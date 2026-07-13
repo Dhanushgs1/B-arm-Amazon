@@ -4,7 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useDashboard } from "@/lib/DashboardContext";
 import { mcp } from "@/lib/api";
 import { DataTable } from "@/components/DataTable";
-import { Loader2 } from "lucide-react";
+import { KPICard } from "@/components/KPICard";
+import { Loader2, Search, AlertTriangle, Lightbulb, TrendingUp } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const cur = (val: number, currency?: string) => {
@@ -26,7 +27,7 @@ export default function SearchTermsPage() {
         workspace_id: account?.workspace_id,
         start_date: startDate,
         end_date: endDate,
-        page_size: 500,
+        page_size: 2000,
         group_by: ["searchTerm", "campaignName"],
       }, keySlot);
       return res.data || res.searchterms || [];
@@ -35,6 +36,20 @@ export default function SearchTermsPage() {
   });
 
   const currency = account?.currency;
+
+  const searchTerms = data || [];
+  
+  // Calculate Search Term KPIs
+  const totalSearchTerms = searchTerms.length;
+  const negativeCandidatesCount = searchTerms.filter((st: any) => st.orders === 0 && st.clicks > 10).length;
+  const harvestCandidatesCount = searchTerms.filter((st: any) => st.roas > 4.5 && st.orders >= 2).length;
+  const wastedSpend = searchTerms.reduce((acc: number, st: any) => st.orders === 0 ? acc + (st.spend || 0) : acc, 0);
+
+  // Lists for insights
+  const negativeKeywords = searchTerms.filter((st: any) => st.orders === 0 && st.clicks > 10)
+    .sort((a: any, b: any) => b.clicks - a.clicks);
+  const keywordHarvesting = searchTerms.filter((st: any) => st.roas > 4.5 && st.orders >= 2)
+    .sort((a: any, b: any) => b.sales - a.sales);
 
   const columns = [
     {
@@ -137,7 +152,54 @@ export default function SearchTermsPage() {
           <p className="font-semibold text-sm">{contextLoading ? "Connecting..." : "Loading Search Terms..."}</p>
         </div>
       ) : (
-        <DataTable data={data || []} columns={columns} defaultSort="spend" />
+        <>
+          {/* KPI Dashboard */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <KPICard title="Total Search Terms" value={num(totalSearchTerms)} subtitle="Customer queries analyzed" delay={0.05} />
+            <KPICard title="Negative Candidates" value={num(negativeCandidatesCount)} subtitle="Clicks > 10 with zero sales" delay={0.1} />
+            <KPICard title="New Keywords Found" value={num(harvestCandidatesCount)} subtitle="ROAS > 4.5x (ready to harvest)" delay={0.15} />
+            <KPICard title="Wasted Search Spend" value={cur(wastedSpend, currency)} subtitle="Spend on non-converting terms" inverseTrend delay={0.2} />
+          </div>
+
+          {/* Actionable Alerts & Recommendations */}
+          {(negativeKeywords.length > 0 || keywordHarvesting.length > 0) && (
+            <div className="glass rounded-2xl border border-border p-5 shadow-sm space-y-3">
+              <h3 className="font-bold text-sm flex items-center gap-2">
+                <Search className="w-4 h-4 text-primary" /> Search Term Optimization Insights
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {negativeKeywords.slice(0, 2).map((st: any) => (
+                  <div key={st.searchTerm + st.campaignName} className="p-3 rounded-xl border border-red-200 dark:border-red-900 bg-red-50/50 dark:bg-red-950/20 text-xs">
+                    <p className="font-bold text-red-800 dark:text-red-400 flex items-center gap-1">🛑 Add Negative Exact Candidate</p>
+                    <p className="font-semibold mt-1 truncate" title={st.searchTerm}>"{st.searchTerm}"</p>
+                    <p className="text-muted-foreground mt-0.5 font-bold">Clicks: {st.clicks} · Spend: {cur(st.spend, currency)}</p>
+                    <p className="font-bold text-red-700 dark:text-red-500 mt-1.5">Action: Add as Negative Exact to campaign "{st.campaignName ? st.campaignName.split("-").slice(0, 2).join("-") : ""}" to save spend.</p>
+                  </div>
+                ))}
+                {keywordHarvesting.slice(0, 2).map((st: any) => (
+                  <div key={st.searchTerm + st.campaignName} className="p-3 rounded-xl border border-green-200 dark:border-green-900 bg-green-50/50 dark:bg-green-950/20 text-xs">
+                    <p className="font-bold text-green-800 dark:text-green-400 flex items-center gap-1">🌱 Keyword Harvesting Opportunity</p>
+                    <p className="font-semibold mt-1 truncate" title={st.searchTerm}>"{st.searchTerm}"</p>
+                    <p className="text-muted-foreground mt-0.5 font-bold">ROAS: {st.roas.toFixed(2)}x · Orders: {st.orders} · Sales: {cur(st.sales, currency)}</p>
+                    <p className="font-bold text-green-700 dark:text-green-500 mt-1.5">Action: Extract search term and launch as Exact Match keyword in target campaign.</p>
+                  </div>
+                ))}
+                {negativeCandidatesCount > 0 && (
+                  <div className="p-3 rounded-xl border border-yellow-200 dark:border-yellow-900 bg-yellow-50/50 dark:bg-yellow-950/20 text-xs flex flex-col justify-between">
+                    <div>
+                      <p className="font-bold text-yellow-800 dark:text-yellow-400 flex items-center gap-1">📊 Search Terms Quality</p>
+                      <p className="font-semibold mt-1">{pct((1 - (negativeCandidatesCount / totalSearchTerms)) * 100)} Clean Queries</p>
+                      <p className="text-muted-foreground mt-0.5">{negativeCandidatesCount} unqualified terms found.</p>
+                    </div>
+                    <p className="font-bold text-yellow-700 dark:text-yellow-500 mt-1.5">Action: Run negative keywords sweep weekly.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <DataTable data={searchTerms} columns={columns} defaultSort="spend" />
+        </>
       )}
     </div>
   );

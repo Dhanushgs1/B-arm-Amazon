@@ -26,7 +26,7 @@ export default function PlacementsPage() {
         workspace_id: account?.workspace_id,
         start_date: startDate,
         end_date: endDate,
-        page_size: 500,
+        page_size: 2000,
       }, keySlot);
       return res.placements || res.data || [];
     },

@@ -4,7 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useDashboard } from "@/lib/DashboardContext";
 import { mcp } from "@/lib/api";
 import { DataTable } from "@/components/DataTable";
-import { Loader2, PackageOpen } from "lucide-react";
+import { KPICard } from "@/components/KPICard";
+import { Loader2, PackageOpen, AlertTriangle, CheckCircle, XCircle } from "lucide-react";
 
 const cur = (val: number, currency?: string) => {
   const sym = currency === "INR" ? "₹" : "$";
@@ -31,12 +32,14 @@ export default function InventoryPage() {
         const fbaQty = i.fba?.endingWarehouseBalance || 0;
         const totalQty = fbmQty + fbaQty;
         const totalValue = totalQty * (i.price || 0);
+        const stockStatus = totalQty === 0 ? "Out of Stock" : totalQty < 20 ? "Low Stock" : "Healthy";
         return {
           ...i,
           fbmQty,
           fbaQty,
           totalQty,
           totalValue,
+          stockStatus,
         };
       });
     },
@@ -44,6 +47,16 @@ export default function InventoryPage() {
   });
 
   const currency = account?.currency;
+
+  // Compute stock health summaries
+  const inventoryItems = data || [];
+  const totalValue = inventoryItems.reduce((acc: number, item: any) => acc + item.totalValue, 0);
+  const healthyCount = inventoryItems.filter((item: any) => item.stockStatus === "Healthy").length;
+  const lowStockCount = inventoryItems.filter((item: any) => item.stockStatus === "Low Stock").length;
+  const outOfStockCount = inventoryItems.filter((item: any) => item.stockStatus === "Out of Stock").length;
+
+  const outOfStockList = inventoryItems.filter((item: any) => item.stockStatus === "Out of Stock");
+  const lowStockList = inventoryItems.filter((item: any) => item.stockStatus === "Low Stock");
 
   const columns = [
     {
@@ -80,6 +93,32 @@ export default function InventoryPage() {
       label: "Price",
       sortable: true,
       render: (val: number) => <span className="font-medium text-foreground">{cur(val, currency)}</span>,
+    },
+    {
+      key: "stockStatus",
+      label: "Stock Status",
+      sortable: true,
+      render: (val: string) => {
+        if (val === "Out of Stock") {
+          return (
+            <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-400 border border-red-200 dark:border-red-900">
+              Out of Stock
+            </span>
+          );
+        } else if (val === "Low Stock") {
+          return (
+            <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-400 border border-yellow-200 dark:border-yellow-900">
+              Low Stock
+            </span>
+          );
+        } else {
+          return (
+            <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-400 border border-green-200 dark:border-green-900">
+              Healthy
+            </span>
+          );
+        }
+      },
     },
     {
       key: "fbaQty",
@@ -126,7 +165,61 @@ export default function InventoryPage() {
           <p className="font-semibold text-sm">{contextLoading ? "Connecting..." : "Loading Inventory..."}</p>
         </div>
       ) : (
-        <DataTable data={data || []} columns={columns} defaultSort="totalValue" />
+        <>
+          {/* KPI Dashboard */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <KPICard title="Total Value" value={cur(totalValue, currency)} subtitle="Valuation of on-hand inventory" delay={0.05} />
+            <KPICard title="Healthy SKUs" value={num(healthyCount)} subtitle="20+ units buffer" delay={0.1} />
+            <KPICard title="Low Stock SKUs" value={num(lowStockCount)} subtitle="1 - 19 units (need fill)" delay={0.15} />
+            <KPICard title="Out of Stock SKUs" value={num(outOfStockCount)} subtitle="0 units (immediate action)" delay={0.2} />
+          </div>
+
+          {/* Actionable Alerts Panel */}
+          {(outOfStockCount > 0 || lowStockCount > 0) && (
+            <div className="glass rounded-2xl border border-border p-5 shadow-sm space-y-3">
+              <h3 className="font-bold text-sm flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-500" /> Stock Health Insights & Recommendations
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {outOfStockList.slice(0, 3).map((item: any) => (
+                  <div key={item.asin} className="p-3 rounded-xl border border-red-200 dark:border-red-900 bg-red-50/50 dark:bg-red-950/20 text-xs flex gap-2.5 items-start">
+                    <XCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-bold text-red-800 dark:text-red-400">Out of Stock Alert</p>
+                      <p className="font-semibold mt-0.5 truncate max-w-[200px]" title={item.itemName}>{item.itemName}</p>
+                      <p className="text-muted-foreground mt-0.5 font-mono text-[10px]">ASIN: {item.asin}</p>
+                      <p className="font-bold text-red-700 dark:text-red-500 mt-1.5">Action: Pause active PPC campaigns to save wasted clicks!</p>
+                    </div>
+                  </div>
+                ))}
+                {lowStockList.slice(0, 3).map((item: any) => (
+                  <div key={item.asin} className="p-3 rounded-xl border border-yellow-200 dark:border-yellow-900 bg-yellow-50/50 dark:bg-yellow-950/20 text-xs flex gap-2.5 items-start">
+                    <AlertTriangle className="w-4 h-4 text-yellow-500 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-bold text-yellow-800 dark:text-yellow-400">Low Stock (Need to Fill)</p>
+                      <p className="font-semibold mt-0.5 truncate max-w-[200px]" title={item.itemName}>{item.itemName}</p>
+                      <p className="text-muted-foreground mt-0.5 font-mono text-[10px]">ASIN: {item.asin} · Qty: {item.totalQty}</p>
+                      <p className="font-bold text-yellow-700 dark:text-yellow-500 mt-1.5">Action: Replenish stock within 7 days to avoid BSR drop.</p>
+                    </div>
+                  </div>
+                ))}
+                {healthyCount > 0 && (
+                  <div className="p-3 rounded-xl border border-green-200 dark:border-green-900 bg-green-50/50 dark:bg-green-950/20 text-xs flex gap-2.5 items-start">
+                    <CheckCircle className="w-4 h-4 text-green-500 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-bold text-green-800 dark:text-green-400">PPC Scaling Opportunity</p>
+                      <p className="font-semibold mt-0.5">{healthyCount} products are in healthy state</p>
+                      <p className="text-muted-foreground mt-0.5">Sufficient inventory buffer available.</p>
+                      <p className="font-bold text-green-700 dark:text-green-500 mt-1.5">Action: Scale up ad budgets on high-converting healthy SKUs.</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <DataTable data={inventoryItems} columns={columns} defaultSort="totalValue" />
+        </>
       )}
     </div>
   );

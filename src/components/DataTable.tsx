@@ -21,8 +21,6 @@ export function DataTable<T>({ data, columns, defaultSort }: DataTableProps<T>) 
   const [sortKey, setSortKey] = useState<string | null>(defaultSort || null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [search, setSearch] = useState("");
-  const [page, setPage] = useState(0);
-  const pageSize = 25;
 
   let filtered = data;
   if (search) {
@@ -43,8 +41,7 @@ export function DataTable<T>({ data, columns, defaultSort }: DataTableProps<T>) 
     });
   }
 
-  const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const view = filtered.slice(page * pageSize, (page + 1) * pageSize);
+  const view = filtered;
 
   return (
     <div className="glass rounded-2xl border border-border shadow-sm flex flex-col overflow-hidden">
@@ -54,7 +51,7 @@ export function DataTable<T>({ data, columns, defaultSort }: DataTableProps<T>) 
           <input
             placeholder="Filter rows..."
             value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+            onChange={(e) => { setSearch(e.target.value); }}
             className="w-full bg-background border border-border text-foreground pl-9 pr-4 py-1.5 rounded-lg text-sm focus:border-primary focus:outline-none transition-colors"
           />
         </div>
@@ -110,26 +107,6 @@ export function DataTable<T>({ data, columns, defaultSort }: DataTableProps<T>) 
             )}
           </tbody>
         </table>
-      </div>
-
-      <div className="p-3 border-t border-border flex items-center justify-between bg-card/50 text-xs font-semibold text-muted-foreground">
-        <span>Page {page + 1} of {pages}</span>
-        <div className="flex gap-2">
-          <button
-            onClick={() => setPage(Math.max(0, page - 1))}
-            disabled={page === 0}
-            className="px-3 py-1.5 rounded-md border border-border hover:bg-muted disabled:opacity-50"
-          >
-            Prev
-          </button>
-          <button
-            onClick={() => setPage(Math.min(pages - 1, page + 1))}
-            disabled={page >= pages - 1}
-            className="px-3 py-1.5 rounded-md border border-border hover:bg-muted disabled:opacity-50"
-          >
-            Next
-          </button>
-        </div>
       </div>
     </div>
   );
