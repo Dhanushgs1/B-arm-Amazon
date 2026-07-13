@@ -70,4 +70,30 @@ module.exports = async (req, res) => {
   if (!apiKey) {
     const varName = keySlot === 'B' ? 'SELLERMATE_API_KEY_B' : 'SELLERMATE_API_KEY_A (or SELLERMATE_API_KEY)';
     res.status(500).json({
-      error: `Server is missing ${varName} for Account ${keySlot}. Add i
+      error: `Server is missing ${varName} for Account ${keySlot}. Add it in Vercel settings.`
+    });
+    return;
+  }
+
+  try {
+    const upstream = await fetch(`${SELLERMATE_BASE_URL}/${tool}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': apiKey,
+      },
+      body: JSON.stringify(args || {}),
+    });
+
+    if (!upstream.ok) {
+      const errText = await upstream.text();
+      res.status(upstream.status).json({ error: `SellerMate API Error: ${errText}` });
+      return;
+    }
+
+    const data = await upstream.json();
+    res.status(200).json(data);
+  } catch (error) {
+    res.status(500).json({ error: `Internal Proxy Error: ${error.message}` });
+  }
+};

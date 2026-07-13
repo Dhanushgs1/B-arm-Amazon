@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/sm/(.*)", "destination": "/api/sm?path=$1" }
+  ]
+}
