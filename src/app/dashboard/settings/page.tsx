@@ -475,10 +475,4 @@ export default function SettingsPage() {
       </div>
     </div>
   );
-}        </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
 }
