@@ -1,0 +1,9 @@
+{
+  "name": "amazon-ppc-analytics-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Standalone deployment of the Amazon PPC Analytics Dashboard, backed by a serverless proxy to the SellerMate.AI Public API.",
+  "engines": {
+    "node": ">=18"
+  }
+}

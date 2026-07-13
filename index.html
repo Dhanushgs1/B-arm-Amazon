@@ -1,0 +1,990 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PPC Command Center</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js" integrity="sha384-iU8HYtnGQ8Cy4zl7gbNMOhsDTTKX02BTXptVP/vqAWIaTfM7isw76iyZCsjL2eVi" crossorigin="anonymous"></script>
+<style>
+:root{
+  color-scheme: light;
+  --bg:#f4f6fb; --panel:rgba(255,255,255,.82); --card:rgba(255,255,255,.75); --solid:#ffffff;
+  --border:#e4e8f1; --text:#111827; --muted:#6b7280; --accent:#4f46e5; --accent2:#0ea5e9;
+  --green:#059669; --red:#dc2626; --amber:#d97706; --chip:#eef2ff;
+  --shadow:0 8px 30px rgba(17,24,39,.06); --glass:blur(14px) saturate(1.4);
+}
+[data-theme=dark]{
+  color-scheme: dark;
+  --bg:#0b0f1a; --panel:rgba(17,24,39,.78); --card:rgba(24,32,51,.72); --solid:#131a2b;
+  --border:#232c42; --text:#e5e9f4; --muted:#8b93a9; --accent:#818cf8; --accent2:#38bdf8;
+  --green:#34d399; --red:#f87171; --amber:#fbbf24; --chip:#1e2740;
+  --shadow:0 8px 30px rgba(0,0,0,.4);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font:13px/1.5 -apple-system,'Segoe UI',Inter,Roboto,sans-serif;background:var(--bg);color:var(--text);overflow:hidden}
+body::before{content:'';position:fixed;inset:0;background:
+ radial-gradient(600px 300px at 15% -5%, rgba(79,70,229,.14), transparent),
+ radial-gradient(700px 350px at 90% 0%, rgba(14,165,233,.12), transparent);pointer-events:none}
+#app{display:flex;height:100vh}
+/* sidebar */
+#sidebar{width:212px;flex-shrink:0;background:var(--panel);backdrop-filter:var(--glass);border-right:1px solid var(--border);display:flex;flex-direction:column;position:sticky;top:0;z-index:40}
+.logo{display:flex;align-items:center;gap:9px;padding:16px 16px 12px;font-weight:800;font-size:15px}
+.logo .mark{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:900}
+.logo small{display:block;font-weight:500;color:var(--muted);font-size:10px}
+nav{flex:1;overflow-y:auto;padding:6px 10px}
+.nav-item{display:flex;align-items:center;gap:10px;padding:8px 11px;border-radius:9px;cursor:pointer;color:var(--muted);font-weight:600;margin-bottom:2px;transition:.15s;user-select:none}
+.nav-item svg{width:16px;height:16px;flex-shrink:0}
+.nav-item:hover{background:var(--chip);color:var(--text)}
+.nav-item.active{background:linear-gradient(90deg,var(--accent),var(--accent2));color:#fff;box-shadow:0 4px 14px rgba(79,70,229,.35)}
+.side-foot{padding:12px;border-top:1px solid var(--border);font-size:11px;color:var(--muted)}
+/* main */
+#main{flex:1;display:flex;flex-direction:column;min-width:0}
+header{display:flex;align-items:center;gap:10px;padding:10px 18px;background:var(--panel);backdrop-filter:var(--glass);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:35;flex-wrap:wrap}
+.hsel,select.hsel{appearance:none;background:var(--card);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:9px;font-weight:600;font-size:12px;cursor:pointer}
+#gsearch{flex:1;min-width:140px;max-width:340px;background:var(--card);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:9px;font-size:12px}
+.icon-btn{width:34px;height:34px;border-radius:9px;border:1px solid var(--border);background:var(--card);color:var(--text);cursor:pointer;display:flex;align-items:center;justify-content:center;position:relative;font-size:14px}
+.icon-btn .dot{position:absolute;top:6px;right:7px;width:7px;height:7px;border-radius:50%;background:var(--red);display:none}
+.avatar{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;cursor:pointer;font-size:12px}
+#datebtn{display:flex;align-items:center;gap:7px}
+/* date panel */
+.pop{position:absolute;top:54px;right:18px;background:var(--solid);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);z-index:60;display:none;overflow:hidden}
+.pop.open{display:block;animation:pin .15s ease}
+@keyframes pin{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+#datepop{display:none;width:520px;max-width:92vw}
+#datepop.open{display:flex}
+.dp-quick{width:180px;border-right:1px solid var(--border);max-height:380px;overflow-y:auto;padding:8px}
+.dp-quick div{padding:7px 11px;border-radius:8px;cursor:pointer;font-weight:600;font-size:12px}
+.dp-quick div:hover{background:var(--chip)}
+.dp-quick div.sel{background:var(--accent);color:#fff}
+.dp-custom{flex:1;padding:16px}
+.dp-custom label{font-size:11px;font-weight:700;color:var(--muted);display:block;margin:10px 0 4px}
+.dp-custom input[type=date]{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:9px;background:var(--card);color:var(--text);font-size:12px}
+.dp-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+.btn{padding:8px 16px;border-radius:9px;border:1px solid var(--border);background:var(--card);color:var(--text);font-weight:700;font-size:12px;cursor:pointer}
+.btn.primary{background:linear-gradient(90deg,var(--accent),var(--accent2));color:#fff;border:none}
+.btn.sm{padding:5px 10px;font-size:11px}
+/* notif + profile pops */
+#notifpop,#profilepop{width:320px;padding:12px}
+.notif-item{padding:9px 10px;border-radius:9px;font-size:12px;border-bottom:1px solid var(--border)}
+.notif-item:last-child{border-bottom:none}
+.notif-item b{display:block}
+/* content */
+#content{flex:1;overflow-y:auto;padding:18px;position:relative}
+.page-title{font-size:19px;font-weight:800;margin-bottom:2px}
+.page-sub{color:var(--muted);margin-bottom:16px;font-size:12px}
+/* cards */
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(158px,1fr));gap:10px;margin-bottom:16px}
+.kpi{background:var(--card);backdrop-filter:var(--glass);border:1px solid var(--border);border-radius:13px;padding:12px 14px;box-shadow:var(--shadow)}
+.kpi .k-label{font-size:10.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.kpi .k-val{font-size:19px;font-weight:800;margin-top:2px}
+.kpi .k-sub{font-size:10.5px;color:var(--muted)}
+.card{background:var(--card);backdrop-filter:var(--glass);border:1px solid var(--border);border-radius:14px;padding:14px 16px;box-shadow:var(--shadow);margin-bottom:14px}
+.card h3{font-size:13px;font-weight:800;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+@media(max-width:1100px){.grid2,.grid3{grid-template-columns:1fr}}
+.chart-box{height:210px;position:relative}
+/* tables */
+.tbl-wrap{overflow:auto;max-height:560px;border-radius:10px;border:1px solid var(--border)}
+table{width:100%;border-collapse:collapse;font-size:12px;background:var(--solid)}
+thead th{position:sticky;top:0;background:var(--solid);z-index:5;text-align:left;padding:9px 10px;font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);border-bottom:1px solid var(--border);cursor:pointer;white-space:nowrap;user-select:none}
+thead th .arr{color:var(--accent)}
+tbody td{padding:8px 10px;border-bottom:1px solid var(--border);white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}
+tbody tr{cursor:pointer;transition:.1s}
+tbody tr:hover{background:var(--chip)}
+.tbl-top{display:flex;gap:8px;align-items:center;margin-bottom:9px;flex-wrap:wrap}
+.tbl-top input{padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-size:12px}
+.tbl-top .spacer{flex:1}
+.pgn{display:flex;gap:6px;align-items:center;justify-content:flex-end;margin-top:9px;font-size:11.5px;color:var(--muted)}
+.pgn button{padding:4px 10px;border-radius:7px;border:1px solid var(--border);background:var(--card);color:var(--text);cursor:pointer;font-size:11.5px}
+.pgn button:disabled{opacity:.4;cursor:default}
+.badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10.5px;font-weight:700}
+.b-green{background:rgba(5,150,105,.13);color:var(--green)}
+.b-red{background:rgba(220,38,38,.12);color:var(--red)}
+.b-amber{background:rgba(217,119,6,.13);color:var(--amber)}
+.b-gray{background:var(--chip);color:var(--muted)}
+.pos{color:var(--green);font-weight:700}.neg{color:var(--red);font-weight:700}
+.pimg{width:30px;height:30px;border-radius:6px;object-fit:contain;background:#fff;border:1px solid var(--border);vertical-align:middle}
+/* skeleton / states */
+.skel{border-radius:10px;background:linear-gradient(90deg,var(--chip) 25%,var(--border) 50%,var(--chip) 75%);background-size:200% 100%;animation:sh 1.2s infinite}
+@keyframes sh{to{background-position:-200% 0}}
+.skel-row{height:14px;margin:10px 0}
+.state{padding:30px;text-align:center;color:var(--muted)}
+.state .big{font-size:26px;margin-bottom:8px}
+/* drawer */
+#overlay{position:fixed;inset:0;background:rgba(10,12,20,.45);z-index:70;display:none;opacity:0;transition:.2s}
+#overlay.open{display:block;opacity:1}
+#drawer{position:fixed;top:0;right:-980px;width:940px;max-width:96vw;height:100vh;background:var(--bg);border-left:1px solid var(--border);z-index:75;transition:right .25s ease;display:flex;flex-direction:column;box-shadow:-20px 0 60px rgba(0,0,0,.25)}
+#drawer.open{right:0}
+.dr-head{padding:14px 18px;border-bottom:1px solid var(--border);background:var(--panel);backdrop-filter:var(--glass);display:flex;align-items:center;gap:10px}
+.dr-head h2{font-size:15px;font-weight:800;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dr-tabs{display:flex;gap:2px;padding:0 14px;border-bottom:1px solid var(--border);background:var(--panel);overflow-x:auto}
+.dr-tab{padding:10px 13px;font-weight:700;font-size:12px;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap}
+.dr-tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.dr-body{flex:1;overflow-y:auto;padding:16px}
+/* AI chat */
+.chat{display:flex;flex-direction:column;height:calc(100vh - 210px);min-height:420px}
+.chat-msgs{flex:1;overflow-y:auto;padding:6px 2px}
+.msg{max-width:82%;padding:10px 13px;border-radius:13px;margin-bottom:9px;font-size:12.5px;white-space:pre-wrap}
+.msg.user{background:linear-gradient(90deg,var(--accent),var(--accent2));color:#fff;margin-left:auto;border-bottom-right-radius:4px}
+.msg.ai{background:var(--card);border:1px solid var(--border);border-bottom-left-radius:4px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.chip{padding:6px 11px;border-radius:20px;background:var(--chip);border:1px solid var(--border);font-size:11.5px;font-weight:600;cursor:pointer}
+.chip:hover{border-color:var(--accent);color:var(--accent)}
+.chat-in{display:flex;gap:8px;margin-top:8px}
+.chat-in input{flex:1;padding:11px 13px;border:1px solid var(--border);border-radius:11px;background:var(--card);color:var(--text)}
+/* misc */
+.mini-list{display:flex;flex-direction:column;gap:7px}
+.mini-row{display:flex;align-items:center;gap:9px;padding:8px 10px;background:var(--solid);border:1px solid var(--border);border-radius:10px;font-size:12px;cursor:pointer}
+.mini-row:hover{border-color:var(--accent)}
+.mini-row .grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.stat-inline{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;margin-bottom:12px}
+.stat-inline .kpi{padding:9px 11px}.stat-inline .k-val{font-size:15px}
+.filters-bar{display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+.report-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+.report-card{background:var(--card);border:1px solid var(--border);border-radius:13px;padding:15px;box-shadow:var(--shadow)}
+.report-card h4{font-size:13px;margin-bottom:4px}
+.report-card p{color:var(--muted);font-size:11.5px;margin-bottom:11px}
+.report-card .row{display:flex;gap:6px}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:5px}
+@media(max-width:860px){#sidebar{width:60px}.nav-item span,.logo div,.side-foot{display:none}.kpi-grid{grid-template-columns:repeat(auto-fill,minmax(130px,1fr))}}
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="logo"><div class="mark">P</div><div>PPC Command<small>Enterprise Analytics</small></div></div>
+    <nav id="nav"></nav>
+    <div class="side-foot" id="acctFoot">Connecting…</div>
+  </aside>
+  <div id="main">
+    <header>
+      <select class="hsel" id="keySel" title="SellerMate Account"><option value="A">Account A</option><option value="B">Account B</option></select>
+      <select class="hsel" id="mktSel" title="Marketplace"></select>
+      <input id="gsearch" placeholder="Search current page…">
+      <select class="hsel" id="portSel" title="Portfolio"><option value="">All Portfolios</option></select>
+      <select class="hsel" id="campSel" title="Campaign filter"><option value="">All Campaigns</option></select>
+      <button class="hsel" id="datebtn">📅 <span id="datelabel">Last 30 Days</span></button>
+      <button class="icon-btn" id="notifBtn" title="Alerts">🔔<span class="dot" id="notifDot"></span></button>
+      <button class="icon-btn" id="themeBtn" title="Dark mode">🌙</button>
+      <div class="avatar" id="profileBtn">?</div>
+      <div class="pop" id="datepop">
+        <div class="dp-quick" id="dpQuick"></div>
+        <div class="dp-custom">
+          <b style="font-size:12px">Custom Range</b>
+          <label>Start Date</label><input type="date" id="dpStart">
+          <label>End Date</label><input type="date" id="dpEnd">
+          <div class="dp-actions"><button class="btn" id="dpCancel">Cancel</button><button class="btn primary" id="dpApply">Apply</button></div>
+        </div>
+      </div>
+      <div class="pop" id="notifpop"><b style="font-size:12px">Recent Alerts</b><div id="notifList" style="margin-top:8px"><div class="state">Loading alerts…</div></div></div>
+      <div class="pop" id="profilepop"><div id="profileInfo">…</div></div>
+    </header>
+    <div id="content"></div>
+  </div>
+</div>
+<div id="overlay"></div>
+<div id="drawer">
+  <div class="dr-head"><h2 id="drTitle"></h2><button class="icon-btn" onclick="closeDrawer()">✕</button></div>
+  <div class="dr-tabs" id="drTabs"></div>
+  <div class="dr-body" id="drBody"></div>
+</div>
+<script>
+'use strict';
+/* ================= CORE ================= */
+const cache=new Map();
+const S={ws:null,accounts:[],acct:null,user:null,start:null,end:null,label:'Last 30 Days',page:'overview',campFilter:'',portFilter:'',campaignsMeta:null,charts:[],alerts:[],keySlot:localStorage.getItem('ppcKeySlot')||'A'};
+const MKT_NAMES={IN:'Amazon India',US:'Amazon US',CA:'Amazon Canada',MX:'Amazon Mexico',AE:'Amazon UAE',UK:'Amazon UK',GB:'Amazon UK'};
+function el(id){return document.getElementById(id)}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+async function mcp(tool,args={},noCache){
+  const key=S.keySlot+'|'+tool+'|'+JSON.stringify(args);
+  if(!noCache&&cache.has(key))return cache.get(key);
+  const res=await fetch('/api/tool',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tool,args,slot:S.keySlot})});
+  let d;const t=await res.text();try{d=JSON.parse(t)}catch(e){d={raw:t}}
+  if(!res.ok)throw new Error((d&&(d.error||d.message))||'API error from '+tool);
+  cache.set(key,d);return d;
+}
+function base(extra={}){
+  const a={workspace_id:S.ws,amazon_account_id:S.acct.id,start_date:S.start,end_date:S.end,...extra};
+  if(S.campFilter&&!a.campaign_ids)a.campaign_ids=[S.campFilter];
+  return a;
+}
+/* formatting */
+function cur(v,dec=0){if(v==null||isNaN(v))return'—';try{return new Intl.NumberFormat(undefined,{style:'currency',currency:S.acct?.currency||'USD',maximumFractionDigits:dec}).format(v)}catch(e){return v.toFixed(dec)}}
+function num(v){if(v==null||isNaN(v))return'—';return new Intl.NumberFormat().format(Math.round(v*100)/100)}
+function pct(v){if(v==null||isNaN(v))return'—';return(+v).toFixed(2)+'%'}
+function fx(v,d=2){if(v==null||isNaN(v))return'—';return(+v).toFixed(d)}
+function dstr(d){return d.toISOString().slice(0,10)}
+function today(){const t=new Date();return new Date(t.getFullYear(),t.getMonth(),t.getDate())}
+/* skeleton & states */
+function skel(n=5){let h='';for(let i=0;i<n;i++)h+=`<div class="skel skel-row" style="width:${60+Math.random()*38}%"></div>`;return h}
+function errState(msg,retryFn){const id='r'+Math.random().toString(36).slice(2);setTimeout(()=>{const b=el(id);if(b)b.onclick=retryFn});return`<div class="state"><div class="big">⚠️</div><div>${esc(msg)}</div><button class="btn primary" id="${id}" style="margin-top:12px">Retry</button></div>`}
+function emptyState(msg='No data for this period'){return`<div class="state"><div class="big">🗂️</div>${esc(msg)}</div>`}
+async function loadInto(elm,fetcher,renderer){
+  elm.innerHTML=skel(6);
+  try{const d=await fetcher();elm.innerHTML='';renderer(elm,d)}
+  catch(e){console.error(e);elm.innerHTML=errState(e.message||'Request failed',()=>loadInto(elm,fetcher,renderer))}
+}
+/* ================= GENERIC TABLE ================= */
+function renderTable(container,cfg){
+  // cfg: {columns:[{key,label,fmt,html}], rows, pageSize, onRow, exportName, defaultSort, filterKeys}
+  const st={sort:cfg.defaultSort||null,dir:-1,page:0,q:'',ps:cfg.pageSize||25};
+  const wrap=document.createElement('div');container.appendChild(wrap);
+  function fmtCell(c,r){const v=r[c.key];if(c.html)return c.html(v,r);return esc(c.fmt?c.fmt(v,r):(v??'—'))}
+  function draw(){
+    let rows=cfg.rows;
+    const gq=(el('gsearch')?.value||'').toLowerCase();
+    const q=(st.q||gq).toLowerCase();
+    if(q)rows=rows.filter(r=>cfg.columns.some(c=>String(r[c.key]??'').toLowerCase().includes(q)));
+    if(st.sort){rows=[...rows].sort((a,b)=>{const x=a[st.sort],y=b[st.sort];if(x==null)return 1;if(y==null)return -1;return(typeof x==='number'?x-y:String(x).localeCompare(String(y)))*st.dir})}
+    const pages=Math.max(1,Math.ceil(rows.length/st.ps));st.page=Math.min(st.page,pages-1);
+    const view=rows.slice(st.page*st.ps,(st.page+1)*st.ps);
+    wrap.innerHTML=`
+    <div class="tbl-top">
+      <input placeholder="Filter rows…" value="${esc(st.q)}" id="tq">
+      <span style="color:var(--muted);font-size:11.5px">${num(rows.length)} rows</span>
+      <div class="spacer"></div>
+      ${cfg.exportName?`<button class="btn sm" id="texp">⬇ CSV</button><button class="btn sm" id="texl">⬇ Excel</button>`:''}
+    </div>
+    <div class="tbl-wrap"><table><thead><tr>${cfg.columns.map(c=>`<th data-k="${c.key}">${esc(c.label)}${st.sort===c.key?`<span class="arr">${st.dir<0?' ▼':' ▲'}</span>`:''}</th>`).join('')}</tr></thead>
+    <tbody>${view.length?view.map((r,i)=>`<tr data-i="${rows.indexOf(r)}">${cfg.columns.map(c=>`<td>${fmtCell(c,r)}</td>`).join('')}</tr>`).join(''):`<tr><td colspan="${cfg.columns.length}">${emptyState()}</td></tr>`}</tbody></table></div>
+    <div class="pgn"><span>Page ${st.page+1} / ${pages}</span>
+      <button ${st.page===0?'disabled':''} id="tprev">‹ Prev</button>
+      <button ${st.page>=pages-1?'disabled':''} id="tnext">Next ›</button>
+      <select id="tps" class="hsel" style="padding:3px 6px">${[10,25,50,100].map(n=>`<option ${n===st.ps?'selected':''}>${n}</option>`).join('')}</select>
+    </div>`;
+    wrap.querySelector('#tq').oninput=e=>{st.q=e.target.value;st.page=0;draw()};
+    wrap.querySelector('#tprev')?.addEventListener('click',()=>{st.page--;draw()});
+    wrap.querySelector('#tnext')?.addEventListener('click',()=>{st.page++;draw()});
+    wrap.querySelector('#tps').onchange=e=>{st.ps=+e.target.value;draw()};
+    wrap.querySelectorAll('thead th').forEach(th=>th.onclick=()=>{const k=th.dataset.k;if(st.sort===k)st.dir*=-1;else{st.sort=k;st.dir=-1}draw()});
+    if(cfg.onRow)wrap.querySelectorAll('tbody tr[data-i]').forEach(tr=>tr.onclick=()=>cfg.onRow(cfg.rows.length?rowsRef()[+tr.dataset.i]:null));
+    function rowsRef(){let rr=cfg.rows;const q2=(st.q||gq).toLowerCase();if(q2)rr=rr.filter(r=>cfg.columns.some(c=>String(r[c.key]??'').toLowerCase().includes(q2)));if(st.sort)rr=[...rr].sort((a,b)=>{const x=a[st.sort],y=b[st.sort];if(x==null)return 1;if(y==null)return-1;return(typeof x==='number'?x-y:String(x).localeCompare(String(y)))*st.dir});return rr}
+    if(cfg.exportName){
+      wrap.querySelector('#texp').onclick=()=>exportRows(cfg.exportName+'.csv',cfg.columns,rows,',');
+      wrap.querySelector('#texl').onclick=()=>exportRows(cfg.exportName+'.xls',cfg.columns,rows,'\t');
+    }
+  }
+  draw();
+  return{redraw:draw};
+}
+function exportRows(name,cols,rows,sep){
+  const head=cols.map(c=>c.label).join(sep);
+  const body=rows.map(r=>cols.map(c=>{let v=r[c.key];v=(v==null?'':String(v)).replace(/"/g,'""');return/[",\n\t]/.test(v)?`"${v}"`:v}).join(sep)).join('\n');
+  const blob=new Blob([head+'\n'+body],{type:sep===','?'text/csv':'application/vnd.ms-excel'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();
+}
+/* ================= CHARTS ================= */
+function killCharts(){S.charts.forEach(c=>{try{c.destroy()}catch(e){}});S.charts=[]}
+function themeC(){const cs=getComputedStyle(document.documentElement);return{text:cs.getPropertyValue('--muted').trim(),grid:cs.getPropertyValue('--border').trim(),a:cs.getPropertyValue('--accent').trim(),b:cs.getPropertyValue('--accent2').trim(),g:cs.getPropertyValue('--green').trim(),r:cs.getPropertyValue('--red').trim(),am:cs.getPropertyValue('--amber').trim()}}
+function lineChart(canvas,labels,datasets,opts={}){
+  const t=themeC();
+  const ch=new Chart(canvas,{type:opts.type||'line',data:{labels,datasets:datasets.map((d,i)=>({tension:.35,fill:d.fill??true,pointRadius:2.5,borderWidth:2,backgroundColor:(d.color||[t.a,t.b,t.g,t.am][i%4])+'22',borderColor:d.color||[t.a,t.b,t.g,t.am][i%4],...d}))},
+  options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:datasets.length>1,labels:{color:t.text,boxWidth:10,font:{size:10}}},tooltip:{mode:'index',intersect:false}},scales:{x:{ticks:{color:t.text,font:{size:10}},grid:{color:t.grid+'55'}},y:{ticks:{color:t.text,font:{size:10}},grid:{color:t.grid+'55'},beginAtZero:true}}}});
+  S.charts.push(ch);return ch;
+}
+/* weekly trend (labels + metric arrays) */
+async function weeklyTrend(extra={}){
+  const d=await mcp('get_targeting_performance',base({group_by:['week','year'],page_size:200,...extra}));
+  const rows=(d.data||[]).filter(r=>r.week).sort((a,b)=>new Date(a.week)-new Date(b.week));
+  return{labels:rows.map(r=>new Date(r.week).toLocaleDateString(undefined,{month:'short',day:'numeric'})),rows};
+}
+/* ================= HEADER / FILTERS ================= */
+const QUICK=[['Today',0,0],['Yesterday',1,1],['Last 7 Days',6,0],['Last 14 Days',13,0],['Last 30 Days',29,0],['Last 60 Days',59,0],['Last 90 Days',89,0]];
+function quickRange(name){
+  const t=today();let s,e;
+  const wd=(t.getDay()+6)%7; // Mon=0
+  switch(name){
+    case 'This Week':s=new Date(t);s.setDate(t.getDate()-wd);e=t;break;
+    case 'Last Week':e=new Date(t);e.setDate(t.getDate()-wd-1);s=new Date(e);s.setDate(e.getDate()-6);break;
+    case 'This Month':s=new Date(t.getFullYear(),t.getMonth(),1);e=t;break;
+    case 'Last Month':s=new Date(t.getFullYear(),t.getMonth()-1,1);e=new Date(t.getFullYear(),t.getMonth(),0);break;
+    case 'This Quarter':s=new Date(t.getFullYear(),Math.floor(t.getMonth()/3)*3,1);e=t;break;
+    case 'Last Quarter':{const q=Math.floor(t.getMonth()/3)-1;const y=q<0?t.getFullYear()-1:t.getFullYear();const qq=(q+4)%4;s=new Date(y,qq*3,1);e=new Date(y,qq*3+3,0);break}
+    case 'Lifetime':s=new Date(2020,0,1);e=t;break;
+    default:{const f=QUICK.find(x=>x[0]===name);s=new Date(t);s.setDate(t.getDate()-f[1]);e=new Date(t);e.setDate(t.getDate()-f[2])}
+  }
+  return[dstr(s),dstr(e)];
+}
+function buildDatePicker(){
+  const names=[...QUICK.map(q=>q[0]),'This Week','Last Week','This Month','Last Month','This Quarter','Last Quarter','Lifetime'];
+  el('dpQuick').innerHTML=names.map(n=>`<div data-n="${n}" class="${S.label===n?'sel':''}">${n}</div>`).join('')+`<div data-n="__custom">Custom Range…</div>`;
+  el('dpQuick').querySelectorAll('div').forEach(d=>d.onclick=()=>{
+    const n=d.dataset.n;
+    if(n==='__custom')return;
+    const[s,e]=quickRange(n);setRange(s,e,n);el('datepop').classList.remove('open');
+  });
+  el('dpApply').onclick=()=>{const s=el('dpStart').value,e=el('dpEnd').value;if(!s||!e||s>e)return alert('Pick a valid start and end date');setRange(s,e,s+' → '+e);el('datepop').classList.remove('open')};
+  el('dpCancel').onclick=()=>el('datepop').classList.remove('open');
+}
+function setRange(s,e,label){S.start=s;S.end=e;S.label=label;el('datelabel').textContent=label;el('dpStart').value=s;el('dpEnd').value=e;buildDatePicker();cache.clear();route()}
+function togglePop(id){['datepop','notifpop','profilepop'].forEach(p=>{if(p!==id)el(p).classList.remove('open')});el(id).classList.toggle('open')}
+/* ================= NAV / ROUTER ================= */
+const NAV=[
+ ['overview','Overview','<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>'],
+ ['campaigns','Campaigns','<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11l18-7-7 18-2.5-7.5L3 11z"/></svg>'],
+ ['adgroups','Ad Groups','<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/></svg>'],
+ ['placements','Placements','<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/></svg>'],
+ ['products','Products','<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>'],
+ ['keywords','Keywords','<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h10M4 17h7"/></svg>'],
+ ['searchterms','Search Terms','<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>'],
+ ['inventory','Inventory','<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-6 9 6v11a1 1 0 01-1 1H4a1 1 0 01-1-1V9z"/><path d="M9 21V12h6v9"/></svg>'],
+ ['reports','Reports','<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z"/><path d="M14 2v6h6M9 15l2 2 4-4"/></svg>'],
+ ['ai','AI Assistant','<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.8 4.8L18 9.5l-4.2 1.7L12 16l-1.8-4.8L6 9.5l4.2-1.7L12 3z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z"/></svg>'],
+ ['settings','Settings','<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.2a1.7 1.7 0 00-1-1.5 1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.2a1.7 1.7 0 001.5-1 1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3h.1a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.2a1.7 1.7 0 001 1.5h.1a1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9v.1a1.7 1.7 0 001.5 1h.2a2 2 0 110 4h-.2a1.7 1.7 0 00-1.5 1z"/></svg>']
+];
+function buildNav(){
+  el('nav').innerHTML=NAV.map(([id,l,ic])=>`<div class="nav-item ${S.page===id?'active':''}" data-p="${id}">${ic}<span>${l}</span></div>`).join('');
+  el('nav').querySelectorAll('.nav-item').forEach(n=>n.onclick=()=>{S.page=n.dataset.p;route()});
+}
+const PAGES={};
+function route(){buildNav();killCharts();const c=el('content');c.scrollTop=0;c.innerHTML='';(PAGES[S.page]||PAGES.overview)(c)}
+/* ================= OVERVIEW ================= */
+PAGES.overview=function(c){
+  c.innerHTML=`<div class="page-title">Overview</div><div class="page-sub">${esc(MKT_NAMES[S.acct.country]||S.acct.country)} · ${esc(S.label)} (${S.start} → ${S.end})</div>
+  <div id="ovKpi" class="kpi-grid"></div>
+  <div class="grid2"><div class="card"><h3>Revenue Trend (Ad Sales, weekly)</h3><div class="chart-box"><canvas id="c1"></canvas></div></div>
+  <div class="card"><h3>Spend Trend</h3><div class="chart-box"><canvas id="c2"></canvas></div></div>
+  <div class="card"><h3>ACOS Trend</h3><div class="chart-box"><canvas id="c3"></canvas></div></div>
+  <div class="card"><h3>ROAS Trend</h3><div class="chart-box"><canvas id="c4"></canvas></div></div>
+  <div class="card"><h3>Orders Trend</h3><div class="chart-box"><canvas id="c5"></canvas></div></div>
+  <div class="card"><h3>Inventory — Top Value on Hand</h3><div class="chart-box"><canvas id="c6"></canvas></div></div></div>
+  <div class="grid3">
+    <div class="card"><h3>Top Campaigns</h3><div id="ovTopC">${skel(5)}</div></div>
+    <div class="card"><h3>Top Products (Ad Sales)</h3><div id="ovTopP">${skel(5)}</div></div>
+    <div class="card"><h3>Recent Alerts</h3><div id="ovAlerts">${skel(4)}</div></div>
+  </div>
+  <div class="card"><h3>AI Recommendations <button class="btn sm" id="aiRegen">↻ Regenerate</button></h3><div id="ovAI" class="state">Generating from live account data…</div></div>`;
+  el('ovKpi').innerHTML=skel(3);
+  const P={};
+  // KPIs
+  (async()=>{
+    try{
+      const[cp,rp]=await Promise.all([
+        mcp('get_campaign_performance',base({page_size:500,status:['ENABLED','PAUSED']})),
+        mcp('get_retail_product_performance',base()).catch(()=>null)
+      ]);
+      P.cp=cp;P.rp=rp;
+      const s=cp.summary||{},r=rp?.summary||null;
+      const ctr=s.totalImpressions?s.totalClicks/s.totalImpressions*100:null;
+      const cpc=s.totalClicks?s.totalSpend/s.totalClicks:null;
+      const cvr=s.totalClicks?s.totalOrders/s.totalClicks*100:null;
+      const organic=r?r.totalSales-r.totalAdSales:null;
+      let campMeta=null;try{campMeta=await getCampaignsMeta()}catch(e){}
+      const active=campMeta?campMeta.filter(x=>x.state==='ENABLED').length:null;
+      const paused=campMeta?campMeta.filter(x=>x.state==='PAUSED').length:null;
+      let invVal=null,invRows=null;
+      try{const inv=await mcp('get_inventory',base({limit:200}));invRows=inv.items||[];invVal=invRows.reduce((t,i)=>t+(i.price||0)*((i.fbm?.quantity||0)+(i.fba?.endingWarehouseBalance||0)),0)}catch(e){}
+      const K=[
+        ['Total Sales',r?cur(r.totalSales):'—','retail + ads'],['Organic Sales',organic!=null?cur(organic):'—',''],
+        ['Ad Sales',cur(s.totalSales),''],['Ad Spend',cur(s.totalSpend),''],
+        ['Orders',num(s.totalOrders),'ad-attributed'],['Units',r?num(r.totalUnitsOrdered):'—','retail'],
+        ['ACOS',pct(s.overallAcos),''],['ROAS',fx(s.overallRoas),''],
+        ['TACOS',r?pct(r.overallTacos):'—',''],['CTR',pct(ctr),''],
+        ['CPC',cur(cpc,2),''],['CVR',pct(cvr),''],
+        ['Clicks',num(s.totalClicks),''],['Impressions',num(s.totalImpressions),''],
+        ['Profit','—','needs COGS data'],['Margin','—','needs COGS data'],
+        ['Inventory Value',invVal!=null?cur(invVal):'—','on-hand'],['Active Campaigns',active!=null?num(active):'—',''],
+        ['Paused Campaigns',paused!=null?num(paused):'—','']
+      ];
+      el('ovKpi').innerHTML=K.map(k=>`<div class="kpi"><div class="k-label">${k[0]}</div><div class="k-val">${k[1]}</div><div class="k-sub">${k[2]}</div></div>`).join('');
+      // top campaigns / products
+      const top=[...(cp.data||[])].sort((a,b)=>b.sales-a.sales).slice(0,6);
+      el('ovTopC').innerHTML=top.length?`<div class="mini-list">${top.map(t=>`<div class="mini-row" data-cid="${t.campaignId}"><div class="grow">${esc(t.campaignName)}</div><span>${cur(t.sales)}</span><span class="badge ${t.acos>40?'b-red':'b-green'}">${pct(t.acos)}</span></div>`).join('')}</div>`:emptyState();
+      el('ovTopC').querySelectorAll('[data-cid]').forEach(m=>m.onclick=()=>openCampaignDrawer(m.dataset.cid));
+      // alerts
+      computeAlerts(cp);
+      renderAlerts(el('ovAlerts'));
+      // inventory chart
+      if(invRows){
+        const topInv=invRows.map(i=>({n:(i.itemName||i.asin).slice(0,26),v:(i.price||0)*((i.fbm?.quantity||0)+(i.fba?.endingWarehouseBalance||0))})).sort((a,b)=>b.v-a.v).slice(0,10);
+        lineChart(el('c6'),topInv.map(t=>t.n),[{label:'Value',data:topInv.map(t=>t.v),fill:true}],{type:'bar'});
+      }else el('c6').parentElement.innerHTML=emptyState('Inventory not connected');
+      // AI recs
+      const gen=()=>aiFill(el('ovAI'),'You are an Amazon PPC expert. Based on this live account data, give the 5 most impactful, specific recommendations (campaign names + numbers). Be concise, plain text bullets.',{summary:s,retail:r,topCampaigns:(cp.data||[]).slice(0,25)});
+      el('aiRegen').onclick=gen;gen();
+    }catch(e){el('ovKpi').innerHTML=errState(e.message,()=>PAGES.overview(c))}
+  })();
+  // trends
+  (async()=>{
+    try{
+      const t=await weeklyTrend();
+      if(!t.rows.length){['c1','c2','c3','c4','c5'].forEach(id=>el(id).parentElement.innerHTML=emptyState());return}
+      lineChart(el('c1'),t.labels,[{label:'Ad Sales',data:t.rows.map(r=>r.sales)}]);
+      lineChart(el('c2'),t.labels,[{label:'Spend',data:t.rows.map(r=>r.spend),color:themeC().b}]);
+      lineChart(el('c3'),t.labels,[{label:'ACOS %',data:t.rows.map(r=>r.acos),color:themeC().am}]);
+      lineChart(el('c4'),t.labels,[{label:'ROAS',data:t.rows.map(r=>r.roas),color:themeC().g}]);
+      lineChart(el('c5'),t.labels,[{label:'Orders',data:t.rows.map(r=>r.orders)}]);
+    }catch(e){['c1','c2','c3','c4','c5'].forEach(id=>{const p=el(id)?.parentElement;if(p)p.innerHTML=errState('Trend failed: '+e.message,()=>PAGES.overview(c))})}
+  })();
+  // top products
+  loadInto(el('ovTopP'),()=>mcp('get_advertised_product_performance',base({page_size:6,sort_field:'attributedSales14d'})),(elm,d)=>{
+    const rows=d.data||[];
+    elm.innerHTML=rows.length?`<div class="mini-list">${rows.map(p=>`<div class="mini-row" data-asin="${p.adAsin}"><div class="grow">${esc(p.adProductName||p.adAsin)}</div><span>${cur(p.sales)}</span><span class="badge ${p.acos>40?'b-red':'b-green'}">${pct(p.acos)}</span></div>`).join('')}</div>`:emptyState();
+    elm.querySelectorAll('[data-asin]').forEach(m=>m.onclick=()=>openProductDrawer(m.dataset.asin));
+  });
+};
+function computeAlerts(cp){
+  const a=[];
+  (cp.data||[]).forEach(x=>{
+    if(x.spend>2000&&x.orders===0)a.push({t:'danger',h:'Zero-order spend',m:`${x.campaignName} spent ${cur(x.spend)} with 0 orders`});
+    else if(x.acos>80&&x.spend>1000)a.push({t:'danger',h:'Very high ACOS',m:`${x.campaignName}: ACOS ${pct(x.acos)} on ${cur(x.spend)} spend`});
+    else if(x.acos>0&&x.acos>((cp.summary?.overallAcos||30)*1.6)&&x.spend>2000)a.push({t:'warn',h:'ACOS above account avg',m:`${x.campaignName}: ${pct(x.acos)} vs avg ${pct(cp.summary.overallAcos)}`});
+  });
+  S.alerts=a.slice(0,12);
+  el('notifDot').style.display=S.alerts.length?'block':'none';
+  el('notifList').innerHTML=S.alerts.length?S.alerts.slice(0,8).map(x=>`<div class="notif-item"><b>${x.t==='danger'?'🔴':'🟠'} ${esc(x.h)}</b>${esc(x.m)}</div>`).join(''):'<div class="state">No alerts — account looks healthy</div>';
+}
+function renderAlerts(elm){
+  elm.innerHTML=S.alerts.length?`<div class="mini-list">${S.alerts.slice(0,6).map(x=>`<div class="mini-row"><span>${x.t==='danger'?'🔴':'🟠'}</span><div class="grow" style="white-space:normal">${esc(x.m)}</div></div>`).join('')}</div>`:emptyState('No alerts for this period');
+}
+async function aiFill(elm,instruction,data){
+  elm.innerHTML='<div class="skel skel-row" style="width:80%"></div><div class="skel skel-row" style="width:65%"></div><div class="skel skel-row" style="width:72%"></div>';
+  try{
+    if(!window.cowork?.askClaude)throw new Error('AI unavailable in this view');
+    const out=await window.cowork.askClaude(instruction,[JSON.stringify(data).slice(0,24000)]);
+    elm.className='';elm.style.whiteSpace='pre-wrap';elm.style.fontSize='12.5px';
+    elm.textContent=typeof out==='string'?out:(out?.text||JSON.stringify(out));
+  }catch(e){elm.innerHTML=`<div class="state">AI generation failed: ${esc(e.message)}</div>`}
+}
+/* campaigns metadata (list_campaigns) */
+async function getCampaignsMeta(){
+  if(S.campaignsMeta)return S.campaignsMeta;
+  const d=await mcp('list_campaigns',{workspace_id:S.ws,amazon_account_id:S.acct.id,status:['ENABLED','PAUSED']});
+  S.campaignsMeta=d.campaigns||[];
+  // populate global campaign filter
+  const sel=el('campSel');
+  sel.innerHTML='<option value="">All Campaigns</option>'+S.campaignsMeta.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(x=>`<option value="${x.campaignId}" ${S.campFilter===x.campaignId?'selected':''}>${esc(x.name.slice(0,60))}</option>`).join('');
+  const ports=[...new Set(S.campaignsMeta.map(x=>x.portfolioId).filter(Boolean))];
+  el('portSel').innerHTML='<option value="">All Portfolios</option>'+ports.map(p=>`<option ${S.portFilter===p?'selected':''}>${esc(p)}</option>`).join('');
+  return S.campaignsMeta;
+}
+/* ================= CAMPAIGNS PAGE ================= */
+PAGES.campaigns=function(c){
+  c.innerHTML=`<div class="page-title">Campaigns</div><div class="page-sub">All campaigns with live performance · click a row for full details</div><div id="cStats" class="stat-inline"></div><div id="cTbl">${skel(8)}</div>`;
+  loadInto(el('cTbl'),async()=>{
+    const[meta,perf]=await Promise.all([getCampaignsMeta(),mcp('get_campaign_performance',base({page_size:500,status:['ENABLED','PAUSED']}))]);
+    return{meta,perf};
+  },(elm,{meta,perf})=>{
+    const mIdx=Object.fromEntries(meta.map(m=>[m.campaignId,m]));
+    let rows=(perf.data||[]).map(p=>{const m=mIdx[p.campaignId]||{};return{...p,portfolio:m.portfolioId||'—',type:m.type||'—',targeting:m.targetingType||'—',state:m.state||'ENABLED',budget:m.budget?.budget??null,budgetType:m.budget?.budgetType||'',created:m.startDate?m.startDate.slice(0,10):'—',cvr:p.cvr}});
+    if(S.portFilter)rows=rows.filter(r=>r.portfolio===S.portFilter);
+    const s=perf.summary||{};
+    el('cStats').innerHTML=[['Campaigns',num(rows.length)],['Spend',cur(s.totalSpend)],['Sales',cur(s.totalSales)],['ACOS',pct(s.overallAcos)],['ROAS',fx(s.overallRoas)],['Orders',num(s.totalOrders)]].map(k=>`<div class="kpi"><div class="k-label">${k[0]}</div><div class="k-val">${k[1]}</div></div>`).join('');
+    renderTable(elm,{exportName:'campaigns',pageSize:25,defaultSort:'spend',
+      columns:[
+        {key:'campaignName',label:'Campaign'},{key:'campaignId',label:'ID'},
+        {key:'type',label:'Type',html:v=>`<span class="badge b-gray">SP${v==='Brand'?'→SB':v==='Display'?'→SD':''} ${esc(v)}</span>`},
+        {key:'portfolio',label:'Portfolio'},
+        {key:'state',label:'Status',html:v=>`<span class="badge ${v==='ENABLED'?'b-green':'b-amber'}">${esc(v)}</span>`},
+        {key:'budget',label:'Budget',fmt:(v,r)=>v!=null?cur(v)+(r.budgetType==='DAILY'?'/day':''):'—'},
+        {key:'spend',label:'Spend',fmt:v=>cur(v)},{key:'sales',label:'Sales',fmt:v=>cur(v)},
+        {key:'orders',label:'Orders',fmt:num},{key:'clicks',label:'Clicks',fmt:num},{key:'impressions',label:'Impr.',fmt:num},
+        {key:'ctr',label:'CTR',fmt:pct},{key:'cpc',label:'CPC',fmt:v=>cur(v,2)},{key:'cvr',label:'CVR',fmt:pct},
+        {key:'acos',label:'ACOS',html:v=>`<span class="${v>40?'neg':'pos'}">${pct(v)}</span>`},
+        {key:'roas',label:'ROAS',fmt:fx},
+        {key:'created',label:'Created'},{key:'targeting',label:'Targeting'}
+      ],rows,onRow:r=>openCampaignDrawer(r.campaignId,r)});
+  });
+};
+/* ================= AD GROUPS PAGE ================= */
+PAGES.adgroups=function(c){
+  c.innerHTML=`<div class="page-title">Ad Groups</div><div class="page-sub">Every ad group with rollup performance for the selected period · downloadable below</div><p style="color:var(--muted);font-size:11px;margin:-8px 0 12px">ℹ️ SellerMate's API only exposes the <b>current</b> state (ENABLED / PAUSED / ARCHIVED) of each keyword/ad group — it doesn't expose a change-history log with the exact date &amp; time something was paused. Check the Amazon Ads console's History tab for that.</p><div id="agStats" class="stat-inline"></div><div id="agTbl">${skel(8)}</div><div class="pgn" id="agPgn"></div>`;
+  let page=0;
+  async function load(){
+    const box=el('agTbl');box.innerHTML=skel(8);
+    try{
+      const d=await mcp('get_targeting_performance',base({group_by:['adGroupId','adGroupName','campaignName','campaignId'],page,page_size:500,sort_field:'cost',sort_direction:'desc'}));
+      const s=d.summary||{};
+      el('agStats').innerHTML=[['Ad Groups',num(d.total)],['Spend',cur(s.totalSpend)],['Sales',cur(s.totalSales)],['ACOS',pct(s.overallAcos)],['ROAS',fx(s.overallRoas)],['Orders',num(s.totalOrders)]].map(k=>`<div class="kpi"><div class="k-label">${k[0]}</div><div class="k-val">${k[1]}</div></div>`).join('');
+      const rows=d.data||[];box.innerHTML='';
+      renderTable(box,{pageSize:25,exportName:'ad_groups_p'+(page+1),defaultSort:'spend',columns:[
+        {key:'adGroupName',label:'Ad Group'},{key:'adGroupId',label:'Ad Group ID'},
+        {key:'campaignName',label:'Campaign'},{key:'campaignId',label:'Campaign ID'},
+        ...MCOLS
+      ],rows,onRow:r=>openCampaignDrawer(r.campaignId,{campaignName:r.campaignName})});
+      const pg=d.pagination||{};
+      el('agPgn').innerHTML=`<span>API page ${page+1} / ${num(pg.totalPages||1)} · ${num(d.total)} ad groups</span>
+        <button id="agp" ${page===0?'disabled':''}>‹ Prev 500</button><button id="agn" ${!pg.hasMore?'disabled':''}>Next 500 ›</button>`;
+      el('agp').onclick=()=>{page--;load()};el('agn').onclick=()=>{page++;load()};
+    }catch(e){box.innerHTML=errState(e.message,load)}
+  }
+  load();
+};
+/* ================= CAMPAIGN DRAWER ================= */
+function openDrawer(title,tabs){
+  el('drTitle').textContent=title;
+  el('drTabs').innerHTML=tabs.map((t,i)=>`<div class="dr-tab ${i===0?'active':''}" data-i="${i}">${t.label}</div>`).join('');
+  el('overlay').classList.add('open');el('drawer').classList.add('open');
+  const body=el('drBody');
+  function activate(i){
+    el('drTabs').querySelectorAll('.dr-tab').forEach((x,j)=>x.classList.toggle('active',j===i));
+    body.innerHTML='';const box=document.createElement('div');body.appendChild(box);box.innerHTML=skel(7);
+    Promise.resolve(tabs[i].load(box)).catch(e=>box.innerHTML=errState(e.message,()=>activate(i)));
+  }
+  el('drTabs').querySelectorAll('.dr-tab').forEach(t=>t.onclick=()=>activate(+t.dataset.i));
+  activate(0);
+}
+function closeDrawer(){el('overlay').classList.remove('open');el('drawer').classList.remove('open')}
+el('overlay').onclick=closeDrawer;
+function kpiStrip(pairs){return`<div class="stat-inline">${pairs.map(k=>`<div class="kpi"><div class="k-label">${k[0]}</div><div class="k-val">${k[1]}</div></div>`).join('')}</div>`}
+const MCOLS=[{key:'spend',label:'Spend',fmt:v=>cur(v)},{key:'sales',label:'Sales',fmt:v=>cur(v)},{key:'orders',label:'Orders',fmt:num},{key:'clicks',label:'Clicks',fmt:num},{key:'impressions',label:'Impr.',fmt:num},{key:'ctr',label:'CTR',fmt:pct},{key:'cpc',label:'CPC',fmt:v=>cur(v,2)},{key:'cvr',label:'CVR',fmt:pct},{key:'acos',label:'ACOS',html:v=>`<span class="${v>40?'neg':'pos'}">${pct(v)}</span>`},{key:'roas',label:'ROAS',fmt:fx}];
+function suggestedMod(row,avgRoas){
+  const cur=(row.bidAdjustments||[]).find(b=>b.placement===row.placement)?.bidAdjustmentPercent??0;
+  if(!row.clicks)return cur;
+  if(row.roas>avgRoas*1.25)return Math.min(900,cur+25);
+  if(row.roas<avgRoas*.6)return Math.max(0,cur-25);
+  return cur;
+}
+async function openCampaignDrawer(cid,row){
+  let meta={};try{meta=(await getCampaignsMeta()).find(m=>m.campaignId===cid)||{}}catch(e){}
+  const name=row?.campaignName||meta.name||('Campaign '+cid);
+  openDrawer(name,[
+    {label:'Overview',load:async box=>{
+      const d=await mcp('get_campaign_performance',base({campaign_ids:[cid]}));
+      const r=(d.data||[])[0]||row||{};
+      box.innerHTML=kpiStrip([['Spend',cur(r.spend)],['Sales',cur(r.sales)],['Orders',num(r.orders)],['ACOS',pct(r.acos)],['ROAS',fx(r.roas)],['CTR',pct(r.ctr)],['CPC',cur(r.cpc,2)],['CVR',pct(r.cvr)],['Clicks',num(r.clicks)],['Impressions',num(r.impressions)]])+
+      `<div class="card"><h3>Campaign Settings</h3><table><tbody>
+      ${[['Campaign ID',cid],['Type',meta.type||'—'],['Targeting',meta.targetingType||'—'],['State',meta.state||'—'],['Portfolio',meta.portfolioId||'—'],['Daily Budget',meta.budget?cur(meta.budget.budget):'—'],['Created',meta.startDate?meta.startDate.slice(0,10):'—']].map(x=>`<tr><td style="color:var(--muted);width:160px">${x[0]}</td><td><b>${esc(x[1])}</b></td></tr>`).join('')}
+      </tbody></table></div>`;
+    }},
+    {label:'Placements',load:async box=>{
+      const d=await mcp('get_placement_performance',base({campaign_ids:[cid],page_size:20}));
+      const rows=d.placements||[];if(!rows.length)return box.innerHTML=emptyState();
+      const avg=rows.reduce((t,r)=>t+r.roas,0)/rows.length;
+      box.innerHTML=`<div class="card"><h3>Placement Performance</h3><div id="plc"></div></div><div class="card"><h3>Placement Graph</h3><div class="chart-box"><canvas id="plcC"></canvas></div></div>`;
+      renderTable(box.querySelector('#plc'),{pageSize:10,exportName:'placements_'+cid,columns:[
+        {key:'placement',label:'Placement'},...MCOLS,
+        {key:'mod',label:'Modifier',fmt:(v,r)=>((r.bidAdjustments||[]).find(b=>b.placement===r.placement)?.bidAdjustmentPercent??0)+'%'},
+        {key:'sug',label:'Suggested',html:(v,r)=>{const s=suggestedMod(r,avg);const c=(r.bidAdjustments||[]).find(b=>b.placement===r.placement)?.bidAdjustmentPercent??0;return`<span class="badge ${s>c?'b-green':s<c?'b-red':'b-gray'}">${s}%</span>`}}
+      ],rows});
+      const t=themeC();
+      lineChart(box.querySelector('#plcC'),rows.map(r=>r.placement),[{label:'Spend',data:rows.map(r=>r.spend),color:t.b},{label:'Sales',data:rows.map(r=>r.sales),color:t.g}],{type:'bar'});
+    }},
+    {label:'Products',load:async box=>{
+      const d=await mcp('get_advertised_product_performance',base({campaign_ids:[cid],page_size:200}));
+      const rows=d.data||[];if(!rows.length)return box.innerHTML=emptyState();
+      renderTable(box,{pageSize:15,exportName:'products_'+cid,columns:[{key:'adAsin',label:'ASIN'},{key:'adProductName',label:'Product'},...MCOLS],rows,onRow:r=>openProductDrawer(r.adAsin)});
+    }},
+    {label:'Keywords',load:async box=>{
+      const d=await mcp('get_targeting_performance',base({campaign_ids:[cid],group_by:['targetingValue','targetingType','campaignName','campaignId','adGroupName','adGroupId'],page_size:300}));
+      const rows=d.data||[];if(!rows.length)return box.innerHTML=emptyState();
+      renderTable(box,{pageSize:15,exportName:'keywords_'+cid,columns:[{key:'targetingValue',label:'Target'},{key:'targetingType',label:'Match'},{key:'adGroupName',label:'Ad Group'},...MCOLS],rows,onRow:r=>openKeywordDrawer(r)});
+    }},
+    {label:'Search Terms',load:async box=>{
+      const d=await mcp('get_search_term_performance',base({campaign_ids:[cid],group_by:['searchTerm','targetingValue','targetingType','adGroupName'],page_size:300}));
+      const rows=d.data||[];if(!rows.length)return box.innerHTML=emptyState();
+      renderTable(box,{pageSize:15,exportName:'terms_'+cid,columns:[{key:'searchTerm',label:'Search Term'},{key:'targetingValue',label:'Keyword'},{key:'targetingType',label:'Match'},...MCOLS],rows,onRow:r=>openTermDrawer({...r,campaignId:cid,campaignName:name})});
+    }},
+    {label:'Performance',load:async box=>{
+      const t=await weeklyTrend({campaign_ids:[cid]});
+      if(!t.rows.length)return box.innerHTML=emptyState();
+      box.innerHTML=`<div class="card"><h3>Weekly Sales vs Spend</h3><div class="chart-box"><canvas id="cw1"></canvas></div></div><div class="card"><h3>Weekly ACOS / ROAS</h3><div class="chart-box"><canvas id="cw2"></canvas></div></div>`;
+      const th=themeC();
+      lineChart(box.querySelector('#cw1'),t.labels,[{label:'Sales',data:t.rows.map(r=>r.sales),color:th.g},{label:'Spend',data:t.rows.map(r=>r.spend),color:th.b}]);
+      lineChart(box.querySelector('#cw2'),t.labels,[{label:'ACOS %',data:t.rows.map(r=>r.acos),color:th.am},{label:'ROAS',data:t.rows.map(r=>r.roas),color:th.a}]);
+    }},
+    {label:'History',load:async box=>{
+      box.innerHTML=`<div class="card"><h3>Campaign Record</h3><table><tbody>
+      ${[['Created',meta.startDate||'—'],['Current State',meta.state||'—'],['Budget',meta.budget?cur(meta.budget.budget)+' '+(meta.budget.budgetType||''):'—'],['Internal ID',meta.id||'—']].map(x=>`<tr><td style="color:var(--muted);width:160px">${x[0]}</td><td><b>${esc(x[1])}</b></td></tr>`).join('')}</tbody></table>
+      <p style="color:var(--muted);margin-top:10px;font-size:11.5px">Change history events are not exposed by the SellerMate API — showing current record. Ask the AI Assistant to compare periods for effective change detection.</p></div>`;
+    }},
+    {label:'AI Insights',load:async box=>{
+      const d=await mcp('get_campaign_performance',base({campaign_ids:[cid]}));
+      const p=await mcp('get_placement_performance',base({campaign_ids:[cid],page_size:20})).catch(()=>null);
+      aiFill(box,'You are an Amazon PPC strategist. Analyze this single campaign (metrics + placements) and give specific optimization actions: bids, placement modifiers, budget, negatives. Plain text, concise.',{campaign:(d.data||[])[0],placements:p?.placements});
+    }}
+  ]);
+}
+/* ================= PLACEMENTS PAGE ================= */
+PAGES.placements=function(c){
+  c.innerHTML=`<div class="page-title">Placements</div><div class="page-sub">Top of Search · Rest of Search · Product Pages — across all campaigns</div>
+  <div id="plAgg" class="grid3"></div><div class="card"><h3>Placement × Campaign detail</h3><div id="plTbl">${skel(8)}</div></div>`;
+  el('plAgg').innerHTML=skel(3);
+  loadInto(el('plTbl'),()=>mcp('get_placement_performance',base({page_size:500})),(elm,d)=>{
+    const rows=d.placements||[];
+    // aggregate cards
+    const agg={};rows.forEach(r=>{const k=r.placement||'Other';agg[k]=agg[k]||{spend:0,sales:0,clicks:0,impressions:0,orders:0};const a=agg[k];a.spend+=r.spend;a.sales+=r.sales;a.clicks+=r.clicks;a.impressions+=r.impressions;a.orders+=r.orders});
+    el('plAgg').innerHTML=Object.entries(agg).map(([k,a])=>{
+      const acos=a.sales?a.spend/a.sales*100:null;
+      return`<div class="card"><h3>${esc(k)}</h3>${kpiStrip([['Spend',cur(a.spend)],['Sales',cur(a.sales)],['Orders',num(a.orders)],['ACOS',pct(acos)],['ROAS',a.spend?fx(a.sales/a.spend):'—'],['CTR',a.impressions?pct(a.clicks/a.impressions*100):'—'],['CPC',a.clicks?cur(a.spend/a.clicks,2):'—'],['Impr.',num(a.impressions)]])}</div>`;
+    }).join('')||emptyState();
+    const avg=rows.length?rows.reduce((t,r)=>t+r.roas,0)/rows.length:1;
+    renderTable(elm,{pageSize:25,exportName:'placements',defaultSort:'spend',columns:[
+      {key:'campaignName',label:'Campaign'},{key:'placement',label:'Placement'},{key:'sponsoredType',label:'Type'},...MCOLS,
+      {key:'mod',label:'Modifier',fmt:(v,r)=>((r.bidAdjustments||[]).find(b=>b.placement===r.placement)?.bidAdjustmentPercent??0)+'%'},
+      {key:'sug',label:'Suggested',html:(v,r)=>{const s=suggestedMod(r,avg);return`<span class="badge b-gray">${s}%</span>`}}
+    ],rows,onRow:r=>openCampaignDrawer(r.campaignId,{campaignName:r.campaignName})});
+  });
+};
+/* ================= PRODUCTS PAGE ================= */
+PAGES.products=function(c){
+  c.innerHTML=`<div class="page-title">Products</div><div class="page-sub">Catalog with retail + advertising performance · click for product deep-dive</div><div id="pStats" class="stat-inline"></div><div id="pTbl">${skel(8)}</div>`;
+  loadInto(el('pTbl'),async()=>{
+    const cat=await mcp('list_product_catalog',base({limit:200,include_ads_metrics:true}));
+    const rp=await mcp('get_retail_product_performance',base()).catch(()=>null);
+    return{cat,rp};
+  },(elm,{cat,rp})=>{
+    const tIdx=rp?Object.fromEntries((rp.data||[]).map(r=>[r.asin,r])):{};
+    const rows=(cat.products||[]).map(p=>{const t=tIdx[p.asin]||{};return{
+      img:p.mainImageUrl,name:p.itemName,asin:p.asin,sku:p.sku,brand:(p.itemName||'').split(' ')[0],
+      inventory:p.quantity,price:p.price,sessions:p.retail?.sessions??t.sessions,orders:p.ads?.orders??0,
+      units:p.retail?.unitsOrdered??0,adSales:p.ads?.attributedSales14d??0,totalSales:p.retail?.totalRevenue??0,
+      organic:(p.retail?.totalRevenue??0)-(p.ads?.attributedSales14d??0),
+      spend:p.ads?.spend??0,acos:p.ads?.acos,roas:p.ads?.roas,tacos:t.tacos,fulfil:p.fulfillmentChannel==='DEFAULT'?'FBM':'FBA',advertised:p.isAdvertised};});
+    const sm=cat.summary||{};
+    el('pStats').innerHTML=[['Products',num(cat.total)],['Revenue',cur(sm.totalRevenue)],['Units',num(sm.totalUnitsOrdered)],['Ad Spend',cur(sm.totalAdSpend)],['Ad Sales',cur(sm.totalAdSales)]].map(k=>`<div class="kpi"><div class="k-label">${k[0]}</div><div class="k-val">${k[1]}</div></div>`).join('');
+    renderTable(elm,{pageSize:25,exportName:'products',defaultSort:'totalSales',columns:[
+      {key:'img',label:'',html:v=>v?`<img class="pimg" src="${esc(v)}" loading="lazy">`:''},
+      {key:'name',label:'Product'},{key:'asin',label:'ASIN'},{key:'sku',label:'SKU'},{key:'brand',label:'Brand'},
+      {key:'fulfil',label:'Ch.',html:v=>`<span class="badge b-gray">${v}</span>`},
+      {key:'inventory',label:'Inv.',fmt:num},{key:'price',label:'Price',fmt:v=>cur(v)},
+      {key:'sessions',label:'Sessions',fmt:num},{key:'units',label:'Units',fmt:num},
+      {key:'organic',label:'Organic Sales',fmt:v=>cur(v)},{key:'adSales',label:'Ad Sales',fmt:v=>cur(v)},
+      {key:'totalSales',label:'Total Sales',fmt:v=>cur(v)},{key:'spend',label:'Spend',fmt:v=>cur(v)},
+      {key:'acos',label:'ACOS',html:v=>v?`<span class="${v>40?'neg':'pos'}">${pct(v)}</span>`:'—'},
+      {key:'roas',label:'ROAS',fmt:fx},{key:'tacos',label:'TACOS',fmt:pct}
+    ],rows,onRow:r=>openProductDrawer(r.asin,r)});
+  });
+};
+async function openProductDrawer(asin,row){
+  openDrawer(row?.name||asin,[
+    {label:'Overview',load:async box=>{
+      const d=await mcp('get_retail_product_performance',base({asin})).catch(()=>null);
+      const r=(d?.data||[])[0]||{};
+      box.innerHTML=(row?.img?`<img class="pimg" style="width:70px;height:70px;margin-bottom:10px" src="${esc(row.img)}">`:'')+
+      kpiStrip([['Total Sales',cur(r.totalSales)],['Ad Sales',cur(r.adSales)],['Organic',cur((r.totalSales||0)-(r.adSales||0))],['Ad Spend',cur(r.adSpend)],['TACOS',pct(r.tacos)],['ACOS',pct(r.acos)],['ROAS',fx(r.roas)],['Units',num(r.unitsOrdered)],['Sessions',num(r.sessions)],['Page Views',num(r.pageViews)],['Buy Box %',pct(r.buyBoxPercentage)],['Avg Price',cur(r.averageSellingPrice)]])+
+      `<div class="card"><h3>Identity</h3><table><tbody>${[['ASIN',asin],['SKU',row?.sku||'—'],['Price',row?cur(row.price):'—'],['Fulfillment',row?.fulfil||'—'],['Advertised',row?(row.advertised?'Yes':'No'):'—']].map(x=>`<tr><td style="color:var(--muted);width:140px">${x[0]}</td><td><b>${esc(x[1])}</b></td></tr>`).join('')}</tbody></table></div>`;
+    }},
+    {label:'Campaigns',load:async box=>{
+      const d=await mcp('get_advertised_product_performance',base({ad_asin:asin,group_by:['adAsin','campaignName','campaignId'],page_size:200}));
+      const rows=d.data||[];if(!rows.length)return box.innerHTML=emptyState('Not advertised in this period');
+      renderTable(box,{pageSize:15,exportName:'asin_campaigns_'+asin,columns:[{key:'campaignName',label:'Campaign'},...MCOLS],rows,onRow:r=>openCampaignDrawer(r.campaignId,{campaignName:r.campaignName})});
+    }},
+    {label:'Keywords',load:async box=>{
+      const d=await mcp('get_advertised_product_performance',base({ad_asin:asin,group_by:['adAsin','campaignId'],page_size:50}));
+      const cids=[...new Set((d.data||[]).map(r=>r.campaignId).filter(Boolean))].slice(0,10);
+      if(!cids.length)return box.innerHTML=emptyState('No ad campaigns for this ASIN');
+      const k=await mcp('get_targeting_performance',base({campaign_ids:cids,group_by:['targetingValue','targetingType','campaignName','campaignId'],page_size:300}));
+      renderTable(box,{pageSize:15,exportName:'asin_keywords_'+asin,columns:[{key:'targetingValue',label:'Target'},{key:'targetingType',label:'Match'},{key:'campaignName',label:'Campaign'},...MCOLS],rows:k.data||[],onRow:r=>openKeywordDrawer(r)});
+    }},
+    {label:'Inventory',load:async box=>{
+      const d=await mcp('get_inventory',base({asins:[asin]}));
+      const i=(d.items||[])[0];
+      if(!i)return box.innerHTML=emptyState('No inventory record');
+      const stock=(i.fbm?.quantity||0)+(i.fba?.endingWarehouseBalance||0);
+      box.innerHTML=kpiStrip([['FBM Qty',num(i.fbm?.quantity)],['FBA On Hand',num(i.fba?.endingWarehouseBalance)],['Total',num(stock)],['Value',cur(stock*(i.price||0))]])+`<p style="color:var(--muted);font-size:11.5px">FBA reserved / inbound quantities are not synced by the API — showing warehouse balance from the daily FBA ledger.</p>`;
+    }},
+    {label:'Search Terms',load:async box=>{
+      const d=await mcp('get_advertised_product_performance',base({ad_asin:asin,group_by:['adAsin','campaignId'],page_size:50}));
+      const cids=[...new Set((d.data||[]).map(r=>r.campaignId).filter(Boolean))].slice(0,8);
+      if(!cids.length)return box.innerHTML=emptyState('No ad campaigns for this ASIN');
+      const t=await mcp('get_search_term_performance',base({campaign_ids:cids,group_by:['searchTerm','targetingValue','campaignName','campaignId'],page_size:300}));
+      renderTable(box,{pageSize:15,exportName:'asin_terms_'+asin,columns:[{key:'searchTerm',label:'Search Term'},{key:'targetingValue',label:'Keyword'},{key:'campaignName',label:'Campaign'},...MCOLS],rows:t.data||[],onRow:r=>openTermDrawer(r)});
+    }},
+    {label:'Performance',load:async box=>{
+      const d=await mcp('get_advertised_product_performance',base({ad_asin:asin,group_by:['adAsin','week','year'],page_size:100}));
+      const rows=(d.data||[]).filter(r=>r.week).sort((a,b)=>new Date(a.week)-new Date(b.week));
+      if(!rows.length)return box.innerHTML=emptyState();
+      box.innerHTML=`<div class="card"><h3>Weekly Ad Performance</h3><div class="chart-box"><canvas id="pw1"></canvas></div></div>`;
+      const th=themeC();
+      lineChart(box.querySelector('#pw1'),rows.map(r=>new Date(r.week).toLocaleDateString(undefined,{month:'short',day:'numeric'})),[{label:'Sales',data:rows.map(r=>r.sales),color:th.g},{label:'Spend',data:rows.map(r=>r.spend),color:th.b}]);
+    }},
+    {label:'AI Recommendations',load:async box=>{
+      const d=await mcp('get_retail_product_performance',base({asin})).catch(()=>null);
+      aiFill(box,'You are an Amazon PPC + retail expert. Analyze this product and give specific recommendations on advertising, conversion, and inventory. Plain text, concise.',{asin,product:(d?.data||[])[0],row});
+    }}
+  ]);
+}
+/* ================= KEYWORDS PAGE ================= */
+PAGES.keywords=function(c){
+  c.innerHTML=`<div class="page-title">Keywords & Targets</div><div class="page-sub">Live targeting performance · click a keyword for bid detail</div><p style="color:var(--muted);font-size:11px;margin:-8px 0 12px">ℹ️ SellerMate's API only exposes each keyword's <b>current</b> state (ENABLED / PAUSED / ARCHIVED) and bid — it doesn't expose a change-history log with the exact date &amp; time something was paused or bid-changed. Check the keyword's History tab in the Amazon Ads console for that.</p><div id="kStats" class="stat-inline"></div><div id="kTbl">${skel(8)}</div>`;
+  loadInto(el('kTbl'),()=>mcp('get_targeting_performance',base({group_by:['targetingValue','targetingType','campaignName','campaignId','adGroupName','adGroupId'],page_size:500})),(elm,d)=>{
+    const rows=(d.data||[]).map(r=>({...r,sug:suggestedBid(r)}));
+    const s=d.summary||{};
+    el('kStats').innerHTML=[['Targets',num(d.total)],['Spend',cur(s.totalSpend)],['Sales',cur(s.totalSales)],['ACOS',pct(s.overallAcos)],['ROAS',fx(s.overallRoas)]].map(k=>`<div class="kpi"><div class="k-label">${k[0]}</div><div class="k-val">${k[1]}</div></div>`).join('');
+    renderTable(elm,{pageSize:25,exportName:'keywords',defaultSort:'spend',columns:[
+      {key:'targetingValue',label:'Keyword / Target'},{key:'campaignName',label:'Campaign'},{key:'campaignId',label:'Campaign ID'},{key:'adGroupName',label:'Ad Group'},
+      {key:'targetingType',label:'Match',html:v=>`<span class="badge b-gray">${esc(v||'—')}</span>`},
+      {key:'sug',label:'Suggested Bid',fmt:v=>v!=null?cur(v,2):'—'},...MCOLS
+    ],rows,onRow:r=>openKeywordDrawer(r)});
+    if(d.pagination?.hasMore)elm.insertAdjacentHTML('beforeend',`<p style="color:var(--muted);font-size:11px;margin-top:6px">Showing top ${num(rows.length)} of ${num(d.total)} by spend — refine with the campaign filter for full coverage.</p>`);
+  });
+};
+function suggestedBid(r){
+  if(!r.clicks||!r.cpc)return null;
+  if(r.orders===0&&r.spend>500)return Math.max(1,r.cpc*.7);
+  if(r.acos&&r.acos>50)return r.cpc*(30/r.acos);
+  if(r.acos&&r.acos<20&&r.orders>2)return r.cpc*1.15;
+  return r.cpc;
+}
+async function openKeywordDrawer(r){
+  openDrawer((r.targetingValue||'Target')+' · '+(r.targetingType||''),[
+    {label:'Performance',load:async box=>{
+      box.innerHTML=kpiStrip([['Spend',cur(r.spend)],['Sales',cur(r.sales)],['Orders',num(r.orders)],['Clicks',num(r.clicks)],['ACOS',pct(r.acos)],['ROAS',fx(r.roas)],['CPC',cur(r.cpc,2)],['CVR',pct(r.cvr)],['Suggested Bid',suggestedBid(r)!=null?cur(suggestedBid(r),2):'—']])+`<div class="card"><h3>Weekly Trend</h3><div class="chart-box"><canvas id="kw1"></canvas></div></div>`;
+      const d=await mcp('get_targeting_performance',base({targeting_value:r.targetingValue,campaign_ids:r.campaignId?[r.campaignId]:undefined,group_by:['week','year'],page_size:100}));
+      const rows=(d.data||[]).filter(x=>x.week).sort((a,b)=>new Date(a.week)-new Date(b.week));
+      if(!rows.length){box.querySelector('.card').innerHTML=emptyState();return}
+      const th=themeC();
+      lineChart(box.querySelector('#kw1'),rows.map(x=>new Date(x.week).toLocaleDateString(undefined,{month:'short',day:'numeric'})),[{label:'Sales',data:rows.map(x=>x.sales),color:th.g},{label:'Spend',data:rows.map(x=>x.spend),color:th.b}]);
+    }},
+    {label:'Bid',load:async box=>{
+      const d=await mcp('list_targets',base({keyword_text:r.targetingValue,campaign_id:r.campaignId,page_size:50})).catch(()=>({targets:[]}));
+      const t=(d.targets||[]).find(x=>x.keywordText===r.targetingValue||x.targetingValue===r.targetingValue)||(d.targets||[])[0];
+      box.innerHTML=t?kpiStrip([['Current Bid',cur(t.bid,2)],['State',t.state],['Match',t.matchType||r.targetingType],['Suggested Bid',suggestedBid(r)!=null?cur(suggestedBid(r),2):'—']])+`<div class="card"><h3>Target Record</h3><table><tbody>${[['Target ID',t.id],['Ad Group',t.adGroupName],['Campaign',t.campaignName],['Type',t.sponsoredType]].map(x=>`<tr><td style="color:var(--muted);width:140px">${x[0]}</td><td><b>${esc(x[1])}</b></td></tr>`).join('')}</tbody></table><p style="color:var(--muted);font-size:11.5px;margin-top:8px">SellerMate's API only exposes the current state (ENABLED / PAUSED / ARCHIVED) of each keyword — it doesn't expose a change-history log with the exact date/time a bid or state changed. Check this keyword's History tab in the Amazon Ads console for that. To apply the suggested bid here, ask Claude in chat: "update target ${esc(t.id)} bid to X".</p></div>`:emptyState('Target record not found in inventory');
+    }},
+    {label:'Search Terms',load:async box=>{
+      const d=await mcp('get_search_term_performance',base({campaign_ids:r.campaignId?[r.campaignId]:undefined,group_by:['searchTerm','targetingValue','targetingType'],page_size:300}));
+      const rows=(d.data||[]).filter(x=>x.targetingValue===r.targetingValue);
+      if(!rows.length)return box.innerHTML=emptyState('No matched search terms');
+      renderTable(box,{pageSize:15,exportName:'kw_terms',columns:[{key:'searchTerm',label:'Search Term'},...MCOLS],rows,onRow:x=>openTermDrawer({...x,campaignId:r.campaignId,campaignName:r.campaignName})});
+    }},
+    {label:'Campaign',load:box=>{openCampaignDrawer(r.campaignId,{campaignName:r.campaignName});}},
+    {label:'AI Suggestions',load:box=>aiFill(box,'You are an Amazon PPC bid expert. Analyze this keyword/target and recommend an exact bid, match-type strategy, and whether to harvest or negate. Plain text.',r)}
+  ]);
+}
+/* ================= SEARCH TERMS PAGE ================= */
+PAGES.searchterms=function(c){
+  c.innerHTML=`<div class="page-title">Search Terms</div><div class="page-sub">Customer queries that triggered your ads (server-paginated)</div><div id="stStats" class="stat-inline"></div><div id="stTbl">${skel(8)}</div><div class="pgn" id="stPgn"></div>`;
+  let page=0;
+  async function load(){
+    const box=el('stTbl');box.innerHTML=skel(8);
+    try{
+      const d=await mcp('get_search_term_performance',base({group_by:['searchTerm','targetingValue','targetingType','campaignName','campaignId','adGroupName'],page,page_size:200}));
+      const s=d.summary||{};
+      el('stStats').innerHTML=[['Search Terms',num(d.total)],['Spend',cur(s.totalSpend)],['Sales',cur(s.totalSales)],['ACOS',pct(s.overallAcos)],['ROAS',fx(s.overallRoas)],['Orders',num(s.totalOrders)]].map(k=>`<div class="kpi"><div class="k-label">${k[0]}</div><div class="k-val">${k[1]}</div></div>`).join('');
+      const rows=d.data||[];box.innerHTML='';
+      renderTable(box,{pageSize:25,exportName:'search_terms_p'+(page+1),defaultSort:'spend',columns:[
+        {key:'searchTerm',label:'Search Term'},{key:'campaignName',label:'Campaign'},{key:'campaignId',label:'Campaign ID'},{key:'adGroupName',label:'Ad Group'},
+        {key:'targetingValue',label:'Keyword'},{key:'targetingType',label:'Match',html:v=>`<span class="badge b-gray">${esc(v||'—')}</span>`},...MCOLS,
+        {key:'act',label:'Actions',html:(v,r)=>`<span class="badge ${r.orders>0&&r.acos<30?'b-green':r.spend>300&&!r.orders?'b-red':'b-gray'}">${r.orders>0&&r.acos<30?'→ Exact':r.spend>300&&!r.orders?'+ Negative':r.acos>50?'↓ Bid':'—'}</span>`}
+      ],rows,onRow:r=>openTermDrawer(r)});
+      const pg=d.pagination||{};
+      el('stPgn').innerHTML=`<span>API page ${page+1} / ${num(pg.totalPages||1)} · ${num(d.total)} terms</span>
+        <button id="sp" ${page===0?'disabled':''}>‹ Prev 200</button><button id="sn" ${!pg.hasMore?'disabled':''}>Next 200 ›</button>`;
+      el('sp').onclick=()=>{page--;load()};el('sn').onclick=()=>{page++;load()};
+    }catch(e){box.innerHTML=errState(e.message,load)}
+  }
+  load();
+};
+async function openTermDrawer(r){
+  openDrawer('"'+(r.searchTerm||'')+'"',[
+    {label:'Performance',load:async box=>{
+      box.innerHTML=kpiStrip([['Spend',cur(r.spend)],['Sales',cur(r.sales)],['Orders',num(r.orders)],['Clicks',num(r.clicks)],['Impr.',num(r.impressions)],['CTR',pct(r.ctr)],['CPC',cur(r.cpc,2)],['CVR',pct(r.cvr)],['ACOS',pct(r.acos)],['ROAS',fx(r.roas)],['Freq. Rank','n/a']])+
+      `<div class="card"><h3>Context</h3><table><tbody>${[['Matched Keyword',r.targetingValue||'—'],['Match Type',r.targetingType||'—'],['Campaign',r.campaignName||'—'],['Campaign ID',r.campaignId||'—'],['Ad Group',r.adGroupName||'—']].map(x=>`<tr><td style="color:var(--muted);width:150px">${x[0]}</td><td><b>${esc(x[1])}</b></td></tr>`).join('')}</tbody></table></div>
+      <div class="card"><h3>Recommended Actions</h3><div class="chips">${termActions(r).map(a=>`<span class="chip">${a}</span>`).join('')}</div><p style="color:var(--muted);font-size:11.5px">These are data-driven suggestions. To execute (add negative, move to exact, change bid), ask Claude in the chat — the SellerMate connector supports those write operations with your confirmation.</p></div>
+      <div class="card"><h3>Weekly Trend</h3><div class="chart-box"><canvas id="st1"></canvas></div></div>`;
+      const d=await mcp('get_search_term_performance',base({search_term:r.searchTerm,group_by:['searchTerm','week','year'],page_size:100})).catch(()=>null);
+      const rows=(d?.data||[]).filter(x=>x.week).sort((a,b)=>new Date(a.week)-new Date(b.week));
+      const cv=box.querySelector('#st1');
+      if(!rows.length){cv.parentElement.innerHTML=emptyState();return}
+      const th=themeC();
+      lineChart(cv,rows.map(x=>new Date(x.week).toLocaleDateString(undefined,{month:'short',day:'numeric'})),[{label:'Spend',data:rows.map(x=>x.spend),color:th.b},{label:'Sales',data:rows.map(x=>x.sales),color:th.g}]);
+    }},
+    {label:'Related Keywords',load:async box=>{
+      const d=await mcp('get_search_term_performance',base({group_by:['searchTerm','targetingValue','campaignName'],page_size:300}));
+      const words=(r.searchTerm||'').split(/\s+/).filter(w=>w.length>3);
+      const rows=(d.data||[]).filter(x=>x.searchTerm!==r.searchTerm&&words.some(w=>String(x.searchTerm||'').includes(w)));
+      if(!rows.length)return box.innerHTML=emptyState('No related terms found in top spenders');
+      renderTable(box,{pageSize:15,exportName:'related',columns:[{key:'searchTerm',label:'Search Term'},{key:'targetingValue',label:'Keyword'},{key:'campaignName',label:'Campaign'},...MCOLS],rows});
+    }},
+    {label:'AI Suggestions',load:box=>aiFill(box,'You are an Amazon PPC expert. For this search term row, recommend exactly what to do (harvest to exact w/ suggested bid, negate, or adjust bid) and why. Plain text, short.',r)}
+  ]);
+}
+function termActions(r){
+  const a=[];
+  if(r.orders>0&&(r.acos??999)<30)a.push('📈 Move to Exact');
+  if(r.orders>0&&(r.acos??999)<20)a.push('⬆ Increase Bid');
+  if((r.acos??0)>50&&r.orders>0)a.push('⬇ Decrease Bid');
+  if(r.spend>300&&!r.orders)a.push('🚫 Add Negative');
+  if(r.spend>800&&!r.orders)a.push('⏸ Pause Keyword');
+  if(!a.length)a.push('✓ No action needed');
+  return a;
+}
+/* ================= INVENTORY PAGE ================= */
+PAGES.inventory=function(c){
+  c.innerHTML=`<div class="page-title">Inventory</div><div class="page-sub">Stock levels, sales velocity & restock signals (daily FBA ledger + FBM)</div><div id="iStats" class="stat-inline"></div><div id="iTbl">${skel(8)}</div>`;
+  loadInto(el('iTbl'),async()=>{
+    const[inv,cat,adv]=await Promise.all([
+      mcp('get_inventory',base({limit:200})),
+      mcp('list_product_catalog',base({limit:200,include_ads_metrics:true})).catch(()=>null),
+      mcp('get_advertised_product_performance',base({page_size:200})).catch(()=>null)
+    ]);return{inv,cat,adv};
+  },(elm,{inv,cat,adv})=>{
+    const cIdx=cat?Object.fromEntries((cat.products||[]).map(p=>[p.asin,p])):{};
+    const aIdx=adv?Object.fromEntries((adv.data||[]).map(p=>[p.adAsin,p])):{};
+    const days=Math.max(1,(new Date(S.end)-new Date(S.start))/864e5+1);
+    const rows=(inv.items||[]).map(i=>{
+      const p=cIdx[i.asin]||{};const ad=aIdx[i.asin];
+      const stock=(i.fbm?.quantity||0)+(i.fba?.endingWarehouseBalance||0);
+      const units=p.retail?.unitsOrdered||0;const vel=units/days;
+      const dol=vel>0?stock/vel:(stock>0?9999:0);
+      const status=stock===0?'OUT OF STOCK':dol<15?'LOW':dol>120&&stock>50?'OVERSTOCK':'HEALTHY';
+      const restock=vel>0&&dol<45?new Date(Date.now()+Math.max(0,(dol-14))*864e5).toISOString().slice(0,10):'—';
+      return{img:i.mainImageUrl,asin:i.asin,sku:i.sku||p.sku||'—',name:i.itemName,fbm:i.fbm?.quantity||0,fba:i.fba?.endingWarehouseBalance||0,stock,vel:+vel.toFixed(2),dol:dol===9999?null:Math.round(dol),running:ad?'Yes':'No',adSpend:ad?.spend||0,adSales:ad?.sales||0,restock,status,
+      rec:status==='OUT OF STOCK'?(ad?'Pause ads — no stock':'Restock ASAP'):status==='LOW'?`Reorder now (~${Math.ceil(vel*45)} units for 45d)`:status==='OVERSTOCK'?'Consider promo/ads to clear':'—'};});
+    const val=rows.reduce((t,r)=>t+(cIdx[r.asin]?.price||0)*r.stock,0);
+    el('iStats').innerHTML=[['SKUs',num(inv.total)],['Inventory Value',cur(val)],['Out of Stock',num(rows.filter(r=>r.status==='OUT OF STOCK').length)],['Low Stock',num(rows.filter(r=>r.status==='LOW').length)],['Advertised & OOS',num(rows.filter(r=>r.status==='OUT OF STOCK'&&r.running==='Yes').length)]].map(k=>`<div class="kpi"><div class="k-label">${k[0]}</div><div class="k-val">${k[1]}</div></div>`).join('');
+    renderTable(elm,{pageSize:25,exportName:'inventory',defaultSort:'stock',columns:[
+      {key:'img',label:'',html:v=>v?`<img class="pimg" src="${esc(v)}" loading="lazy">`:''},
+      {key:'asin',label:'ASIN'},{key:'sku',label:'SKU'},{key:'name',label:'Product'},
+      {key:'fbm',label:'FBM',fmt:num},{key:'fba',label:'FBA',fmt:num},{key:'stock',label:'Available',fmt:num},
+      {key:'vel',label:'Velocity/day'},{key:'dol',label:'Days Left',html:v=>v==null?'∞':`<span class="${v<15?'neg':''}">${v}</span>`},
+      {key:'running',label:'Ads',html:v=>`<span class="badge ${v==='Yes'?'b-green':'b-gray'}">${v}</span>`},
+      {key:'adSpend',label:'Ad Spend',fmt:v=>cur(v)},{key:'adSales',label:'Ad Sales',fmt:v=>cur(v)},
+      {key:'restock',label:'Restock By'},
+      {key:'status',label:'Status',html:v=>`<span class="badge ${v==='HEALTHY'?'b-green':v==='LOW'||v==='OVERSTOCK'?'b-amber':'b-red'}">${v}</span>`},
+      {key:'rec',label:'AI Restock Rec.'}
+    ],rows,onRow:r=>openProductDrawer(r.asin,{name:r.name,img:r.img,sku:r.sku})});
+  });
+};
+/* ================= REPORTS ================= */
+PAGES.reports=function(c){
+  const R=[
+    ['Campaign Report','All campaigns with full metrics',async()=>{const d=await mcp('get_campaign_performance',base({page_size:500,status:['ENABLED','PAUSED']}));return{cols:['campaignName','campaignId','spend','sales','orders','clicks','impressions','ctr','cpc','cvr','acos','roas'],rows:d.data||[]}}],
+    ['Ad Group Report','All ad groups with rollup metrics',async()=>{const d=await mcp('get_targeting_performance',base({group_by:['adGroupId','adGroupName','campaignName','campaignId'],page_size:500}));return{cols:['adGroupName','adGroupId','campaignName','campaignId','spend','sales','orders','clicks','impressions','ctr','cpc','cvr','acos','roas'],rows:d.data||[]}}],
+    ['Placement Report','Placement × campaign performance',async()=>{const d=await mcp('get_placement_performance',base({page_size:500}));return{cols:['campaignName','placement','sponsoredType','spend','sales','orders','clicks','impressions','ctr','cpc','acos','roas'],rows:d.placements||[]}}],
+    ['Search Term Report','Top 500 search terms by spend',async()=>{const d=await mcp('get_search_term_performance',base({group_by:['searchTerm','targetingValue','targetingType','campaignName','adGroupName'],page_size:500}));return{cols:['searchTerm','targetingValue','targetingType','campaignName','adGroupName','spend','sales','orders','clicks','acos','roas'],rows:d.data||[]}}],
+    ['Keyword Report','Top 500 targets by spend',async()=>{const d=await mcp('get_targeting_performance',base({group_by:['targetingValue','targetingType','campaignName','adGroupName'],page_size:500}));return{cols:['targetingValue','targetingType','campaignName','adGroupName','spend','sales','orders','clicks','acos','roas'],rows:d.data||[]}}],
+    ['ASIN Report','Advertised product performance',async()=>{const d=await mcp('get_advertised_product_performance',base({page_size:500}));return{cols:['adAsin','adProductName','spend','sales','orders','clicks','impressions','acos','roas'],rows:d.data||[]}}],
+    ['Inventory Report','Stock by ASIN (FBM + FBA)',async()=>{const d=await mcp('get_inventory',base({limit:200}));return{cols:['asin','sku','itemName','price','fbmQty','fbaQty'],rows:(d.items||[]).map(i=>({asin:i.asin,sku:i.sku,itemName:i.itemName,price:i.price,fbmQty:i.fbm?.quantity||0,fbaQty:i.fba?.endingWarehouseBalance||0}))}}],
+    ['Performance Report','Weekly account trend',async()=>{const t=await weeklyTrend();return{cols:['week','spend','sales','orders','clicks','impressions','acos','roas'],rows:t.rows}}]
+  ];
+  c.innerHTML=`<div class="page-title">Reports</div><div class="page-sub">Generate exports from live data · ${esc(S.label)}</div><div class="report-grid">${R.map((r,i)=>`
+    <div class="report-card"><h4>📄 ${r[0]}</h4><p>${r[1]}</p><div class="row">
+      <button class="btn sm primary" data-i="${i}" data-f="csv">CSV</button>
+      <button class="btn sm" data-i="${i}" data-f="xls">Excel</button>
+      <button class="btn sm" data-i="${i}" data-f="pdf">PDF</button>
+    </div><div class="rep-state" style="margin-top:8px;font-size:11px;color:var(--muted)"></div></div>`).join('')}</div>`;
+  c.querySelectorAll('button[data-i]').forEach(b=>b.onclick=async()=>{
+    const r=R[+b.dataset.i];const st=b.closest('.report-card').querySelector('.rep-state');
+    st.textContent='Fetching live data…';
+    try{
+      const{cols,rows}=await r[2]();
+      const cdefs=cols.map(k=>({key:k,label:k}));
+      if(b.dataset.f==='pdf'){
+        const w=window.open('','_blank');
+        w.document.write(`<h2>${r[0]} — ${S.start} → ${S.end}</h2><table border=1 cellspacing=0 cellpadding=4 style="font:11px sans-serif;border-collapse:collapse"><tr>${cols.map(x=>`<th>${x}</th>`).join('')}</tr>${rows.map(x=>`<tr>${cols.map(k=>`<td>${x[k]??''}</td>`).join('')}</tr>`).join('')}</table>`);
+        w.document.close();w.print();
+      }else exportRows(r[0].replace(/ /g,'_')+(b.dataset.f==='csv'?'.csv':'.xls'),cdefs,rows,b.dataset.f==='csv'?',':'\t');
+      st.textContent=`✓ ${rows.length} rows exported`;
+    }catch(e){st.textContent='✗ '+e.message}
+  });
+};
+/* ================= AI ASSISTANT ================= */
+PAGES.ai=function(c){
+  c.innerHTML=`<div class="page-title">AI Assistant</div><div class="page-sub">Grounded in your live SellerMate data for ${esc(S.acct.name)} · ${esc(S.label)}</div>
+  <div class="card chat"><div class="chat-msgs" id="chatMsgs"><div class="msg ai">Hi! I analyze your live PPC data. Pick a prompt or ask anything.</div></div>
+  <div class="chips" id="chatChips"></div>
+  <div class="chat-in"><input id="chatIn" placeholder="Ask about your account…"><button class="btn primary" id="chatSend">Send</button></div></div>`;
+  const PROMPTS=['Why is ACOS increasing?','Which campaign should I pause?','Show products with low inventory.','Show high spend zero order search terms.','Recommend bid optimization.','Recommend placement optimization.','Suggest negative keywords.','Forecast tomorrow sales.','Forecast tomorrow spend.'];
+  el('chatChips').innerHTML=PROMPTS.map(p=>`<span class="chip">${p}</span>`).join('');
+  el('chatChips').querySelectorAll('.chip').forEach(ch=>ch.onclick=()=>send(ch.textContent));
+  el('chatSend').onclick=()=>send(el('chatIn').value);
+  el('chatIn').onkeydown=e=>{if(e.key==='Enter')send(el('chatIn').value)};
+  async function send(q){
+    q=(q||'').trim();if(!q)return;el('chatIn').value='';
+    const m=el('chatMsgs');
+    m.insertAdjacentHTML('beforeend',`<div class="msg user">${esc(q)}</div>`);
+    m.insertAdjacentHTML('beforeend',`<div class="msg ai" id="pend">Analyzing live data…</div>`);
+    m.scrollTop=m.scrollHeight;
+    try{
+      const ql=q.toLowerCase();
+      const ctx={dateRange:{start:S.start,end:S.end},account:S.acct.name,currency:S.acct.currency};
+      const cp=await mcp('get_campaign_performance',base({page_size:100}));
+      ctx.summary=cp.summary;ctx.campaigns=(cp.data||[]).slice(0,40);
+      if(/search term|negative|zero order|keyword|bid/.test(ql)){const st=await mcp('get_search_term_performance',base({group_by:['searchTerm','targetingValue','campaignName'],page_size:150}));ctx.searchTerms=(st.data||[]).slice(0,80)}
+      if(/inventory|stock|restock/.test(ql)){const inv=await mcp('get_inventory',base({limit:200}));ctx.inventory=(inv.items||[]).map(i=>({asin:i.asin,name:(i.itemName||'').slice(0,60),fbm:i.fbm?.quantity,fba:i.fba?.endingWarehouseBalance}))}
+      if(/placement/.test(ql)){const pl=await mcp('get_placement_performance',base({page_size:100}));ctx.placements=(pl.placements||[]).slice(0,60)}
+      if(/forecast|trend|increasing|why/.test(ql)){const t=await weeklyTrend();ctx.weeklyTrend=t.rows}
+      if(!window.cowork?.askClaude)throw new Error('AI bridge unavailable');
+      const out=await window.cowork.askClaude('You are an expert Amazon PPC analyst. Answer the user question using ONLY the attached live account data. Cite campaign/product names and numbers. Be concise and actionable. Question: '+q,[JSON.stringify(ctx).slice(0,30000)]);
+      el('pend').textContent=typeof out==='string'?out:(out?.text||JSON.stringify(out));
+    }catch(e){el('pend').textContent='Failed: '+e.message}
+    el('pend')?.removeAttribute('id');m.scrollTop=m.scrollHeight;
+  }
+};
+/* ================= SETTINGS ================= */
+PAGES.settings=function(c){
+  c.innerHTML=`<div class="page-title">Settings</div><div class="page-sub">Workspace & preferences</div>
+  <div class="grid2">
+  <div class="card"><h3>Connected Account</h3><table><tbody>
+    ${[['User',S.user?.name+' ('+S.user?.email+')'],['Workspace',S.wsName],['Account',S.acct.name],['Marketplace',MKT_NAMES[S.acct.country]||S.acct.country],['Currency',S.acct.currency],['Timezone',S.acct.timezone],['Advertiser ID',S.acct.advertiser_id],['Marketplace ID',S.acct.marketplace]].map(x=>`<tr><td style="color:var(--muted);width:150px">${x[0]}</td><td><b>${esc(x[1]??'—')}</b></td></tr>`).join('')}
+  </tbody></table></div>
+  <div class="card"><h3>Preferences</h3>
+    <p style="margin-bottom:10px">Theme: <button class="btn sm" onclick="toggleTheme()">Toggle dark mode</button></p>
+    <p style="margin-bottom:10px">Default range: <select class="hsel" id="defRange">${['Last 7 Days','Last 14 Days','Last 30 Days','Last 60 Days','Last 90 Days','This Month'].map(n=>`<option ${localStorage.getItem('ppcDefRange')===n?'selected':''}>${n}</option>`).join('')}</select></p>
+    <p style="margin-bottom:10px"><button class="btn sm" onclick="cache.clear();route()">Clear data cache & refetch</button></p>
+    <p style="color:var(--muted);font-size:11.5px">All data is fetched live from SellerMate on load — nothing is mocked or stored. The view header's Reload button refreshes everything.</p>
+  </div>
+  <div class="card"><h3>All Marketplaces (live)</h3><div id="setMkt">${skel(4)}</div></div>
+  </div>`;
+  el('defRange').onchange=e=>localStorage.setItem('ppcDefRange',e.target.value);
+  loadInto(el('setMkt'),()=>mcp('get_marketplace_summary',{workspace_id:S.ws,start_date:S.start,end_date:S.end}),(elm,d)=>{
+    elm.innerHTML=`<div class="mini-list">${(d.accounts||[]).map(a=>`<div class="mini-row"><div class="grow">${esc(MKT_NAMES[a.country]||a.country)} · ${esc(a.name)}</div><span>${a.metrics.spend?new Intl.NumberFormat(undefined,{style:'currency',currency:a.currency,maximumFractionDigits:0}).format(a.metrics.spend):'no spend'}</span><span class="badge ${a.metrics.sales?'b-green':'b-gray'}">${a.metrics.acos?a.metrics.acos.toFixed(1)+'% ACOS':'idle'}</span></div>`).join('')}</div>`;
+  });
+};
+/* ================= INIT ================= */
+function toggleTheme(){
+  const d=document.documentElement.dataset.theme==='dark';
+  document.documentElement.dataset.theme=d?'':'dark';
+  localStorage.setItem('ppcTheme',d?'light':'dark');
+  el('themeBtn').textContent=d?'🌙':'☀️';
+  killCharts();route();
+}
+async function connect(){
+  el('content').innerHTML=`<div class="card"><h3>Connecting to SellerMate — Account ${S.keySlot}…</h3>${skel(6)}</div>`;
+  try{
+    const u=await mcp('get_user_context',{});
+    S.user=u.user;S.accounts=u.accounts||[];
+    if(!S.accounts.length)throw new Error('No Amazon accounts found on this SellerMate key.');
+    // prefer account with data (IN) else first
+    S.acct=S.accounts.find(a=>a.country==='IN')||S.accounts[0];
+    S.ws=S.acct.workspace_id;S.wsName=S.acct.workspace_name;
+    el('mktSel').innerHTML=S.accounts.map(a=>`<option value="${a.id}" ${a.id===S.acct.id?'selected':''}>${MKT_NAMES[a.country]||('Amazon '+a.country)} — ${esc(a.name)}</option>`).join('');
+    el('profileBtn').textContent=(S.user?.name||'?').slice(0,1).toUpperCase();
+    el('profileInfo').innerHTML=`<b>${esc(S.user?.name)}</b><div style="color:var(--muted);font-size:11.5px">${esc(S.user?.email)}</div><div style="margin-top:8px;font-size:11.5px">SellerMate Account: <b>${S.keySlot}</b><br>Workspace: <b>${esc(S.wsName)}</b><br>Accounts: <b>${S.accounts.length}</b></div>`;
+    el('acctFoot').innerHTML=`● Live · Account ${S.keySlot}<br>${esc(S.acct.name)}<br>${esc(S.wsName)}`;
+    getCampaignsMeta().catch(()=>{});
+    route();
+    console.log('PPC dashboard initialized OK — account',S.acct.name,S.acct.country);
+  }catch(e){
+    console.error('connect failed',e);
+    el('content').innerHTML=errState('Could not connect to SellerMate (Account '+S.keySlot+'): '+e.message,connect);
+  }
+}
+function switchKeySlot(slot){
+  S.keySlot=slot;localStorage.setItem('ppcKeySlot',slot);
+  cache.clear();S.accounts=[];S.acct=null;S.campaignsMeta=null;S.campFilter='';S.portFilter='';
+  el('campSel').innerHTML='<option value="">All Campaigns</option>';
+  el('portSel').innerHTML='<option value="">All Portfolios</option>';
+  connect();
+}
+async function init(){
+  if(localStorage.getItem('ppcTheme')==='dark'){document.documentElement.dataset.theme='dark';el('themeBtn').textContent='☀️'}
+  const defR=localStorage.getItem('ppcDefRange')||'Last 30 Days';
+  const[s,e]=quickRange(defR);S.start=s;S.end=e;S.label=defR;
+  el('datelabel').textContent=defR;el('dpStart').value=s;el('dpEnd').value=e;
+  buildDatePicker();buildNav();
+  el('keySel').value=S.keySlot;
+  el('datebtn').onclick=()=>togglePop('datepop');
+  el('notifBtn').onclick=()=>togglePop('notifpop');
+  el('profileBtn').onclick=()=>togglePop('profilepop');
+  el('themeBtn').onclick=toggleTheme;
+  el('gsearch').addEventListener('input',()=>{clearTimeout(S._gs);S._gs=setTimeout(()=>{const active=el('content').querySelector('.tbl-top input');if(active){/* tables read gsearch on redraw */}route()},400)});
+  el('keySel').onchange=e=>switchKeySlot(e.target.value);
+  el('mktSel').onchange=e=>{S.acct=S.accounts.find(a=>a.id===e.target.value);S.campaignsMeta=null;S.campFilter='';S.portFilter='';cache.clear();route()};
+  el('campSel').onchange=e=>{S.campFilter=e.target.value;route()};
+  el('portSel').onchange=e=>{S.portFilter=e.target.value;route()};
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeDrawer();['datepop','notifpop','profilepop'].forEach(p=>el(p).classList.remove('open'))}});
+  await connect();
+}
+window.toggleTheme=toggleTheme;window.closeDrawer=closeDrawer;
+init();
+</script>
+</body>
+</html>
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
