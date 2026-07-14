@@ -39,6 +39,9 @@ function getFirstDayOfMonth(year: number, month: number) {
 
 function formatDisplay(start: string, end: string) {
   const fmt = (s: string) => new Date(s + "T00:00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+  if (start === end) {
+    return fmt(start);
+  }
   return `${fmt(start)} – ${fmt(end)}`;
 }
 
@@ -191,7 +194,11 @@ export function DateRangePicker() {
         )}
       >
         <CalendarDays className="w-4 h-4 text-primary" />
-        <span className="max-w-[160px] truncate">{dateLabel}</span>
+        <span className="max-w-[320px] truncate">
+          {PRESETS.some(p => p.label === dateLabel)
+            ? `${dateLabel} (${formatDisplay(startDate, endDate)})`
+            : dateLabel}
+        </span>
       </button>
 
       {open && (
