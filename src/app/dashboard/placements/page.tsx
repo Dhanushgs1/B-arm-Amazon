@@ -126,7 +126,7 @@ export default function PlacementsPage() {
   const restSearch = getAggregates("rest");
   const productPages = getAggregates("product");
   
-  const totalSpend = rows.reduce((a, b) => a + (b.spend || 0), 0);
+  const totalSpend = rows.reduce((a: number, b: any) => a + (b.spend || 0), 0);
   const topSpendShare = totalSpend > 0 ? (topSearch.spend / totalSpend) * 100 : 0;
 
   // AI Insights Winners & Bleeders

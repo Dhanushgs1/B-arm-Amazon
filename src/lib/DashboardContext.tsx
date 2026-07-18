@@ -19,6 +19,8 @@ type DashboardState = {
   setDateRange: (start: string, end: string, label: string) => void;
   account: Account | null;
   contextLoading: boolean;
+  contextError: string | null;
+  retryContext: () => void;
   selectedCampaignName: string | null;
   selectedAsin: string | null;
   setSelectedCampaignName: (name: string | null) => void;
@@ -32,6 +34,7 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
   const [loggedInUser, setLoggedInUser] = useState<string>("Lkn");
   const [account, setAccount] = useState<Account | null>(null);
   const [contextLoading, setContextLoading] = useState(true);
+  const [contextError, setContextError] = useState<string | null>(null);
 
   // Use local date (not UTC) to avoid timezone shift bugs
   const getLocalDateStr = (d: Date = new Date()) => {
@@ -65,6 +68,7 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
   // Load user context (workspace + account IDs) for a given slot
   const loadContext = async (slot: "A" | "B") => {
     setContextLoading(true);
+    setContextError(null);
     setAccount(null);
     try {
       const ctx = await mcp("get_user_context", {}, slot);
@@ -76,13 +80,18 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
           workspace_id: acc.workspace_id,
           currency: acc.currency || "USD",
         });
+      } else {
+        setContextError("No Amazon account found for this workspace.");
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error("Failed to load user context:", e);
+      setContextError(e?.message || "Could not reach the data service.");
     } finally {
       setContextLoading(false);
     }
   };
+
+  const retryContext = () => loadContext(keySlot);
 
   useEffect(() => {
     const savedUser = localStorage.getItem("ppcUser") || "Lkn";
@@ -118,6 +127,8 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
         setDateRange,
         account,
         contextLoading,
+        contextError,
+        retryContext,
         selectedCampaignName,
         selectedAsin,
         setSelectedCampaignName,

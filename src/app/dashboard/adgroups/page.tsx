@@ -140,7 +140,7 @@ export default function AdGroupsPage() {
         });
       } else {
         const category = getCampaignCategory(cName);
-        prods.filter((p: any) => categorizeTitle(p.itemName, p.asin) === category)
+        prods.filter((p: any) => categorizeTitle(p.itemName) === category)
           .slice(0, 1)
           .forEach((p: any) => {
             if (p.sku) skus.push(p.sku);
