@@ -37,10 +37,6 @@ yarn-error.log*
 # local tooling
 .claude/
 
-# secrets — NEVER commit (test-email.js has a hardcoded Gmail app password)
-test-email.js
-.email-settings.json
-
 # local scratch / backups / dumps
 dump.txt
 page_backup.tsx
