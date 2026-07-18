@@ -1,10 +1,16 @@
 "use client";
 
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useDashboard } from "@/lib/DashboardContext";
-import { mcp } from "@/lib/api";
+import { mcpAllPages } from "@/lib/api";
+import { exportToExcel } from "@/lib/excelExport";
+import { KpiDrilldownModal } from "@/components/KpiDrilldownModal";
+import { AiSuggestionModal } from "@/components/AiSuggestionModal";
 import { DataTable } from "@/components/DataTable";
 import { KPICard } from "@/components/KPICard";
+import { PageHero } from "@/components/PageHero";
+import { AcosBadge, ACOS_LIMIT, acosRowClass } from "@/components/AcosBadge";
 import { Loader2, Search, AlertTriangle, Lightbulb, TrendingUp } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -18,19 +24,19 @@ const pct = (val: number) => `${(val || 0).toFixed(2)}%`;
 
 export default function SearchTermsPage() {
   const { keySlot, startDate, endDate, account, contextLoading, setSelectedCampaignName } = useDashboard();
+  const [kpiModal, setKpiModal] = useState<{ title: string; data: any[] } | null>(null);
+  const [aiModal, setAiModal] = useState(false);
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, refetch } = useQuery({
     queryKey: ["searchterms", keySlot, account?.id, startDate, endDate],
     queryFn: async () => {
-      const res = await mcp("get_search_term_performance", {
+      return mcpAllPages("get_search_term_performance", {
         amazon_account_id: account?.id,
         workspace_id: account?.workspace_id,
         start_date: startDate,
         end_date: endDate,
-        page_size: 2000,
-        group_by: ["searchTerm", "campaignName"],
+        group_by: ["searchTerm", "campaignName", "adGroupName"],
       }, keySlot);
-      return res.data || res.searchterms || [];
     },
     enabled: !!account,
   });
@@ -41,6 +47,7 @@ export default function SearchTermsPage() {
   
   // Calculate Search Term KPIs
   const totalSearchTerms = searchTerms.length;
+  const highAcosCount = searchTerms.filter((st: any) => st.acos > ACOS_LIMIT).length;
   const negativeCandidatesCount = searchTerms.filter((st: any) => st.orders === 0 && st.clicks > 10).length;
   const harvestCandidatesCount = searchTerms.filter((st: any) => st.roas > 4.5 && st.orders >= 2).length;
   const wastedSpend = searchTerms.reduce((acc: number, st: any) => st.orders === 0 ? acc + (st.spend || 0) : acc, 0);
@@ -78,6 +85,16 @@ export default function SearchTermsPage() {
       ),
     },
     {
+      key: "adGroupName",
+      label: "Ad Group",
+      sortable: true,
+      render: (val: string) => (
+        <span className="text-xs font-semibold text-muted-foreground bg-muted px-2 py-0.5 rounded-md block max-w-[140px] truncate" title={val}>
+          {val || "—"}
+        </span>
+      ),
+    },
+    {
       key: "spend",
       label: "Spend",
       sortable: true,
@@ -93,11 +110,7 @@ export default function SearchTermsPage() {
       key: "acos",
       label: "ACOS",
       sortable: true,
-      render: (val: number) => (
-        <span className={cn("px-2 py-0.5 rounded-full text-xs font-bold", val && val < 20 ? "bg-green-500/10 text-green-700 dark:text-green-400" : val && val > 40 ? "bg-red-500/10 text-red-700 dark:text-red-400" : "bg-yellow-500/10 text-yellow-700 dark:text-yellow-400")}>
-          {val ? pct(val) : "—"}
-        </span>
-      ),
+      render: (val: number) => <AcosBadge value={val} />,
     },
     {
       key: "roas",
@@ -139,12 +152,21 @@ export default function SearchTermsPage() {
 
   return (
     <div className="space-y-6 pb-10">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight mb-0.5">Search Terms</h1>
-        <p className="text-muted-foreground text-sm">
-          {account?.name} · {startDate} → {endDate}
-        </p>
-      </div>
+      <PageHero
+        title="Search Terms Intelligence"
+        subtitle="Analyze exactly what customers are searching for. Harvest winners and negate wasted spend instantly."
+        workspace={account?.name?.split(" ").slice(0, 2).join(" ")}
+        dateRange={`${startDate} → ${endDate}`}
+        primaryAction="AI Search Term Report"
+        onPrimaryAction={() => setAiModal(true)}
+        onRefresh={() => refetch()}
+        onExport={() => exportToExcel(searchTerms, columns as any, `searchterms-${startDate}-to-${endDate}`)}
+        chips={[
+          { label: "Wasted Spend", value: cur(wastedSpend, currency) },
+          { label: "Harvest Opportunities", value: String(harvestCandidatesCount) },
+          { label: "Negative Candidates", value: String(negativeCandidatesCount) },
+        ]}
+      />
 
       {contextLoading || isLoading ? (
         <div className="flex h-[400px] items-center justify-center text-muted-foreground flex-col gap-4 glass rounded-2xl border border-border">
@@ -154,12 +176,32 @@ export default function SearchTermsPage() {
       ) : (
         <>
           {/* KPI Dashboard */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <KPICard title="Total Search Terms" value={num(totalSearchTerms)} subtitle="Customer queries analyzed" delay={0.05} />
-            <KPICard title="Negative Candidates" value={num(negativeCandidatesCount)} subtitle="Clicks > 10 with zero sales" delay={0.1} />
-            <KPICard title="New Keywords Found" value={num(harvestCandidatesCount)} subtitle="ROAS > 4.5x (ready to harvest)" delay={0.15} />
-            <KPICard title="Wasted Search Spend" value={cur(wastedSpend, currency)} subtitle="Spend on non-converting terms" inverseTrend delay={0.2} />
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+            <KPICard title="Total Search Terms" value={num(totalSearchTerms)} subtitle="Customer queries analyzed" delay={0.05} onClick={() => setKpiModal({ title: "Total Search Terms", data: searchTerms })} />
+            <KPICard title="High ACOS Terms" value={num(highAcosCount)} subtitle={`ACOS > ${ACOS_LIMIT}% (marked red below)`} inverseTrend delay={0.08} onClick={() => setKpiModal({ title: "High ACOS Search Terms", data: searchTerms.filter((st: any) => st.acos > ACOS_LIMIT) })} />
+            <KPICard title="Negative Candidates" value={num(negativeCandidatesCount)} subtitle="Clicks > 10 with zero sales" delay={0.1} onClick={() => setKpiModal({ title: "Negative Keyword Candidates", data: negativeKeywords })} />
+            <KPICard title="New Keywords Found" value={num(harvestCandidatesCount)} subtitle="ROAS > 4.5x (ready to harvest)" delay={0.15} onClick={() => setKpiModal({ title: "Keyword Harvesting Candidates", data: keywordHarvesting })} />
+            <KPICard title="Wasted Search Spend" value={cur(wastedSpend, currency)} subtitle="Spend on non-converting terms" inverseTrend delay={0.2} onClick={() => setKpiModal({ title: "Wasted Spend Terms", data: searchTerms.filter((st: any) => st.spend > 0 && st.orders === 0) })} />
           </div>
+
+          <KpiDrilldownModal 
+            isOpen={!!kpiModal} 
+            onClose={() => setKpiModal(null)} 
+            title={kpiModal?.title || ""} 
+            data={kpiModal?.data || []} 
+            columns={columns} 
+          />
+
+          <AiSuggestionModal
+            isOpen={aiModal}
+            onClose={() => setAiModal(false)}
+            title="AI Search Term Insights"
+            suggestions={[
+              `Found ${harvestCandidatesCount} highly profitable search terms. Harvest these and launch them as Exact Match.`,
+              `Found ${negativeCandidatesCount} negative candidates. Negate these to save ${cur(wastedSpend, currency)} in wasted spend.`,
+              `Your clean queries percentage is ${pct((1 - (negativeCandidatesCount / totalSearchTerms)) * 100)}. Sweep negatives weekly to improve this.`
+            ]}
+          />
 
           {/* Actionable Alerts & Recommendations */}
           {(negativeKeywords.length > 0 || keywordHarvesting.length > 0) && (
@@ -198,7 +240,7 @@ export default function SearchTermsPage() {
             </div>
           )}
 
-          <DataTable data={searchTerms} columns={columns} defaultSort="spend" />
+          <DataTable data={searchTerms} columns={columns} defaultSort="spend" rowClassName={acosRowClass} exportName="search-terms" />
         </>
       )}
     </div>

@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useDashboard } from "@/lib/DashboardContext";
-import { mcp } from "@/lib/api";
+import { mcpAllInventory, fetchSkuMap } from "@/lib/api";
 import { DataTable } from "@/components/DataTable";
 import { KPICard } from "@/components/KPICard";
 import { Loader2, PackageOpen, AlertTriangle, CheckCircle, XCircle } from "lucide-react";
@@ -20,21 +20,27 @@ export default function InventoryPage() {
   const { data, isLoading } = useQuery({
     queryKey: ["inventory_page", keySlot, account?.id],
     queryFn: async () => {
-      const res = await mcp("get_inventory", {
+      const baseArgs = {
         amazon_account_id: account?.id,
         workspace_id: account?.workspace_id,
-        page_size: 200,
-      }, keySlot);
-      
-      const items = res.items || [];
+      };
+      // get_inventory paginates with limit/offset (not page_size) — fetch every page,
+      // and join SKUs from the product catalog since inventory rows return sku as "".
+      const [items, skuMap] = await Promise.all([
+        mcpAllInventory(baseArgs, keySlot),
+        fetchSkuMap(baseArgs, keySlot),
+      ]);
+
       return items.map((i: any) => {
         const fbmQty = i.fbm?.quantity || 0;
         const fbaQty = i.fba?.endingWarehouseBalance || 0;
         const totalQty = fbmQty + fbaQty;
         const totalValue = totalQty * (i.price || 0);
         const stockStatus = totalQty === 0 ? "Out of Stock" : totalQty < 20 ? "Low Stock" : "Healthy";
+        const skus = i.sku ? [i.sku] : (skuMap[i.asin] || []);
         return {
           ...i,
+          skuList: skus.join(", ") || "—",
           fbmQty,
           fbaQty,
           totalQty,
@@ -77,14 +83,24 @@ export default function InventoryPage() {
       key: "itemName",
       label: "Product Title",
       sortable: true,
-      render: (val: string, row: any) => (
-        <div className="max-w-[280px]">
+      render: (val: string) => (
+        <div className="max-w-[260px]">
           <span className="font-semibold text-foreground text-sm block truncate" title={val}>
             {val || "—"}
           </span>
-          <span className="text-[10px] text-muted-foreground font-mono">
-            ASIN: {row.asin || "—"} | SKU: {row.sku || "—"}
+        </div>
+      ),
+    },
+    {
+      key: "skuList",
+      label: "SKU / ASIN",
+      sortable: true,
+      render: (val: string, row: any) => (
+        <div className="max-w-[260px]">
+          <span className="font-mono text-xs font-bold text-foreground block whitespace-normal break-words" title={val}>
+            {val}
           </span>
+          <span className="font-mono text-[10px] text-muted-foreground">{row.asin || "—"}</span>
         </div>
       ),
     },
@@ -187,7 +203,7 @@ export default function InventoryPage() {
                     <div>
                       <p className="font-bold text-red-800 dark:text-red-400">Out of Stock Alert</p>
                       <p className="font-semibold mt-0.5 truncate max-w-[200px]" title={item.itemName}>{item.itemName}</p>
-                      <p className="text-muted-foreground mt-0.5 font-mono text-[10px]">ASIN: {item.asin}</p>
+                      <p className="text-muted-foreground mt-0.5 font-mono text-[10px]">SKU: {item.skuList} · ASIN: {item.asin}</p>
                       <p className="font-bold text-red-700 dark:text-red-500 mt-1.5">Action: Pause active PPC campaigns to save wasted clicks!</p>
                     </div>
                   </div>
@@ -198,7 +214,7 @@ export default function InventoryPage() {
                     <div>
                       <p className="font-bold text-yellow-800 dark:text-yellow-400">Low Stock (Need to Fill)</p>
                       <p className="font-semibold mt-0.5 truncate max-w-[200px]" title={item.itemName}>{item.itemName}</p>
-                      <p className="text-muted-foreground mt-0.5 font-mono text-[10px]">ASIN: {item.asin} · Qty: {item.totalQty}</p>
+                      <p className="text-muted-foreground mt-0.5 font-mono text-[10px]">SKU: {item.skuList} · ASIN: {item.asin} · Qty: {item.totalQty}</p>
                       <p className="font-bold text-yellow-700 dark:text-yellow-500 mt-1.5">Action: Replenish stock within 7 days to avoid BSR drop.</p>
                     </div>
                   </div>
@@ -218,7 +234,7 @@ export default function InventoryPage() {
             </div>
           )}
 
-          <DataTable data={inventoryItems} columns={columns} defaultSort="totalValue" />
+          <DataTable data={inventoryItems} columns={columns} defaultSort="totalValue" exportName="inventory" />
         </>
       )}
     </div>

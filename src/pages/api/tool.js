@@ -25,6 +25,16 @@ const ALLOWED_TOOLS = new Set([
   'get_retail_product_performance',
   'get_inventory',
   'get_advertised_product_performance',
+  'get_sqp_report',
+  'get_fba_customer_returns',
+  'get_hourly_performance',
+  'get_orders_report',
+  'list_automations',
+  // Read-only additions: negatives inventory, dayparting schedules, tags.
+  'list_negative_targets',
+  'list_daypartings',
+  'get_dayparting',
+  'get_tags',
 ]);
 
 const SELLERMATE_BASE_URL = 'https://api.sellermate.ai/public/v1/tools';

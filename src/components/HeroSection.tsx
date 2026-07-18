@@ -40,8 +40,8 @@ export default function HeroSection() {
       {/* Top Branding Section */}
       <div className="relative z-10 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-indigo-500/15 rounded-xl flex items-center justify-center text-[#7C3AED] border border-indigo-500/20 shadow-[0_0_20px_rgba(124,58,237,0.15)]">
-            <Hexagon size={22} fill="currentColor" className="text-[#7C3AED]" />
+          <div className="w-10 h-10 bg-indigo-500/15 rounded-xl flex items-center justify-center text-[#6C63FF] border border-indigo-500/20 shadow-[0_0_20px_rgba(20,184,166,0.15)]">
+            <Hexagon size={22} fill="currentColor" className="text-[#6C63FF]" />
           </div>
           <div>
             <span className="font-extrabold text-xl tracking-tight block">BARM AI</span>
@@ -100,8 +100,8 @@ export default function HeroSection() {
               {/* Glowing Gradient Area */}
               <defs>
                 <linearGradient id="chartGlow" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#7C3AED" stopOpacity="0.25" />
-                  <stop offset="100%" stopColor="#4F46E5" stopOpacity="0.0" />
+                  <stop offset="0%" stopColor="#6C63FF" stopOpacity="0.25" />
+                  <stop offset="100%" stopColor="#6D5EF8" stopOpacity="0.0" />
                 </linearGradient>
               </defs>
               <path
@@ -122,8 +122,8 @@ export default function HeroSection() {
               />
 
               <linearGradient id="lineGradient" x1="0" y1="0" x2="1" y2="0">
-                <stop offset="0%" stopColor="#7C3AED" />
-                <stop offset="50%" stopColor="#4F46E5" />
+                <stop offset="0%" stopColor="#6C63FF" />
+                <stop offset="50%" stopColor="#6D5EF8" />
                 <stop offset="100%" stopColor="#22D3EE" />
               </linearGradient>
             </svg>

@@ -54,7 +54,7 @@ export default function LoginForm() {
       localStorage.setItem("ppcKeySlot", uTrim === "Barm" ? "B" : "A");
       window.location.href = "/dashboard";
     } else {
-      setError("Incorrect credentials. Use Barm / Barm@123 or Lkn / Lkn@123.");
+      setError("Incorrect credentials. Please check your username and password and try again.");
       setLoading(false);
     }
   };
@@ -93,7 +93,7 @@ export default function LoginForm() {
                   required
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  className="w-full pl-11 pr-4 h-[52px] bg-white/[0.03] border border-white/10 rounded-xl text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-[#7C3AED] transition-all text-sm font-semibold shadow-inner"
+                  className="w-full pl-11 pr-4 h-[52px] bg-white/[0.03] border border-white/10 rounded-xl text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-[#6C63FF] transition-all text-sm font-semibold shadow-inner"
                   placeholder="e.g. Barm"
                 />
               </div>
@@ -116,7 +116,7 @@ export default function LoginForm() {
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full pl-11 pr-12 h-[52px] bg-white/[0.03] border border-white/10 rounded-xl text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-[#7C3AED] transition-all text-sm font-semibold shadow-inner"
+                  className="w-full pl-11 pr-12 h-[52px] bg-white/[0.03] border border-white/10 rounded-xl text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-[#6C63FF] transition-all text-sm font-semibold shadow-inner"
                   placeholder="••••••••"
                 />
                 <button
@@ -174,7 +174,7 @@ export default function LoginForm() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full h-[54px] bg-gradient-to-r from-[#7C3AED] to-[#4F46E5] hover:from-[#8B5CF6] hover:to-[#5B21B6] text-white rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 disabled:opacity-75 shadow-lg shadow-indigo-500/15 hover:shadow-indigo-500/30 active:scale-[0.98] mt-2 group"
+              className="w-full h-[54px] bg-gradient-to-r from-[#6C63FF] to-[#6D5EF8] hover:from-[#8B5CF6] hover:to-[#5B4FE0] text-white rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 disabled:opacity-75 shadow-lg shadow-indigo-500/15 hover:shadow-indigo-500/30 active:scale-[0.98] mt-2 group"
             >
               {loading ? (
                 <Loader2 className="w-5 h-5 animate-spin text-white" />

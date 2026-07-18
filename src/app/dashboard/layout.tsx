@@ -2,6 +2,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { TopNav } from "@/components/TopNav";
 import { CampaignDetailDrawer } from "@/components/CampaignDetailDrawer";
 import { ProductDetailDrawer } from "@/components/ProductDetailDrawer";
+import { ConnectionBanner } from "@/components/ConnectionBanner";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -9,7 +10,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <Sidebar />
       <div className="flex flex-col flex-1 min-w-0">
         <TopNav />
-        <main className="flex-1 overflow-y-auto p-6 relative">
+        <main className="flex-1 overflow-y-auto overflow-x-hidden p-5 relative">
+          <ConnectionBanner />
           {children}
         </main>
       </div>

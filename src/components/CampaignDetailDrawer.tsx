@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useDashboard } from "@/lib/DashboardContext";
-import { mcp } from "@/lib/api";
+import { mcp, fetchSkuMap } from "@/lib/api";
 import { X, Loader2, Target, KeyRound, Search, Package, TrendingUp, Sparkles, HelpCircle, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
@@ -131,6 +131,16 @@ export function CampaignDetailDrawer() {
     enabled: !!account && !!selectedCampaignName && !!campaignMeta?.campaignId && activeTab === "products",
   });
   const filteredProducts = productsData?.data || [];
+
+  // Fetch SKU map for ASIN-to-SKU translation
+  const { data: skuMap } = useQuery({
+    queryKey: ["campaign_detail_sku_map", keySlot, account?.id],
+    queryFn: () => fetchSkuMap({
+      amazon_account_id: account?.id,
+      workspace_id: account?.workspace_id,
+    }, keySlot),
+    enabled: !!account && !!selectedCampaignName && activeTab === "products",
+  });
 
   // 4. Fetch Keywords data
   const { data: keywordsData, isLoading: keywordsLoading } = useQuery({
@@ -450,7 +460,7 @@ Write directly and professionally in bullet points.`;
                     <table className="w-full text-left text-xs divide-y divide-border">
                       <thead className="bg-muted/50 text-[10px] uppercase font-bold text-muted-foreground">
                         <tr>
-                          <SortableHeader field="adAsin" label="ASIN" />
+                          <SortableHeader field="adAsin" label="SKU" />
                           <SortableHeader field="adProductName" label="Product Name" />
                           <SortableHeader field="spend" label="Spend" />
                           <SortableHeader field="sales" label="Sales" />
@@ -459,16 +469,29 @@ Write directly and professionally in bullet points.`;
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border">
-                        {getSortedData(filteredProducts).map((p: any, i: number) => (
-                          <tr key={i} className="hover:bg-muted/10 transition-colors">
-                            <td className="px-4 py-3 font-mono font-bold">{p.adAsin || p.asin || "—"}</td>
-                            <td className="px-4 py-3 max-w-[200px] truncate" title={p.adProductName}>{p.adProductName || "—"}</td>
-                            <td className="px-4 py-3">{cur(p.spend, currency)}</td>
-                            <td className="px-4 py-3 text-green-600 dark:text-green-400 font-bold">{cur(p.sales, currency)}</td>
-                            <td className="px-4 py-3">{num(p.orders)}</td>
-                            <td className="px-4 py-3">{num(p.clicks)}</td>
-                          </tr>
-                        ))}
+                        {getSortedData(filteredProducts).map((p: any, i: number) => {
+                          const asin = p.adAsin || p.asin || "";
+                          const skus = skuMap?.[asin]?.length ? skuMap[asin] : [asin];
+                          return (
+                            <tr key={i} className="hover:bg-muted/10 transition-colors">
+                              <td className="px-4 py-3">
+                                <div className="flex flex-wrap items-center gap-1.5 max-w-[200px]">
+                                  {skus.map((sku: string) => (
+                                    <span key={sku} className="inline-flex items-center gap-1.5 font-mono text-[11px] font-extrabold bg-slate-800/90 border border-slate-700 px-2.5 py-0.5 rounded-full text-slate-100 shadow-sm whitespace-nowrap">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0 animate-pulse" />
+                                      {sku}
+                                    </span>
+                                  ))}
+                                </div>
+                              </td>
+                              <td className="px-4 py-3 max-w-[200px] truncate" title={p.adProductName}>{p.adProductName || "—"}</td>
+                              <td className="px-4 py-3">{cur(p.spend, currency)}</td>
+                              <td className="px-4 py-3 text-green-600 dark:text-green-400 font-bold">{cur(p.sales, currency)}</td>
+                              <td className="px-4 py-3">{num(p.orders)}</td>
+                              <td className="px-4 py-3">{num(p.clicks)}</td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   )}

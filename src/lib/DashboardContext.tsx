@@ -33,16 +33,34 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
   const [account, setAccount] = useState<Account | null>(null);
   const [contextLoading, setContextLoading] = useState(true);
 
+  // Use local date (not UTC) to avoid timezone shift bugs
+  const getLocalDateStr = (d: Date = new Date()) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  };
+
   const getDefaultStart = () => {
+    const saved = typeof window !== 'undefined' ? localStorage.getItem('ppc_startDate') : null;
+    if (saved) return saved;
     const d = new Date();
     d.setDate(d.getDate() - 29);
-    return d.toISOString().slice(0, 10);
+    return getLocalDateStr(d);
   };
-  const getDefaultEnd = () => new Date().toISOString().slice(0, 10);
+  const getDefaultEnd = () => {
+    const saved = typeof window !== 'undefined' ? localStorage.getItem('ppc_endDate') : null;
+    if (saved) return saved;
+    return getLocalDateStr();
+  };
+  const getDefaultLabel = () => {
+    const saved = typeof window !== 'undefined' ? localStorage.getItem('ppc_dateLabel') : null;
+    return saved || "Last 30 Days";
+  };
 
   const [startDate, setStartDate] = useState(getDefaultStart);
   const [endDate, setEndDate] = useState(getDefaultEnd);
-  const [dateLabel, setDateLabel] = useState("Last 30 Days");
+  const [dateLabel, setDateLabel] = useState(getDefaultLabel);
 
   // Load user context (workspace + account IDs) for a given slot
   const loadContext = async (slot: "A" | "B") => {
@@ -82,6 +100,11 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     setStartDate(start);
     setEndDate(end);
     setDateLabel(label);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('ppc_startDate', start);
+      localStorage.setItem('ppc_endDate', end);
+      localStorage.setItem('ppc_dateLabel', label);
+    }
   };
 
   return (
