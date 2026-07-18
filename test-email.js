@@ -1,8 +1,20 @@
 const nodemailer = require('nodemailer');
+// Load .env.local (SMTP_FROM / SMTP_PASS) — a standalone `node test-email.js`
+// run does not auto-load Next's env files, so pull them in via @next/env.
+const { loadEnvConfig } = require('@next/env');
+loadEnvConfig(process.cwd());
+
+const SMTP_FROM = process.env.SMTP_FROM;
+const SMTP_PASS = process.env.SMTP_PASS;
+
+if (!SMTP_FROM || !SMTP_PASS) {
+  console.error('Missing SMTP_FROM / SMTP_PASS in .env.local — cannot send test email.');
+  process.exit(1);
+}
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',
-  auth: { user: 'dhanushgovinthang@gmail.com', pass: 'qgcqmqmbzmivjlwa' }
+  auth: { user: SMTP_FROM, pass: SMTP_PASS }
 });
 
 const html = `<!DOCTYPE html>
@@ -65,8 +77,8 @@ const html = `<!DOCTYPE html>
 </body></html>`;
 
 transporter.sendMail({
-  from: 'BARM AI Dashboard <dhanushgovinthang@gmail.com>',
-  to: 'dhanushgovinthang@gmail.com',
+  from: `BARM AI Dashboard <${SMTP_FROM}>`,
+  to: SMTP_FROM,
   subject: 'BARM AI - Email Connected Successfully!',
   html: html
 }, (err, info) => {
