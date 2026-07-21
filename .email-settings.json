@@ -27,8 +27,8 @@
   "autoBudget": false,
   "roasTarget": 4,
   "compactMode": false,
-  "keySlot": "A",
-  "amazonAccountId": "6a0564dbe39dd28f972d3312",
-  "workspaceId": "6a055dc86fe615943b989e75",
+  "keySlot": "B",
+  "amazonAccountId": "6a3279a4af744dda69afe36d",
+  "workspaceId": "6a3279510c060940d2b87662",
   "currency": "INR"
 }
