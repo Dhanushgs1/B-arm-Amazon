@@ -67,7 +67,7 @@ async function returnsCount(apiKey: string, base: any, start: string, end: strin
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const { slot = "B", amazon_account_id, workspace_id, to, currency = "INR", endDate, send = true, accountName = "B-ARM" } = req.body || {};
+  const { slot = "B", amazon_account_id, workspace_id, to, cc, currency = "INR", endDate, send = true, accountName = "B-ARM" } = req.body || {};
   if (!amazon_account_id || !workspace_id) return res.status(400).json({ error: "amazon_account_id and workspace_id are required" });
   const apiKey = resolveSellerMateKey(slot === "B" ? "B" : "A");
   if (!apiKey) return res.status(500).json({ error: `Missing SellerMate API key for slot ${slot}` });
@@ -169,7 +169,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const host = req.headers.host;
       const r = await fetch(`${proto}://${host}/api/send-email`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "weeklyReport", to, data: emailData, attachments }),
+        body: JSON.stringify({ type: "weeklyReport", to, cc, data: emailData, attachments }),
       });
       emailResult = await r.json().catch(() => ({}));
       if (!r.ok) emailResult = { error: emailResult?.error || "send-email failed" };

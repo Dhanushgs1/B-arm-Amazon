@@ -79,13 +79,13 @@ export function wastedTermsEmail(terms: any[], totalWasted: number, currency: st
   };
 }
 
-async function sendEmail(req: NextApiRequest, to: string, subject: string, dataObj: any) {
+async function sendEmail(req: NextApiRequest, to: string, cc: string | undefined, subject: string, dataObj: any) {
   const proto = (req.headers["x-forwarded-proto"] as string) || "http";
   const host = req.headers.host;
   const r = await fetch(`${proto}://${host}/api/send-email`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ type: "adAlert", to, subject, data: dataObj }),
+    body: JSON.stringify({ type: "adAlert", to, cc, subject, data: dataObj }),
   });
   const j = await r.json().catch(() => ({}));
   return { ok: r.ok, result: j };
@@ -95,7 +95,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   const {
-    slot = "B", amazon_account_id, workspace_id, to, currency = "INR",
+    slot = "B", amazon_account_id, workspace_id, to, cc, currency = "INR",
     acosThreshold = 40, minSpend = 500, lookbackDays = 7, send = true,
     alerts = ["bleeding", "wastedTerms"],
   } = req.body || {};
@@ -113,7 +113,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       out.bleeding = { count: items.length, totalSpend: Math.round(items.reduce((a, c) => a + c.spend, 0)) };
       if (send && to && items.length > 0) {
         const em = bleedingEmail(items, currency, dateRangeLabel(lookbackDays));
-        const r = await sendEmail(req, to, em.subject, em.data);
+        const r = await sendEmail(req, to, cc, em.subject, em.data);
         out.sent.push({ alert: "bleeding", ok: r.ok, msg: r.result?.message || r.result?.error });
       } else out.skipped.push("bleeding");
     }
@@ -123,7 +123,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       out.wastedTerms = { count: terms.length, totalWasted: Math.round(totalWasted) };
       if (send && to && terms.length > 0) {
         const em = wastedTermsEmail(terms, totalWasted, currency, dateRangeLabel(lookbackDays));
-        const r = await sendEmail(req, to, em.subject, em.data);
+        const r = await sendEmail(req, to, cc, em.subject, em.data);
         out.sent.push({ alert: "wastedTerms", ok: r.ok, msg: r.result?.message || r.result?.error });
       } else out.skipped.push("wastedTerms");
     }

@@ -49,7 +49,7 @@ async function callReportEndpoint(req: NextApiRequest, pathname: string, body: R
 
 // Placeholder monthly summary (mirrors the instrumentation.ts version) — no live
 // data wiring exists for the monthly send yet, only daily/weekly pull real metrics.
-async function sendMonthlyPlaceholder(toEmail: string) {
+async function sendMonthlyPlaceholder(toEmail: string, ccEmail?: string) {
   const transporter = nodemailer.createTransport({
     service: "gmail",
     auth: { user: process.env.SMTP_FROM, pass: process.env.SMTP_PASS },
@@ -58,6 +58,7 @@ async function sendMonthlyPlaceholder(toEmail: string) {
   await transporter.sendMail({
     from: `BARM AI Dashboard <${process.env.SMTP_FROM}>`,
     to: toEmail,
+    cc: ccEmail || undefined,
     subject: "BARM AI - Monthly Performance Report",
     html: `<p>Monthly report placeholder — generated ${now} IST. Live monthly metrics aren't wired up yet; see the Daily/Weekly reports for real data.</p>`,
   });
@@ -102,6 +103,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     amazon_account_id: s.amazonAccountId,
     workspace_id: s.workspaceId,
     to: s.notifEmail,
+    cc: s.ccEmail || undefined,
     currency: s.currency || "INR",
   };
 
@@ -125,7 +127,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
   if (isFirstOfMonth && s.monthlySummary) {
     try {
-      await sendMonthlyPlaceholder(s.notifEmail);
+      await sendMonthlyPlaceholder(s.notifEmail, s.ccEmail);
       results.monthly = { ok: true };
       console.log(`[BARM AI Cron] ✅ Monthly report sent → ${s.notifEmail}`);
     } catch (err: any) {

@@ -128,7 +128,7 @@ export async function register() {
 </body></html>`;
     }
 
-    async function sendReport(period: string, toEmail: string) {
+    async function sendReport(period: string, toEmail: string, ccEmail?: string) {
       // Use placeholder metrics for now — will be replaced with live API data
       const metrics = {
         sales: 0, spend: 0, roas: 0, acos: 0, orders: 0, impressions: 0,
@@ -144,6 +144,7 @@ export async function register() {
         await transporter.sendMail({
           from: `BARM AI Dashboard <${process.env.SMTP_FROM}>`,
           to: toEmail,
+          cc: ccEmail || undefined,
           subject: subjects[period] || "BARM AI Report",
           html: buildSummaryHtml(period, metrics, toEmail),
         });
@@ -176,7 +177,7 @@ export async function register() {
       const s = readSettings();
       if (!(s.emailAlerts && s.notifEmail)) return;
 
-      const acct = { slot: s.keySlot || "A", amazon_account_id: s.amazonAccountId, workspace_id: s.workspaceId, to: s.notifEmail, currency: s.currency || "INR" };
+      const acct = { slot: s.keySlot || "A", amazon_account_id: s.amazonAccountId, workspace_id: s.workspaceId, to: s.notifEmail, cc: s.ccEmail || undefined, currency: s.currency || "INR" };
       if (!s.amazonAccountId || !s.workspaceId) {
         console.log("[BARM AI] Daily report + alerts skipped — save Settings once to store account context.");
         return;
@@ -200,7 +201,7 @@ export async function register() {
     cron.schedule("30 3 * * 1", async () => {
       const s = readSettings();
       if (!(s.emailAlerts && s.weeklySummary && s.notifEmail && s.amazonAccountId && s.workspaceId)) return;
-      const acct = { slot: s.keySlot || "A", amazon_account_id: s.amazonAccountId, workspace_id: s.workspaceId, to: s.notifEmail, currency: s.currency || "INR" };
+      const acct = { slot: s.keySlot || "A", amazon_account_id: s.amazonAccountId, workspace_id: s.workspaceId, to: s.notifEmail, cc: s.ccEmail || undefined, currency: s.currency || "INR" };
       console.log("[BARM AI] Sending weekly report (live WoW comparison)...");
       await runAlertEndpoint("/api/weekly-report", { ...acct }, "Weekly report"); // endDate omitted → yesterday
     }, { timezone: "UTC" });
@@ -210,7 +211,7 @@ export async function register() {
       const s = readSettings();
       if (s.emailAlerts && s.monthlySummary && s.notifEmail) {
         console.log("[BARM AI] Sending monthly report...");
-        await sendReport("Monthly", s.notifEmail);
+        await sendReport("Monthly", s.notifEmail, s.ccEmail);
       }
     }, { timezone: "UTC" });
 

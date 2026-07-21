@@ -30,5 +30,6 @@
   "keySlot": "B",
   "amazonAccountId": "6a3279a4af744dda69afe36d",
   "workspaceId": "6a3279510c060940d2b87662",
-  "currency": "INR"
+  "currency": "INR",
+  "ccEmail": ""
 }

@@ -15,6 +15,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     amazon_account_id,
     workspace_id,
     to,
+    cc,
     lowStockThreshold = 0,
     lookbackDays = 7,
     send = true,
@@ -39,7 +40,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const r = await fetch(`${proto}://${host}/api/send-email`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "stockout", to, data: { items, currency } }),
+        body: JSON.stringify({ type: "stockout", to, cc, data: { items, currency } }),
       });
       emailResult = await r.json().catch(() => ({}));
       if (!r.ok) emailResult = { error: emailResult?.error || "send-email failed" };

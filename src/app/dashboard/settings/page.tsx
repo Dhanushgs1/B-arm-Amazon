@@ -88,6 +88,7 @@ export default function SettingsPage() {
   // ── Existing form states (preserved) ──
   const [emailAlerts, setEmailAlerts] = useState(true);
   const [notifEmail, setNotifEmail] = useState("");
+  const [ccEmail, setCcEmail] = useState("");
   const [slackAlerts, setSlackAlerts] = useState(false);
   const [slackUrl, setSlackUrl] = useState("");
   const [acosThreshold, setAcosThreshold] = useState(40);
@@ -151,6 +152,7 @@ export default function SettingsPage() {
         const p = JSON.parse(saved);
         setEmailAlerts(p.emailAlerts ?? true);
         setNotifEmail(p.notifEmail ?? "");
+        setCcEmail(p.ccEmail ?? "");
         setSlackAlerts(p.slackAlerts ?? false);
         setSlackUrl(p.slackUrl ?? "");
         setAcosThreshold(p.acosThreshold ?? 40);
@@ -193,6 +195,7 @@ export default function SettingsPage() {
       const saved = localStorage.getItem("ppcUserSettings");
       const current = saved ? JSON.parse(saved) : {};
       current.notifEmail = notifEmail;
+      current.ccEmail = ccEmail;
       localStorage.setItem("ppcUserSettings", JSON.stringify(current));
       // also persist to server so cron can read it — include account context
       // so the automated stockout/report crons know which account to query
@@ -200,12 +203,12 @@ export default function SettingsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          notifEmail, emailAlerts,
+          notifEmail, ccEmail, emailAlerts,
           keySlot, amazonAccountId: account?.id, workspaceId: account?.workspace_id, currency: account?.currency,
         }),
       }).catch(() => {});
     }
-  }, [notifEmail, emailAlerts]);
+  }, [notifEmail, ccEmail, emailAlerts]);
 
   const toggleTheme = (next: "light" | "dark") => {
     setTheme(next);
@@ -218,7 +221,7 @@ export default function SettingsPage() {
     setSaveEmailNote(null);
 
     const config = {
-      emailAlerts, notifEmail, slackAlerts, slackUrl, acosThreshold, lowStockThreshold,
+      emailAlerts, notifEmail, ccEmail, slackAlerts, slackUrl, acosThreshold, lowStockThreshold,
       syncSchedule, twoFactor, ipRestrict, whitelistIps,
       timezone, defaultRange, pushAlerts, roasAlerts, inventoryAlerts,
       weeklySummary, dailySummary, monthlySummary, aiEnabled, autoInsights, smartAlerts,
@@ -261,6 +264,7 @@ export default function SettingsPage() {
           body: JSON.stringify({
             type: "confirmation",
             to: notifEmail,
+            cc: ccEmail || undefined,
             data: { activeAlerts, acosThreshold, lowStockThreshold },
           }),
         });
@@ -604,6 +608,18 @@ export default function SettingsPage() {
                       autoComplete="email"
                     />
                     <p className="text-[10px] text-muted-foreground font-medium mt-1">✅ Saved automatically as you type. Inventory alerts, campaign reports &amp; daily summaries will be sent here.</p>
+
+                    <label className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-widest mt-3 block">CC Email Address (optional)</label>
+                    <input
+                      type="email"
+                      placeholder="teammate@example.com"
+                      value={ccEmail}
+                      onChange={(e) => setCcEmail(e.target.value)}
+                      className={cn(inputCls, "w-full mt-1")}
+                      autoComplete="email"
+                    />
+                    <p className="text-[10px] text-muted-foreground font-medium mt-1">Optional — CC&apos;d on every report and alert alongside the recipient above.</p>
+
                     <div className="mt-3 flex items-center gap-3">
                       <button
                         type="button"
@@ -615,7 +631,7 @@ export default function SettingsPage() {
                             const r = await fetch("/api/send-email", {
                               method: "POST",
                               headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify({ type: "test", to: notifEmail }),
+                              body: JSON.stringify({ type: "test", to: notifEmail, cc: ccEmail || undefined }),
                             });
                             const json = await r.json();
                             if (r.ok) { setTestEmailStatus("sent"); setTimeout(() => setTestEmailStatus("idle"), 4000); }
@@ -673,6 +689,7 @@ export default function SettingsPage() {
                   <div className="mt-1 mb-2 px-3 py-2.5 bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 rounded-xl">
                     <p className="text-[11px] font-extrabold text-indigo-600 dark:text-indigo-400 flex items-center gap-1.5">
                       <span>📬</span> Reports will be sent to: <span className="font-black">{notifEmail || "—"}</span>
+                      {ccEmail && <span className="font-semibold">(cc: {ccEmail})</span>}
                     </p>
                     <p className="text-[10px] text-indigo-500/80 font-semibold mt-0.5">
                       {[dailySummary && "Daily 10AM", weeklySummary && "Weekly Monday", monthlySummary && "Monthly 1st"].filter(Boolean).join(" · ")}
@@ -695,7 +712,7 @@ export default function SettingsPage() {
                               headers: { "Content-Type": "application/json" },
                               body: JSON.stringify({
                                 slot: keySlot, amazon_account_id: account.id, workspace_id: account.workspace_id,
-                                to: notifEmail, currency: account?.currency || "INR",
+                                to: notifEmail, cc: ccEmail || undefined, currency: account?.currency || "INR",
                               }),
                             });
                             const json = await r.json();

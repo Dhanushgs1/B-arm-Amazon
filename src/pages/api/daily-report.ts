@@ -27,7 +27,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   const {
-    slot = "B", amazon_account_id, workspace_id, to, currency = "INR",
+    slot = "B", amazon_account_id, workspace_id, to, cc, currency = "INR",
     date, send = true, accountName = "B-ARM",
   } = req.body || {};
 
@@ -135,7 +135,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const r = await fetch(`${proto}://${host}/api/send-email`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "dailyReport", to, data: emailData, attachments }),
+        body: JSON.stringify({ type: "dailyReport", to, cc, data: emailData, attachments }),
       });
       emailResult = await r.json().catch(() => ({}));
       if (!r.ok) emailResult = { error: emailResult?.error || "send-email failed" };

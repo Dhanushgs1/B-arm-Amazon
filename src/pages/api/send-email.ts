@@ -626,7 +626,7 @@ const SUBJECTS: Record<string, string> = {
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const { type = "test", to, data = {}, subject, attachments } = req.body;
+  const { type = "test", to, cc, data = {}, subject, attachments } = req.body;
 
   if (!to) return res.status(400).json({ error: "Recipient email (to) is required" });
   if (!process.env.SMTP_FROM || !process.env.SMTP_PASS) {
@@ -638,14 +638,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const info = await transporter.sendMail({
       from: `BARM AI Dashboard <${process.env.SMTP_FROM}>`,
       to,
+      cc: cc || undefined,
       subject: subject || SUBJECTS[type] || "BARM AI Notification",
       html,
       // attachments: [{ filename, content: <base64 string>, encoding: "base64" }] — content
       // travels as base64 over JSON since raw Buffers don't survive a fetch() body.
       attachments: Array.isArray(attachments) && attachments.length ? attachments : undefined,
     });
-    console.log("Email sent:", info.messageId, "→", to);
-    res.status(200).json({ success: true, message: `Email sent to ${to}`, messageId: info.messageId });
+    console.log("Email sent:", info.messageId, "→", to, cc ? `(cc: ${cc})` : "");
+    res.status(200).json({ success: true, message: `Email sent to ${to}${cc ? ` (cc: ${cc})` : ""}`, messageId: info.messageId });
   } catch (err: any) {
     console.error("Email send error:", err);
     res.status(500).json({ error: err.message || "Failed to send email" });
