@@ -29,8 +29,8 @@ interface PeriodBucket {
 
 interface PeriodStats {
   orders: number;
-  allReturns: number; // every return Amazon reports, including courier RTO/undeliverable
-  returns: number; // genuine customer returns only (courier RTO excluded) — what Total Orders is based on
+  allReturns: number; // every return Amazon reports, including courier RTO/undeliverable — what Total Orders is based on
+  returns: number; // genuine customer returns only (courier RTO excluded)
   totalOrders: number;
   price: number;
   totalSales: number;
@@ -369,7 +369,7 @@ async function buildAmazonSalesWorkbook(opts: {
           orders: stat.orders,
           allReturns,
           returns,
-          totalOrders: Math.max(0, stat.orders - returns),
+          totalOrders: Math.max(0, stat.orders - allReturns),
           price: stat.price,
           totalSales: stat.totalSales,
         };
@@ -406,7 +406,7 @@ async function buildAmazonSalesWorkbook(opts: {
             orders,
             allReturns,
             returns,
-            totalOrders: Math.max(0, orders - returns),
+            totalOrders: Math.max(0, orders - allReturns),
             price,
             totalSales,
           };
@@ -466,8 +466,8 @@ async function buildAmazonSalesWorkbook(opts: {
   // Column 0 = Product, column 1 = SKU, column 2 = Category (department), then 7 columns per
   // period (Orders, All Returns, Customer Returns, Total Orders, Price, Total Sales, Growth %).
   // All Returns is every return Amazon reports; Customer Returns excludes courier RTO/undeliverable
-  // "returns" (see isGenuineReturn) — Total Orders is based on Customer Returns only, since a
-  // courier RTO was never actually rejected by the customer. Rows are grouped by department
+  // "returns" (see isGenuineReturn) — Total Orders subtracts All Returns, since an RTO'd order
+  // never became a real sale either even though the customer didn't reject it. Rows are grouped by department
   // (rowsByCategory) so the sheet reads "category-wise" while staying at full product/SKU granularity.
   const COLS_PER_PERIOD = 7;
   const LEAD_COLS = 3; // Product, SKU, Category

@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useDashboard } from "@/lib/DashboardContext";
-import { mcp } from "@/lib/api";
+import { mcp, mcpAllInventory } from "@/lib/api";
 import { X, Loader2, Sparkles, Box, TrendingUp, RefreshCw, AlertTriangle } from "lucide-react";
 import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
@@ -51,10 +51,12 @@ export function ProductDetailDrawer() {
     enabled: !!account && !!selectedAsin,
   });
 
-  // 2. Inventory data
-  const { data: inventoryData, isLoading: invLoading } = useQuery({
-    queryKey: ["product_detail_inventory", keySlot, account?.id, selectedAsin],
-    queryFn: () => mcp("get_inventory", { amazon_account_id: account?.id, workspace_id: account?.workspace_id, page_size: 500 }, keySlot),
+  // 2. Inventory data — get_inventory paginates with limit/offset (max 200), not
+  // page_size, so a single call only returns the first ~50 items. mcpAllInventory
+  // walks every page so the clicked ASIN is actually found regardless of its position.
+  const { data: inventoryItems, isLoading: invLoading } = useQuery({
+    queryKey: ["product_detail_inventory", keySlot, account?.id],
+    queryFn: () => mcpAllInventory({ amazon_account_id: account?.id, workspace_id: account?.workspace_id }, keySlot),
     enabled: !!account && !!selectedAsin,
   });
 
@@ -66,7 +68,7 @@ export function ProductDetailDrawer() {
   });
 
   const productPerf = (productPerfData?.data || []).find((p: any) => p.adAsin === selectedAsin || p.asin === selectedAsin);
-  const inventoryItem = (inventoryData?.items || []).find((i: any) => i.asin === selectedAsin);
+  const inventoryItem = (inventoryItems || []).find((i: any) => i.asin === selectedAsin);
 
   const topCampaigns = (campaignPerfData?.campaigns || [])
     .sort((a: any, b: any) => (b.spend || 0) - (a.spend || 0))
