@@ -1,6 +1,8 @@
 // Next.js instrumentation — runs once when the server starts
 // Sets up cron jobs for scheduled email reports
 
+import { SITE_URL } from "@/lib/siteUrl";
+
 export async function register() {
   // Only run in Node.js runtime (not Edge)
   if (process.env.NEXT_RUNTIME === "nodejs") {
@@ -109,7 +111,7 @@ export async function register() {
           <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:24px;">
             <tr>
               <td align="center">
-                <a href="http://localhost:3000/dashboard" style="background:#6D5EF8;color:#fff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Dashboard &#8594;</a>
+                <a href="${SITE_URL}/dashboard" style="background:#6D5EF8;color:#fff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Dashboard &#8594;</a>
               </td>
             </tr>
           </table>
@@ -117,7 +119,7 @@ export async function register() {
       </tr>
       <tr>
         <td style="padding:16px 32px;border-top:1px solid #f0f0f0;text-align:center;">
-          <p style="margin:0;color:#9ca3af;font-size:12px;">BARM AI Dashboard &nbsp;&#183;&nbsp; Automated ${period} Report &nbsp;&#183;&nbsp; <a href="http://localhost:3000/dashboard/settings" style="color:#6D5EF8;text-decoration:none;">Manage alerts</a></p>
+          <p style="margin:0;color:#9ca3af;font-size:12px;">BARM AI Dashboard &nbsp;&#183;&nbsp; Automated ${period} Report &nbsp;&#183;&nbsp; <a href="${SITE_URL}/dashboard/settings" style="color:#6D5EF8;text-decoration:none;">Manage alerts</a></p>
         </td>
       </tr>
     </table>

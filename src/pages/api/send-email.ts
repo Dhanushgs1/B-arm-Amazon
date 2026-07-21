@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import nodemailer from "nodemailer";
+import { SITE_URL } from "@/lib/siteUrl";
 
 const transporter = nodemailer.createTransport({
   service: "gmail",
@@ -36,7 +37,7 @@ function wrap(body: string) {
       <!-- Footer -->
       <tr>
         <td style="padding:20px 32px;border-top:1px solid #f0f0f0;text-align:center;">
-          <p style="margin:0;color:#9ca3af;font-size:12px;">Sent by BARM AI &nbsp;&#183;&nbsp; <a href="http://localhost:3000/dashboard/settings" style="color:#6D5EF8;text-decoration:none;">Manage alerts</a></p>
+          <p style="margin:0;color:#9ca3af;font-size:12px;">Sent by BARM AI &nbsp;&#183;&nbsp; <a href="${SITE_URL}/dashboard/settings" style="color:#6D5EF8;text-decoration:none;">Manage alerts</a></p>
         </td>
       </tr>
     </table>
@@ -86,7 +87,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
         </tr>
         <tr>
           <td align="center" style="padding-top:28px;">
-            <a href="http://localhost:3000/dashboard" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Dashboard &#8594;</a>
+            <a href="${SITE_URL}/dashboard" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Dashboard &#8594;</a>
           </td>
         </tr>
       </table>`);
@@ -130,7 +131,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
         </tr>
         <tr>
           <td align="center" style="padding-top:24px;">
-            <a href="http://localhost:3000/dashboard/settings" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Manage Alert Settings &#8594;</a>
+            <a href="${SITE_URL}/dashboard/settings" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Manage Alert Settings &#8594;</a>
           </td>
         </tr>
       </table>`);
@@ -170,7 +171,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
           </table>
         </td></tr>
         <tr><td align="center" style="padding-top:24px;">
-          <a href="${data.ctaUrl || "http://localhost:3000/dashboard"}" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">${data.ctaText || "Open Dashboard"} &#8594;</a>
+          <a href="${data.ctaUrl || `${SITE_URL}/dashboard`}" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">${data.ctaText || "Open Dashboard"} &#8594;</a>
         </td></tr>
       </table>`);
   }
@@ -234,7 +235,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
           <table width="100%" cellpadding="0" cellspacing="0" border="0">${cards}</table>
         </td></tr>
         <tr><td align="center" style="padding-top:8px;">
-          <a href="http://localhost:3000/dashboard/campaigns" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Manage Campaigns &#8594;</a>
+          <a href="${SITE_URL}/dashboard/campaigns" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Manage Campaigns &#8594;</a>
         </td></tr>
       </table>`);
   }
@@ -278,7 +279,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
           </table>
         </td></tr>
         <tr><td align="center" style="padding-top:24px;">
-          <a href="http://localhost:3000/dashboard/inventory" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">View Inventory &#8594;</a>
+          <a href="${SITE_URL}/dashboard/inventory" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">View Inventory &#8594;</a>
         </td></tr>
       </table>`);
   }
@@ -322,7 +323,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
           </table>
         </td></tr>
         <tr><td align="center" style="padding-top:24px;">
-          <a href="http://localhost:3000/dashboard/campaigns" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">View Campaigns &#8594;</a>
+          <a href="${SITE_URL}/dashboard/campaigns" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">View Campaigns &#8594;</a>
         </td></tr>
       </table>`);
   }
@@ -436,7 +437,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
         ${moverTable("&#128201;", "Top Decliners (sales down)", data.losers, false, "Products dropping week-over-week — check stock, bids & ranking.")}
 
         <tr><td align="center" style="padding-top:28px;">
-          <a href="http://localhost:3000/dashboard" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Dashboard &#8594;</a>
+          <a href="${SITE_URL}/dashboard" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Dashboard &#8594;</a>
         </td></tr>
       </table>`);
   }
@@ -547,7 +548,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
         </td></tr>
 
         <tr><td align="center" style="padding-top:28px;">
-          <a href="http://localhost:3000/dashboard" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Dashboard &#8594;</a>
+          <a href="${SITE_URL}/dashboard" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Dashboard &#8594;</a>
         </td></tr>
       </table>`);
   }
@@ -605,7 +606,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
         </table>
       </td></tr>
       <tr><td align="center" style="padding-top:28px;">
-        <a href="http://localhost:3000/dashboard" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Dashboard &#8594;</a>
+        <a href="${SITE_URL}/dashboard" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Dashboard &#8594;</a>
       </td></tr>
     </table>`);
 }

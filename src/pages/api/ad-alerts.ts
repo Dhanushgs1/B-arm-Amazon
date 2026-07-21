@@ -8,6 +8,7 @@
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import { findBleedingCampaigns, findWastedSearchTerms, resolveSellerMateKey } from "@/lib/adAlerts";
+import { SITE_URL } from "@/lib/siteUrl";
 
 // dateRangeLabel is defined below and hoisted; used to stamp the data window.
 
@@ -46,7 +47,7 @@ export function bleedingEmail(items: any[], currency: string, rangeLabel = "") {
         { text: String(c.orders), color: c.orders === 0 ? "#dc2626" : "#111", bold: true },
       ]),
       ctaText: "View Campaigns",
-      ctaUrl: "http://localhost:3000/dashboard/campaigns",
+      ctaUrl: `${SITE_URL}/dashboard/campaigns`,
     },
   };
 }
@@ -73,7 +74,7 @@ export function wastedTermsEmail(terms: any[], totalWasted: number, currency: st
         { text: "0", badge: true, color: "#991b1b", badgeBg: "#fee2e2" },
       ]),
       ctaText: "View Search Terms",
-      ctaUrl: "http://localhost:3000/dashboard/searchterms",
+      ctaUrl: `${SITE_URL}/dashboard/searchterms`,
     },
   };
 }
