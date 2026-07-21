@@ -7,23 +7,16 @@
 // schedule regardless of whether any function instance happens to be warm.
 //
 // Runs daily; internally decides whether today is also a weekly (Monday) or
-// monthly (1st) send, mirroring the three separate node-cron schedules.
+// monthly (1st) send, mirroring the three separate node-cron schedules. Loops
+// over both accounts (keySlot "A" = Lkn, "B" = Barm) — each has its own
+// settings row in Supabase, so one account's config can never leak into the
+// other's automated emails.
 
 import type { NextApiRequest, NextApiResponse } from "next";
-import fs from "fs";
-import path from "path";
 import nodemailer from "nodemailer";
+import { readEmailSettings } from "@/lib/emailSettingsStore";
 
-const SETTINGS_FILE = path.join(process.cwd(), ".email-settings.json");
-
-function readSettings(): Record<string, any> {
-  try {
-    if (fs.existsSync(SETTINGS_FILE)) {
-      return JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8"));
-    }
-  } catch {}
-  return {};
-}
+const KEY_SLOTS = ["A", "B"] as const;
 
 function baseUrl(req: NextApiRequest) {
   const proto = (req.headers["x-forwarded-proto"] as string) || "http";
@@ -64,6 +57,62 @@ async function sendMonthlyPlaceholder(toEmail: string, ccEmail?: string) {
   });
 }
 
+async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, isFirstOfMonth: boolean, dryRun: boolean) {
+  const s = await readEmailSettings(slot);
+  if (!(s.emailAlerts && s.notifEmail && s.amazonAccountId && s.workspaceId)) {
+    return { skipped: true, reason: "Email alerts not configured — save Settings once to store account context." };
+  }
+
+  if (dryRun) {
+    return {
+      dryRun: true,
+      wouldSend: {
+        daily: !!s.dailySummary,
+        stockout: !!s.inventoryAlerts,
+        adWaste: !!s.roasAlerts,
+        weekly: isMonday && !!s.weeklySummary,
+        monthly: isFirstOfMonth && !!s.monthlySummary,
+      },
+    };
+  }
+
+  const acct = {
+    slot,
+    amazon_account_id: s.amazonAccountId,
+    workspace_id: s.workspaceId,
+    to: s.notifEmail,
+    cc: s.ccEmail || undefined,
+    currency: s.currency || "INR",
+  };
+
+  const results: Record<string, any> = {};
+
+  if (s.dailySummary) {
+    results.daily = await callReportEndpoint(req, "/api/daily-report", acct, `[${slot}] Daily report`);
+  }
+  if (s.inventoryAlerts) {
+    results.stockout = await callReportEndpoint(req, "/api/stockout-alert", { ...acct, lowStockThreshold: s.lowStockThreshold || 5, lookbackDays: 7 }, `[${slot}] Stockout alert`);
+  }
+  if (s.roasAlerts) {
+    results.adWaste = await callReportEndpoint(req, "/api/ad-alerts", { ...acct, acosThreshold: s.acosThreshold || 40, minSpend: 500, lookbackDays: 7 }, `[${slot}] Ad-waste alerts`);
+  }
+  if (isMonday && s.weeklySummary) {
+    results.weekly = await callReportEndpoint(req, "/api/weekly-report", acct, `[${slot}] Weekly report`);
+  }
+  if (isFirstOfMonth && s.monthlySummary) {
+    try {
+      await sendMonthlyPlaceholder(s.notifEmail, s.ccEmail);
+      results.monthly = { ok: true };
+      console.log(`[BARM AI Cron] ✅ [${slot}] Monthly report sent → ${s.notifEmail}`);
+    } catch (err: any) {
+      results.monthly = { ok: false, error: err?.message || String(err) };
+      console.error(`[BARM AI Cron] ❌ [${slot}] Monthly report failed:`, err);
+    }
+  }
+
+  return { results };
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   // Vercel Cron sends "Authorization: Bearer $CRON_SECRET" when CRON_SECRET is set
   // as a project env var. Enforced only if you've set one — add it in Vercel
@@ -75,66 +124,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
   }
 
-  const s = readSettings();
-  if (!(s.emailAlerts && s.notifEmail && s.amazonAccountId && s.workspaceId)) {
-    return res.status(200).json({ skipped: true, reason: "Email alerts not configured — save Settings once to store account context." });
-  }
-
   // ?dryRun=1 — confirms routing, settings, and today's Monday/1st-of-month
   // flags without actually sending any report or email. Useful for verifying
   // the endpoint after a deploy without spamming the configured inbox.
   const dryRun = req.query.dryRun === "1";
-  if (dryRun) {
-    const now = new Date();
-    return res.status(200).json({
-      dryRun: true,
-      wouldSend: {
-        daily: !!s.dailySummary,
-        stockout: !!s.inventoryAlerts,
-        adWaste: !!s.roasAlerts,
-        weekly: now.getUTCDay() === 1 && !!s.weeklySummary,
-        monthly: now.getUTCDate() === 1 && !!s.monthlySummary,
-      },
-    });
-  }
-
-  const acct = {
-    slot: s.keySlot || "A",
-    amazon_account_id: s.amazonAccountId,
-    workspace_id: s.workspaceId,
-    to: s.notifEmail,
-    cc: s.ccEmail || undefined,
-    currency: s.currency || "INR",
-  };
-
   const now = new Date();
   const isMonday = now.getUTCDay() === 1;
   const isFirstOfMonth = now.getUTCDate() === 1;
 
-  const results: Record<string, any> = {};
-
-  if (s.dailySummary) {
-    results.daily = await callReportEndpoint(req, "/api/daily-report", acct, "Daily report");
-  }
-  if (s.inventoryAlerts) {
-    results.stockout = await callReportEndpoint(req, "/api/stockout-alert", { ...acct, lowStockThreshold: s.lowStockThreshold || 5, lookbackDays: 7 }, "Stockout alert");
-  }
-  if (s.roasAlerts) {
-    results.adWaste = await callReportEndpoint(req, "/api/ad-alerts", { ...acct, acosThreshold: s.acosThreshold || 40, minSpend: 500, lookbackDays: 7 }, "Ad-waste alerts");
-  }
-  if (isMonday && s.weeklySummary) {
-    results.weekly = await callReportEndpoint(req, "/api/weekly-report", acct, "Weekly report");
-  }
-  if (isFirstOfMonth && s.monthlySummary) {
-    try {
-      await sendMonthlyPlaceholder(s.notifEmail, s.ccEmail);
-      results.monthly = { ok: true };
-      console.log(`[BARM AI Cron] ✅ Monthly report sent → ${s.notifEmail}`);
-    } catch (err: any) {
-      results.monthly = { ok: false, error: err?.message || String(err) };
-      console.error("[BARM AI Cron] ❌ Monthly report failed:", err);
-    }
+  const bySlot: Record<string, any> = {};
+  for (const slot of KEY_SLOTS) {
+    bySlot[slot] = await runForSlot(req, slot, isMonday, isFirstOfMonth, dryRun);
   }
 
-  return res.status(200).json({ ranAt: now.toISOString(), isMonday, isFirstOfMonth, results });
+  return res.status(200).json({ ranAt: now.toISOString(), isMonday, isFirstOfMonth, dryRun, bySlot });
 }

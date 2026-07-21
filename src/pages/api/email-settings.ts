@@ -1,32 +1,26 @@
+// GET/POST { keySlot: "A" | "B", ... } — per-account settings, stored in Supabase
+// (see src/lib/emailSettingsStore.ts for why: the previous single shared JSON
+// file didn't persist on Vercel and could leak one account's settings into
+// another's automated emails).
+
 import type { NextApiRequest, NextApiResponse } from "next";
-import fs from "fs";
-import path from "path";
+import { readEmailSettings, writeEmailSettings } from "@/lib/emailSettingsStore";
 
-const SETTINGS_FILE = path.join(process.cwd(), ".email-settings.json");
-
-function readSettings() {
-  try {
-    if (fs.existsSync(SETTINGS_FILE)) {
-      return JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8"));
-    }
-  } catch {}
-  return {};
-}
-
-function writeSettings(data: Record<string, any>) {
-  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(data, null, 2), "utf-8");
-}
-
-export default function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === "GET") {
-    return res.status(200).json(readSettings());
+    const keySlot = (req.query.keySlot as string) || "B";
+    const settings = await readEmailSettings(keySlot);
+    return res.status(200).json(settings);
   }
 
   if (req.method === "POST") {
-    const current = readSettings();
-    const updated = { ...current, ...req.body };
-    writeSettings(updated);
-    return res.status(200).json({ success: true, settings: updated });
+    const keySlot = req.body?.keySlot || "B";
+    try {
+      const settings = await writeEmailSettings(keySlot, req.body || {});
+      return res.status(200).json({ success: true, settings });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message || "Failed to save settings" });
+    }
   }
 
   res.status(405).json({ error: "Method not allowed" });

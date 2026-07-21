@@ -2,25 +2,19 @@
 // Sets up cron jobs for scheduled email reports
 
 import { SITE_URL } from "@/lib/siteUrl";
+import { readEmailSettings } from "@/lib/emailSettingsStore";
+
+// Two accounts share this dashboard — "A" (Lkn) and "B" (Barm) — each with its
+// own settings row in Supabase. Every cron job below loops over both instead
+// of assuming a single shared config, so one account's schedule/recipient
+// never bleeds into the other's (see the Barm/Lkn mixup this replaced).
+const KEY_SLOTS = ["A", "B"] as const;
 
 export async function register() {
   // Only run in Node.js runtime (not Edge)
   if (process.env.NEXT_RUNTIME === "nodejs") {
     const cron = (await import("node-cron")).default;
     const nodemailer = (await import("nodemailer")).default;
-    const fs = (await import("fs")).default;
-    const path = (await import("path")).default;
-
-    const SETTINGS_FILE = path.join(process.cwd(), ".email-settings.json");
-
-    function readSettings() {
-      try {
-        if (fs.existsSync(SETTINGS_FILE)) {
-          return JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8"));
-        }
-      } catch {}
-      return {};
-    }
 
     const transporter = nodemailer.createTransport({
       service: "gmail",
@@ -174,44 +168,50 @@ export async function register() {
 
     // ── Daily Report + ad-waste alerts — every day at 10:00 AM IST (4:30 AM UTC) ──
     cron.schedule("30 4 * * *", async () => {
-      const s = readSettings();
-      if (!(s.emailAlerts && s.notifEmail)) return;
+      for (const slot of KEY_SLOTS) {
+        const s = await readEmailSettings(slot);
+        if (!(s.emailAlerts && s.notifEmail)) continue;
 
-      const acct = { slot: s.keySlot || "A", amazon_account_id: s.amazonAccountId, workspace_id: s.workspaceId, to: s.notifEmail, cc: s.ccEmail || undefined, currency: s.currency || "INR" };
-      if (!s.amazonAccountId || !s.workspaceId) {
-        console.log("[BARM AI] Daily report + alerts skipped — save Settings once to store account context.");
-        return;
-      }
+        const acct = { slot, amazon_account_id: s.amazonAccountId, workspace_id: s.workspaceId, to: s.notifEmail, cc: s.ccEmail || undefined, currency: s.currency || "INR" };
+        if (!s.amazonAccountId || !s.workspaceId) {
+          console.log(`[BARM AI] [${slot}] Daily report + alerts skipped — save Settings once to store account context.`);
+          continue;
+        }
 
-      if (s.dailySummary) {
-        console.log("[BARM AI] Sending daily report (live data)...");
-        await runAlertEndpoint("/api/daily-report", { ...acct }, "Daily report"); // date omitted → yesterday
-      }
-      if (s.inventoryAlerts) {
-        console.log("[BARM AI] Running stockout + ad-spend alert...");
-        await runAlertEndpoint("/api/stockout-alert", { ...acct, lowStockThreshold: 5, lookbackDays: 7 }, "Stockout alert");
-      }
-      if (s.roasAlerts) {
-        console.log("[BARM AI] Running bleeding-campaigns + wasted-search-terms alerts...");
-        await runAlertEndpoint("/api/ad-alerts", { ...acct, acosThreshold: s.acosThreshold || 40, minSpend: 500, lookbackDays: 7 }, "Ad-waste alerts");
+        if (s.dailySummary) {
+          console.log(`[BARM AI] [${slot}] Sending daily report (live data)...`);
+          await runAlertEndpoint("/api/daily-report", { ...acct }, `[${slot}] Daily report`); // date omitted → yesterday
+        }
+        if (s.inventoryAlerts) {
+          console.log(`[BARM AI] [${slot}] Running stockout + ad-spend alert...`);
+          await runAlertEndpoint("/api/stockout-alert", { ...acct, lowStockThreshold: 5, lookbackDays: 7 }, `[${slot}] Stockout alert`);
+        }
+        if (s.roasAlerts) {
+          console.log(`[BARM AI] [${slot}] Running bleeding-campaigns + wasted-search-terms alerts...`);
+          await runAlertEndpoint("/api/ad-alerts", { ...acct, acosThreshold: s.acosThreshold || 40, minSpend: 500, lookbackDays: 7 }, `[${slot}] Ad-waste alerts`);
+        }
       }
     }, { timezone: "UTC" });
 
     // ── Weekly Report (this week vs last week) — every Monday at 9:00 AM IST ──
     cron.schedule("30 3 * * 1", async () => {
-      const s = readSettings();
-      if (!(s.emailAlerts && s.weeklySummary && s.notifEmail && s.amazonAccountId && s.workspaceId)) return;
-      const acct = { slot: s.keySlot || "A", amazon_account_id: s.amazonAccountId, workspace_id: s.workspaceId, to: s.notifEmail, cc: s.ccEmail || undefined, currency: s.currency || "INR" };
-      console.log("[BARM AI] Sending weekly report (live WoW comparison)...");
-      await runAlertEndpoint("/api/weekly-report", { ...acct }, "Weekly report"); // endDate omitted → yesterday
+      for (const slot of KEY_SLOTS) {
+        const s = await readEmailSettings(slot);
+        if (!(s.emailAlerts && s.weeklySummary && s.notifEmail && s.amazonAccountId && s.workspaceId)) continue;
+        const acct = { slot, amazon_account_id: s.amazonAccountId, workspace_id: s.workspaceId, to: s.notifEmail, cc: s.ccEmail || undefined, currency: s.currency || "INR" };
+        console.log(`[BARM AI] [${slot}] Sending weekly report (live WoW comparison)...`);
+        await runAlertEndpoint("/api/weekly-report", { ...acct }, `[${slot}] Weekly report`); // endDate omitted → yesterday
+      }
     }, { timezone: "UTC" });
 
     // ── Monthly Report — 1st of every month at 9:00 AM IST ──
     cron.schedule("30 3 1 * *", async () => {
-      const s = readSettings();
-      if (s.emailAlerts && s.monthlySummary && s.notifEmail) {
-        console.log("[BARM AI] Sending monthly report...");
-        await sendReport("Monthly", s.notifEmail, s.ccEmail);
+      for (const slot of KEY_SLOTS) {
+        const s = await readEmailSettings(slot);
+        if (s.emailAlerts && s.monthlySummary && s.notifEmail) {
+          console.log(`[BARM AI] [${slot}] Sending monthly report...`);
+          await sendReport("Monthly", s.notifEmail, s.ccEmail);
+        }
       }
     }, { timezone: "UTC" });
 
