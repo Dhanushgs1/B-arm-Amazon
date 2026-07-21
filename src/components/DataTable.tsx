@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Search, Download, Columns3, FileSpreadsheet } from "lucide-react";
+import { useState, useTransition } from "react";
+import { ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Search, Columns3, FileSpreadsheet, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { exportToExcel } from "@/lib/excelExport";
 
@@ -37,9 +37,12 @@ export function DataTable<T>({
   const [sortKey, setSortKey] = useState<string | null>(defaultSort || null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [search, setSearch] = useState("");
+  const [displaySearch, setDisplaySearch] = useState("");
   const [page, setPage] = useState(0);
   const [hiddenCols, setHiddenCols] = useState<Set<string>>(new Set());
   const [showColPicker, setShowColPicker] = useState(false);
+  const [currentPageSize, setCurrentPageSize] = useState(pageSize);
+  const [isPending, startTransition] = useTransition();
 
   const visibleColumns = columns.filter((c) => !hiddenCols.has(c.key));
 
@@ -50,6 +53,7 @@ export function DataTable<T>({
       columns.some((c) => String(row[c.key] || "").toLowerCase().includes(q))
     );
   }
+
 
   if (sortKey) {
     filtered = [...filtered].sort((a: any, b: any) => {
@@ -62,7 +66,7 @@ export function DataTable<T>({
     });
   }
 
-  const effectivePageSize = disablePagination ? Math.max(1, filtered.length) : pageSize;
+  const effectivePageSize = disablePagination ? Math.max(1, filtered.length) : currentPageSize;
   const pageCount = Math.max(1, Math.ceil(filtered.length / effectivePageSize));
   const safePage = Math.min(page, pageCount - 1);
   const view = filtered.slice(safePage * effectivePageSize, (safePage + 1) * effectivePageSize);
@@ -88,13 +92,34 @@ export function DataTable<T>({
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
           <input
             placeholder="Quick search..."
-            value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(0); }}
-            className="w-full bg-background border border-border text-foreground pl-9 pr-4 py-2 rounded-xl text-sm font-semibold focus:border-primary focus:ring-2 focus:ring-primary/20 focus:outline-none transition-all"
+            value={displaySearch}
+            onChange={(e) => {
+              const val = e.target.value;
+              setDisplaySearch(val);
+              startTransition(() => {
+                setSearch(val);
+                setPage(0);
+              });
+            }}
+            className="w-full bg-background border border-border text-foreground pl-9 pr-9 py-2 rounded-xl text-sm font-semibold focus:border-primary focus:ring-2 focus:ring-primary/20 focus:outline-none transition-all"
           />
+          {isPending && (
+            <Loader2 className="w-3.5 h-3.5 absolute right-3 top-1/2 -translate-y-1/2 text-primary animate-spin" />
+          )}
         </div>
         <div className="flex items-center gap-3">
           <span className="text-xs font-bold text-muted-foreground bg-muted px-2.5 py-1 rounded-full">{filtered.length.toLocaleString("en-IN")} rows</span>
+          {!disablePagination && (
+            <select
+              value={currentPageSize}
+              onChange={(e) => { setCurrentPageSize(Number(e.target.value)); setPage(0); }}
+              className="bg-background border border-border text-foreground px-2.5 py-1.5 rounded-xl text-xs font-bold focus:border-primary focus:outline-none cursor-pointer"
+            >
+              {[25, 50, 100, 200].map((s) => (
+                <option key={s} value={s}>{s} / page</option>
+              ))}
+            </select>
+          )}
 
           {/* Column picker */}
           <div className="relative">

@@ -49,6 +49,7 @@ export default function PlacementsPage() {
       key: "placementClassification",
       label: "Placement Type",
       sortable: true,
+      exportValue: (val: string, row: any) => val || row.placement || "—",
       render: (val: string, row: any) => {
         const type = val || row.placement || "—";
         let color = "text-slate-600 dark:text-slate-400 bg-slate-100 dark:bg-slate-800";

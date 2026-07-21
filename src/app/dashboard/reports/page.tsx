@@ -5,6 +5,7 @@ import { BarChart3, FileSpreadsheet, Download, FileText, CheckCircle2, Loader2, 
 import { useState } from "react";
 import { mcp, mcpAllPages, mcpAllInventory } from "@/lib/api";
 import { exportAmazonSalesReport, SalesReportGranularity } from "@/lib/amazonSalesExport";
+import { exportAnalysisReport } from "@/lib/analysisReportExport";
 import * as XLSX from "xlsx-js-style";
 
 export default function ReportsPage() {
@@ -18,41 +19,84 @@ export default function ReportsPage() {
     try {
       let content = "";
       let filename = "";
-      const baseArgs = { 
-        amazon_account_id: account?.id, 
-        workspace_id: account?.workspace_id,
-        start_date: startDate,
-        end_date: endDate
-      };
-      
-      const dateSuffix = `${startDate}_to_${endDate}`;
 
-      if (type.includes("Amazon Daily") || type.includes("Amazon Weekly") || type.includes("Amazon Monthly")) {
+      // The account context loads asynchronously on mount — clicking Export before
+      // it resolves would send undefined ids and 400 every tool (a failed/empty
+      // download). Fail loudly with a clear message instead.
+      if (!account?.id || !account?.workspace_id) {
+        alert("Account is still loading — please wait a moment and try again.");
+        setGenerating(null);
+        return;
+      }
+
+      // The date picker also initialises after first paint; if a report is
+      // triggered while the dates are still blank, fall back to a trailing
+      // 30-day window rather than sending empty dates (which 400 upstream and
+      // produce an empty file).
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const isoLocal = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      let effStart = startDate;
+      let effEnd = endDate;
+      if (!effStart || !effEnd) {
+        const now = new Date();
+        const s = new Date(now);
+        s.setDate(s.getDate() - 29);
+        effStart = isoLocal(s);
+        effEnd = isoLocal(now);
+      }
+
+      const baseArgs = {
+        amazon_account_id: account.id,
+        workspace_id: account.workspace_id,
+        start_date: effStart,
+        end_date: effEnd,
+      };
+
+      const dateSuffix = `${effStart}_to_${effEnd}`;
+
+      if (type.includes("Analysis Report")) {
+        // Fixed trailing windows (Last 30 days + Last 7 days ending today) — this
+        // report ignores the global date picker by design.
+        const { filename: analysisName } = await exportAnalysisReport({ account, keySlot });
+        setHistory(prev => [{ filename: analysisName, timestamp: new Date() }, ...prev]);
+        setGenerating(null);
+        return;
+
+      } else if (type.includes("Amazon Daily") || type.includes("Amazon Weekly") || type.includes("Amazon Monthly")) {
         const granularity: SalesReportGranularity = type.includes("Daily") ? "daily" : type.includes("Weekly") ? "weekly" : "monthly";
         const gLabel = granularity === "daily" ? "Daily" : granularity === "weekly" ? "Weekly" : "Monthly";
-        await exportAmazonSalesReport({ account, keySlot, startDate, endDate, granularity });
+        await exportAmazonSalesReport({ account, keySlot, startDate: effStart, endDate: effEnd, granularity });
         setHistory(prev => [{ filename: `Amazon_${gLabel}_Sales_Report_${dateSuffix}.xlsx`, timestamp: new Date() }, ...prev]);
         setGenerating(null);
         return;
 
       } else if (type.includes("Campaign")) {
-        const res = await mcp("get_campaign_performance", { ...baseArgs, page_size: 500 }, keySlot);
-        const rows = res.data || res.rows || [];
-        content = "Campaign,State,Spend,Sales,ACOS,ROAS,Impressions,Clicks,Orders\n";
-        content += rows.map((r: any) => 
-          `${r.campaignName || "Unknown"},${r.state || "UNKNOWN"},${r.spend || 0},${r.sales || 0},${r.acos || 0}%,${r.roas || 0}x,${r.impressions || 0},${r.clicks || 0},${r.orders || 0}`
+        // All pages, and all states (the API defaults to ENABLED only — paused/
+        // archived campaigns were silently dropped before).
+        const rows = await mcpAllPages("get_campaign_performance", { ...baseArgs, status: ["ENABLED", "PAUSED", "ARCHIVED"] }, keySlot);
+        content = "Campaign,Spend,Sales,ACOS,ROAS,Impressions,Clicks,Orders,CTR,CPC,CVR\n";
+        content += rows.map((r: any) =>
+          `"${(r.campaignName || "Unknown").replace(/"/g, '""')}",${r.spend || 0},${r.sales || 0},${r.acos || 0}%,${r.roas || 0}x,${r.impressions || 0},${r.clicks || 0},${r.orders || 0},${r.ctr || 0}%,${r.cpc || 0},${r.cvr || 0}%`
         ).join("\n");
         filename = `Campaign_Performance_Summary_${dateSuffix}.csv`;
-        
+
+      } else if (type.includes("Placements")) {
+        const res = await mcp("get_placement_performance", { ...baseArgs, page_size: 2000 }, keySlot);
+        const rows = res.placements || res.data || [];
+        content = "Placement_Type,Campaign,Spend,Sales,ACOS,ROAS,Impressions,Clicks,Orders,CTR,CPC\n";
+        content += rows.map((r: any) =>
+          `"${(r.placementClassification || r.placement || "Unknown").replace(/"/g, '""')}","${(r.campaignName || "").replace(/"/g, '""')}",${r.spend || 0},${r.sales || 0},${r.acos || 0}%,${r.roas || 0}x,${r.impressions || 0},${r.clicks || 0},${r.orders || 0},${r.ctr || 0}%,${r.cpc || 0}`
+        ).join("\n");
+        filename = `Placements_Performance_${dateSuffix}.csv`;
+
       } else if (type.includes("Product")) {
-        const res = await mcp("get_advertised_product_performance", { ...baseArgs, page_size: 500 }, keySlot);
-        const invData = await mcpAllInventory({ amazon_account_id: account?.id, workspace_id: account?.workspace_id }, keySlot).catch(() => []);
+        const rows = await mcpAllPages("get_advertised_product_performance", baseArgs, keySlot);
+        const invData = await mcpAllInventory({ amazon_account_id: account.id, workspace_id: account.workspace_id }, keySlot).catch(() => []);
         const skuMap = new Map();
         invData.forEach((item: any) => {
           if (item.asin && item.sku) skuMap.set(item.asin, item.sku);
         });
 
-        const rows = res.data || res.rows || [];
         content = "ASIN,SKU,Product_Name,Spend,Sales,Orders,Clicks,ACOS,ROAS\n";
         content += rows.map((r: any) => 
           `${r.adAsin || "Unknown"},${r.sku || skuMap.get(r.adAsin) || ""},"${(r.adProductName || "").replace(/"/g, '""')} ",${r.spend || 0},${r.sales || 0},${r.orders || 0},${r.clicks || 0},${r.acos || 0}%,${r.roas || 0}x`
@@ -60,25 +104,28 @@ export default function ReportsPage() {
         filename = `Product_Advertising_Profitability_${dateSuffix}.csv`;
         
       } else if (type.includes("Search Term")) {
-        const res = await mcp("get_search_term_performance", { ...baseArgs, page_size: 500 }, keySlot);
-        const rows = res.data || res.rows || [];
+        // group_by targetingValue + campaignName so the Targeting/Campaign columns
+        // are actually populated (the default grouping returns neither).
+        const rows = await mcpAllPages("get_search_term_performance", { ...baseArgs, group_by: ["searchTerm", "targetingValue", "campaignName"] }, keySlot);
         content = "Search_Term,Targeting,Campaign,Spend,Sales,Orders,Clicks,ACOS,ROAS\n";
-        content += rows.map((r: any) => 
-          `"${(r.searchTerm || "").replace(/"/g, '""')}","${(r.keywordText || "").replace(/"/g, '""')}","${(r.campaignName || "").replace(/"/g, '""')}",${r.spend || 0},${r.sales || 0},${r.orders || 0},${r.clicks || 0},${r.acos || 0}%,${r.roas || 0}x`
+        content += rows.map((r: any) =>
+          `"${(r.searchTerm || "").replace(/"/g, '""')}","${(r.targetingValue || r.keywordText || "").replace(/"/g, '""')}","${(r.campaignName || "").replace(/"/g, '""')}",${r.spend || 0},${r.sales || 0},${r.orders || 0},${r.clicks || 0},${r.acos || 0}%,${r.roas || 0}x`
         ).join("\n");
         filename = `Targeting_Search_Term_Harvest_${dateSuffix}.csv`;
-        
+
       } else if (type.includes("Inventory")) {
-        const res = await mcp("get_inventory", { ...baseArgs, page_size: 500 }, keySlot);
-        const rows = res.items || [];
-        content = "ASIN,SKU,FBA_Quantity,FBM_Quantity,Price,Total_Value\n";
+        // get_inventory paginates with limit/offset (max 200) — the old page_size:500
+        // was ignored, capping this report at the default 50 rows. mcpAllInventory
+        // walks every page.
+        const rows = await mcpAllInventory({ amazon_account_id: account.id, workspace_id: account.workspace_id }, keySlot);
+        content = "ASIN,SKU,Item_Name,FBA_Quantity,FBM_Quantity,Price,Total_Value\n";
         content += rows.map((r: any) => {
           const fba = r.fba?.endingWarehouseBalance || 0;
           const fbm = r.fbm?.quantity || 0;
-          return `${r.asin || "Unknown"},${r.sku || ""},${fba},${fbm},${r.price || 0},${(fba + fbm) * (r.price || 0)}`;
+          return `${r.asin || "Unknown"},${r.sku || ""},"${(r.itemName || "").replace(/"/g, '""')}",${fba},${fbm},${r.price || 0},${(fba + fbm) * (r.price || 0)}`;
         }).join("\n");
         filename = `Inventory_Forecasting_Report_${dateSuffix}.csv`;
-        
+
       } else if (type.includes("Automation")) {
         const res = await mcp("list_automations", { amazon_account_id: account?.id, workspace_id: account?.workspace_id, page_size: 500 }, keySlot).catch(() => ({ automations: [] }));
         const rows = res.automations || [];
@@ -93,18 +140,24 @@ export default function ReportsPage() {
         filename = `Advertising_Automations_${dateSuffix}.csv`;
 
       } else if (type.includes("Returns")) {
-        const res = await mcp("get_fba_customer_returns", { ...baseArgs, page_size: 500 }, keySlot);
-        const rows = res.order_returns || [];
-        content = "Return_Date,ASIN,Product_Name,Reason,Status\n";
-        content += rows.map((r: any) => 
-          `${r.returnDate || ""},${r.asin || ""},"${(r.productName || "").replace(/"/g, '""')}","${(r.reason || "").replace(/"/g, '""')}","${(r.status || "").replace(/"/g, '""')}"`
+        // Walk every page of returns (response rows live under order_returns, not data).
+        const rows: any[] = [];
+        for (let page = 0; page < 20; page++) {
+          const res = await mcp("get_fba_customer_returns", { ...baseArgs, page, page_size: 500 }, keySlot);
+          const pageRows = res.order_returns || [];
+          rows.push(...pageRows);
+          if (!res.pagination?.hasMore || pageRows.length === 0) break;
+        }
+        content = "Return_Date,ASIN,SKU,Product_Name,Quantity,Reason,Status\n";
+        content += rows.map((r: any) =>
+          `${r.returnDate || ""},${r.asin || ""},${r.sku || ""},"${(r.productName || "").replace(/"/g, '""')}",${r.quantity || 1},"${(r.reason || "").replace(/"/g, '""')}","${(r.status || "").replace(/"/g, '""')}"`
         ).join("\n");
         filename = `Customer_Returns_Log_${dateSuffix}.csv`;
-        
+
       } else if (type.includes("Full")) {
         // Calculate previous dates for comparison
-        const sDate = new Date(startDate + "T00:00:00Z");
-        const eDate = new Date(endDate + "T00:00:00Z");
+        const sDate = new Date(effStart + "T00:00:00Z");
+        const eDate = new Date(effEnd + "T00:00:00Z");
         const diffDays = Math.ceil(Math.abs(eDate.getTime() - sDate.getTime()) / 86400000) + 1;
         const pEnd = new Date(sDate.getTime() - 86400000);
         const pStart = new Date(pEnd.getTime() - (diffDays - 1) * 86400000);
@@ -137,7 +190,7 @@ export default function ReportsPage() {
 
         // 1. Overview Sheet with Comparisons
         const overviewData = [
-          { Metric: "Date Range", "Current Period": `${startDate} to ${endDate}`, "Previous Period": `${prevStartDate} to ${prevEndDate}` },
+          { Metric: "Date Range", "Current Period": `${effStart} to ${effEnd}`, "Previous Period": `${prevStartDate} to ${prevEndDate}` },
           { Metric: "Total Sales", "Current Period": retailRes.summary?.totalSales || 0, "Previous Period": prevRetailRes.summary?.totalSales || 0 },
           { Metric: "Total Units Ordered", "Current Period": retailRes.summary?.totalUnitsOrdered || 0, "Previous Period": prevRetailRes.summary?.totalUnitsOrdered || 0 },
           { Metric: "Total Ad Spend", "Current Period": cpRes.summary?.totalSpend || 0, "Previous Period": prevCpRes.summary?.totalSpend || 0 },
@@ -231,12 +284,14 @@ export default function ReportsPage() {
   };
 
   const reports = [
+    { id: "analysis", title: "Analysis Report (Ad Performance)", desc: "Per-product ad-performance analysis with Last 30 days and Last 7 days side by side — Spend+Tax, Advertised & Total Units, Orders, Returns, Final, CPC, ACOS, and TACOS per product, plus current FBA availability. Windows are fixed (trailing 30/7 days ending today) and ignore the date picker.", format: "Excel (.xlsx)", size: "Live" },
     { id: "amazon-daily", title: "Amazon Daily Sales Report", desc: "Day-by-day Orders, Returns, Price, Total Sales, and Growth % per product, plus a Top Losers/Gainers summary — Amazon only, no Flipkart. The most recent 1-2 days may show provisional figures (Amazon's own reporting sync lag).", format: "Excel (.xlsx)", size: "Live" },
     { id: "amazon-weekly", title: "Amazon Weekly Sales Report", desc: "Week-by-week Orders, Returns, Price, Total Sales, and Growth % per product, plus a Top Losers/Gainers summary — Amazon only, no Flipkart. Matches the classic weekly revenue sheet layout.", format: "Excel (.xlsx)", size: "Live" },
     { id: "amazon-monthly", title: "Amazon Monthly Sales Report", desc: "Month-by-month Orders, Returns, Price, Total Sales, and Growth % per product, plus a Top Losers/Gainers summary — Amazon only, no Flipkart.", format: "Excel (.xlsx)", size: "Live" },
     { id: "full", title: "Full Executive Report", desc: "A comprehensive multi-sheet Excel file containing Overview, Campaigns, Products, Targeting, Inventory, and Returns.", format: "Excel (.xlsx)", size: "Live" },
     { id: "performance", title: "Campaigns (Full)", desc: "Detailed breakdown of clicks, spend, sales, ACOS, and ROAS across all campaigns.", format: "CSV", size: "Live" },
     { id: "products", title: "Product Details (Full)", desc: "Analyze which products perform best in ads and match against inventory stock.", format: "CSV", size: "Live" },
+    { id: "placements", title: "Placements Performance", desc: "Spend, sales, ACOS, and ROAS broken down by Top of Search, Rest of Search, and Product Pages for every campaign.", format: "CSV", size: "Live" },
     { id: "keywords", title: "Search Terms (Full)", desc: "List of all converting keywords and search terms for bid optimization.", format: "CSV", size: "Live" },
     { id: "inventory", title: "Inventory", desc: "Estimate run-rate and stockout risks based on current FBA velocity.", format: "CSV", size: "Live" },
     { id: "returns", title: "Returns & Cancellations", desc: "Detailed log of all FBA customer returns, ASINs, and reasons for return.", format: "CSV", size: "Live" },

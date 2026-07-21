@@ -3,17 +3,19 @@
 import { useDashboard } from "@/lib/DashboardContext";
 import {
   Settings, Shield, RefreshCw, Key, HelpCircle, CheckCircle, Bell, Loader2, Send,
-  Building2, Bot, Zap, Palette, Sun, Moon, Globe, Database, Activity, Sparkles, Plug
+  Building2, Bot, Zap, Palette, Sun, Moon, Globe, Database, Activity, Sparkles, Plug, Store
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
+import { MARKETPLACE_META } from "@/lib/marketplace";
 
-type Tab = "general" | "sellermate" | "notifications" | "automation" | "ai" | "security" | "appearance" | "support";
+type Tab = "general" | "sellermate" | "marketplaces" | "notifications" | "automation" | "ai" | "security" | "appearance" | "support";
 
 const NAV: { id: Tab; label: string; icon: any; section: string }[] = [
   { id: "general", label: "General", icon: Settings, section: "Workspace" },
   { id: "sellermate", label: "SellerMate Connection", icon: Plug, section: "Workspace" },
+  { id: "marketplaces", label: "Marketplace Connections", icon: Store, section: "Workspace" },
   { id: "notifications", label: "Notifications", icon: Bell, section: "Preferences" },
   { id: "automation", label: "Automation Rules", icon: Zap, section: "Preferences" },
   { id: "ai", label: "AI Assistant", icon: Bot, section: "Preferences" },
@@ -116,6 +118,16 @@ export default function SettingsPage() {
   const [compactMode, setCompactMode] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">("light");
 
+  // ── Marketplace connections (Flipkart / Meesho) — stored locally only.
+  // Nothing consumes these yet: there is no server-side proxy for either
+  // platform, so Flipkart/Meesho pages keep showing demo data until a real
+  // integration is built. This just captures the credentials so that wiring
+  // is a backend change, not another round of UI work.
+  const [flipkartApiKey, setFlipkartApiKey] = useState("");
+  const [flipkartSellerId, setFlipkartSellerId] = useState("");
+  const [meeshoApiKey, setMeeshoApiKey] = useState("");
+  const [meeshoSupplierId, setMeeshoSupplierId] = useState("");
+
   // Ingestion trigger states
   const [syncing, setSyncing] = useState(false);
   const [syncSuccess, setSyncSuccess] = useState(false);
@@ -165,6 +177,10 @@ export default function SettingsPage() {
         setAutoBudget(p.autoBudget ?? false);
         setRoasTarget(p.roasTarget ?? 4);
         setCompactMode(p.compactMode ?? false);
+        setFlipkartApiKey(p.flipkartApiKey ?? "");
+        setFlipkartSellerId(p.flipkartSellerId ?? "");
+        setMeeshoApiKey(p.meeshoApiKey ?? "");
+        setMeeshoSupplierId(p.meeshoSupplierId ?? "");
       } catch (e) {
         console.error("Failed to parse settings", e);
       }
@@ -208,6 +224,7 @@ export default function SettingsPage() {
       weeklySummary, dailySummary, monthlySummary, aiEnabled, autoInsights, smartAlerts,
       forecastWindow, recMode, autoPause, autoNegatives, autoBudget,
       roasTarget, compactMode,
+      flipkartApiKey, flipkartSellerId, meeshoApiKey, meeshoSupplierId,
       // account context for the automated crons (which account to query)
       keySlot, amazonAccountId: account?.id, workspaceId: account?.workspace_id, currency: account?.currency,
     };
@@ -498,6 +515,74 @@ export default function SettingsPage() {
                   )}
                 </div>
               </Card>
+            </>
+          )}
+
+          {activeTab === "marketplaces" && (
+            <>
+              <Card title="Amazon" icon={Plug} iconColor="bg-emerald-500/10 border-emerald-500/15 text-emerald-500">
+                <SettingRow title="Connection" desc="Live via SellerMate Public API — see the SellerMate Connection tab.">
+                  <span className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full">
+                    <CheckCircle size={12} /> Connected
+                  </span>
+                </SettingRow>
+                <SettingRow title="Data" desc="Campaigns, catalog, inventory and orders — all real-time." border={false}>
+                  <span className="text-xs font-bold text-muted-foreground">Live</span>
+                </SettingRow>
+              </Card>
+
+              {(["flipkart", "meesho"] as const).map((mp) => {
+                const meta = MARKETPLACE_META[mp];
+                const apiKey = mp === "flipkart" ? flipkartApiKey : meeshoApiKey;
+                const setApiKey = mp === "flipkart" ? setFlipkartApiKey : setMeeshoApiKey;
+                const idValue = mp === "flipkart" ? flipkartSellerId : meeshoSupplierId;
+                const setIdValue = mp === "flipkart" ? setFlipkartSellerId : setMeeshoSupplierId;
+                const idLabel = mp === "flipkart" ? "Seller ID" : "Supplier ID";
+                const isConnected = apiKey.trim().length > 0 && idValue.trim().length > 0;
+
+                return (
+                  <Card key={mp} title={meta.label} icon={Store} iconColor={cn(meta.bg, meta.border, meta.text)}>
+                    <div className="-mt-2 mb-2">
+                      <span className="flex items-center gap-1.5 text-xs font-extrabold px-2.5 py-1 rounded-full w-fit"
+                        style={{ color: isConnected ? "#059669" : meta.color, background: isConnected ? "#05966915" : `${meta.color}15` }}>
+                        {isConnected ? <CheckCircle size={12} /> : <Key size={12} />}
+                        {isConnected ? "Credentials saved" : "Not connected — showing demo data"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground font-semibold leading-relaxed mb-3">
+                      {mp === "flipkart"
+                        ? "Generate an API key from Flipkart Seller Hub → Settings → API Access, then paste it below."
+                        : "Generate a Supplier API key from the Meesho Supplier Panel → Settings → API Access, then paste it below."}
+                    </p>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-widest">{meta.label} API Key</label>
+                        <input
+                          type="password"
+                          placeholder="Paste API key..."
+                          value={apiKey}
+                          onChange={(e) => setApiKey(e.target.value)}
+                          className={cn(inputCls, "w-full mt-1 font-mono")}
+                          autoComplete="off"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-widest">{idLabel}</label>
+                        <input
+                          type="text"
+                          placeholder={`Your ${idLabel}...`}
+                          value={idValue}
+                          onChange={(e) => setIdValue(e.target.value)}
+                          className={cn(inputCls, "w-full mt-1")}
+                        />
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground font-medium mt-3">
+                      Saved locally when you hit "Save Changes" below. {meta.label} pages will keep showing illustrative demo data until a live data connection is built for it.
+                    </p>
+                  </Card>
+                );
+              })}
             </>
           )}
 

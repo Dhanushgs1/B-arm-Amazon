@@ -239,6 +239,37 @@ export default function DashboardOverview() {
     ? dailyTrend.reduce((sum: number, d: any) => sum + (d.overallSales || 0), 0) / dailyTrend.length
     : totalSales / 30;
 
+  // AI Executive Summary — every bullet is derived from this account's real
+  // data for the selected date range (previously these 4 lines were hardcoded
+  // placeholder text that showed the same "Hair Oil" / "SKU XYZ" copy no
+  // matter which account was logged in).
+  const avgArr = (arr: number[]) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
+  const latestDay = dailyTrend && dailyTrend.length > 0 ? dailyTrend[dailyTrend.length - 1] : null;
+  const latestDayDeltaPct = latestDay && avgDaily > 0 ? ((latestDay.overallSales - avgDaily) / avgDaily) * 100 : null;
+
+  const acosSeries: number[] = (dailyTrend || []).map((d) => d.acos || 0);
+  const acosMid = Math.floor(acosSeries.length / 2);
+  const acosStart = avgArr(acosSeries.slice(0, acosMid));
+  const acosEnd = avgArr(acosSeries.slice(acosMid));
+
+  const topCampaign = topCampaigns[0];
+  const criticalLowStock = lowInventory[0];
+
+  const executiveSummaryPoints: string[] = [
+    latestDayDeltaPct != null
+      ? `Latest day's sales ${latestDayDeltaPct >= 0 ? "increased" : "decreased"} by ${Math.abs(latestDayDeltaPct).toFixed(0)}% compared to the daily average.`
+      : "Not enough daily data yet to compare recent sales.",
+    acosSeries.length >= 2
+      ? `ACOS ${acosEnd <= acosStart ? "improved" : "rose"} from ${acosStart.toFixed(0)}% to ${acosEnd.toFixed(0)}% across this period's campaigns.`
+      : "Not enough data yet to track an ACOS trend this period.",
+    topCampaign
+      ? `Sponsored Products campaign "${topCampaign.campaignName}" is your top performer this period (${cur(topCampaign.spend, currency)} spend, ${fx(topCampaign.roas || 0)}x ROAS).`
+      : "No active campaigns found for this account in this period.",
+    criticalLowStock
+      ? `Inventory alert: "${(criticalLowStock.itemName || "").substring(0, 40)}" has only ${criticalLowStock.totalQty} units left — restock soon.`
+      : "All tracked products are sufficiently stocked.",
+  ];
+
   if (contextLoading || cpLoading) {
     return (
       <div className="flex h-[60vh] items-center justify-center flex-col gap-4 text-muted-foreground">
@@ -332,30 +363,14 @@ export default function DashboardOverview() {
               </h3>
             </div>
             <div className="flex-1 space-y-3 relative z-10 overflow-y-auto pr-1 custom-scrollbar">
-              <div className="flex gap-2.5 items-start p-3 rounded-2xl bg-muted/40">
-                <div className="mt-1.5 w-1.5 h-1.5 rounded-full bg-indigo-500 flex-shrink-0" />
-                <p className="text-[12px] leading-relaxed font-semibold text-slate-700 dark:text-slate-300">
-                  Yesterday's sales increased by 12% compared to the daily average.
-                </p>
-              </div>
-              <div className="flex gap-2.5 items-start p-3 rounded-2xl bg-muted/40">
-                <div className="mt-1.5 w-1.5 h-1.5 rounded-full bg-indigo-500 flex-shrink-0" />
-                <p className="text-[12px] leading-relaxed font-semibold text-slate-700 dark:text-slate-300">
-                  ACOS improved from 31% to 27% across Top 5 campaigns.
-                </p>
-              </div>
-              <div className="flex gap-2.5 items-start p-3 rounded-2xl bg-muted/40">
-                <div className="mt-1.5 w-1.5 h-1.5 rounded-full bg-indigo-500 flex-shrink-0" />
-                <p className="text-[12px] leading-relaxed font-semibold text-slate-700 dark:text-slate-300">
-                  Sponsored Products campaign "Hair Oil" is performing exceptionally well.
-                </p>
-              </div>
-              <div className="flex gap-2.5 items-start p-3 rounded-2xl bg-muted/40">
-                <div className="mt-1.5 w-1.5 h-1.5 rounded-full bg-indigo-500 flex-shrink-0" />
-                <p className="text-[12px] leading-relaxed font-semibold text-slate-700 dark:text-slate-300">
-                  Inventory for SKU XYZ will last only 6 days at current velocity.
-                </p>
-              </div>
+              {executiveSummaryPoints.map((point, i) => (
+                <div key={i} className="flex gap-2.5 items-start p-3 rounded-2xl bg-muted/40">
+                  <div className="mt-1.5 w-1.5 h-1.5 rounded-full bg-indigo-500 flex-shrink-0" />
+                  <p className="text-[12px] leading-relaxed font-semibold text-slate-700 dark:text-slate-300">
+                    {point}
+                  </p>
+                </div>
+              ))}
             </div>
             <div className="mt-3 pt-3 border-t border-slate-200/50 dark:border-slate-800/50 flex items-center justify-between">
               <span className="text-[9px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-1"><Sparkles className="w-3 h-3" /> AUTO-GENERATED BY GEMINI</span>

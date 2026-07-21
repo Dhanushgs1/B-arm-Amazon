@@ -1,10 +1,54 @@
 "use client";
 
 import { useDashboard } from "@/lib/DashboardContext";
-import { Bell, Moon, Sun, Search, RefreshCw, Loader2, LogOut } from "lucide-react";
+import { Bell, Moon, Sun, Search, RefreshCw, Loader2, ShoppingBag, Store, Users2, GitCompare, Menu, type LucideIcon } from "lucide-react";
 import { useState, useEffect } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { DateRangePicker } from "@/components/DateRangePicker";
 import { cn } from "@/lib/utils";
+import { MARKETPLACE_META, getMarketplaceTab, marketplaceHome, type MarketplaceTab } from "@/lib/marketplace";
+
+const MARKETPLACE_TABS: { id: MarketplaceTab; label: string; icon: LucideIcon }[] = [
+  { id: "amazon", label: "Amazon", icon: ShoppingBag },
+  { id: "flipkart", label: "Flipkart", icon: Store },
+  { id: "meesho", label: "Meesho", icon: Users2 },
+  { id: "compare", label: "Compare All", icon: GitCompare },
+];
+
+function MarketplaceSwitcher() {
+  const pathname = usePathname();
+  const router = useRouter();
+  const activeTab = getMarketplaceTab(pathname);
+
+  return (
+    <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-900 p-1 rounded-xl shadow-inner flex-wrap">
+      {MARKETPLACE_TABS.map((tab) => {
+        const isActive = activeTab === tab.id;
+        const meta = tab.id !== "compare" ? MARKETPLACE_META[tab.id] : null;
+        const Icon = tab.icon;
+        return (
+          <button
+            key={tab.id}
+            onClick={() => router.push(tab.id === "compare" ? "/dashboard/compare" : marketplaceHome(tab.id))}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-black transition-all",
+              isActive
+                ? tab.id === "compare"
+                  ? "bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-sm"
+                  : "text-white shadow-sm"
+                : "text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200"
+            )}
+            style={isActive && meta ? { background: `linear-gradient(90deg, ${meta.color}, ${meta.color}cc)` } : undefined}
+            title={tab.id !== "compare" && meta ? meta.tagline : "Compare every connected marketplace"}
+          >
+            <Icon className="w-3.5 h-3.5" />
+            {tab.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 type Notification = {
   id: number;
@@ -15,8 +59,12 @@ type Notification = {
   type: "warning" | "danger" | "success" | "info";
 };
 
-export function TopNav() {
-  const { loggedInUser, account, contextLoading } = useDashboard();
+interface TopNavProps {
+  onOpenMobileNav?: () => void;
+}
+
+export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
+  const { loggedInUser, contextLoading } = useDashboard();
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [showNotifications, setShowNotifications] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -67,14 +115,23 @@ export function TopNav() {
 
   // Derive initials and label from logged-in user
   const isLkn = loggedInUser === "Lkn";
-  const accountLabel = isLkn ? "LKN Account" : "Barm Account";
+  const accountLabel = isLkn ? "LKN" : "Barm";
   const initials = isLkn ? "LK" : "BA";
   const avatarGradient = isLkn
     ? "from-indigo-500 to-violet-600"
     : "from-emerald-500 to-teal-600";
 
   return (
-    <header className="flex items-center gap-3 px-6 py-3 bg-popover/80 backdrop-blur-xl border-b border-border sticky top-0 z-30 flex-wrap">
+    <header className="flex items-center gap-3 px-3 sm:px-6 py-3 bg-popover/80 backdrop-blur-xl border-b border-border sticky top-0 z-30 flex-wrap">
+      {/* Mobile Sidebar Toggle */}
+      <button
+        onClick={onOpenMobileNav}
+        className="w-10 h-10 flex-shrink-0 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 flex items-center justify-center hover:border-indigo-500/50 hover:text-indigo-500 transition-colors shadow-sm focus:outline-none md:hidden"
+        title="Open menu"
+      >
+        <Menu className="w-4 h-4" />
+      </button>
+
       {/* Workspace Switcher */}
       <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-900 border border-transparent dark:border-transparent px-3.5 py-2.5 rounded-xl text-xs font-black shadow-inner">
         {contextLoading ? (
@@ -83,15 +140,13 @@ export function TopNav() {
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse flex-shrink-0" />
         )}
         <span className="text-slate-700 dark:text-slate-300 uppercase tracking-wider">{accountLabel}</span>
-        {account && !contextLoading && (
-          <span className="text-[10px] text-slate-400 dark:text-slate-500 border-l border-slate-200 dark:border-slate-800 pl-2">
-            {account.currency}
-          </span>
-        )}
       </div>
 
+      {/* Marketplace Switcher — Amazon / Flipkart / Meesho / Compare All */}
+      <MarketplaceSwitcher />
+
       {/* Global Search with Cmd/Ctrl+K shortcut hint */}
-      <div className="relative flex-1 min-w-[200px] max-w-[360px]">
+      <div className="hidden sm:block relative flex-1 min-w-[160px] max-w-[360px]">
         <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
         <input
           placeholder="Search workspace..."

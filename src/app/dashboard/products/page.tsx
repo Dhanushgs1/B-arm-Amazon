@@ -63,18 +63,23 @@ function ProductsContent() {
   // Growth export sheet's period-over-period comparison. get_retail_product_performance rejects
   // start_date === end_date, so a single-day selection has no valid previous window; growthAvailable
   // below tells the export to show a "pick a wider range" note instead of a fake 100%/-100% growth.
-  const rangeDaysForPrev = Math.max(1, Math.round((new Date(endDate).getTime() - new Date(startDate).getTime()) / 86400000) + 1);
+  const hasDates = !!startDate && !!endDate;
+  const rangeDaysForPrev = hasDates ? Math.max(1, Math.round((new Date(endDate).getTime() - new Date(startDate).getTime()) / 86400000) + 1) : 1;
   const prevEndDate = (() => {
+    if (!startDate) return "";
     const d = new Date(startDate + "T00:00:00Z");
+    if (isNaN(d.getTime())) return "";
     d.setUTCDate(d.getUTCDate() - 1);
     return d.toISOString().slice(0, 10);
   })();
   const prevStartDate = (() => {
+    if (!prevEndDate) return "";
     const d = new Date(prevEndDate + "T00:00:00Z");
+    if (isNaN(d.getTime())) return "";
     d.setUTCDate(d.getUTCDate() - (rangeDaysForPrev - 1));
     return d.toISOString().slice(0, 10);
   })();
-  const growthAvailable = prevStartDate !== prevEndDate;
+  const growthAvailable = !!prevStartDate && !!prevEndDate && prevStartDate !== prevEndDate;
 
   const { data: prevRetailData } = useQuery({
     queryKey: ["products_tab_retail_prev", keySlot, account?.id, prevStartDate, prevEndDate],

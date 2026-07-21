@@ -11,7 +11,7 @@ import { PageHero } from "@/components/PageHero";
 import { AcosBadge, acosRowClass } from "@/components/AcosBadge";
 import {
   Loader2, ShieldAlert, TrendingUp, TrendingDown, PauseCircle,
-  Minus, Rocket, AlertTriangle, Ban, Trophy
+  Minus, Rocket, AlertTriangle, Ban, Trophy, RefreshCw
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -98,17 +98,19 @@ export default function BidAdjustmentPage() {
   // ── Secondary (slow) query: full live-target inventory (bids + zero-traffic
   // targets). Fetched only after the user clicks "No Data" — the graded table
   // works without it (CPC-based suggestions), so the initial load stays fast.
-  const [wantTargets, setWantTargets] = useState(false);
-  const { data: targetsData, isLoading: targetsLoading, isFetching: targetsFetching } = useQuery({
+  const [wantTargets, setWantTargets] = useState(true);
+  const { data: targetsData, isLoading: targetsLoading, isFetching: targetsFetching, isError: targetsError, refetch: refetchTargets } = useQuery({
     queryKey: ["bid_targets", keySlot, account?.id],
     queryFn: async () =>
       mcpAllTargets({
         amazon_account_id: account?.id,
         workspace_id: account?.workspace_id,
         state: ["ENABLED"],
-      }, keySlot, 20),
+      }, keySlot, 6),
     enabled: !!account && wantTargets,
-    staleTime: 5 * 60 * 1000,
+    staleTime: 15 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
+    retry: false,          // don't retry — fail fast and show retry button
   });
 
   // Campaign budgets — cheap single call, gives context to every suggestion.
@@ -308,18 +310,74 @@ export default function BidAdjustmentPage() {
       label: "Current Bid",
       sortable: true,
       render: (val: number | null) => {
-        if (val != null) return <span className="font-bold text-foreground">{cur(val, currency)}</span>;
-        return bidsSynced
-          ? <span className="text-xs text-muted-foreground font-semibold">—</span>
-          : (
+        // Error state — fetch failed, show retry
+        if (targetsError) {
+          return (
             <button
-              onClick={() => setWantTargets(true)}
-              className="text-[10px] font-bold text-primary hover:underline"
-              title="Load live bids from the target inventory"
+              onClick={() => refetchTargets()}
+              className="flex items-center gap-1 text-[10px] font-bold text-red-500 hover:text-red-400 transition-colors"
+              title="Failed to load — click to retry"
             >
-              {targetsFetching ? "syncing…" : "load bids"}
+              <RefreshCw className="w-3 h-3" /> retry
             </button>
           );
+        }
+
+        // Bids loaded and this row has a bid value
+        if (val != null) {
+          return (
+            <div className="flex items-center gap-1.5">
+              <span className="font-bold text-foreground">{cur(val, currency)}</span>
+              <button
+                onClick={() => refetchTargets()}
+                className="text-muted-foreground hover:text-primary transition-colors"
+                title="Refresh current bid"
+              >
+                {targetsFetching
+                  ? <Loader2 className="w-3 h-3 animate-spin" />
+                  : <RefreshCw className="w-3 h-3" />}
+              </button>
+            </div>
+          );
+        }
+
+        // Bids synced but this row has no match
+        if (bidsSynced) {
+          return (
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted-foreground font-semibold">—</span>
+              <button
+                onClick={() => refetchTargets()}
+                className="text-muted-foreground hover:text-primary transition-colors"
+                title="Refresh bids"
+              >
+                {targetsFetching
+                  ? <Loader2 className="w-3 h-3 animate-spin" />
+                  : <RefreshCw className="w-3 h-3" />}
+              </button>
+            </div>
+          );
+        }
+
+        // Loading in progress
+        if (targetsFetching) {
+          return (
+            <span className="flex items-center gap-1 text-[10px] font-bold text-primary">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              Loading…
+            </span>
+          );
+        }
+
+        // Not yet triggered
+        return (
+          <button
+            onClick={() => refetchTargets()}
+            className="text-[10px] font-bold text-primary hover:underline"
+          >
+            load bids
+          </button>
+        );
       },
     },
     {
@@ -533,8 +591,28 @@ export default function BidAdjustmentPage() {
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" /> Syncing live bids…
               </span>
             )}
+            {targetsError && !targetsFetching && (
+              <span className="flex items-center gap-1.5 text-[11px] font-bold text-red-500">
+                ⚠ Failed to load bids
+                <button
+                  onClick={() => refetchTargets()}
+                  className="flex items-center gap-1 text-red-500 hover:text-red-400 hover:underline font-bold"
+                >
+                  <RefreshCw className="w-3 h-3" /> retry
+                </button>
+              </span>
+            )}
             {bidsSynced && !targetsFetching && (
-              <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400">✓ Live bids synced</span>
+              <span className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+                ✓ Live bids synced
+                <button
+                  onClick={() => refetchTargets()}
+                  className="flex items-center gap-1 text-primary hover:underline font-bold"
+                  title="Reload live bids from the target inventory"
+                >
+                  <RefreshCw className="w-3 h-3" /> reload
+                </button>
+              </span>
             )}
           </div>
 
@@ -545,7 +623,7 @@ export default function BidAdjustmentPage() {
               <p className="text-xs">Large accounts can take ~15-30s — only fetched when you need it.</p>
             </div>
           ) : (
-            <DataTable data={filtered} columns={columns} defaultSort="spend" rowClassName={acosRowClass} exportName="bid-adjustment" />
+            <DataTable data={filtered} columns={columns} defaultSort="spend" rowClassName={acosRowClass} exportName="bid-adjustment" pageSize={100} disablePagination={false} />
           )}
         </>
       )}

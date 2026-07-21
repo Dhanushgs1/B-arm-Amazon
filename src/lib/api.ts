@@ -83,9 +83,9 @@ export async function mcpAllTargets(args: any, slot: string, maxPages: number = 
   const totalPages = Math.min(first.pagination?.totalPages || 1, maxPages);
   if (totalPages <= 1) return all;
 
-  // Fetch remaining pages concurrently, in batches of 6 to stay polite.
+  // Fetch remaining pages concurrently — all in one parallel batch for speed.
   const pages = Array.from({ length: totalPages - 1 }, (_, i) => i + 1);
-  const BATCH = 6;
+  const BATCH = 10;
   for (let i = 0; i < pages.length; i += BATCH) {
     const batch = pages.slice(i, i + BATCH);
     const results = await Promise.all(

@@ -44,26 +44,30 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     return `${y}-${m}-${day}`;
   };
 
-  const getDefaultStart = () => {
-    const saved = typeof window !== 'undefined' ? localStorage.getItem('ppc_startDate') : null;
-    if (saved) return saved;
-    const d = new Date();
-    d.setDate(d.getDate() - 29);
-    return getLocalDateStr(d);
-  };
-  const getDefaultEnd = () => {
-    const saved = typeof window !== 'undefined' ? localStorage.getItem('ppc_endDate') : null;
-    if (saved) return saved;
-    return getLocalDateStr();
-  };
-  const getDefaultLabel = () => {
-    const saved = typeof window !== 'undefined' ? localStorage.getItem('ppc_dateLabel') : null;
-    return saved || "Last 30 Days";
-  };
+  // Server has no `window` and its clock may differ from the client's by the
+  // time hydration runs, so computing "today" during the initial render (used
+  // for both SSR and client hydration) causes a hydration mismatch. Render a
+  // fixed placeholder on first pass, then resolve the real value client-side
+  // in a useEffect below.
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [dateLabel, setDateLabel] = useState("Last 30 Days");
 
-  const [startDate, setStartDate] = useState(getDefaultStart);
-  const [endDate, setEndDate] = useState(getDefaultEnd);
-  const [dateLabel, setDateLabel] = useState(getDefaultLabel);
+  useEffect(() => {
+    const savedStart = localStorage.getItem('ppc_startDate');
+    const savedEnd = localStorage.getItem('ppc_endDate');
+    const savedLabel = localStorage.getItem('ppc_dateLabel');
+
+    if (savedStart) {
+      setStartDate(savedStart);
+    } else {
+      const d = new Date();
+      d.setDate(d.getDate() - 29);
+      setStartDate(getLocalDateStr(d));
+    }
+    setEndDate(savedEnd || getLocalDateStr());
+    setDateLabel(savedLabel || "Last 30 Days");
+  }, []);
 
   // Load user context (workspace + account IDs) for a given slot
   const loadContext = async (slot: "A" | "B") => {
