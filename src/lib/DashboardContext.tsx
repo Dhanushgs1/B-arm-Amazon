@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useContext, useState, useEffect } from "react";
+import { useRouter, usePathname } from "next/navigation";
 import { mcp } from "@/lib/api";
 
 type Account = {
@@ -30,6 +31,8 @@ type DashboardState = {
 const DashboardContext = createContext<DashboardState | undefined>(undefined);
 
 export function DashboardProvider({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
+  const pathname = usePathname();
   const [keySlot, setKeySlotState] = useState<"A" | "B">("A");
   const [loggedInUser, setLoggedInUser] = useState<string>("Lkn");
   const [account, setAccount] = useState<Account | null>(null);
@@ -98,11 +101,26 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
   const retryContext = () => loadContext(keySlot);
 
   useEffect(() => {
-    const savedUser = localStorage.getItem("ppcUser") || "Lkn";
+    const savedUser = localStorage.getItem("ppcUser");
+    if (!savedUser) {
+      // No session — visiting a /dashboard/* URL directly (bookmark, email link,
+      // typed URL) used to silently fall back to "Lkn" and load its data instead
+      // of asking the visitor to log in. Send unauthenticated visitors to login.
+      if (pathname?.startsWith("/dashboard")) {
+        // Leave contextLoading at its default true — the redirect below unmounts
+        // this tree shortly, so any dashboard page briefly re-rendered in the
+        // meantime shows its loading spinner instead of empty/broken content.
+        router.replace("/");
+      } else {
+        setContextLoading(false);
+      }
+      return;
+    }
     const slot: "A" | "B" = savedUser === "Barm" ? "B" : "A";
     setLoggedInUser(savedUser);
     setKeySlotState(slot);
     loadContext(slot);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
 
