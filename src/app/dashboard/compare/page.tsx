@@ -466,7 +466,7 @@ export default function ComparePage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {scored.map((r) => (
               <div key={r.id} className="flex items-center gap-4 p-4 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800">
-                <ScoreRing score={Math.round((r.score || 0) * 100)} size={64} />
+                <ScoreRing value={Math.round((r.score || 0) * 100)} label={r.label} color={r.color} />
                 <div>
                   <p className="font-black text-sm text-slate-900 dark:text-white">{r.label}</p>
                   <p className="text-[10px] text-slate-500 dark:text-slate-400">Health Score: {Math.round((r.score || 0) * 100)}%</p>

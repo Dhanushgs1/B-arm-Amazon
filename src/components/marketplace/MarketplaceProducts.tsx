@@ -10,7 +10,7 @@ import {
 import { PageHero } from "@/components/PageHero";
 import { KPICard } from "@/components/KPICard";
 import { DataTable } from "@/components/DataTable";
-import { Package, Star, TrendingUp, Box } from "lucide-react";
+import { Star } from "lucide-react";
 
 const cur = (val: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(val || 0))}`;
 const num = (val: number) => new Intl.NumberFormat("en-IN").format(Math.round(val || 0));
@@ -87,9 +87,9 @@ export function MarketplaceProducts({ marketplace }: MarketplaceProductsProps) {
         transition={{ delay: 0.1, duration: 0.5 }}
         className="grid grid-cols-1 sm:grid-cols-3 gap-4"
       >
-        <KPICard title="Catalog Products" value={overview.topProducts.length.toString()} subtext="active SKUs" icon={Package} />
-        <KPICard title="Total Sales" value={cur(overview.totalSales)} subtext="catalog revenue" icon={TrendingUp} />
-        <KPICard title="Avg Product Rating" value={`${overview.rating.toFixed(1)} ★`} subtext="seller score" icon={Star} />
+        <KPICard title="Catalog Products" value={overview.topProducts.length.toString()} subtitle="active SKUs" />
+        <KPICard title="Total Sales" value={cur(overview.totalSales)} subtitle="catalog revenue" />
+        <KPICard title="Avg Product Rating" value={`${overview.rating.toFixed(1)} ★`} subtitle="seller score" />
       </motion.div>
 
       <motion.div 
@@ -98,7 +98,7 @@ export function MarketplaceProducts({ marketplace }: MarketplaceProductsProps) {
         transition={{ delay: 0.2, duration: 0.5 }}
         className="bg-popover/80 border border-border rounded-xl p-4"
       >
-        <DataTable data={overview.topProducts} columns={columns as any} defaultSortKey="sales" defaultSortDir="desc" />
+        <DataTable data={overview.topProducts} columns={columns as any} defaultSort="sales" />
       </motion.div>
     </motion.div>
   );

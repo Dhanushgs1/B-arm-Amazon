@@ -7,7 +7,7 @@ import '@/components/flipkart/index.css';
 // numbers get into Supabase), P&L Analyzer, Campaign Manager editing,
 // Keyword Planner, and price-alert history. /dashboard/flipkart itself now
 // renders the clean FlipkartOverview instead of this component.
-const FlipkartApp = dynamic(() => import('@/components/flipkart/App'), { ssr: false });
+const FlipkartApp = dynamic<{ initialTab?: string }>(() => import('@/components/flipkart/App'), { ssr: false });
 
 export default function FlipkartHubPage() {
   return (

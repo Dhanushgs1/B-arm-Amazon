@@ -6,7 +6,7 @@ import { MARKETPLACE_META, generateMarketplaceBids, type MarketplaceId } from "@
 import { PageHero } from "@/components/PageHero";
 import { KPICard } from "@/components/KPICard";
 import { DataTable } from "@/components/DataTable";
-import { Search, Ban, TrendingUp, DollarSign } from "lucide-react";
+import { Search } from "lucide-react";
 
 const cur = (val: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(val || 0))}`;
 const num = (val: number) => new Intl.NumberFormat("en-IN").format(Math.round(val || 0));
@@ -105,13 +105,13 @@ export function MarketplaceSearchTerms({ marketplace }: { marketplace: Exclude<M
       />
 
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1, duration: 0.5 }} className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <KPICard title="Total Search Terms" value={searchTerms.length.toString()} subtext="customer queries logged" icon={Search} />
-        <KPICard title="Wasted Spend Detected" value={cur(wastedSpend)} subtext="zero order queries" icon={Ban} />
-        <KPICard title="Converting Search Terms" value={searchTerms.filter(s => !s.isWasted).length.toString()} subtext="high intent terms" icon={TrendingUp} />
+        <KPICard title="Total Search Terms" value={searchTerms.length.toString()} subtitle="customer queries logged" />
+        <KPICard title="Wasted Spend Detected" value={cur(wastedSpend)} subtitle="zero order queries" />
+        <KPICard title="Converting Search Terms" value={searchTerms.filter(s => !s.isWasted).length.toString()} subtitle="high intent terms" />
       </motion.div>
 
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2, duration: 0.5 }} className="bg-popover/80 border border-border rounded-xl p-4">
-        <DataTable data={searchTerms} columns={columns as any} defaultSortKey="spend" defaultSortDir="desc" />
+        <DataTable data={searchTerms} columns={columns as any} defaultSort="spend" />
       </motion.div>
     </motion.div>
   );

@@ -6,7 +6,6 @@ import { MARKETPLACE_META, generateMarketplaceCampaigns, type MarketplaceId } fr
 import { PageHero } from "@/components/PageHero";
 import { KPICard } from "@/components/KPICard";
 import { DataTable } from "@/components/DataTable";
-import { Target, TrendingUp, DollarSign } from "lucide-react";
 
 const cur = (val: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(val || 0))}`;
 const num = (val: number) => new Intl.NumberFormat("en-IN").format(Math.round(val || 0));
@@ -94,13 +93,13 @@ export function MarketplacePlacements({ marketplace }: { marketplace: Exclude<Ma
       />
 
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1, duration: 0.5 }} className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <KPICard title="Top of Search ROAS" value="4.2x" subtext="highest converting placement" icon={Target} />
-        <KPICard title="Product Page Spend" value={cur(placements.reduce((a, p) => a + p.spend, 0) * 0.35)} subtext="detail page ads" icon={DollarSign} />
-        <KPICard title="Total Placement Sales" value={cur(placements.reduce((a, p) => a + p.sales, 0))} subtext="placement revenue" icon={TrendingUp} />
+        <KPICard title="Top of Search ROAS" value="4.2x" subtitle="highest converting placement" />
+        <KPICard title="Product Page Spend" value={cur(placements.reduce((a, p) => a + p.spend, 0) * 0.35)} subtitle="detail page ads" />
+        <KPICard title="Total Placement Sales" value={cur(placements.reduce((a, p) => a + p.sales, 0))} subtitle="placement revenue" />
       </motion.div>
 
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2, duration: 0.5 }} className="bg-popover/80 border border-border rounded-xl p-4">
-        <DataTable data={placements} columns={columns as any} defaultSortKey="spend" defaultSortDir="desc" />
+        <DataTable data={placements} columns={columns as any} defaultSort="spend" />
       </motion.div>
     </motion.div>
   );

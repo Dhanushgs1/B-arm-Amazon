@@ -6,7 +6,6 @@ import { MARKETPLACE_META, generateMarketplaceBids, type MarketplaceId } from "@
 import { PageHero } from "@/components/PageHero";
 import { KPICard } from "@/components/KPICard";
 import { DataTable } from "@/components/DataTable";
-import { KeyRound, TrendingUp, DollarSign } from "lucide-react";
 
 const cur = (val: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(val || 0))}`;
 
@@ -66,13 +65,13 @@ export function MarketplaceKeywords({ marketplace }: { marketplace: Exclude<Mark
       />
 
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1, duration: 0.5 }} className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <KPICard title="Total Keywords" value={bids.length.toString()} subtext="targeted keywords" icon={KeyRound} />
-        <KPICard title="Total Spend" value={cur(bids.reduce((a, b) => a + b.spend, 0))} subtext="keyword spend" icon={DollarSign} />
-        <KPICard title="Total Sales" value={cur(bids.reduce((a, b) => a + b.sales, 0))} subtext="keyword sales" icon={TrendingUp} />
+        <KPICard title="Total Keywords" value={bids.length.toString()} subtitle="targeted keywords" />
+        <KPICard title="Total Spend" value={cur(bids.reduce((a, b) => a + b.spend, 0))} subtitle="keyword spend" />
+        <KPICard title="Total Sales" value={cur(bids.reduce((a, b) => a + b.sales, 0))} subtitle="keyword sales" />
       </motion.div>
 
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2, duration: 0.5 }} className="bg-popover/80 border border-border rounded-xl p-4">
-        <DataTable data={bids} columns={columns as any} defaultSortKey="spend" defaultSortDir="desc" />
+        <DataTable data={bids} columns={columns as any} defaultSort="spend" />
       </motion.div>
     </motion.div>
   );

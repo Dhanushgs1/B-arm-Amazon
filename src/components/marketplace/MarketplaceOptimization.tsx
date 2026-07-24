@@ -11,20 +11,18 @@ import {
 } from "@/lib/marketplace";
 import { PageHero } from "@/components/PageHero";
 import { KPICard } from "@/components/KPICard";
-import { 
-  Wand2, 
-  Plus, 
-  Play, 
-  CheckCircle2, 
-  ShieldCheck, 
-  TrendingUp, 
-  AlertTriangle, 
-  Moon, 
-  Ban, 
-  Sliders, 
-  Sparkles, 
-  Clock, 
-  Trash2, 
+import {
+  Wand2,
+  Play,
+  CheckCircle2,
+  TrendingUp,
+  AlertTriangle,
+  Moon,
+  Ban,
+  Sliders,
+  Sparkles,
+  Clock,
+  Trash2,
   RefreshCw,
   X
 } from "lucide-react";
@@ -152,15 +150,8 @@ export function MarketplaceOptimization({ marketplace }: MarketplaceOptimization
       <PageHero
         title={`${meta.label} Automation Rules & Optimization Engine`}
         subtitle={`Configure automated bid guardrails, stock safety nets, and ROAS rules specifically for ${meta.label} Ads.`}
-        actions={
-          <button
-            onClick={() => setIsModalOpen(true)}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white text-xs font-bold shadow-lg shadow-indigo-500/25 transition-all cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            Create Automation Rule
-          </button>
-        }
+        primaryAction="Create Automation Rule"
+        onPrimaryAction={() => setIsModalOpen(true)}
       />
 
       {/* KPI Cards */}
@@ -173,26 +164,22 @@ export function MarketplaceOptimization({ marketplace }: MarketplaceOptimization
         <KPICard
           title="Active Guardrail Rules"
           value={activeRulesCount.toString()}
-          subtext={`out of ${rules.length} total rules configured`}
-          icon={ShieldCheck}
+          subtitle={`out of ${rules.length} total rules configured`}
         />
         <KPICard
           title="Automated Actions Executed"
           value="142"
-          subtext="in last 30 days"
-          icon={Wand2}
+          subtitle="in last 30 days"
         />
         <KPICard
           title="Est. Monthly Spend Saved"
           value={marketplace === "flipkart" ? "₹16,700" : "₹19,300"}
-          subtext="via auto-negations & ACOS caps"
-          icon={TrendingUp}
+          subtitle="via auto-negations & ACOS caps"
         />
         <KPICard
           title="Rule Engine Health"
           value="100% Operational"
-          subtext="Last run 12 mins ago"
-          icon={CheckCircle2}
+          subtitle="Last run 12 mins ago"
         />
       </motion.div>
 

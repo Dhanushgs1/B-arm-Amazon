@@ -5,7 +5,6 @@ import { motion } from "framer-motion";
 import { MARKETPLACE_META, generateMarketplaceOverview, type MarketplaceId } from "@/lib/marketplace";
 import { PageHero } from "@/components/PageHero";
 import { KPICard } from "@/components/KPICard";
-import { TrendingUp, PieChart, Award } from "lucide-react";
 
 const cur = (val: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(val || 0))}`;
 
@@ -28,9 +27,9 @@ export function MarketplaceMarketShare({ marketplace }: { marketplace: Exclude<M
       />
 
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1, duration: 0.5 }} className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <KPICard title="Category Leadership Rank" value="#2 Overall" subtext="across top niche categories" icon={Award} />
-        <KPICard title="Est. Category Share" value="28.4%" subtext="market penetration" icon={PieChart} />
-        <KPICard title="Monthly Growth Velocity" value={`+${overview.growthPct.toFixed(1)}%`} subtext="sales momentum" icon={TrendingUp} />
+        <KPICard title="Category Leadership Rank" value="#2 Overall" subtitle="across top niche categories" />
+        <KPICard title="Est. Category Share" value="28.4%" subtitle="market penetration" />
+        <KPICard title="Monthly Growth Velocity" value={`+${overview.growthPct.toFixed(1)}%`} subtitle="sales momentum" />
       </motion.div>
 
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2, duration: 0.5 }} className="grid grid-cols-1 md:grid-cols-2 gap-4">

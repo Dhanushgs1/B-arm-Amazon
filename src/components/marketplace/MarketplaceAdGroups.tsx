@@ -6,7 +6,6 @@ import { MARKETPLACE_META, generateMarketplaceCampaigns, type MarketplaceId } fr
 import { PageHero } from "@/components/PageHero";
 import { KPICard } from "@/components/KPICard";
 import { DataTable } from "@/components/DataTable";
-import { LayoutGrid, DollarSign, TrendingUp, Megaphone } from "lucide-react";
 
 const cur = (val: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(val || 0))}`;
 const num = (val: number) => new Intl.NumberFormat("en-IN").format(Math.round(val || 0));
@@ -106,13 +105,13 @@ export function MarketplaceAdGroups({ marketplace }: { marketplace: Exclude<Mark
       />
 
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1, duration: 0.5 }} className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <KPICard title="Total Ad Groups" value={adGroups.length.toString()} subtext="active ad groups" icon={LayoutGrid} />
-        <KPICard title="Total Spend" value={cur(adGroups.reduce((a, g) => a + g.spend, 0))} subtext="ad group spend" icon={DollarSign} />
-        <KPICard title="Total Sales" value={cur(adGroups.reduce((a, g) => a + g.sales, 0))} subtext="ad group revenue" icon={TrendingUp} />
+        <KPICard title="Total Ad Groups" value={adGroups.length.toString()} subtitle="active ad groups" />
+        <KPICard title="Total Spend" value={cur(adGroups.reduce((a, g) => a + g.spend, 0))} subtitle="ad group spend" />
+        <KPICard title="Total Sales" value={cur(adGroups.reduce((a, g) => a + g.sales, 0))} subtitle="ad group revenue" />
       </motion.div>
 
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2, duration: 0.5 }} className="bg-popover/80 border border-border rounded-xl p-4">
-        <DataTable data={adGroups} columns={columns as any} defaultSortKey="spend" defaultSortDir="desc" />
+        <DataTable data={adGroups} columns={columns as any} defaultSort="spend" />
       </motion.div>
     </motion.div>
   );

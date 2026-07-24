@@ -11,7 +11,7 @@ import {
 import { PageHero } from "@/components/PageHero";
 import { KPICard } from "@/components/KPICard";
 import { DataTable } from "@/components/DataTable";
-import { Sliders, ArrowUpRight, ArrowDownRight, Check, RefreshCw } from "lucide-react";
+import { Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const cur = (val: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(val || 0))}`;
@@ -132,13 +132,13 @@ export function MarketplaceBids({ marketplace }: MarketplaceBidsProps) {
       />
 
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1, duration: 0.5 }} className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <KPICard title="Total Bid Targets" value={bids.length.toString()} subtext="active keyword & product targets" icon={Sliders} />
-        <KPICard title="Bids to Increase" value={bids.filter(b => b.recommendation === "Increase").length.toString()} subtext="high ROAS targets" icon={ArrowUpRight} />
-        <KPICard title="Bids to Reduce" value={bids.filter(b => b.recommendation === "Reduce").length.toString()} subtext="high ACOS bleeder targets" icon={ArrowDownRight} />
+        <KPICard title="Total Bid Targets" value={bids.length.toString()} subtitle="active keyword & product targets" />
+        <KPICard title="Bids to Increase" value={bids.filter(b => b.recommendation === "Increase").length.toString()} subtitle="high ROAS targets" />
+        <KPICard title="Bids to Reduce" value={bids.filter(b => b.recommendation === "Reduce").length.toString()} subtitle="high ACOS bleeder targets" />
       </motion.div>
 
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2, duration: 0.5 }} className="bg-popover/80 border border-border rounded-xl p-4">
-        <DataTable data={bids} columns={columns as any} defaultSortKey="spend" defaultSortDir="desc" />
+        <DataTable data={bids} columns={columns as any} defaultSort="spend" />
       </motion.div>
     </motion.div>
   );
