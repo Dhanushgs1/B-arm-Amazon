@@ -1,7 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo } from "react";
 import { useRouter } from "next/navigation";
+import { motion } from "framer-motion";
 import { useDashboard } from "@/lib/DashboardContext";
 import { KPICard } from "@/components/KPICard";
 import { TrendChart } from "@/components/TrendChart";
@@ -30,7 +32,12 @@ export function MarketplaceOverview({ marketplace }: { marketplace: Exclude<Mark
   const topStates = overview.states.slice(0, 5);
 
   return (
-    <div className="space-y-6 pb-12">
+    <motion.div 
+      initial={{ opacity: 0 }} 
+      animate={{ opacity: 1 }} 
+      transition={{ duration: 0.4 }}
+      className="space-y-6 pb-12"
+    >
       <DemoDataBanner marketplace={marketplace} />
 
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200/50 dark:border-slate-800/50 pb-4">
@@ -46,23 +53,33 @@ export function MarketplaceOverview({ marketplace }: { marketplace: Exclude<Mark
             <p className="text-slate-500 dark:text-slate-400 text-xs">{startDate} – {endDate} · {meta.tagline}</p>
           </div>
         </div>
-        <button
-          onClick={() => router.push("/dashboard/compare")}
-          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-full text-xs font-bold transition-all shadow-md shadow-indigo-600/20"
+        <Link
+          href="/dashboard/compare"
+          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-full text-xs font-bold transition-all shadow-md shadow-indigo-600/20 cursor-pointer"
         >
           Compare vs other marketplaces <ArrowRight className="w-3.5 h-3.5" />
-        </button>
+        </Link>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }} 
+        animate={{ opacity: 1, y: 0 }} 
+        transition={{ delay: 0.1, duration: 0.5 }}
+        className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4"
+      >
         <KPICard title="Total Sales" value={cur(overview.totalSales)} subtitle="Selected date range" trend={overview.growthPct} delay={0.02} accent="green" />
         <KPICard title="Orders" value={num(overview.totalOrders)} subtitle="Orders placed" trend={overview.growthPct * 0.6} delay={0.04} accent="blue" />
         <KPICard title="Units Sold" value={num(overview.totalUnits)} subtitle="Total units" trend={overview.growthPct * 0.5} delay={0.06} accent="purple" />
         <KPICard title="Avg Order Value" value={cur(overview.avgOrderValue)} subtitle="Per order" trend={overview.growthPct * 0.3} delay={0.08} accent="cyan" />
         <KPICard title="Return Rate" value={`${overview.returnRatePct.toFixed(1)}%`} subtitle="RTO + returns" trend={overview.returnRatePct} inverseTrend delay={0.1} accent="orange" />
-      </div>
+      </motion.div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-4 gap-4">
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }} 
+        animate={{ opacity: 1, y: 0 }} 
+        transition={{ delay: 0.2, duration: 0.5 }}
+        className="grid grid-cols-1 xl:grid-cols-4 gap-4"
+      >
         <div className="xl:col-span-3">
           <TrendChart
             title={`${meta.label} Sales Trend`}
@@ -87,7 +104,7 @@ export function MarketplaceOverview({ marketplace }: { marketplace: Exclude<Mark
               </div>
               <div className="bg-muted/40 rounded-xl p-3">
                 <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider">Fulfilment</p>
-                <p className="text-lg font-black text-slate-800 dark:text-white">{marketplace === "meesho" ? "Meesho Logistics" : "Flipkart Assured"}</p>
+                <p className="text-lg font-black text-slate-800 dark:text-white">Flipkart Assured</p>
               </div>
               <div className="bg-muted/40 rounded-xl p-3">
                 <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider">Connection</p>
@@ -96,17 +113,22 @@ export function MarketplaceOverview({ marketplace }: { marketplace: Exclude<Mark
             </div>
           </div>
         </div>
-      </div>
+      </motion.div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }} 
+        animate={{ opacity: 1, y: 0 }} 
+        transition={{ delay: 0.3, duration: 0.5 }}
+        className="grid grid-cols-1 lg:grid-cols-2 gap-5"
+      >
         <div className="glass rounded-2xl border border-border p-4 shadow-sm bg-white dark:bg-slate-900">
           <div className="flex items-center justify-between mb-3">
             <h3 className="font-black text-xs flex items-center gap-1.5 text-slate-800 dark:text-slate-200">
               <Package className="w-3.5 h-3.5" style={{ color: meta.color }} /> Top Products
             </h3>
-            <button onClick={() => router.push(`/dashboard/${marketplace}/inventory`)} className="text-[9px] font-black text-slate-400 hover:text-slate-600 uppercase tracking-wider">
+            <Link href={`/dashboard/${marketplace}/inventory`} className="text-[9px] font-black text-slate-400 hover:text-slate-600 uppercase tracking-wider cursor-pointer">
               View Inventory
-            </button>
+            </Link>
           </div>
           <div className="space-y-2.5">
             {topProducts.map((p, i) => (
@@ -129,9 +151,9 @@ export function MarketplaceOverview({ marketplace }: { marketplace: Exclude<Mark
             <h3 className="font-black text-xs flex items-center gap-1.5 text-slate-800 dark:text-slate-200">
               <MapPin className="w-3.5 h-3.5" style={{ color: meta.color }} /> Top States
             </h3>
-            <button onClick={() => router.push(`/dashboard/${marketplace}/orders`)} className="text-[9px] font-black text-slate-400 hover:text-slate-600 uppercase tracking-wider">
+            <Link href={`/dashboard/${marketplace}/orders`} className="text-[9px] font-black text-slate-400 hover:text-slate-600 uppercase tracking-wider cursor-pointer">
               View Orders
-            </button>
+            </Link>
           </div>
           <div className="space-y-2.5">
             {topStates.map((s, i) => (
@@ -148,7 +170,30 @@ export function MarketplaceOverview({ marketplace }: { marketplace: Exclude<Mark
             ))}
           </div>
         </div>
-      </div>
-    </div>
+      </motion.div>
+
+      {/* Rules Engine Banner Card */}
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }} 
+        animate={{ opacity: 1, y: 0 }} 
+        transition={{ delay: 0.4, duration: 0.5 }}
+        className="glass rounded-2xl border border-indigo-500/20 p-5 shadow-sm bg-gradient-to-r from-indigo-100 via-indigo-50 to-white dark:from-indigo-950/20 dark:via-slate-900 dark:to-slate-950 flex flex-col md:flex-row items-center justify-between gap-4"
+      >
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-black text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">Automated Rules Engine</span>
+            <span className="bg-emerald-500/20 text-emerald-400 text-[9px] font-bold px-2 py-0.5 rounded-full border border-emerald-500/30">Active</span>
+          </div>
+          <h3 className="text-base font-extrabold text-slate-900 dark:text-white">{meta.label} Automation Guardrails Enabled</h3>
+          <p className="text-xs text-slate-500 dark:text-slate-400">Target ROAS auto-bidding, stock safety nets, and night-window dayparting active on your {meta.label} campaigns.</p>
+        </div>
+        <Link
+          href={`/dashboard/${marketplace}/optimization`}
+          className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow-lg shadow-indigo-600/20 transition-all flex-shrink-0 cursor-pointer"
+        >
+          Manage Rules <ArrowRight className="w-3.5 h-3.5" />
+        </Link>
+      </motion.div>
+    </motion.div>
   );
 }

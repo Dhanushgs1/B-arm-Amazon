@@ -7,8 +7,9 @@
 // date: YYYY-MM-DD to report on (default: yesterday).
 
 import type { NextApiRequest, NextApiResponse } from "next";
-import { resolveSellerMateKey } from "@/lib/adAlerts";
+import { resolveSellerMateKey, fetchAsinSkuMap } from "@/lib/adAlerts";
 import { buildAmazonSalesWorkbookForAccount } from "@/lib/amazonSalesExport";
+import { resolveProductName } from "@/lib/categoryMap";
 import * as XLSX from "xlsx-js-style";
 
 const SELLERMATE_BASE_URL = "https://api.sellermate.ai/public/v1/tools";
@@ -83,8 +84,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Top search terms & products (by ad sales)
     const topTerms = (st.data || []).filter((t: any) => t.sales > 0).slice(0, 5)
       .map((t: any) => ({ term: t.searchTerm, sales: t.sales, orders: t.orders }));
+    const skuByAsin = await fetchAsinSkuMap({ apiKey, amazon_account_id, workspace_id });
     const topProducts = (prod.data || []).filter((p: any) => p.sales > 0).slice(0, 5)
-      .map((p: any) => ({ name: p.adProductName, sales: p.sales, acos: p.acos }));
+      .map((p: any) => {
+        const sku = (skuByAsin.get(p.adAsin) || [])[0] || "";
+        return { name: resolveProductName(p.adProductName, sku) || p.adProductName, sales: p.sales, acos: p.acos };
+      });
 
     // Inventory health (first page snapshot of 200 — enough for a health count)
     const invItems: any[] = inv.items || [];

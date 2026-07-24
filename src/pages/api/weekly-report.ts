@@ -6,9 +6,9 @@
 // endDate: last day of "this week" (default: yesterday).
 
 import type { NextApiRequest, NextApiResponse } from "next";
-import { resolveSellerMateKey } from "@/lib/adAlerts";
+import { resolveSellerMateKey, fetchAsinSkuMap } from "@/lib/adAlerts";
 import { buildAmazonSalesWorkbookForAccount } from "@/lib/amazonSalesExport";
-import { categorizeTitle } from "@/lib/categoryMap";
+import { categorizeTitle, resolveProductName } from "@/lib/categoryMap";
 import * as XLSX from "xlsx-js-style";
 
 const SELLERMATE_BASE_URL = "https://api.sellermate.ai/public/v1/tools";
@@ -47,12 +47,14 @@ const pctChange = (last: number, now: number) => {
   return ((now - last) / last) * 100;
 };
 
-async function retailMap(apiKey: string, base: any, start: string, end: string) {
+async function retailMap(apiKey: string, base: any, start: string, end: string, skuByAsin: Map<string, string[]>) {
   // 336 products fit in one page of 500
   const res = await callTool("get_retail_product_performance", { ...base, start_date: start, end_date: end, page_size: 500 }, apiKey);
-  const map = new Map<string, { name: string; sales: number; units: number }>();
+  const map = new Map<string, { name: string; sku: string; sales: number; units: number }>();
   for (const r of (res.data || [])) {
-    map.set(r.asin, { name: r.productName || r.asin, sales: r.totalSales || 0, units: r.unitsOrdered || 0 });
+    const sku = (skuByAsin.get(r.asin) || [])[0] || "";
+    const rawName = r.productName || r.asin;
+    map.set(r.asin, { name: resolveProductName(rawName, sku) || rawName, sku, sales: r.totalSales || 0, units: r.unitsOrdered || 0 });
   }
   return { map, summary: res.summary || {} };
 }
@@ -83,9 +85,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const base = { amazon_account_id, workspace_id };
 
   try {
+    const skuByAsin = await fetchAsinSkuMap({ apiKey, amazon_account_id, workspace_id });
+
     // Sequential — SellerMate rate-limits bursts of heavy report calls.
-    const tW = await retailMap(apiKey, base, T.start, T.end);
-    const lW = await retailMap(apiKey, base, L.start, L.end);
+    const tW = await retailMap(apiKey, base, T.start, T.end, skuByAsin);
+    const lW = await retailMap(apiKey, base, L.start, L.end, skuByAsin);
     const retThis = await returnsCount(apiKey, base, T.start, T.end);
     const retLast = await returnsCount(apiKey, base, L.start, L.end);
 
@@ -112,29 +116,42 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
     const gainers = movers.filter((m) => m.diff > 0).sort((a, b) => b.diff - a.diff).slice(0, 5);
     const losers = movers.filter((m) => m.diff < 0).sort((a, b) => a.diff - b.diff).slice(0, 5);
+    // Best Sellers: top 5 by raw sales THIS week, regardless of growth direction — distinct from
+    // Gainers/Decliners above, which rank by week-over-week change instead of absolute volume.
+    const bestSellers = [...movers].sort((a, b) => b.this - a.this).slice(0, 5);
 
     // Platform line: only Amazon is connected today — structured as a list so
     // Flipkart/other marketplaces can be appended here once wired up.
     const platforms = [{ name: "Amazon", sales: ts.totalSales || 0 }];
 
-    // Department breakdown (this week) — reuses the same per-product rows already
+    // Department breakdown, this week AND last week — reuses the same per-product rows already
     // fetched above, categorized via the product->department map (categoryMap.ts).
-    const deptAgg = new Map<string, { sales: number; units: number }>();
-    for (const [asin, p] of tW.map.entries()) {
-      const dept = categorizeTitle(p.name, asin);
-      const d = deptAgg.get(dept) || { sales: 0, units: 0 };
-      d.sales += p.sales;
-      d.units += p.units;
-      deptAgg.set(dept, d);
+    function aggregateByDept(map: Map<string, { name: string; sku: string; sales: number; units: number }>) {
+      const agg = new Map<string, { sales: number; units: number }>();
+      for (const [asin, p] of map.entries()) {
+        const dept = categorizeTitle(p.name, asin, p.sku);
+        const d = agg.get(dept) || { sales: 0, units: 0 };
+        d.sales += p.sales;
+        d.units += p.units;
+        agg.set(dept, d);
+      }
+      return agg;
     }
-    const departments = [...deptAgg.entries()]
-      .map(([name, v]) => ({ name, sales: v.sales, units: v.units }))
+    const deptThis = aggregateByDept(tW.map);
+    const deptLast = aggregateByDept(lW.map);
+    const deptNames = new Set<string>([...deptThis.keys(), ...deptLast.keys()]);
+    const departments = [...deptNames]
+      .map((name) => {
+        const t = deptThis.get(name) || { sales: 0, units: 0 };
+        const l = deptLast.get(name) || { sales: 0, units: 0 };
+        return { name, sales: t.sales, units: t.units, lastSales: l.sales, lastUnits: l.units, deltaPct: pctChange(l.sales, t.sales) };
+      })
       .sort((a, b) => b.sales - a.sales);
 
     const emailData = {
       currency, accountName,
       thisLabel: label(T.start, T.end), lastLabel: label(L.start, L.end),
-      compare, gainers, losers, platforms, departments,
+      compare, gainers, losers, bestSellers, platforms, departments,
     };
 
     // Plain-text version of the two summary lines Barath sir asked for, formatted
@@ -175,7 +192,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (!r.ok) emailResult = { error: emailResult?.error || "send-email failed" };
     }
 
-    return res.status(200).json({ thisWeek: T, lastWeek: L, compare, gainers, losers, platforms, departments, whatsappText, emailed: !!(send && to), emailResult });
+    return res.status(200).json({ thisWeek: T, lastWeek: L, compare, gainers, losers, bestSellers, platforms, departments, whatsappText, emailed: !!(send && to), emailResult });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || "weekly-report failed" });
   }

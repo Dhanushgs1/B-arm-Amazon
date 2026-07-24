@@ -1,5 +1,5 @@
-import { MarketplaceOverview } from "@/components/marketplace/MarketplaceOverview";
+import { FlipkartOverview } from "@/components/marketplace/FlipkartOverview";
 
 export default function FlipkartPage() {
-  return <MarketplaceOverview marketplace="flipkart" />;
+  return <FlipkartOverview />;
 }

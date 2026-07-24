@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { useDashboard } from "@/lib/DashboardContext";
@@ -24,8 +25,9 @@ import {
   Wand2,
   ShoppingCart,
   Boxes,
-  LineChart,
   GitCompare,
+  Store,
+  UploadCloud,
   type LucideIcon
 } from "lucide-react";
 import { MARKETPLACE_META, getMarketplaceTab } from "@/lib/marketplace";
@@ -47,6 +49,7 @@ const NAV_SECTIONS: SidebarNavSection[] = [
     label: "Workspace",
     items: [
       { id: "overview", label: "Overview", icon: LayoutDashboard },
+      { id: "upload", label: "Upload Reports", icon: UploadCloud },
       { id: "reports", label: "Reports", icon: BarChart3 },
     ],
   },
@@ -79,24 +82,45 @@ const NAV_SECTIONS: SidebarNavSection[] = [
   },
 ];
 
-// Flipkart & Meesho don't expose an ads API the way Amazon Ads does, so they
-// get a lighter nav — Overview, Orders, Inventory, Sales — instead of trying
-// to mirror every Amazon Advertising page.
-function marketplaceNavSections(marketplace: "flipkart" | "meesho"): SidebarNavSection[] {
+// Flipkart doesn't expose an ads API the way Amazon Ads does, so it gets a
+// lighter nav — Overview, Orders, Inventory, Sales — instead of trying to
+// mirror every Amazon Advertising page.
+function marketplaceNavSections(marketplace: "flipkart"): SidebarNavSection[] {
+  const mName = MARKETPLACE_META[marketplace].label;
   return [
     {
-      label: MARKETPLACE_META[marketplace].label,
+      label: `${mName} Workspace`,
       items: [
         { id: "overview", label: "Overview", icon: LayoutDashboard, path: `/dashboard/${marketplace}` },
-        { id: "orders", label: "Orders", icon: ShoppingCart, path: `/dashboard/${marketplace}/orders` },
-        { id: "inventory", label: "Inventory", icon: Boxes, path: `/dashboard/${marketplace}/inventory` },
-        { id: "sales", label: "Sales Performance", icon: LineChart, path: `/dashboard/${marketplace}/sales` },
+        { id: "hub", label: "Upload Data", icon: UploadCloud, path: `/dashboard/${marketplace}/hub` },
+        { id: "reports", label: "Reports", icon: BarChart3, path: `/dashboard/${marketplace}/reports` },
       ],
     },
     {
-      label: "Workspace",
+      label: `${mName} Advertising`,
       items: [
-        { id: "compare", label: "Compare All", icon: GitCompare, path: "/dashboard/compare" },
+        { id: "campaigns", label: "Campaigns", icon: Megaphone, path: `/dashboard/${marketplace}/campaigns` },
+        { id: "adgroups", label: "Ad Groups", icon: LayoutGrid, path: `/dashboard/${marketplace}/adgroups` },
+        { id: "placements", label: "Placements", icon: Target, path: `/dashboard/${marketplace}/placements` },
+        { id: "keywords", label: "Keywords", icon: KeyRound, path: `/dashboard/${marketplace}/keywords` },
+        { id: "searchterms", label: "Search Terms", icon: Search, path: `/dashboard/${marketplace}/searchterms` },
+        { id: "bids", label: "Bid Adjustment", icon: Sliders, path: `/dashboard/${marketplace}/bids` },
+        { id: "optimization", label: "Rules & Optimization", icon: Wand2, path: `/dashboard/${marketplace}/optimization` },
+      ],
+    },
+    {
+      label: `${mName} Catalog`,
+      items: [
+        { id: "products", label: "Products", icon: Package, path: `/dashboard/${marketplace}/products` },
+        { id: "inventory", label: "Inventory", icon: Boxes, path: `/dashboard/${marketplace}/inventory` },
+        { id: "marketshare", label: "Market Share", icon: TrendingUp, path: `/dashboard/${marketplace}/marketshare` },
+      ],
+    },
+    {
+      label: "Intelligence & Workspace",
+      items: [
+        { id: "ai", label: "AI Assistant", icon: Bot, path: `/dashboard/${marketplace}/ai` },
+        { id: "compare", label: "Combined Overall View", icon: GitCompare, path: "/dashboard/compare" },
         { id: "settings", label: "Settings", icon: Settings, path: "/dashboard/settings" },
       ],
     },
@@ -105,13 +129,28 @@ function marketplaceNavSections(marketplace: "flipkart" | "meesho"): SidebarNavS
 
 const COMPARE_NAV_SECTIONS: SidebarNavSection[] = [
   {
-    label: "Workspace",
+    label: "Combined Workspace",
     items: [
-      { id: "compare", label: "Marketplace Comparison", icon: GitCompare, path: "/dashboard/compare" },
+      { id: "compare", label: "Combined Overall View", icon: GitCompare, path: "/dashboard/compare" },
+    ],
+  },
+  {
+    label: "Switch Marketplace",
+    items: [
+      { id: "amazon", label: "Amazon Analytics", icon: ShoppingCart, path: "/dashboard" },
+      { id: "flipkart", label: "Flipkart Analytics", icon: Store, path: "/dashboard/flipkart" },
+    ],
+  },
+  {
+    label: "Intelligence & Settings",
+    items: [
+      { id: "ai", label: "✨ AI Assistant", icon: Bot, path: "/dashboard/ai" },
+      { id: "optimization", label: "Amazon Rules Engine", icon: Wand2, path: "/dashboard/optimization" },
       { id: "settings", label: "Settings", icon: Settings, path: "/dashboard/settings" },
     ],
   },
 ];
+
 
 interface SidebarProps {
   mobileOpen?: boolean;
@@ -144,13 +183,13 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
   const initials = isLkn ? "LK" : "BA";
 
   const sections =
-    marketplace === "flipkart" || marketplace === "meesho"
+    marketplace === "flipkart"
       ? marketplaceNavSections(marketplace)
       : marketplace === "compare"
       ? COMPARE_NAV_SECTIONS
       : NAV_SECTIONS;
 
-  const marketplaceRoot = marketplace === "flipkart" || marketplace === "meesho" ? `/dashboard/${marketplace}` : null;
+  const marketplaceRoot = marketplace === "flipkart" ? `/dashboard/${marketplace}` : null;
   const currentPage =
     pathname === "/dashboard" || pathname === marketplaceRoot
       ? "overview"
@@ -212,11 +251,13 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
               const isActive = currentPage === item.id;
               const Icon = item.icon;
 
+              const targetHref = item.path || (item.id === "overview" ? "/dashboard" : `/dashboard/${item.id}`);
+
               return (
                 <div key={item.id} className="relative group">
-                  <button
+                  <Link
+                    href={targetHref}
                     onClick={() => {
-                      router.push(item.path || (item.id === "overview" ? "/dashboard" : `/dashboard/${item.id}`));
                       if (closeOnNavigate) onCloseMobile?.();
                     }}
                     className={cn(
@@ -234,7 +275,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
                       <Icon className={cn("w-3.5 h-3.5", isActive ? "text-white" : "text-slate-400")} />
                     </span>
                     {!collapsed && <span className="truncate">{item.label}</span>}
-                  </button>
+                  </Link>
 
                   {/* Tooltip shown only in collapsed view */}
                   {collapsed && (
@@ -248,6 +289,24 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
           </div>
         ))}
       </nav>
+
+      {/* Pinned AI CTA */}
+      <div className={cn("px-2 pb-3 pt-2 border-t border-slate-800", collapsed && "flex justify-center")}>
+        <Link
+          href="/dashboard/ai"
+          className={cn(
+            "flex items-center rounded-xl transition-all duration-200 font-black text-[11px] bg-gradient-to-r from-indigo-600 to-violet-700 text-white hover:from-indigo-500 hover:to-violet-600 shadow-md shadow-indigo-500/20",
+            collapsed ? "justify-center p-2 w-10 h-10" : "gap-2.5 px-3 py-2 w-full"
+          )}
+          onClick={() => { if (closeOnNavigate) onCloseMobile?.(); }}
+          title="AI Assistant"
+        >
+          <span className="w-5 h-5 rounded-lg bg-white/20 flex items-center justify-center flex-shrink-0">
+            <Bot className="w-3 h-3 text-white" />
+          </span>
+          {!collapsed && <span>✨ AI Assistant</span>}
+        </Link>
+      </div>
     </>
   );
 

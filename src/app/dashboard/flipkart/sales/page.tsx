@@ -1,5 +1,5 @@
-import { MarketplaceSales } from "@/components/marketplace/MarketplaceSales";
+import { FlipkartSales } from "@/components/marketplace/FlipkartSales";
 
 export default function FlipkartSalesPage() {
-  return <MarketplaceSales marketplace="flipkart" />;
+  return <FlipkartSales />;
 }

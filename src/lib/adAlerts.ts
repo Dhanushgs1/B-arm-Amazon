@@ -90,3 +90,29 @@ export function resolveSellerMateKey(slot: string): string | undefined {
   if (slot === "B") return process.env.SELLERMATE_API_KEY_B;
   return process.env.SELLERMATE_API_KEY_A || process.env.SELLERMATE_API_KEY;
 }
+
+// ASIN -> SKU list, paginated over the full catalog (matches the dashboard Products page's
+// approach) — feeds resolveProductName() so report emails show the seller's clean master name
+// (from "Master SKU sheet with Category.xlsx") instead of the raw Amazon/Flipkart listing title.
+export async function fetchAsinSkuMap(opts: {
+  apiKey: string; amazon_account_id: string; workspace_id: string;
+}): Promise<Map<string, string[]>> {
+  const map = new Map<string, string[]>();
+  let offset = 0;
+  for (let i = 0; i < 20; i++) {
+    const res = await callTool("list_product_catalog", {
+      amazon_account_id: opts.amazon_account_id, workspace_id: opts.workspace_id,
+      limit: 200, offset, include_suppressed: true,
+    }, opts.apiKey);
+    const page: any[] = res.products || [];
+    for (const c of page) {
+      if (!c.asin || !c.sku) continue;
+      const list = map.get(c.asin) || [];
+      if (!list.includes(c.sku)) list.push(c.sku);
+      map.set(c.asin, list);
+    }
+    if (page.length < 200) break;
+    offset += 200;
+  }
+  return map;
+}

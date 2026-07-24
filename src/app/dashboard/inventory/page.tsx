@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useDashboard } from "@/lib/DashboardContext";
 import { mcpAllInventory, fetchSkuMap } from "@/lib/api";
+import { resolveProductName } from "@/lib/categoryMap";
 import { DataTable } from "@/components/DataTable";
 import { KPICard } from "@/components/KPICard";
 import { Loader2, PackageOpen, AlertTriangle, CheckCircle, XCircle } from "lucide-react";
@@ -38,9 +39,11 @@ export default function InventoryPage() {
         const totalValue = totalQty * (i.price || 0);
         const stockStatus = totalQty === 0 ? "Out of Stock" : totalQty < 20 ? "Low Stock" : "Healthy";
         const skus = i.sku ? [i.sku] : (skuMap[i.asin] || []);
+        const skuList = skus.join(", ");
         return {
           ...i,
-          skuList: skus.join(", ") || "—",
+          itemName: resolveProductName(i.itemName, skuList) || i.itemName,
+          skuList: skuList || "—",
           fbmQty,
           fbaQty,
           totalQty,

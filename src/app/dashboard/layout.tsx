@@ -14,7 +14,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const pathname = usePathname();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   // These two are Amazon/SellerMate-specific — irrelevant (and, for the
-  // banner, actively misleading) on the Flipkart/Meesho/Compare pages.
+  // banner, actively misleading) on the Flipkart/Compare pages.
   const isAmazon = getMarketplaceTab(pathname) === "amazon";
 
   return (

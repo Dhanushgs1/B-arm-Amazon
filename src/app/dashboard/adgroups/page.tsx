@@ -328,7 +328,7 @@ export default function AdGroupsPage() {
                 {winners.slice(0, 3).map((r: any) => (
                   <div key={r.adGroupId} className="p-4 rounded-2xl border border-emerald-200 dark:border-emerald-900 bg-gradient-to-br from-emerald-50/80 to-white dark:from-emerald-950/30 dark:to-transparent text-xs hover:-translate-y-0.5 transition-transform">
                     <p className="font-extrabold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5 text-sm"><Rocket className="w-4 h-4" /> Winning Ad Group</p>
-                    <p className="font-bold mt-1.5 truncate text-[13px]" title={r.adGroupName}>{r.adGroupName}</p>
+                    <p className="font-bold mt-1.5 truncate text-[13px]" title={r.campaignName}>{r.campaignName}</p>
                     <p className="text-muted-foreground mt-1 font-bold">ROAS {r.roas.toFixed(2)}x · Sales {cur(r.sales, currency)}</p>
                     <p className="font-extrabold text-emerald-700 dark:text-emerald-500 mt-2">Raise bids +10–15% to capture volume</p>
                   </div>
@@ -336,7 +336,7 @@ export default function AdGroupsPage() {
                 {bleeders.slice(0, 3).map((r: any) => (
                   <div key={r.adGroupId} className="p-4 rounded-2xl border border-red-200 dark:border-red-900 bg-gradient-to-br from-red-50/80 to-white dark:from-red-950/30 dark:to-transparent text-xs hover:-translate-y-0.5 transition-transform">
                     <p className="font-extrabold text-red-700 dark:text-red-400 flex items-center gap-1.5 text-sm"><AlertTriangle className="w-4 h-4" /> High ACOS</p>
-                    <p className="font-bold mt-1.5 truncate text-[13px]" title={r.adGroupName}>{r.adGroupName}</p>
+                    <p className="font-bold mt-1.5 truncate text-[13px]" title={r.campaignName}>{r.campaignName}</p>
                     <p className="text-muted-foreground mt-1 font-bold">ACOS {pct(r.acos)} · Spend {cur(r.spend, currency)}</p>
                     <p className="font-extrabold text-red-700 dark:text-red-500 mt-2">Reduce bids & review search terms for negatives</p>
                   </div>

@@ -1,12 +1,11 @@
-// Flipkart & Meesho don't have a connected data source yet (no Seller/Supplier
-// API keys — see Settings > Marketplace Connections), so every number here is
+// Flipkart doesn't have a connected data source yet (no Seller API keys —
+// see Settings > Marketplace Connections), so every number here is
 // deterministically generated demo data. It is seeded from the marketplace id
 // + date range, so it stays stable while you browse a given period instead of
 // re-randomizing on every render, and it swaps out for real numbers with zero
-// UI changes once fetchFlipkartOverview/fetchMeeshoOverview are backed by a
-// real API call.
+// UI changes once fetchFlipkartOverview is backed by a real API call.
 
-export type MarketplaceId = "amazon" | "flipkart" | "meesho";
+export type MarketplaceId = "amazon" | "flipkart";
 export type MarketplaceTab = MarketplaceId | "compare";
 
 export interface MarketplaceMeta {
@@ -44,20 +43,9 @@ export const MARKETPLACE_META: Record<MarketplaceId, MarketplaceMeta> = {
     text: "text-[#2874F0]",
     border: "border-[#2874F0]/25",
   },
-  meesho: {
-    id: "meesho",
-    label: "Meesho",
-    shortLabel: "MS",
-    tagline: "Demo · Connect API",
-    color: "#9F2089",
-    gradient: "from-[#9F2089] to-[#F43397]",
-    bg: "bg-[#9F2089]/10",
-    text: "text-[#9F2089]",
-    border: "border-[#9F2089]/25",
-  },
 };
 
-export const MOCK_MARKETPLACES: MarketplaceId[] = ["flipkart", "meesho"];
+export const MOCK_MARKETPLACES: MarketplaceId[] = ["flipkart"];
 
 // ---------------------------------------------------------------------------
 // Pathname helpers — the sidebar/topnav derive the active marketplace from
@@ -68,7 +56,6 @@ export const MOCK_MARKETPLACES: MarketplaceId[] = ["flipkart", "meesho"];
 export function getMarketplaceTab(pathname: string | null): MarketplaceTab {
   const p = pathname || "";
   if (p.startsWith("/dashboard/flipkart")) return "flipkart";
-  if (p.startsWith("/dashboard/meesho")) return "meesho";
   if (p.startsWith("/dashboard/compare")) return "compare";
   return "amazon";
 }
@@ -201,8 +188,8 @@ const INDIAN_STATES = [
   "West Bengal", "Gujarat", "Telangana", "Rajasthan", "Kerala",
 ];
 
-// Marketplace "personality" — Meesho skews to high order volume / low AOV /
-// higher RTO, Flipkart sits mid-market, roughly matching real seller reports.
+// Marketplace "personality" — Flipkart sits mid-market, roughly matching
+// real seller reports.
 const PROFILE: Record<Exclude<MarketplaceId, "amazon">, {
   aovRange: [number, number];
   ordersPerDay: [number, number];
@@ -210,7 +197,6 @@ const PROFILE: Record<Exclude<MarketplaceId, "amazon">, {
   ratingRange: [number, number];
 }> = {
   flipkart: { aovRange: [420, 780], ordersPerDay: [8, 22], returnRateRange: [4, 11], ratingRange: [3.9, 4.5] },
-  meesho: { aovRange: [220, 420], ordersPerDay: [15, 40], returnRateRange: [12, 26], ratingRange: [3.5, 4.2] },
 };
 
 export function generateMarketplaceOverview(
@@ -351,3 +337,206 @@ export function generateMarketplaceInventory(
     };
   }).sort((a, b) => a.inStock - b.inStock);
 }
+
+// ---------------------------------------------------------------------------
+// Ad Campaigns, Rules & Bids for Flipkart
+// ---------------------------------------------------------------------------
+
+export interface MarketplaceCampaign {
+  id: string;
+  name: string;
+  type: string; // PLA, PCA, Smart ROI, Smart Ads, Brand Ads
+  status: "ENABLED" | "PAUSED";
+  budget: number;
+  spend: number;
+  sales: number;
+  orders: number;
+  clicks: number;
+  impressions: number;
+  acos: number;
+  roas: number;
+}
+
+export interface MarketplaceRule {
+  id: string;
+  name: string;
+  type: "roas" | "stock" | "rto" | "negative" | "dayparting";
+  condition: string;
+  action: string;
+  enabled: boolean;
+  frequency: string;
+  lastExecuted: string;
+  impactEstimate: string;
+  marketplace: Exclude<MarketplaceId, "amazon">;
+}
+
+export interface MarketplaceBidTarget {
+  id: string;
+  campaignName: string;
+  target: string;
+  matchType: string;
+  currentBid: number;
+  suggestedBid: number;
+  spend: number;
+  sales: number;
+  acos: number;
+  roas: number;
+  recommendation: "Increase" | "Reduce" | "Pause" | "Optimal";
+}
+
+export function generateMarketplaceCampaigns(
+  id: Exclude<MarketplaceId, "amazon">
+): MarketplaceCampaign[] {
+  const rng = makeRng([id, "campaigns"]);
+  const campaignTypes = ["PLA (Product Listing Ads)", "PCA (Product Contextual Ads)", "Smart ROI", "Flipkart Brand Ads"];
+
+  return [
+    "High Conversion Top Sellers",
+    "Seasonal Festive Boost",
+    "New Product Discovery",
+    "Competitor Keyword Conquesting",
+    "Retargeting & Abandoned Cart",
+    "Auto-Targeting Smart ROI",
+    "Category Leader Push",
+  ].map((baseName, index) => {
+    const type = campaignTypes[index % campaignTypes.length];
+    const budget = Math.round(500 + rng() * 4500);
+    const spend = Math.round(budget * (0.4 + rng() * 0.55));
+    const roas = Math.round((1.8 + rng() * 4.5) * 10) / 10;
+    const sales = Math.round(spend * roas);
+    const orders = Math.round(sales / 550);
+    const clicks = Math.round(orders * (8 + rng() * 12));
+    const impressions = Math.round(clicks * (25 + rng() * 50));
+    const acos = sales ? Math.round((spend / sales) * 1000) / 10 : 0;
+
+    return {
+      id: `${id.slice(0, 2).toUpperCase()}-CMP-${100 + index}`,
+      name: `[${id.toUpperCase()}] ${baseName}`,
+      type,
+      status: index === 3 ? "PAUSED" : "ENABLED",
+      budget,
+      spend,
+      sales,
+      orders,
+      clicks,
+      impressions,
+      acos,
+      roas,
+    };
+  });
+}
+
+export function generateMarketplaceRules(
+  id: Exclude<MarketplaceId, "amazon">
+): MarketplaceRule[] {
+  return [
+    {
+      id: "fk-rule-1",
+        name: "Flipkart Smart ROI Protection Guardrail",
+        type: "roas",
+        condition: "If Campaign ACOS > 35% over last 7 days",
+        action: "Reduce bid by 12% automatically",
+        enabled: true,
+        frequency: "Daily at 02:00 AM",
+        impactEstimate: "Est. Savings ₹8,400/mo",
+        marketplace: id,
+      },
+      {
+        id: "fk-rule-2",
+        name: "Low Inventory Campaign Pause",
+        type: "stock",
+        condition: "If SKU Stock < 10 units",
+        action: "Pause Flipkart PLA & PCA Ads for SKU",
+        enabled: true,
+        frequency: "Every 2 hours",
+        impactEstimate: "Prevents wasted spend on out-of-stock SKUs",
+        marketplace: id,
+      },
+      {
+        id: "fk-rule-3",
+        name: "High Performing PLA Bid Booster",
+        type: "roas",
+        condition: "If Target ROAS > 4.5x & Orders >= 5",
+        action: "Increase bid by 15% (Max Bid ₹25)",
+        enabled: true,
+        frequency: "Every 12 hours",
+        impactEstimate: "+18% Revenue Scale",
+        marketplace: id,
+      },
+      {
+        id: "fk-rule-4",
+        name: "Wasted Search Term Auto-Negation",
+        type: "negative",
+        condition: "If Search Term Clicks >= 12 & Orders = 0",
+        action: "Add to Flipkart Negative Exact Keyword list",
+        enabled: true,
+        frequency: "Daily",
+        impactEstimate: "Est. Savings ₹5,200/mo",
+        marketplace: id,
+      },
+      {
+        id: "fk-rule-5",
+        name: "Night Window Dayparting Schedule",
+        type: "dayparting",
+        condition: "Between 01:00 AM - 06:00 AM",
+        action: "Lower bids by 35%",
+        enabled: false,
+        frequency: "Scheduled Daily",
+        impactEstimate: "Est. Savings ₹3,100/mo",
+        marketplace: id,
+      },
+    ];
+}
+
+export function generateMarketplaceBids(
+  id: Exclude<MarketplaceId, "amazon">
+): MarketplaceBidTarget[] {
+  const rng = makeRng([id, "bids"]);
+  const targets = [
+    "ovulation kit 30 strips",
+    "basal body thermometer",
+    "speech therapy kit",
+    "baby grooming 8 pcs",
+    "postpartum belt",
+    "sensory chew brush",
+    "teether set silicone",
+    "maternity support band",
+  ];
+
+  return targets.map((target, i) => {
+    const currentBid = Math.round((8 + rng() * 14) * 10) / 10;
+    const acos = Math.round((18 + rng() * 35) * 10) / 10;
+    const roas = Math.round((100 / acos) * 10) / 10;
+    const spend = Math.round(1500 + rng() * 8000);
+    const sales = Math.round(spend * roas);
+    
+    let recommendation: MarketplaceBidTarget["recommendation"] = "Optimal";
+    let suggestedBid = currentBid;
+
+    if (acos > 40) {
+      recommendation = "Reduce";
+      suggestedBid = Math.round(currentBid * 0.8 * 10) / 10;
+    } else if (roas > 4.2) {
+      recommendation = "Increase";
+      suggestedBid = Math.round(currentBid * 1.18 * 10) / 10;
+    } else if (acos > 50 && roas < 1.8) {
+      recommendation = "Pause";
+      suggestedBid = 0;
+    }
+
+    return {
+      id: `${id.slice(0, 2).toUpperCase()}-BID-${i + 1}`,
+      campaignName: `[${id.toUpperCase()}] Smart ROI - ${target.split(" ")[0]}`,
+      target,
+      matchType: i % 2 === 0 ? "Exact" : "Broad",
+      currentBid,
+      suggestedBid,
+      spend,
+      sales,
+      acos,
+      roas,
+      recommendation,
+    };
+  });
+}
+

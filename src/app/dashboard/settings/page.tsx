@@ -119,15 +119,13 @@ export default function SettingsPage() {
   const [compactMode, setCompactMode] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">("light");
 
-  // ── Marketplace connections (Flipkart / Meesho) — stored locally only.
-  // Nothing consumes these yet: there is no server-side proxy for either
-  // platform, so Flipkart/Meesho pages keep showing demo data until a real
-  // integration is built. This just captures the credentials so that wiring
-  // is a backend change, not another round of UI work.
+  // ── Marketplace connections (Flipkart) — stored locally only. Nothing
+  // consumes these yet: there is no server-side proxy for the platform, so
+  // Flipkart pages keep showing demo data until a real integration is
+  // built. This just captures the credentials so that wiring is a backend
+  // change, not another round of UI work.
   const [flipkartApiKey, setFlipkartApiKey] = useState("");
   const [flipkartSellerId, setFlipkartSellerId] = useState("");
-  const [meeshoApiKey, setMeeshoApiKey] = useState("");
-  const [meeshoSupplierId, setMeeshoSupplierId] = useState("");
 
   // Ingestion trigger states
   const [syncing, setSyncing] = useState(false);
@@ -181,8 +179,6 @@ export default function SettingsPage() {
         setCompactMode(p.compactMode ?? false);
         setFlipkartApiKey(p.flipkartApiKey ?? "");
         setFlipkartSellerId(p.flipkartSellerId ?? "");
-        setMeeshoApiKey(p.meeshoApiKey ?? "");
-        setMeeshoSupplierId(p.meeshoSupplierId ?? "");
       } catch (e) {
         console.error("Failed to parse settings", e);
       }
@@ -227,7 +223,7 @@ export default function SettingsPage() {
       weeklySummary, dailySummary, monthlySummary, aiEnabled, autoInsights, smartAlerts,
       forecastWindow, recMode, autoPause, autoNegatives, autoBudget,
       roasTarget, compactMode,
-      flipkartApiKey, flipkartSellerId, meeshoApiKey, meeshoSupplierId,
+      flipkartApiKey, flipkartSellerId,
       // account context for the automated crons (which account to query)
       keySlot, amazonAccountId: account?.id, workspaceId: account?.workspace_id, currency: account?.currency,
     };
@@ -535,13 +531,13 @@ export default function SettingsPage() {
                 </SettingRow>
               </Card>
 
-              {(["flipkart", "meesho"] as const).map((mp) => {
+              {(["flipkart"] as const).map((mp) => {
                 const meta = MARKETPLACE_META[mp];
-                const apiKey = mp === "flipkart" ? flipkartApiKey : meeshoApiKey;
-                const setApiKey = mp === "flipkart" ? setFlipkartApiKey : setMeeshoApiKey;
-                const idValue = mp === "flipkart" ? flipkartSellerId : meeshoSupplierId;
-                const setIdValue = mp === "flipkart" ? setFlipkartSellerId : setMeeshoSupplierId;
-                const idLabel = mp === "flipkart" ? "Seller ID" : "Supplier ID";
+                const apiKey = flipkartApiKey;
+                const setApiKey = setFlipkartApiKey;
+                const idValue = flipkartSellerId;
+                const setIdValue = setFlipkartSellerId;
+                const idLabel = "Seller ID";
                 const isConnected = apiKey.trim().length > 0 && idValue.trim().length > 0;
 
                 return (
@@ -554,9 +550,7 @@ export default function SettingsPage() {
                       </span>
                     </div>
                     <p className="text-xs text-muted-foreground font-semibold leading-relaxed mb-3">
-                      {mp === "flipkart"
-                        ? "Generate an API key from Flipkart Seller Hub → Settings → API Access, then paste it below."
-                        : "Generate a Supplier API key from the Meesho Supplier Panel → Settings → API Access, then paste it below."}
+                      Generate an API key from Flipkart Seller Hub → Settings → API Access, then paste it below.
                     </p>
                     <div className="space-y-3">
                       <div>

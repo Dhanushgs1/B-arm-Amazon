@@ -6,6 +6,7 @@ import { mcp, mcpAllInventory } from "@/lib/api";
 import { X, Loader2, Sparkles, Box, TrendingUp, RefreshCw, AlertTriangle } from "lucide-react";
 import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
+import { resolveProductName } from "@/lib/categoryMap";
 
 const cur = (val: number, currency?: string) => {
   const sym = currency === "INR" ? "₹" : "$";
@@ -69,6 +70,8 @@ export function ProductDetailDrawer() {
 
   const productPerf = (productPerfData?.data || []).find((p: any) => p.adAsin === selectedAsin || p.asin === selectedAsin);
   const inventoryItem = (inventoryItems || []).find((i: any) => i.asin === selectedAsin);
+  const displayName = resolveProductName(productPerf?.adProductName || inventoryItem?.itemName, inventoryItem?.sku)
+    || productPerf?.adProductName || inventoryItem?.itemName || selectedAsin;
 
   const topCampaigns = (campaignPerfData?.campaigns || [])
     .sort((a: any, b: any) => (b.spend || 0) - (a.spend || 0))
@@ -147,7 +150,7 @@ export function ProductDetailDrawer() {
 
     const prompt = `You are an Amazon PPC analyst. Analyze this REAL data for an Amazon product and give sharp, actionable insights. Be direct and concise.
 
-PRODUCT: ${productPerf?.adProductName || inventoryItem?.itemName || selectedAsin}
+PRODUCT: ${displayName}
 ASIN: ${selectedAsin}
 Period: ${startDate} to ${endDate}
 
@@ -278,8 +281,8 @@ Provide analysis in 4 clear sections using bullet points:
             )}
             <div className="min-w-0">
               <span className="text-xs text-muted-foreground font-mono">ASIN: {selectedAsin}</span>
-              <h2 className="text-base font-bold tracking-tight truncate text-foreground pr-4" title={productPerf?.adProductName || inventoryItem?.itemName}>
-                {productPerf?.adProductName || inventoryItem?.itemName || "Advertised Product"}
+              <h2 className="text-base font-bold tracking-tight truncate text-foreground pr-4" title={displayName}>
+                {displayName || "Advertised Product"}
               </h2>
             </div>
           </div>

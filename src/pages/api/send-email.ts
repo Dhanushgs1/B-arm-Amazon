@@ -385,7 +385,9 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
     const deptRows = departments.map((d: any) => `
       <tr>
         <td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12.5px;font-weight:700;color:#111;">${d.name}</td>
+        <td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12.5px;color:#6b7280;text-align:right;">${money(d.lastSales || 0)}</td>
         <td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12.5px;color:#111;font-weight:800;text-align:right;">${money(d.sales)}</td>
+        <td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12.5px;text-align:right;">${delta(d.deltaPct, true)}</td>
         <td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12.5px;color:#6b7280;text-align:right;">${d.units}</td>
         <td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12.5px;color:#6b7280;text-align:right;">${deptTotal ? ((d.sales / deptTotal) * 100).toFixed(1) : "0.0"}%</td>
       </tr>`).join("");
@@ -409,11 +411,13 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
 
         ${departments.length ? `
         <tr><td style="padding-top:16px;">
-          <h3 style="margin:0 0 8px;font-size:14px;font-weight:800;color:#111;">&#127973; Department Breakup (this week)</h3>
+          <h3 style="margin:0 0 8px;font-size:14px;font-weight:800;color:#111;">&#127973; Department Breakup</h3>
           <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #f0f0f0;border-radius:10px;overflow:hidden;">
             <thead><tr style="background:#f9fafb;">
               <th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">Department</th>
-              <th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">Sales</th>
+              <th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">Last Wk</th>
+              <th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">This Wk</th>
+              <th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">Change</th>
               <th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">Units</th>
               <th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">Share</th>
             </tr></thead>
@@ -433,6 +437,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
           </table>
         </td></tr>
 
+        ${moverTable("&#127942;", "Top 5 Best Sellers (by sales)", data.bestSellers, true, "Highest-selling products this week, with last week for comparison.")}
         ${moverTable("&#128200;", "Top Gainers (sales up)", data.gainers, true, "Products growing week-over-week — double down here.")}
         ${moverTable("&#128201;", "Top Decliners (sales down)", data.losers, false, "Products dropping week-over-week — check stock, bids & ranking.")}
 

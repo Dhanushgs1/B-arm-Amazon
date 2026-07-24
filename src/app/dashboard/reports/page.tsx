@@ -6,6 +6,7 @@ import { useState } from "react";
 import { mcp, mcpAllPages, mcpAllInventory } from "@/lib/api";
 import { exportAmazonSalesReport, SalesReportGranularity } from "@/lib/amazonSalesExport";
 import { exportAnalysisReport } from "@/lib/analysisReportExport";
+import { resolveProductName } from "@/lib/categoryMap";
 import * as XLSX from "xlsx-js-style";
 
 export default function ReportsPage() {
@@ -98,9 +99,11 @@ export default function ReportsPage() {
         });
 
         content = "ASIN,SKU,Product_Name,Spend,Sales,Orders,Clicks,ACOS,ROAS\n";
-        content += rows.map((r: any) => 
-          `${r.adAsin || "Unknown"},${r.sku || skuMap.get(r.adAsin) || ""},"${(r.adProductName || "").replace(/"/g, '""')} ",${r.spend || 0},${r.sales || 0},${r.orders || 0},${r.clicks || 0},${r.acos || 0}%,${r.roas || 0}x`
-        ).join("\n");
+        content += rows.map((r: any) => {
+          const sku = r.sku || skuMap.get(r.adAsin) || "";
+          const name = resolveProductName(r.adProductName, sku) || r.adProductName || "";
+          return `${r.adAsin || "Unknown"},${sku},"${name.replace(/"/g, '""')} ",${r.spend || 0},${r.sales || 0},${r.orders || 0},${r.clicks || 0},${r.acos || 0}%,${r.roas || 0}x`;
+        }).join("\n");
         filename = `Product_Advertising_Profitability_${dateSuffix}.csv`;
         
       } else if (type.includes("Search Term")) {
@@ -122,7 +125,8 @@ export default function ReportsPage() {
         content += rows.map((r: any) => {
           const fba = r.fba?.endingWarehouseBalance || 0;
           const fbm = r.fbm?.quantity || 0;
-          return `${r.asin || "Unknown"},${r.sku || ""},"${(r.itemName || "").replace(/"/g, '""')}",${fba},${fbm},${r.price || 0},${(fba + fbm) * (r.price || 0)}`;
+          const name = resolveProductName(r.itemName, r.sku) || r.itemName || "";
+          return `${r.asin || "Unknown"},${r.sku || ""},"${name.replace(/"/g, '""')}",${fba},${fbm},${r.price || 0},${(fba + fbm) * (r.price || 0)}`;
         }).join("\n");
         filename = `Inventory_Forecasting_Report_${dateSuffix}.csv`;
 
@@ -149,8 +153,10 @@ export default function ReportsPage() {
           if (!res.pagination?.hasMore || pageRows.length === 0) break;
         }
         content = "Return_Date,ASIN,SKU,Product_Name,Quantity,Reason,Status\n";
-        content += rows.map((r: any) =>
-          `${r.returnDate || ""},${r.asin || ""},${r.sku || ""},"${(r.productName || "").replace(/"/g, '""')}",${r.quantity || 1},"${(r.reason || "").replace(/"/g, '""')}","${(r.status || "").replace(/"/g, '""')}"`
+        content += rows.map((r: any) => {
+          const name = resolveProductName(r.productName, r.sku) || r.productName || "";
+          return `${r.returnDate || ""},${r.asin || ""},${r.sku || ""},"${name.replace(/"/g, '""')}",${r.quantity || 1},"${(r.reason || "").replace(/"/g, '""')}","${(r.status || "").replace(/"/g, '""')}"`;
+        }
         ).join("\n");
         filename = `Customer_Returns_Log_${dateSuffix}.csv`;
 
@@ -210,10 +216,12 @@ export default function ReportsPage() {
         XLSX.utils.book_append_sheet(wb, wsCp, "Campaigns");
 
         // 3. Ad Products Sheet (Rich data + Colors)
-        const prodRows = prodData.map((p: any) => ({
+        const prodRows = prodData.map((p: any) => {
+          const sku = p.sku || skuMap.get(p.adAsin) || "";
+          return {
           ASIN: p.adAsin,
-          SKU: p.sku || skuMap.get(p.adAsin) || "",
-          Product_Name: p.adProductName || "",
+          SKU: sku,
+          Product_Name: resolveProductName(p.adProductName, sku) || p.adProductName || "",
           State: p.state || "",
           Spend: p.spend || 0,
           Sales: p.sales || 0,
@@ -221,7 +229,8 @@ export default function ReportsPage() {
           Clicks: p.clicks || 0,
           ACOS: p.acos || 0,
           ROAS: p.roas || 0
-        }));
+          };
+        });
         const wsProd = XLSX.utils.json_to_sheet(prodRows);
         
         // Color code ACOS column (I column)
@@ -246,7 +255,7 @@ export default function ReportsPage() {
         
         // 5. Inventory Sheet
         const invFormatted = invData.map((r: any) => ({
-          ASIN: r.asin, SKU: r.sku, Item_Name: r.itemName || "", Price: r.price, FBA_Qty: r.fba?.endingWarehouseBalance || 0, FBM_Qty: r.fbm?.quantity || 0,
+          ASIN: r.asin, SKU: r.sku, Item_Name: resolveProductName(r.itemName, r.sku) || r.itemName || "", Price: r.price, FBA_Qty: r.fba?.endingWarehouseBalance || 0, FBM_Qty: r.fbm?.quantity || 0,
           Total_Value: ((r.fba?.endingWarehouseBalance || 0) + (r.fbm?.quantity || 0)) * (r.price || 0)
         }));
         const wsInv = XLSX.utils.json_to_sheet(invFormatted);
@@ -254,7 +263,11 @@ export default function ReportsPage() {
         XLSX.utils.book_append_sheet(wb, wsInv, "Inventory");
 
         // 6. Returns Sheet
-        const wsReturns = XLSX.utils.json_to_sheet(returnsRes.order_returns || []);
+        const returnsFormatted = (returnsRes.order_returns || []).map((r: any) => ({
+          ...r,
+          productName: resolveProductName(r.productName, r.sku) || r.productName,
+        }));
+        const wsReturns = XLSX.utils.json_to_sheet(returnsFormatted);
         XLSX.utils.book_append_sheet(wb, wsReturns, "Returns");
 
         XLSX.writeFile(wb, `BARM_Full_Executive_Report_${dateSuffix}.xlsx`);

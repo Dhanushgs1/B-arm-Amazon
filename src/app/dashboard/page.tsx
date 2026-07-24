@@ -11,6 +11,7 @@ import { TrendChart, UnifiedTrendChart } from "@/components/TrendChart";
 import { CategoryPerformance } from "@/components/CategoryPerformance";
 import { Loader2, TrendingUp, Package, Megaphone, Bot, AlertTriangle, ChevronRight, Sparkles, Share2, Download, RefreshCw, ArrowRight, Search, RotateCcw, MapPin, SearchSlash, TrendingDown, ShoppingCart, Star, BarChart3 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import Link from "next/link";
 
 // Formatters
 const cur = (val: number, currency?: string) => {
@@ -313,6 +314,39 @@ export default function DashboardOverview() {
         <KPICard title="Ad Sales" value={cur(adSales, currency)} subtitle="Ads-Attributed" trend={getDynamicTrend("Ad Sales", adSales, startDate, endDate, account?.id)} delay={0.04} accent="blue" />
         <KPICard title="Organic Sales" value={cur(organicSales, currency)} subtitle="Non-Ads Revenue" trend={getDynamicTrend("Organic Sales", organicSales, startDate, endDate, account?.id)} delay={0.06} accent="orange" />
         <KPICard title="Units Ordered" value={num(totalUnits)} subtitle="Total Units Sold" trend={getDynamicTrend("Units Ordered", totalUnits, startDate, endDate, account?.id)} delay={0.08} accent="purple" />
+      </div>
+
+      {/* AI Quick-Action Bar */}
+      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-indigo-600 via-violet-600 to-purple-600 p-4 border border-indigo-400/30 shadow-lg">
+        <div className="absolute inset-0 bg-gradient-to-r from-black/10 to-transparent" />
+        <div className="relative flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-white/15 flex items-center justify-center flex-shrink-0">
+              <Bot className="w-4.5 h-4.5 text-white" />
+            </div>
+            <div>
+              <p className="text-white font-black text-sm">BARM AI Assistant</p>
+              <p className="text-white/70 text-[11px] font-semibold">Get instant insights, ACOS analysis &amp; optimization suggestions</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {["Top campaigns?", "Reduce ACOS", "Inventory status", "Best products"].map((q) => (
+              <Link
+                key={q}
+                href={`/dashboard/ai?q=${encodeURIComponent(q)}`}
+                className="text-[11px] font-black px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-white border border-white/20 transition-all hover:scale-105"
+              >
+                {q}
+              </Link>
+            ))}
+            <Link
+              href="/dashboard/ai"
+              className="flex items-center gap-1.5 text-[11px] font-black px-4 py-1.5 rounded-xl bg-white text-indigo-700 hover:bg-indigo-50 transition-all shadow-md ml-1"
+            >
+              Open AI <ArrowRight className="w-3 h-3" />
+            </Link>
+          </div>
+        </div>
       </div>
 
       {/*  Performance Trends header + granularity toggle  */}

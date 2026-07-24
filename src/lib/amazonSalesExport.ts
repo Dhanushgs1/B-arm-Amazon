@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx-js-style";
 import { mcp } from "@/lib/api";
-import { categorizeTitle, CATEGORY_COLORS } from "@/lib/categoryMap";
+import { categorizeTitle, resolveProductName, CATEGORY_COLORS } from "@/lib/categoryMap";
 
 // SellerMate's get_retail_product_performance rejects start_date === end_date outright, so a
 // single calendar day can't be queried directly. "daily" instead uses a cumulative-prefix trick:
@@ -75,7 +75,14 @@ function buildPeriods(startDate: string, endDate: string, granularity: SalesRepo
   } else if (granularity === "weekly") {
     let cursor = start;
     while (cursor <= end) {
-      const naturalWeekEnd = new Date(cursor.getTime() + 6 * 86400000);
+      // Align each bucket's natural end to the Sunday of ITS calendar week (ISO
+      // Monday-Sunday), not a flat +6-day offset from wherever the cursor happens
+      // to land. A mid-week cursor (only possible for the very first bucket, if
+      // the selected start date isn't a Monday) still ends on that week's Sunday,
+      // which snaps every following bucket onto a real Monday-Sunday week.
+      const dow = cursor.getUTCDay(); // 0=Sun..6=Sat
+      const daysToSunday = (7 - dow) % 7;
+      const naturalWeekEnd = new Date(cursor.getTime() + daysToSunday * 86400000);
       const weekEnd = new Date(Math.min(naturalWeekEnd.getTime(), end.getTime()));
       periods.push({
         label: `${fmtDot(cursor)}-${fmtDot(weekEnd)}`,
@@ -84,6 +91,14 @@ function buildPeriods(startDate: string, endDate: string, granularity: SalesRepo
         isFull: weekEnd.getTime() === naturalWeekEnd.getTime(),
       });
       cursor = new Date(weekEnd.getTime() + 86400000);
+    }
+    // Drop a trailing week that hasn't actually finished yet — clipped short by
+    // the selected end date (e.g. the current in-progress week, today being
+    // mid-week). Showing a 1-2 day "week" next to full 7-day weeks reads as a
+    // fake crash in sales, so it's dropped entirely rather than just flagged.
+    // Keep at least one bucket so a range narrower than a week doesn't vanish.
+    if (periods.length > 1 && !periods[periods.length - 1].isFull) {
+      periods.pop();
     }
   } else {
     // monthly — split on calendar month boundaries, clipped to the requested range
@@ -415,6 +430,12 @@ async function buildAmazonSalesWorkbook(opts: {
       });
     }
   }
+
+  // Prefer the seller's own clean product name (matched by SKU) over the raw catalog/listing
+  // title, now that every product's SKU is fully resolved.
+  productsByAsin.forEach((p) => {
+    p.name = resolveProductName(p.name, p.sku) || p.name;
+  });
 
   const rows = [...productsByAsin.values()].sort((a, b) => b.grandTotalSales - a.grandTotalSales);
 

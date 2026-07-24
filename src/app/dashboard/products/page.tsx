@@ -13,7 +13,7 @@ import { Loader2, Package, Bot, Trophy, AlertTriangle, Boxes, Zap, MousePointerC
 import { cn } from "@/lib/utils";
 import { useState, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import { categorizeTitle, CATEGORY_COLORS } from "@/lib/categoryMap";
+import { categorizeTitle, resolveProductName, CATEGORY_COLORS } from "@/lib/categoryMap";
 import { exportProductsWorkbook } from "@/lib/productsWorkbookExport";
 
 const cur = (val: number, currency?: string) => {
@@ -227,13 +227,15 @@ function ProductsContent() {
   const growthCandidates = retailRows
     .map((r: any) => {
       if (!r.asin) return null;
-      const name = r.productName || catalogNameByAsin.get(r.asin) || r.asin;
-      const category = categorizeTitle(name, r.asin, (skusByAsin.get(r.asin) || [])[0]);
+      const rawName = r.productName || catalogNameByAsin.get(r.asin) || r.asin;
+      const sku = (skusByAsin.get(r.asin) || [])[0];
+      const name = resolveProductName(rawName, sku) || rawName;
+      const category = categorizeTitle(rawName, r.asin, sku);
       const curSales = r.totalSales || 0;
       const prevSales = prevSalesByAsin.get(r.asin) || 0;
       if (curSales === 0 && prevSales === 0) return null;
       const growthPct = prevSales > 0 ? (curSales - prevSales) / prevSales : curSales > 0 ? 1 : -1;
-      return { asin: r.asin, name, sku: (skusByAsin.get(r.asin) || [])[0] || "", category, curSales, prevSales, growthPct };
+      return { asin: r.asin, name, sku: sku || "", category, curSales, prevSales, growthPct };
     })
     .filter((p: any): p is { asin: string; name: string; sku: string; category: string; curSales: number; prevSales: number; growthPct: number } =>
       p !== null && GROWTH_CATEGORIES.includes(p.category)
@@ -265,9 +267,11 @@ function ProductsContent() {
     const stock = hasInv ? (inv.fbm?.quantity || 0) + (inv.fba?.endingWarehouseBalance || 0) : null;
     const unitsPerDay = (r.unitsOrdered || 0) / rangeDays;
     const daysOfInventory = hasInv && stock != null && unitsPerDay > 0 ? stock / unitsPerDay : null;
-    const category = categorizeTitle(p.adProductName || r.productName || inv.itemName, asin, sku.split(", ")[0]);
+    const rawName = p.adProductName || r.productName || inv.itemName;
+    const category = categorizeTitle(rawName, asin, sku.split(", ")[0]);
     return {
       ...p,
+      adProductName: resolveProductName(rawName, sku) || rawName,
       category,
       sku,
       image: inv.mainImageUrl || null,

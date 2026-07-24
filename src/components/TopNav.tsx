@@ -1,8 +1,9 @@
 "use client";
 
 import { useDashboard } from "@/lib/DashboardContext";
-import { Bell, Moon, Sun, Search, RefreshCw, Loader2, ShoppingBag, Store, Users2, GitCompare, Menu, type LucideIcon } from "lucide-react";
+import { Bell, Moon, Sun, Search, RefreshCw, Loader2, ShoppingBag, Store, GitCompare, Menu, type LucideIcon } from "lucide-react";
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { DateRangePicker } from "@/components/DateRangePicker";
 import { cn } from "@/lib/utils";
@@ -11,13 +12,11 @@ import { MARKETPLACE_META, getMarketplaceTab, marketplaceHome, type MarketplaceT
 const MARKETPLACE_TABS: { id: MarketplaceTab; label: string; icon: LucideIcon }[] = [
   { id: "amazon", label: "Amazon", icon: ShoppingBag },
   { id: "flipkart", label: "Flipkart", icon: Store },
-  { id: "meesho", label: "Meesho", icon: Users2 },
   { id: "compare", label: "Compare All", icon: GitCompare },
 ];
 
 function MarketplaceSwitcher() {
   const pathname = usePathname();
-  const router = useRouter();
   const activeTab = getMarketplaceTab(pathname);
 
   return (
@@ -26,12 +25,14 @@ function MarketplaceSwitcher() {
         const isActive = activeTab === tab.id;
         const meta = tab.id !== "compare" ? MARKETPLACE_META[tab.id] : null;
         const Icon = tab.icon;
+        const targetHref = tab.id === "compare" ? "/dashboard/compare" : marketplaceHome(tab.id);
+
         return (
-          <button
+          <Link
             key={tab.id}
-            onClick={() => router.push(tab.id === "compare" ? "/dashboard/compare" : marketplaceHome(tab.id))}
+            href={targetHref}
             className={cn(
-              "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-black transition-all",
+              "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-black transition-all cursor-pointer",
               isActive
                 ? tab.id === "compare"
                   ? "bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-sm"
@@ -43,7 +44,7 @@ function MarketplaceSwitcher() {
           >
             <Icon className="w-3.5 h-3.5" />
             {tab.label}
-          </button>
+          </Link>
         );
       })}
     </div>
@@ -142,7 +143,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
         <span className="text-slate-700 dark:text-slate-300 uppercase tracking-wider">{accountLabel}</span>
       </div>
 
-      {/* Marketplace Switcher — Amazon / Flipkart / Meesho / Compare All */}
+      {/* Marketplace Switcher — Amazon / Flipkart / Compare All */}
       <MarketplaceSwitcher />
 
       {/* Global Search with Cmd/Ctrl+K shortcut hint */}

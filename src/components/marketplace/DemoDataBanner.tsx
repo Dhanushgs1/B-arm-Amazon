@@ -4,9 +4,9 @@ import { FlaskConical, ArrowRight } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { MARKETPLACE_META, type MarketplaceId } from "@/lib/marketplace";
 
-// Shown across every Flipkart/Meesho page — neither platform is wired to a
-// real Seller/Supplier API yet, so every number on these pages is
-// deterministic demo data (see lib/marketplace.ts), not live account data.
+// Shown across every Flipkart page — the platform isn't wired to a real
+// Seller API yet, so every number on these pages is deterministic demo
+// data (see lib/marketplace.ts), not live account data.
 export function DemoDataBanner({ marketplace }: { marketplace: Exclude<MarketplaceId, "amazon"> }) {
   const router = useRouter();
   const meta = MARKETPLACE_META[marketplace];
