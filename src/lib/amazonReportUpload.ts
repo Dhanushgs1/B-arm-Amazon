@@ -1,5 +1,6 @@
 import Papa from "papaparse";
 import { createClient } from "@supabase/supabase-js";
+import { lazySupabase, SUPABASE_URL, SUPABASE_ANON_KEY } from "@/lib/supabaseLazy";
 
 // The shared `supabase` client (src/lib/supabaseClient.ts) is pinned to the
 // `barm` Postgres schema, which turns out to be empty in this project — every
@@ -8,9 +9,10 @@ import { createClient } from "@supabase/supabase-js";
 // schema. The tables this file writes to were created there too, so this
 // second client targets `public` explicitly rather than reusing the `barm`
 // one and silently hitting a schema with nothing in it.
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "";
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || "";
-export const supabasePublic = createClient(supabaseUrl, supabaseAnonKey);
+// Built on first use, not at import — see src/lib/supabaseLazy.ts. This module is pulled into the
+// client bundle by the Upload and Reports pages, so constructing eagerly meant a missing
+// NEXT_PUBLIC_SUPABASE_* variable crashed those pages outright instead of just this feature.
+export const supabasePublic = lazySupabase(() => createClient(SUPABASE_URL, SUPABASE_ANON_KEY));
 
 export type UploadReportType =
   | "sp_advertised_product"

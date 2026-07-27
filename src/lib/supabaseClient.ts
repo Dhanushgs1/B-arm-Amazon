@@ -1,16 +1,12 @@
 import { createClient } from '@supabase/supabase-js';
+import { lazySupabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '@/lib/supabaseLazy';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn("Supabase URL or Anon Key is missing. Check your .env.local file.");
-}
-
-// Create a single supabase client for interacting with your database
-// We use the "barm" schema as requested for Flipkart data
-export const supabase = createClient(supabaseUrl || '', supabaseAnonKey || '', {
-  db: {
-    schema: 'barm',
-  },
-});
+// Single client for the "barm" schema (Flipkart data). Built on first use rather than at import
+// — see src/lib/supabaseLazy.ts for why a missing env var must not crash every importing page.
+export const supabase = lazySupabase(() =>
+  createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    db: {
+      schema: 'barm',
+    },
+  })
+);
