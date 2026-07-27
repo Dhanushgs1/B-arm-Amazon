@@ -167,7 +167,7 @@ export default function AIPage() {
     setMessages([
       {
         role: "assistant",
-        content: `Hello! I'm your **BARM AI Assistant** — powered by live advertising data from your ${account?.name || "Amazon"} account.\n\nI can help you with:\n- Campaign performance & ACOS analysis\n- Bid optimization recommendations\n- Inventory forecasting & stock alerts\n- Product-level revenue breakdown\n\nWhat would you like to explore today?`,
+        content: `Hello! I'm your **Marketplace360 Assistant** — powered by live advertising data from your ${account?.name || "Amazon"} account.\n\nI can help you with:\n- Campaign performance & ACOS analysis\n- Bid optimization recommendations\n- Inventory forecasting & stock alerts\n- Product-level revenue breakdown\n\nWhat would you like to explore today?`,
         timestamp: new Date(),
       }
     ]);
@@ -202,7 +202,7 @@ export default function AIPage() {
     setMessages(prev => [...prev, { role: "user", content: userMsg, timestamp: new Date() }]);
     setSending(true);
 
-    const systemPrompt = `You are the BARM AI PPC Assistant. You have access to the user's live dashboard data:
+    const systemPrompt = `You are the Marketplace360 PPC Assistant. You have access to the user's live dashboard data:
 - Account: ${account?.name || "Barm Account"}
 - Currency: ${currency}
 - Total Ad Spend: ${cur(spendVal, currency)}
@@ -353,7 +353,7 @@ Based on these metrics, provide a concise, expert, and direct answer. Avoid gene
         reply = "I couldn't fetch the product data right now.";
       }
     } else if (lowerInput.match(/^(hi|hello|hey|sup|start|help)/)) {
-      reply = "Hello! I'm your **BARM AI PPC Assistant**. I can help you:\n\n- Analyze ACOS and spot wasted spend\n- Check inventory levels and stock alerts\n- Identify top-performing campaigns, products, and keywords\n- Generate bid optimization recommendations\n\nWhat would you like to dive into today?";
+      reply = "Hello! I'm your **Marketplace360 PPC Assistant**. I can help you:\n\n- Analyze ACOS and spot wasted spend\n- Check inventory levels and stock alerts\n- Identify top-performing campaigns, products, and keywords\n- Generate bid optimization recommendations\n\nWhat would you like to dive into today?";
     }
 
     setMessages(prev => [...prev, { role: "assistant", content: reply, timestamp: new Date() }]);
@@ -370,7 +370,7 @@ Based on these metrics, provide a concise, expert, and direct answer. Avoid gene
           </div>
           <div>
             <h1 className="text-xl font-black tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
-              BARM AI Assistant
+              Marketplace360 Assistant
               <span className="text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-500">LIVE DATA</span>
             </h1>
             <p className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold">Ask anything about your campaigns, inventory & revenue</p>

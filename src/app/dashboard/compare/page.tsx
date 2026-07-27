@@ -186,17 +186,9 @@ export default function ComparePage() {
 
   const isLoading = contextLoading || retailLoading || trendLoading || flipkartLoading;
 
-  if (isLoading || rows.length === 0) {
-    return (
-      <div className="flex h-[60vh] items-center justify-center flex-col gap-4 text-muted-foreground">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-        <p className="font-semibold text-sm">Combining marketplace metrics...</p>
-      </div>
-    );
-  }
-
-
-  // Generate AI suggestions based on live data
+  // Generate AI suggestions based on live data — must run before the loading
+  // guard below so this hook is called on every render (Rules of Hooks: the
+  // guard's early return can't skip a hook that a later render still calls).
   const aiInsights = useMemo(() => {
     if (!rows || rows.length < 2) return [];
     const [amz, fk] = rows;
@@ -220,6 +212,15 @@ export default function ComparePage() {
     }
     return insights.slice(0, 3);
   }, [rows]);
+
+  if (isLoading || rows.length === 0) {
+    return (
+      <div className="flex h-[60vh] items-center justify-center flex-col gap-4 text-muted-foreground">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        <p className="font-semibold text-sm">Combining marketplace metrics...</p>
+      </div>
+    );
+  }
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }} className="space-y-6 pb-12">

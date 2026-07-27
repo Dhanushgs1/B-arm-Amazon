@@ -32,10 +32,10 @@ async function callReportEndpoint(req: NextApiRequest, pathname: string, body: R
       body: JSON.stringify(body),
     });
     const j = await r.json().catch(() => ({}));
-    console.log(`[BARM AI Cron] ${r.ok ? "✅" : "❌"} ${label}:`, JSON.stringify(j).slice(0, 300));
+    console.log(`[Marketplace360 Cron] ${r.ok ? "✅" : "❌"} ${label}:`, JSON.stringify(j).slice(0, 300));
     return { ok: r.ok, result: j };
   } catch (err: any) {
-    console.error(`[BARM AI Cron] ❌ ${label} failed:`, err);
+    console.error(`[Marketplace360 Cron] ❌ ${label} failed:`, err);
     return { ok: false, error: err?.message || String(err) };
   }
 }
@@ -49,10 +49,10 @@ async function sendMonthlyPlaceholder(toEmail: string, ccEmail?: string) {
   });
   const now = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   await transporter.sendMail({
-    from: `BARM AI Dashboard <${process.env.SMTP_FROM}>`,
+    from: `Marketplace360 Dashboard <${process.env.SMTP_FROM}>`,
     to: toEmail,
     cc: ccEmail || undefined,
-    subject: "BARM AI - Monthly Performance Report",
+    subject: "Marketplace360 - Monthly Performance Report",
     html: `<p>Monthly report placeholder — generated ${now} IST. Live monthly metrics aren't wired up yet; see the Daily/Weekly reports for real data.</p>`,
   });
 }
@@ -67,9 +67,8 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
     return {
       dryRun: true,
       wouldSend: {
-        daily: !!s.dailySummary,
-        stockout: !!s.inventoryAlerts,
-        adWaste: !!s.roasAlerts,
+        dailyDigest: !!s.dailySummary,
+        liveAlerts: !!s.liveAlerts,
         weekly: isMonday && !!s.weeklySummary,
         monthly: isFirstOfMonth && !!s.monthlySummary,
       },
@@ -87,14 +86,25 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
 
   const results: Record<string, any> = {};
 
+  // `dailySummary` now means the combined digest. The separate daily report was deleted — it
+  // showed only counts of the stockout / bleeding / wasted-term findings (computed by a different
+  // one-day heuristic, so its numbers disagreed with the alert emails' 7-day detectors), and the
+  // digest carries the same KPIs plus the actual rows behind each count. /api/stockout-alert and
+  // /api/ad-alerts still exist for manual one-off sends; the digest calls the same detectors.
   if (s.dailySummary) {
-    results.daily = await callReportEndpoint(req, "/api/daily-report", acct, `[${slot}] Daily report`);
+    // Always sends, including on a quiet day — a digest that goes missing is indistinguishable
+    // from a cron that stopped.
+    results.dailyDigest = await callReportEndpoint(
+      req,
+      "/api/daily-digest",
+      { ...acct, acosThreshold: s.acosThreshold || 40, minSpend: 500, lookbackDays: 7, lowStockThreshold: s.lowStockThreshold || 5 },
+      `[${slot}] Daily digest`
+    );
   }
-  if (s.inventoryAlerts) {
-    results.stockout = await callReportEndpoint(req, "/api/stockout-alert", { ...acct, lowStockThreshold: s.lowStockThreshold || 5, lookbackDays: 7 }, `[${slot}] Stockout alert`);
-  }
-  if (s.roasAlerts) {
-    results.adWaste = await callReportEndpoint(req, "/api/ad-alerts", { ...acct, acosThreshold: s.acosThreshold || 40, minSpend: 500, lookbackDays: 7 }, `[${slot}] Ad-waste alerts`);
+  if (s.liveAlerts) {
+    // Once a day is the honest cadence: every detector compares whole days, so a second run
+    // would re-scan identical numbers. Emails nothing unless something new fired.
+    results.liveAlerts = await callReportEndpoint(req, "/api/live-alerts", acct, `[${slot}] Live alerts`);
   }
   if (isMonday && s.weeklySummary) {
     results.weekly = await callReportEndpoint(req, "/api/weekly-report", acct, `[${slot}] Weekly report`);
@@ -103,10 +113,10 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
     try {
       await sendMonthlyPlaceholder(s.notifEmail, s.ccEmail);
       results.monthly = { ok: true };
-      console.log(`[BARM AI Cron] ✅ [${slot}] Monthly report sent → ${s.notifEmail}`);
+      console.log(`[Marketplace360 Cron] ✅ [${slot}] Monthly report sent → ${s.notifEmail}`);
     } catch (err: any) {
       results.monthly = { ok: false, error: err?.message || String(err) };
-      console.error(`[BARM AI Cron] ❌ [${slot}] Monthly report failed:`, err);
+      console.error(`[Marketplace360 Cron] ❌ [${slot}] Monthly report failed:`, err);
     }
   }
 

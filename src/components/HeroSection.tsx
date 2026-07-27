@@ -44,7 +44,7 @@ export default function HeroSection() {
             <Hexagon size={22} fill="currentColor" className="text-[#6C63FF]" />
           </div>
           <div>
-            <span className="font-extrabold text-xl tracking-tight block">BARM AI</span>
+            <span className="font-extrabold text-xl tracking-tight block">Marketplace360</span>
             <small className="text-[10px] text-indigo-400 font-bold uppercase tracking-widest block -mt-1">
               Amazon Analytics Platform
             </small>
@@ -67,7 +67,7 @@ export default function HeroSection() {
             </span>
           </h1>
           <p className="text-sm text-slate-400 max-w-md leading-relaxed">
-            BARM AI aggregates Seller Central telemetry, running real-time optimizations, budget pacing, and stock replenishment forecasts.
+            Marketplace360 aggregates Seller Central telemetry, running real-time optimizations, budget pacing, and stock replenishment forecasts.
           </p>
         </div>
 

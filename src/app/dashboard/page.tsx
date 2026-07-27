@@ -240,6 +240,15 @@ export default function DashboardOverview() {
     ? dailyTrend.reduce((sum: number, d: any) => sum + (d.overallSales || 0), 0) / dailyTrend.length
     : totalSales / 30;
 
+  // Forecast basis — the whole-period avgDaily above lags badly once sales
+  // are trending up or down (a 30-day average barely moves after one bad
+  // week). Weight the forecast off the trailing 7 days instead so "Next Day"
+  // reflects current momentum, not the stale period-long mean.
+  const recentTrendDays = dailyTrend && dailyTrend.length > 0 ? dailyTrend.slice(-7) : [];
+  const recentAvgDaily = recentTrendDays.length > 0
+    ? recentTrendDays.reduce((sum: number, d: any) => sum + (d.overallSales || 0), 0) / recentTrendDays.length
+    : avgDaily;
+
   // AI Executive Summary — every bullet is derived from this account's real
   // data for the selected date range (previously these 4 lines were hardcoded
   // placeholder text that showed the same "Hair Oil" / "SKU XYZ" copy no
@@ -270,6 +279,70 @@ export default function DashboardOverview() {
       ? `Inventory alert: "${(criticalLowStock.itemName || "").substring(0, 40)}" has only ${criticalLowStock.totalQty} units left — restock soon.`
       : "All tracked products are sufficiently stocked.",
   ];
+
+  // Real AI Executive Summary — sends the same metrics behind the rule-based
+  // bullets above to Gemini so the panel gives genuine analysis instead of
+  // templated sentences. Keyed off a metrics fingerprint (not just date range)
+  // so it regenerates when the underlying numbers actually change, and cached
+  // for 10 minutes to stay within Gemini's free-tier rate limit. Falls back to
+  // executiveSummaryPoints above on any error so the panel never breaks.
+  const summaryMetricsKey = JSON.stringify({
+    totalSales, adSpend: s.totalSpend, adSales, organicSales,
+    roas: s.overallRoas, acos: s.overallAcos,
+    acosStart: acosSeries.length >= 2 ? Math.round(acosStart) : null,
+    acosEnd: acosSeries.length >= 2 ? Math.round(acosEnd) : null,
+    latestDayDeltaPct: latestDayDeltaPct != null ? Math.round(latestDayDeltaPct) : null,
+    topCampaignName: topCampaign?.campaignName, topCampaignRoas: topCampaign?.roas,
+    downCampaigns: downCampaigns.length, wastedTerms: wastedTerms.length,
+    lowInventory: lowInventory.length, criticalLowStock: criticalLowStock?.itemName,
+  });
+
+  const {
+    data: geminiSummary,
+    isFetching: geminiFetching,
+    refetch: refetchGeminiSummary,
+  } = useQuery({
+    queryKey: ["ai_exec_summary", keySlot, account?.id, startDate, endDate, summaryMetricsKey],
+    queryFn: async () => {
+      const prompt = `You are an expert Amazon PPC/e-commerce analyst. Write exactly 4 short, punchy executive-summary bullet points for a seller dashboard, based ONLY on the real metrics below for "${account?.name}" (currency ${currency}) for the period ${startDate} to ${endDate}. Each bullet must be one plain sentence, no markdown, no bullet symbols, no numbering — just plain text, one bullet per line. Reference specific numbers from the data. Prioritize what changed, what's working best, and what needs urgent action.
+
+Metrics:
+- Total Sales (retail + ads): ${cur(totalSales, currency)}
+- Ad Spend: ${cur(s.totalSpend || 0, currency)}
+- Ad Sales: ${cur(adSales, currency)}
+- Organic Sales: ${cur(organicSales, currency)}
+- Overall ROAS: ${fx(s.overallRoas)}x
+- Overall ACOS: ${pct(s.overallAcos)}
+- ACOS trend within period: ${acosSeries.length >= 2 ? `${acosStart.toFixed(0)}% -> ${acosEnd.toFixed(0)}%` : "not enough data yet"}
+- Latest day's sales vs period average: ${latestDayDeltaPct != null ? `${latestDayDeltaPct >= 0 ? "+" : ""}${latestDayDeltaPct.toFixed(0)}%` : "not enough data yet"}
+- Top campaign by spend: ${topCampaign ? `"${topCampaign.campaignName}" — ${cur(topCampaign.spend, currency)} spend, ${fx(topCampaign.roas || 0)}x ROAS` : "no active campaigns"}
+- Campaigns overspending (ACOS > 50%): ${downCampaigns.length}${downCampaigns[0] ? ` (worst: "${downCampaigns[0].campaignName}")` : ""}
+- Search terms with spend but zero sales: ${wastedTerms.length}
+- Products low on stock (<=10 units): ${lowInventory.length}${criticalLowStock ? ` (most critical: "${(criticalLowStock.itemName || "").substring(0, 40)}", ${criticalLowStock.totalQty} units left)` : ""}
+
+Write the 4 bullets now, one per line:`;
+
+      const response = await fetch("/api/gemini-insights", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
+      });
+      const resData = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(resData.error || "Gemini request failed");
+
+      const lines: string[] = (resData.text || "")
+        .split("\n")
+        .map((l: string) => l.replace(/^[\s*\-\d.•]+/, "").trim())
+        .filter((l: string) => l.length > 0);
+      if (!lines.length) throw new Error("Gemini returned no insights");
+      return lines.slice(0, 5);
+    },
+    enabled: !!account,
+    staleTime: 10 * 60 * 1000,
+    retry: false,
+  });
+
+  const finalSummaryPoints = geminiSummary && geminiSummary.length > 0 ? geminiSummary : executiveSummaryPoints;
 
   if (contextLoading || cpLoading) {
     return (
@@ -325,7 +398,7 @@ export default function DashboardOverview() {
               <Bot className="w-4.5 h-4.5 text-white" />
             </div>
             <div>
-              <p className="text-white font-black text-sm">BARM AI Assistant</p>
+              <p className="text-white font-black text-sm">Marketplace360 Assistant</p>
               <p className="text-white/70 text-[11px] font-semibold">Get instant insights, ACOS analysis &amp; optimization suggestions</p>
             </div>
           </div>
@@ -397,8 +470,8 @@ export default function DashboardOverview() {
               </h3>
             </div>
             <div className="flex-1 space-y-3 relative z-10 overflow-y-auto pr-1 custom-scrollbar">
-              {executiveSummaryPoints.map((point, i) => (
-                <div key={i} className="flex gap-2.5 items-start p-3 rounded-2xl bg-muted/40">
+              {finalSummaryPoints.map((point, i) => (
+                <div key={i} className={cn("flex gap-2.5 items-start p-3 rounded-2xl bg-muted/40 transition-opacity", geminiFetching && "opacity-50")}>
                   <div className="mt-1.5 w-1.5 h-1.5 rounded-full bg-indigo-500 flex-shrink-0" />
                   <p className="text-[12px] leading-relaxed font-semibold text-slate-700 dark:text-slate-300">
                     {point}
@@ -407,7 +480,18 @@ export default function DashboardOverview() {
               ))}
             </div>
             <div className="mt-3 pt-3 border-t border-slate-200/50 dark:border-slate-800/50 flex items-center justify-between">
-              <span className="text-[9px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-1"><Sparkles className="w-3 h-3" /> AUTO-GENERATED BY GEMINI</span>
+              <span className="text-[9px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-1">
+                <Sparkles className="w-3 h-3" />
+                {geminiFetching ? "GENERATING WITH GEMINI…" : geminiSummary?.length ? "AUTO-GENERATED BY GEMINI" : "RULE-BASED SUMMARY"}
+              </span>
+              <button
+                onClick={() => refetchGeminiSummary()}
+                disabled={geminiFetching}
+                title="Regenerate with Gemini"
+                className="text-slate-400 hover:text-indigo-500 transition-colors disabled:opacity-50"
+              >
+                <RotateCcw className={cn("w-3 h-3", geminiFetching && "animate-spin")} />
+              </button>
             </div>
           </div>
         </div>
@@ -439,15 +523,15 @@ export default function DashboardOverview() {
             <div className="grid grid-cols-3 gap-2">
               <div className="bg-muted/40 rounded-xl p-2 text-center border border-transparent">
                 <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider mb-0.5">Next Day</p>
-                <p className="text-[12px] font-black text-slate-800 dark:text-slate-200 text-red-500">{cur(avgDaily, currency)}</p>
+                <p className="text-[12px] font-black text-indigo-600 dark:text-indigo-400">{cur(recentAvgDaily, currency)}</p>
               </div>
               <div className="bg-muted/40 rounded-xl p-2 text-center border border-transparent">
                 <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider mb-0.5">Next Week</p>
-                <p className="text-[12px] font-black text-slate-800 dark:text-slate-200 text-[#10B981]">{cur(avgDaily * 7, currency)}</p>
+                <p className="text-[12px] font-black text-indigo-600 dark:text-indigo-400">{cur(recentAvgDaily * 7, currency)}</p>
               </div>
               <div className="bg-muted/40 rounded-xl p-2 text-center border border-transparent">
                 <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider mb-0.5">Next Month</p>
-                <p className="text-[12px] font-black text-slate-800 dark:text-slate-200 text-red-500">{cur(avgDaily * 30, currency)}</p>
+                <p className="text-[12px] font-black text-indigo-600 dark:text-indigo-400">{cur(recentAvgDaily * 30, currency)}</p>
               </div>
             </div>
           </div>
@@ -691,7 +775,7 @@ export default function DashboardOverview() {
                 </div>
                 <div>
                   <h3 className="font-black text-xs text-slate-800 dark:text-slate-200">AI Recommendations</h3>
-                  <p className="text-[9px] text-muted-foreground font-semibold">Powered by BARM AI</p>
+                  <p className="text-[9px] text-muted-foreground font-semibold">Powered by Marketplace360</p>
                 </div>
                 <span className="ml-auto text-[8px] font-black bg-gradient-to-r from-violet-500 to-indigo-600 text-white px-1.5 py-0.5 rounded-full animate-pulse">{aiAlerts.length} alerts</span>
               </div>

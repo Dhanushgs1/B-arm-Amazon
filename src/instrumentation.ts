@@ -28,14 +28,14 @@ export async function register() {
       const now = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
       return `<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><title>BARM AI Report</title></head>
+<head><meta charset="UTF-8"><title>Marketplace360 Report</title></head>
 <body style="margin:0;padding:0;background:#f4f4f7;font-family:Arial,Helvetica,sans-serif;">
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f4f7;padding:32px 16px;">
   <tr><td align="center">
     <table width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
       <tr>
         <td style="background:linear-gradient(135deg,#6D5EF8 0%,#8B5CF6 100%);padding:28px 32px;">
-          <p style="margin:0;color:#fff;font-size:22px;font-weight:800;">&#128202; BARM AI &mdash; ${period} Report</p>
+          <p style="margin:0;color:#fff;font-size:22px;font-weight:800;">&#128202; Marketplace360 &mdash; ${period} Report</p>
           <p style="margin:6px 0 0;color:rgba(255,255,255,0.75);font-size:13px;">${now} IST</p>
         </td>
       </tr>
@@ -113,7 +113,7 @@ export async function register() {
       </tr>
       <tr>
         <td style="padding:16px 32px;border-top:1px solid #f0f0f0;text-align:center;">
-          <p style="margin:0;color:#9ca3af;font-size:12px;">BARM AI Dashboard &nbsp;&#183;&nbsp; Automated ${period} Report &nbsp;&#183;&nbsp; <a href="${SITE_URL}/dashboard/settings" style="color:#6D5EF8;text-decoration:none;">Manage alerts</a></p>
+          <p style="margin:0;color:#9ca3af;font-size:12px;">Marketplace360 Dashboard &nbsp;&#183;&nbsp; Automated ${period} Report &nbsp;&#183;&nbsp; <a href="${SITE_URL}/dashboard/settings" style="color:#6D5EF8;text-decoration:none;">Manage alerts</a></p>
         </td>
       </tr>
     </table>
@@ -129,22 +129,22 @@ export async function register() {
       };
 
       const subjects: Record<string, string> = {
-        Daily: "BARM AI - Daily Performance Report",
-        Weekly: "BARM AI - Weekly Performance Report",
-        Monthly: "BARM AI - Monthly Performance Report",
+        Daily: "Marketplace360 - Daily Performance Report",
+        Weekly: "Marketplace360 - Weekly Performance Report",
+        Monthly: "Marketplace360 - Monthly Performance Report",
       };
 
       try {
         await transporter.sendMail({
-          from: `BARM AI Dashboard <${process.env.SMTP_FROM}>`,
+          from: `Marketplace360 Dashboard <${process.env.SMTP_FROM}>`,
           to: toEmail,
           cc: ccEmail || undefined,
-          subject: subjects[period] || "BARM AI Report",
+          subject: subjects[period] || "Marketplace360 Report",
           html: buildSummaryHtml(period, metrics, toEmail),
         });
-        console.log(`[BARM AI] ✅ ${period} report sent → ${toEmail}`);
+        console.log(`[Marketplace360] ✅ ${period} report sent → ${toEmail}`);
       } catch (err) {
-        console.error(`[BARM AI] ❌ Failed to send ${period} report:`, err);
+        console.error(`[Marketplace360] ❌ Failed to send ${period} report:`, err);
       }
     }
 
@@ -160,9 +160,9 @@ export async function register() {
           body: JSON.stringify(body),
         });
         const j = await r.json().catch(() => ({}));
-        console.log(`[BARM AI] ${r.ok ? "✅" : "❌"} ${label}:`, JSON.stringify(j).slice(0, 300));
+        console.log(`[Marketplace360] ${r.ok ? "✅" : "❌"} ${label}:`, JSON.stringify(j).slice(0, 300));
       } catch (err) {
-        console.error(`[BARM AI] ❌ ${label} failed:`, err);
+        console.error(`[Marketplace360] ❌ ${label} failed:`, err);
       }
     }
 
@@ -174,21 +174,23 @@ export async function register() {
 
         const acct = { slot, amazon_account_id: s.amazonAccountId, workspace_id: s.workspaceId, to: s.notifEmail, cc: s.ccEmail || undefined, currency: s.currency || "INR" };
         if (!s.amazonAccountId || !s.workspaceId) {
-          console.log(`[BARM AI] [${slot}] Daily report + alerts skipped — save Settings once to store account context.`);
+          console.log(`[Marketplace360] [${slot}] Daily report + alerts skipped — save Settings once to store account context.`);
           continue;
         }
 
+        // Mirrors src/pages/api/cron/scheduled-reports.ts, which is what actually runs in
+        // production — keep the two in step, or local testing proves nothing about the deploy.
         if (s.dailySummary) {
-          console.log(`[BARM AI] [${slot}] Sending daily report (live data)...`);
-          await runAlertEndpoint("/api/daily-report", { ...acct }, `[${slot}] Daily report`); // date omitted → yesterday
+          console.log(`[Marketplace360] [${slot}] Sending daily digest (combined)...`);
+          await runAlertEndpoint(
+            "/api/daily-digest",
+            { ...acct, acosThreshold: s.acosThreshold || 40, minSpend: 500, lookbackDays: 7, lowStockThreshold: s.lowStockThreshold || 5 },
+            `[${slot}] Daily digest`
+          );
         }
-        if (s.inventoryAlerts) {
-          console.log(`[BARM AI] [${slot}] Running stockout + ad-spend alert...`);
-          await runAlertEndpoint("/api/stockout-alert", { ...acct, lowStockThreshold: 5, lookbackDays: 7 }, `[${slot}] Stockout alert`);
-        }
-        if (s.roasAlerts) {
-          console.log(`[BARM AI] [${slot}] Running bleeding-campaigns + wasted-search-terms alerts...`);
-          await runAlertEndpoint("/api/ad-alerts", { ...acct, acosThreshold: s.acosThreshold || 40, minSpend: 500, lookbackDays: 7 }, `[${slot}] Ad-waste alerts`);
+        if (s.liveAlerts) {
+          console.log(`[Marketplace360] [${slot}] Running live alerts...`);
+          await runAlertEndpoint("/api/live-alerts", { ...acct }, `[${slot}] Live alerts`);
         }
       }
     }, { timezone: "UTC" });
@@ -199,7 +201,7 @@ export async function register() {
         const s = await readEmailSettings(slot);
         if (!(s.emailAlerts && s.weeklySummary && s.notifEmail && s.amazonAccountId && s.workspaceId)) continue;
         const acct = { slot, amazon_account_id: s.amazonAccountId, workspace_id: s.workspaceId, to: s.notifEmail, cc: s.ccEmail || undefined, currency: s.currency || "INR" };
-        console.log(`[BARM AI] [${slot}] Sending weekly report (live WoW comparison)...`);
+        console.log(`[Marketplace360] [${slot}] Sending weekly report (live WoW comparison)...`);
         await runAlertEndpoint("/api/weekly-report", { ...acct }, `[${slot}] Weekly report`); // endDate omitted → yesterday
       }
     }, { timezone: "UTC" });
@@ -209,12 +211,12 @@ export async function register() {
       for (const slot of KEY_SLOTS) {
         const s = await readEmailSettings(slot);
         if (s.emailAlerts && s.monthlySummary && s.notifEmail) {
-          console.log(`[BARM AI] [${slot}] Sending monthly report...`);
+          console.log(`[Marketplace360] [${slot}] Sending monthly report...`);
           await sendReport("Monthly", s.notifEmail, s.ccEmail);
         }
       }
     }, { timezone: "UTC" });
 
-    console.log("[BARM AI] ✅ Email scheduler started — Daily 10AM / Weekly Monday / Monthly 1st");
+    console.log("[Marketplace360] ✅ Email scheduler started — Daily 10AM / Weekly Monday / Monthly 1st");
   }
 }

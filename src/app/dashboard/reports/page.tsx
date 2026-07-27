@@ -6,6 +6,7 @@ import { useState } from "react";
 import { mcp, mcpAllPages, mcpAllInventory } from "@/lib/api";
 import { exportAmazonSalesReport, SalesReportGranularity } from "@/lib/amazonSalesExport";
 import { exportAnalysisReport } from "@/lib/analysisReportExport";
+import { exportHistoricalAnalysisReport } from "@/lib/historicalAnalysisReportExport";
 import { resolveProductName } from "@/lib/categoryMap";
 import * as XLSX from "xlsx-js-style";
 
@@ -55,7 +56,18 @@ export default function ReportsPage() {
 
       const dateSuffix = `${effStart}_to_${effEnd}`;
 
-      if (type.includes("Analysis Report")) {
+      if (type.includes("Historical Analysis Report")) {
+        // Historical analysis: Last 30 days + Last 7 days side by side, both ending effEnd.
+        const { filename: historicalName } = await exportHistoricalAnalysisReport({
+          account,
+          keySlot,
+          endDate: effEnd,
+        });
+        setHistory(prev => [{ filename: historicalName, timestamp: new Date() }, ...prev]);
+        setGenerating(null);
+        return;
+
+      } else if (type.includes("Analysis Report")) {
         // Fixed trailing windows (Last 30 days + Last 7 days ending today) — this
         // report ignores the global date picker by design.
         const { filename: analysisName } = await exportAnalysisReport({ account, keySlot });
@@ -270,8 +282,8 @@ export default function ReportsPage() {
         const wsReturns = XLSX.utils.json_to_sheet(returnsFormatted);
         XLSX.utils.book_append_sheet(wb, wsReturns, "Returns");
 
-        XLSX.writeFile(wb, `BARM_Full_Executive_Report_${dateSuffix}.xlsx`);
-        setHistory(prev => [{ filename: `BARM_Full_Executive_Report_${dateSuffix}.xlsx`, timestamp: new Date() }, ...prev]);
+        XLSX.writeFile(wb, `Marketplace360_Full_Executive_Report_${dateSuffix}.xlsx`);
+        setHistory(prev => [{ filename: `Marketplace360_Full_Executive_Report_${dateSuffix}.xlsx`, timestamp: new Date() }, ...prev]);
         setGenerating(null);
         return;
       }
@@ -297,6 +309,7 @@ export default function ReportsPage() {
   };
 
   const reports = [
+    { id: "historical-analysis", title: "Historical Analysis Report (30/7-Day)", desc: "Per-campaign ad-performance analysis across two time windows: 30-day and 7-day — Campaign Name, SKU, Spend+Tax, Advertised & Total Units, Orders, Returns, Final, CPC, ACOS, and TACOS. Includes campaign mapping, FBA availability, and detailed order/returns/adspend breakdowns. Ending today.", format: "Excel (.xlsx)", size: "Live" },
     { id: "analysis", title: "Analysis Report (Ad Performance)", desc: "Per-product ad-performance analysis with Last 30 days and Last 7 days side by side — Spend+Tax, Advertised & Total Units, Orders, Returns, Final, CPC, ACOS, and TACOS per product, plus current FBA availability. Windows are fixed (trailing 30/7 days ending today) and ignore the date picker.", format: "Excel (.xlsx)", size: "Live" },
     { id: "amazon-daily", title: "Amazon Daily Sales Report", desc: "Day-by-day Orders, Returns, Price, Total Sales, and Growth % per product, plus a Top Losers/Gainers summary — Amazon only, no Flipkart. The most recent 1-2 days may show provisional figures (Amazon's own reporting sync lag).", format: "Excel (.xlsx)", size: "Live" },
     { id: "amazon-weekly", title: "Amazon Weekly Sales Report", desc: "Week-by-week Orders, Returns, Price, Total Sales, and Growth % per product, plus a Top Losers/Gainers summary — Amazon only, no Flipkart. Matches the classic weekly revenue sheet layout.", format: "Excel (.xlsx)", size: "Live" },

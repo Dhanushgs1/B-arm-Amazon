@@ -212,7 +212,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
           </div>
           {!collapsed && (
             <div className="min-w-0 transition-opacity duration-300">
-              <span className="font-extrabold text-[13.5px] text-white block tracking-tight">{isLkn ? "LKN AI" : "BARM AI"}</span>
+              <span className="font-extrabold text-[13.5px] text-white block tracking-tight">{isLkn ? "LKN AI" : "Marketplace360"}</span>
               <small className="block font-bold text-indigo-400/90 text-[8px] uppercase tracking-widest -mt-1 truncate">
                 {sidebarTagline}
               </small>

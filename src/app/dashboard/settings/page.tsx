@@ -106,6 +106,7 @@ export default function SettingsPage() {
   const [inventoryAlerts, setInventoryAlerts] = useState(true);
   const [weeklySummary, setWeeklySummary] = useState(true);
   const [dailySummary, setDailySummary] = useState(false);
+  const [liveAlerts, setLiveAlerts] = useState(false);
   const [monthlySummary, setMonthlySummary] = useState(false);
   const [aiEnabled, setAiEnabled] = useState(true);
   const [autoInsights, setAutoInsights] = useState(true);
@@ -166,6 +167,7 @@ export default function SettingsPage() {
         setInventoryAlerts(p.inventoryAlerts ?? true);
         setWeeklySummary(p.weeklySummary ?? true);
         setDailySummary(p.dailySummary ?? false);
+        setLiveAlerts(p.liveAlerts ?? false);
         setMonthlySummary(p.monthlySummary ?? false);
         setAiEnabled(p.aiEnabled ?? true);
         setAutoInsights(p.autoInsights ?? true);
@@ -220,7 +222,7 @@ export default function SettingsPage() {
       emailAlerts, notifEmail, ccEmail, slackAlerts, slackUrl, acosThreshold, lowStockThreshold,
       syncSchedule, twoFactor, ipRestrict, whitelistIps,
       timezone, defaultRange, pushAlerts, roasAlerts, inventoryAlerts,
-      weeklySummary, dailySummary, monthlySummary, aiEnabled, autoInsights, smartAlerts,
+      weeklySummary, dailySummary, liveAlerts, monthlySummary, aiEnabled, autoInsights, smartAlerts,
       forecastWindow, recMode, autoPause, autoNegatives, autoBudget,
       roasTarget, compactMode,
       flipkartApiKey, flipkartSellerId,
@@ -246,7 +248,8 @@ export default function SettingsPage() {
       const activeAlerts = [
         roasAlerts && "ROAS / ACOS Alerts",
         inventoryAlerts && "Inventory Alerts",
-        dailySummary && "Daily Summary (10:00 AM IST)",
+        dailySummary && "Daily Digest (10:00 AM IST)",
+        liveAlerts && "Live Alerts (spend spike / stockout forecast / buy box / conversion)",
         weeklySummary && "Weekly Summary (Monday 9:00 AM IST)",
         monthlySummary && "Monthly Summary (1st, 9:00 AM IST)",
         slackAlerts && "Slack Alerts",
@@ -360,7 +363,7 @@ export default function SettingsPage() {
                 </span>
               </div>
               <p className="text-white/75 text-[15px] font-medium mt-1">
-                Manage your BARM AI workspace, integrations, AI preferences and security.
+                Manage your Marketplace360 workspace, integrations, AI preferences and security.
               </p>
               <p className="text-white/60 text-[11px] font-bold mt-1">
                 {account?.name || "—"} · {loggedInUser === "Lkn" ? "Account A" : "Account B"} · Last sync: just now
@@ -670,8 +673,11 @@ export default function SettingsPage() {
                 <SettingRow title="Inventory Alerts" desc="Low stock and stockout-risk warnings.">
                   <Toggle checked={inventoryAlerts} onChange={setInventoryAlerts} />
                 </SettingRow>
-                <SettingRow title="Daily Summary" desc="Sent every morning at 10:00 AM IST.">
+                <SettingRow title="Daily Digest" desc="One morning email: KPIs, out-of-stock ad spend, bleeding campaigns and wasted search terms.">
                   <Toggle checked={dailySummary} onChange={setDailySummary} />
+                </SettingRow>
+                <SettingRow title="Live Alerts" desc="Spend spikes, stockout forecasts, buy box losses and conversion drops — emailed only when something new fires.">
+                  <Toggle checked={liveAlerts} onChange={setLiveAlerts} />
                 </SettingRow>
                 <SettingRow title="Weekly Summary" desc="Sent every Monday at 9:00 AM IST.">
                   <Toggle checked={weeklySummary} onChange={setWeeklySummary} />
@@ -679,14 +685,14 @@ export default function SettingsPage() {
                 <SettingRow title="Monthly Summary" desc="Sent on the 1st of every month at 9:00 AM IST.">
                   <Toggle checked={monthlySummary} onChange={setMonthlySummary} />
                 </SettingRow>
-                {(dailySummary || weeklySummary || monthlySummary) && (
+                {(dailySummary || liveAlerts || weeklySummary || monthlySummary) && (
                   <div className="mt-1 mb-2 px-3 py-2.5 bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 rounded-xl">
                     <p className="text-[11px] font-extrabold text-indigo-600 dark:text-indigo-400 flex items-center gap-1.5">
                       <span>📬</span> Reports will be sent to: <span className="font-black">{notifEmail || "—"}</span>
                       {ccEmail && <span className="font-semibold">(cc: {ccEmail})</span>}
                     </p>
                     <p className="text-[10px] text-indigo-500/80 font-semibold mt-0.5">
-                      {[dailySummary && "Daily 10AM", weeklySummary && "Weekly Monday", monthlySummary && "Monthly 1st"].filter(Boolean).join(" · ")}
+                      {[dailySummary && "Daily digest 10AM", liveAlerts && "Live alerts (when they fire)", weeklySummary && "Weekly Monday", monthlySummary && "Monthly 1st"].filter(Boolean).join(" · ")}
                     </p>
                   </div>
                 )}
@@ -952,7 +958,7 @@ export default function SettingsPage() {
 
       {/* ── Footer ── */}
       <div className="flex items-center justify-between flex-wrap gap-3 text-[11px] font-bold text-muted-foreground border-t border-border pt-5">
-        <span>BARM AI v2.0 · SellerMate Public API v1 · Next.js 16</span>
+        <span>Marketplace360 v2.0 · SellerMate Public API v1 · Next.js 16</span>
         <span className="flex items-center gap-1.5">
           <span className={cn("w-1.5 h-1.5 rounded-full", account ? "bg-emerald-500 animate-pulse" : "bg-red-500")} />
           {account ? "All systems operational" : "Connection issue"}

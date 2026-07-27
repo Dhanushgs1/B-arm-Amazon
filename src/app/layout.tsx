@@ -9,7 +9,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "BARM AI Dashboard",
+  title: "Marketplace360 Dashboard",
   description: "Unified Amazon Analytics powered by AI Insights, Forecasting, and Smart Automation.",
 };
 

@@ -10,11 +10,33 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-function wrap(body: string) {
+// Every email carries a channel badge in the header naming which marketplace the numbers came
+// from, plus a muted "Flipkart · soon" chip beside it. Today everything below is Amazon, and
+// nothing in the body says so — once Flipkart data lands, a reader looking back through their
+// inbox would have no way to tell which channel an old mail described. Pass `channel` in the
+// email data to change the active label; add more entries to CHANNELS as they go live.
+const CHANNELS: { key: string; label: string }[] = [
+  { key: "amazon", label: "Amazon" },
+  { key: "flipkart", label: "Flipkart" },
+];
+
+function channelBar(active = "amazon") {
+  const chips = CHANNELS.map(({ key, label }) => {
+    const live = key === active;
+    return `<span style="display:inline-block;padding:3px 11px;border-radius:999px;font-size:11px;font-weight:800;margin-right:6px;${
+      live
+        ? "background:#ffffff;color:#6D5EF8;"
+        : "background:rgba(255,255,255,0.14);color:rgba(255,255,255,0.65);"
+    }">${label}${live ? "" : " &#183; soon"}</span>`;
+  }).join("");
+  return `<p style="margin:10px 0 0;">${chips}</p>`;
+}
+
+function wrap(body: string, channel = "amazon") {
   const now = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   return `<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BARM AI</title></head>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Marketplace360</title></head>
 <body style="margin:0;padding:0;background:#f4f4f7;font-family:Arial,Helvetica,sans-serif;">
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f4f7;padding:32px 16px;">
   <tr><td align="center">
@@ -25,8 +47,9 @@ function wrap(body: string) {
           <table width="100%" cellpadding="0" cellspacing="0" border="0">
             <tr>
               <td>
-                <p style="margin:0;color:#ffffff;font-size:22px;font-weight:800;letter-spacing:-0.5px;">&#128640; BARM AI Dashboard</p>
+                <p style="margin:0;color:#ffffff;font-size:22px;font-weight:800;letter-spacing:-0.5px;">&#128640; Marketplace360 Dashboard</p>
                 <p style="margin:6px 0 0;color:rgba(255,255,255,0.75);font-size:13px;">${now} IST</p>
+                ${channelBar(channel)}
               </td>
             </tr>
           </table>
@@ -37,7 +60,7 @@ function wrap(body: string) {
       <!-- Footer -->
       <tr>
         <td style="padding:20px 32px;border-top:1px solid #f0f0f0;text-align:center;">
-          <p style="margin:0;color:#9ca3af;font-size:12px;">Sent by BARM AI &nbsp;&#183;&nbsp; <a href="${SITE_URL}/dashboard/settings" style="color:#6D5EF8;text-decoration:none;">Manage alerts</a></p>
+          <p style="margin:0;color:#9ca3af;font-size:12px;">Sent by Marketplace360 &nbsp;&#183;&nbsp; <a href="${SITE_URL}/dashboard/settings" style="color:#6D5EF8;text-decoration:none;">Manage alerts</a></p>
         </td>
       </tr>
     </table>
@@ -47,8 +70,10 @@ function wrap(body: string) {
 }
 
 function buildHtml(type: string, data: Record<string, any>, toEmail: string): string {
+  // Every template below renders through this so the header's channel badge follows the data.
+  const w = (body: string) => wrap(body, data.channel || "amazon");
   if (type === "test") {
-    return wrap(`
+    return w(`
       <table width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr>
           <td align="center" style="padding:8px 0 24px;">
@@ -56,7 +81,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
               <tr><td align="center" style="padding:24px 32px;">
                 <p style="margin:0;font-size:40px;line-height:1;">&#9989;</p>
                 <h2 style="margin:12px 0 6px;color:#166534;font-size:20px;font-weight:800;">Email Connected!</h2>
-                <p style="margin:0;color:#15803d;font-size:14px;font-weight:600;">Your BARM AI alerts are now active.</p>
+                <p style="margin:0;color:#15803d;font-size:14px;font-weight:600;">Your Marketplace360 alerts are now active.</p>
               </td></tr>
             </table>
           </td>
@@ -101,7 +126,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
       </tr>`).join("") || `
       <tr><td style="padding:10px 12px;font-size:13px;font-weight:600;color:#6b7280;">No alert types are enabled yet — turn some on in Settings.</td></tr>`;
 
-    return wrap(`
+    return w(`
       <table width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr>
           <td align="center" style="padding:8px 0 24px;">
@@ -109,7 +134,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
               <tr><td align="center" style="padding:24px 32px;">
                 <p style="margin:0;font-size:40px;line-height:1;">&#128276;</p>
                 <h2 style="margin:12px 0 6px;color:#166534;font-size:20px;font-weight:800;">Alert Settings Saved &amp; Active</h2>
-                <p style="margin:0;color:#15803d;font-size:14px;font-weight:600;">Your BARM AI notification preferences are live.</p>
+                <p style="margin:0;color:#15803d;font-size:14px;font-weight:600;">Your Marketplace360 notification preferences are live.</p>
               </td></tr>
             </table>
           </td>
@@ -153,7 +178,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
       return `<td style="padding:11px 10px;border-bottom:1px solid #f0f0f0;font-size:12.5px;text-align:${align};">${inner}</td>`;
     }).join("")}</tr>`).join("");
 
-    return wrap(`
+    return w(`
       <table width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr><td style="padding-bottom:20px;">
           <table width="100%" cellpadding="16" cellspacing="0" border="0" style="background:${data.headerBg || "#fef2f2"};border:1px solid ${data.headerBorder || "#fecaca"};border-radius:12px;">
@@ -220,7 +245,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
       </tr>`;
     }).join("");
 
-    return wrap(`
+    return w(`
       <table width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr><td style="padding-bottom:20px;">
           <table width="100%" cellpadding="16" cellspacing="0" border="0" style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;">
@@ -252,7 +277,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
         <td style="padding:12px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;font-weight:700;color:${item.days <= 7 ? "#dc2626" : "#d97706"};">${item.days} days left</td>
       </tr>`).join("");
 
-    return wrap(`
+    return w(`
       <table width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr><td style="padding-bottom:20px;">
           <table width="100%" cellpadding="16" cellspacing="0" border="0" style="background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;">
@@ -297,7 +322,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
         <td style="padding:12px 10px;border-bottom:1px solid #f0f0f0;font-size:13px;font-weight:700;color:#6b7280;">${c.roas}x</td>
       </tr>`).join("");
 
-    return wrap(`
+    return w(`
       <table width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr><td style="padding-bottom:20px;">
           <table width="100%" cellpadding="16" cellspacing="0" border="0" style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;">
@@ -392,7 +417,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
         <td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12.5px;color:#6b7280;text-align:right;">${deptTotal ? ((d.sales / deptTotal) * 100).toFixed(1) : "0.0"}%</td>
       </tr>`).join("");
 
-    return wrap(`
+    return w(`
       <table width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr><td style="padding-bottom:6px;">
           <h2 style="margin:0;color:#111;font-size:20px;font-weight:800;">&#128200; Weekly Performance Report</h2>
@@ -447,11 +472,26 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
       </table>`);
   }
 
-  if (type === "dailyReport") {
+  // One combined morning email replacing the four that used to arrive separately: the daily
+  // performance report, out-of-stock ad spend, bleeding campaigns and wasted search terms.
+  // Ordered for a reader who has two minutes — money at risk first, then what to do about it,
+  // then how the day actually went. Sections with nothing to report collapse to a single
+  // "all clear" line rather than an empty table, so the length tracks the number of problems.
+  if (type === "dailyDigest") {
     const currency = data.currency === "INR" ? "₹" : "$";
     const money = (v: number) => currency + new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(v || 0));
     const n = (v: number) => new Intl.NumberFormat("en-IN").format(Math.round(v || 0));
+    const clip = (s: string, len = 40) => ((s || "").length > len ? (s || "").slice(0, len) + "…" : s || "");
     const m = data.metrics || {};
+    const inv = data.inventory || {};
+
+    const stockoutItems: any[] = data.stockoutItems || [];
+    const bleedingItems: any[] = data.bleedingItems || [];
+    const wastedTerms: any[] = data.wastedTerms || [];
+    const atRisk =
+      stockoutItems.reduce((a, i) => a + (i.spend || 0), 0) +
+      bleedingItems.reduce((a, i) => a + (i.spend || 0), 0) +
+      wastedTerms.reduce((a, i) => a + (i.spend || 0), 0);
 
     const kpi = (label: string, val: string, bg: string, color: string) => `
       <td width="33%" style="padding:4px;">
@@ -470,41 +510,87 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
       return `<span style="background:${bg};color:${cl};padding:2px 8px;border-radius:999px;font-size:11px;font-weight:800;">${Math.round(acos)}%</span>`;
     };
 
-    const section = (emoji: string, title: string, headCols: string[], rows: string[]) => `
-      <tr><td style="padding:22px 0 8px;">
-        <h3 style="margin:0;font-size:14px;font-weight:800;color:#111;">${emoji} ${title}</h3>
-      </td></tr>
-      <tr><td>
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #f0f0f0;border-radius:10px;overflow:hidden;">
-          <thead><tr style="background:#f9fafb;">
-            ${headCols.map((h, i) => `<th style="padding:8px 10px;text-align:${i === 0 ? "left" : "right"};font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">${h}</th>`).join("")}
-          </tr></thead>
-          <tbody>${rows.join("") || `<tr><td colspan="${headCols.length}" style="padding:12px;font-size:12px;color:#9ca3af;">No data</td></tr>`}</tbody>
-        </table>
-      </td></tr>`;
-
-    const rank = (i: number) => `<span style="color:#9ca3af;font-weight:800;font-size:11px;">${i + 1}.</span> `;
     const nameCell = (t: string) => `<td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12px;font-weight:700;color:#111;">${t}</td>`;
     const numCell = (t: string, color = "#374151") => `<td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12px;font-weight:700;color:${color};text-align:right;">${t}</td>`;
     const badgeCell = (h: string) => `<td style="padding:9px 10px;border-top:1px solid #f5f5f5;text-align:right;">${h}</td>`;
-    const clip = (s: string, len = 34) => (s || "").length > len ? (s || "").slice(0, len) + "…" : (s || "");
+    const rank = (i: number) => `<span style="color:#9ca3af;font-weight:800;font-size:11px;">${i + 1}.</span> `;
+
+    // A section renders its table when there are rows, and a green one-liner when there aren't —
+    // "nothing wrong here" is itself worth reporting, and an empty grid doesn't say it.
+    const section = (emoji: string, title: string, note: string, headCols: string[], rows: string[], clear: string) => `
+      <tr><td style="padding:22px 0 8px;">
+        <h3 style="margin:0;font-size:14px;font-weight:800;color:#111;">${emoji} ${title}</h3>
+        ${note ? `<p style="margin:3px 0 0;font-size:11px;color:#6b7280;font-weight:600;">${note}</p>` : ""}
+      </td></tr>
+      <tr><td>${
+        rows.length
+          ? `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #f0f0f0;border-radius:10px;overflow:hidden;">
+               <thead><tr style="background:#f9fafb;">
+                 ${headCols.map((h, i) => `<th style="padding:8px 10px;text-align:${i === 0 ? "left" : "right"};font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">${h}</th>`).join("")}
+               </tr></thead>
+               <tbody>${rows.join("")}</tbody>
+             </table>`
+          : `<table width="100%" cellpadding="11" cellspacing="0" border="0" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;">
+               <tr><td style="font-size:12px;font-weight:700;color:#166534;">&#10004; ${clear}</td></tr>
+             </table>`
+      }</td></tr>`;
+
+    const stockoutRows = stockoutItems.map((it) => `<tr>
+      ${nameCell(clip(it.name) + `<br><span style="font-weight:600;color:#9ca3af;font-size:10px;">${it.sku || ""}</span>`)}
+      ${badgeCell(`<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:800;">${it.units === 0 ? "OUT" : it.units + " left"}</span>`)}
+      ${numCell(money(it.spend), "#dc2626")}
+      ${numCell(String((it.campaigns || []).length))}
+    </tr>`);
+
+    const bleedingRows = bleedingItems.map((c) => `<tr>
+      ${nameCell(clip(c.campaignName))}
+      ${numCell(money(c.spend), "#dc2626")}
+      ${numCell(money(c.sales), "#059669")}
+      ${badgeCell(acosBadge(c.acos))}
+      ${numCell(String(c.orders), c.orders === 0 ? "#dc2626" : "#374151")}
+    </tr>`);
+
+    const wastedRows = wastedTerms.map((t) => `<tr>
+      ${nameCell(clip(t.searchTerm))}
+      ${numCell(money(t.spend), "#dc2626")}
+      ${numCell(String(t.clicks))}
+      ${badgeCell(`<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:800;">0</span>`)}
+    </tr>`);
 
     const topCampaigns = (data.topCampaigns || []).map((c: any, i: number) => `<tr>${nameCell(rank(i) + clip(c.name))}${numCell(money(c.sales), "#059669")}${badgeCell(acosBadge(c.acos))}</tr>`);
-    const lossCampaigns = (data.lossCampaigns || []).map((c: any, i: number) => `<tr>${nameCell(rank(i) + clip(c.name))}${numCell(money(c.spend), "#dc2626")}${badgeCell(acosBadge(c.acos))}${numCell(n(c.orders), c.orders === 0 ? "#dc2626" : "#374151")}</tr>`);
-    const topTerms = (data.topTerms || []).map((t: any, i: number) => `<tr>${nameCell(rank(i) + clip(t.term))}${numCell(money(t.sales), "#059669")}${numCell(n(t.orders))}</tr>`);
     const topProducts = (data.topProducts || []).map((p: any, i: number) => `<tr>${nameCell(rank(i) + clip(p.name))}${numCell(money(p.sales), "#059669")}${badgeCell(acosBadge(p.acos))}</tr>`);
+    const topTerms = (data.topTerms || []).map((t: any, i: number) => `<tr>${nameCell(rank(i) + clip(t.term))}${numCell(money(t.sales), "#059669")}${numCell(n(t.orders))}</tr>`);
 
-    const inv = data.inventory || {};
-    const al = data.alerts || {};
+    const issues = stockoutItems.length + bleedingItems.length + wastedTerms.length;
 
-    return wrap(`
+    return w(`
       <table width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr><td style="padding-bottom:6px;">
-          <h2 style="margin:0;color:#111;font-size:20px;font-weight:800;">&#128202; Daily Performance Report</h2>
+          <h2 style="margin:0;color:#111;font-size:20px;font-weight:800;">&#128202; Daily Digest</h2>
           <p style="margin:4px 0 0;color:#6b7280;font-size:12px;font-weight:600;">Data for: <strong style="color:#374151;">${data.dateLabel || ""}</strong> &nbsp;&#183;&nbsp; ${data.accountName || "B-ARM"}</p>
         </td></tr>
 
         <tr><td style="padding-top:14px;">
+          <table width="100%" cellpadding="14" cellspacing="0" border="0" style="background:${issues ? "#fef2f2" : "#f0fdf4"};border:1px solid ${issues ? "#fecaca" : "#bbf7d0"};border-radius:12px;">
+            <tr><td>
+              <p style="margin:0;font-size:12px;font-weight:800;color:${issues ? "#991b1b" : "#166534"};">${issues ? "&#9888;&#65039; Action needed today" : "&#10004; Nothing needs action today"}</p>
+              ${
+                issues
+                  ? `<p style="margin:6px 0 0;font-size:13px;color:#b91c1c;font-weight:700;line-height:1.7;">
+                       <strong style="font-size:16px;">${money(atRisk)}</strong> of ad spend at risk right now<br>
+                       <span style="font-weight:600;font-size:12px;">
+                         &#128230; ${n(stockoutItems.length)} out-of-stock products still advertising &nbsp;|&nbsp;
+                         &#128680; ${n(bleedingItems.length)} bleeding campaigns &nbsp;|&nbsp;
+                         &#128184; ${n(wastedTerms.length)} wasted search terms
+                       </span>
+                     </p>`
+                  : `<p style="margin:5px 0 0;font-size:12px;color:#166534;font-weight:600;">No stockout ad spend, no bleeding campaigns and no wasted search terms were found.</p>`
+              }
+            </td></tr>
+          </table>
+        </td></tr>
+
+        <tr><td style="padding-top:16px;">
           <table width="100%" cellpadding="0" cellspacing="0" border="0">
             <tr>
               ${kpi("Total Sales", money(m.totalSales), "#f0fdf4", "#059669")}
@@ -520,27 +606,15 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
           </table>
         </td></tr>
 
-        <tr><td style="padding-top:16px;">
-          <table width="100%" cellpadding="12" cellspacing="0" border="0" style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;">
-            <tr><td>
-              <p style="margin:0;font-size:12px;font-weight:800;color:#991b1b;">&#9888;&#65039; Action needed today</p>
-              <p style="margin:5px 0 0;font-size:12px;color:#b91c1c;font-weight:600;line-height:1.6;">
-                &#128230; ${n(al.stockout || 0)} products out of stock &nbsp;|&nbsp;
-                &#128680; ${n(al.bleeding || 0)} bleeding campaigns &nbsp;|&nbsp;
-                &#128184; ${n(al.wastedTerms || 0)} wasted search terms
-                ${al.wastedSpend ? `<br><strong>${money(al.wastedSpend)}</strong> ad spend at risk (no orders)` : ""}
-              </p>
-            </td></tr>
-          </table>
-        </td></tr>
-
-        ${section("&#127942;", "Top 5 Campaigns (by sales)", ["Campaign", "Sales", "ACOS"], topCampaigns)}
-        ${section("&#128201;", "Loss 5 Campaigns (worst ACOS / no orders)", ["Campaign", "Spend", "ACOS", "Orders"], lossCampaigns)}
-        ${section("&#128269;", "Top 5 Search Terms", ["Search Term", "Sales", "Orders"], topTerms)}
-        ${section("&#128230;", "Top 5 Products", ["Product", "Sales", "ACOS"], topProducts)}
+        ${section("&#128230;", "Ad Spend on Out-of-Stock Products", "Pause these campaigns — the product cannot ship.", ["Product", "Stock", "Spend (7d)", "Campaigns"], stockoutRows, "No out-of-stock product is being advertised.")}
+        ${section("&#128680;", "Bleeding Campaigns", "High ACOS or no orders — review bids or pause.", ["Campaign", "Spend", "Sales", "ACOS", "Orders"], bleedingRows, "No campaign is bleeding spend.")}
+        ${section("&#128184;", "Wasted Search Terms", "Spend with zero orders — add as negative keywords.", ["Search Term", "Spend", "Clicks", "Orders"], wastedRows, "No search term wasted spend.")}
+        ${section("&#127942;", "Top 5 Campaigns", "", ["Campaign", "Sales", "ACOS"], topCampaigns, "No campaign sales recorded.")}
+        ${section("&#128269;", "Top 5 Products", "", ["Product", "Sales", "ACOS"], topProducts, "No product sales recorded.")}
+        ${section("&#128270;", "Top 5 Search Terms", "", ["Search Term", "Sales", "Orders"], topTerms, "No search term sales recorded.")}
 
         <tr><td style="padding:22px 0 8px;">
-          <h3 style="margin:0;font-size:14px;font-weight:800;color:#111;">&#128230; Inventory Health</h3>
+          <h3 style="margin:0;font-size:14px;font-weight:800;color:#111;">&#128202; Inventory Health</h3>
         </td></tr>
         <tr><td>
           <table width="100%" cellpadding="0" cellspacing="0" border="0">
@@ -558,9 +632,72 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
       </table>`);
   }
 
+  // Condition-driven alerts (src/lib/liveAlerts.ts). Only ever sent when something actually
+  // fired — there is deliberately no "all clear" variant here, unlike the daily digest, because
+  // this one arrives off-schedule and an empty one would train the reader to ignore it.
+  if (type === "liveAlerts") {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const alerts: any[] = data.alerts || [];
+    const currency = data.currency === "INR" ? "₹" : "$";
+    const money = (v: number) => currency + new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(v || 0));
+    const totalImpact = alerts.reduce((a, x) => a + (x.impact || 0), 0);
+
+    const TONE: Record<string, { emoji: string; label: string; bg: string; border: string; color: string }> = {
+      spendSpike: { emoji: "&#128200;", label: "Ad Spend Spike", bg: "#fef2f2", border: "#fecaca", color: "#991b1b" },
+      stockoutForecast: { emoji: "&#128230;", label: "Running Out Soon", bg: "#fffbeb", border: "#fde68a", color: "#92400e" },
+      buyBoxLoss: { emoji: "&#127942;", label: "Buy Box Loss", bg: "#fef2f2", border: "#fecaca", color: "#991b1b" },
+      conversionDrop: { emoji: "&#128201;", label: "Conversion Drop", bg: "#f5f3ff", border: "#ddd6fe", color: "#5b21b6" },
+    };
+    const sevChip = (s: number) => {
+      const [bg, cl, txt] = s >= 3 ? ["#fee2e2", "#991b1b", "Urgent"] : s === 2 ? ["#fef3c7", "#92400e", "Watch"] : ["#e5e7eb", "#374151", "FYI"];
+      return `<span style="background:${bg};color:${cl};padding:2px 9px;border-radius:999px;font-size:10px;font-weight:800;">${txt}</span>`;
+    };
+
+    const cards = alerts.map((a) => {
+      const t = TONE[a.type] || TONE.spendSpike;
+      return `
+      <tr><td style="padding:0 0 12px;">
+        <table width="100%" cellpadding="14" cellspacing="0" border="0" style="background:${t.bg};border:1px solid ${t.border};border-radius:12px;">
+          <tr><td>
+            <table width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td style="font-size:10px;font-weight:800;color:${t.color};text-transform:uppercase;letter-spacing:0.05em;">${t.emoji} ${t.label}</td>
+                <td align="right">${sevChip(a.severity || 1)}</td>
+              </tr>
+            </table>
+            <p style="margin:8px 0 0;font-size:14px;font-weight:800;color:#111;line-height:1.35;">${a.title}</p>
+            <p style="margin:6px 0 0;font-size:12px;color:#374151;font-weight:600;line-height:1.6;">${a.detail}</p>
+            <p style="margin:8px 0 0;padding-top:8px;border-top:1px dashed ${t.border};font-size:12px;color:${t.color};font-weight:700;line-height:1.5;">&#8594; ${a.action}</p>
+          </td></tr>
+        </table>
+      </td></tr>`;
+    }).join("");
+
+    return w(`
+      <table width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr><td style="padding-bottom:14px;">
+          <h2 style="margin:0;color:#111;font-size:20px;font-weight:800;">&#9889; ${alerts.length} thing${alerts.length === 1 ? "" : "s"} need${alerts.length === 1 ? "s" : ""} attention</h2>
+          <p style="margin:4px 0 0;color:#6b7280;font-size:12px;font-weight:600;">
+            ${data.accountName || "B-ARM"} &nbsp;&#183;&nbsp; about <strong style="color:#b91c1c;">${money(totalImpact)}</strong> at stake
+            ${data.windowNote ? `&nbsp;&#183;&nbsp; ${data.windowNote}` : ""}
+          </p>
+        </td></tr>
+        <tr><td><table width="100%" cellpadding="0" cellspacing="0" border="0">${cards}</table></td></tr>
+        <tr><td align="center" style="padding-top:18px;">
+          <a href="${SITE_URL}/dashboard" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Dashboard &#8594;</a>
+        </td></tr>
+        <tr><td style="padding-top:16px;">
+          <p style="margin:0;color:#9ca3af;font-size:11px;line-height:1.6;">
+            You are seeing each of these once. The same alert for the same product or campaign will not repeat
+            for ${data.cooldownHours || 24} hours unless it gets materially worse.
+          </p>
+        </td></tr>
+      </table>`);
+  }
+
   // Daily / Weekly summary
   const metrics = data.metrics || {};
-  return wrap(`
+  return w(`
     <table width="100%" cellpadding="0" cellspacing="0" border="0">
       <tr><td style="padding-bottom:20px;">
         <h2 style="margin:0;color:#111;font-size:20px;font-weight:800;">&#128202; ${data.period || "Daily"} Performance Summary</h2>
@@ -617,15 +754,16 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
 }
 
 const SUBJECTS: Record<string, string> = {
-  test: "BARM AI - Email Connected Successfully!",
-  confirmation: "BARM AI - Alert Settings Saved & Active",
-  adAlert: "⚠️ BARM AI - Ad Alert",
-  dailyReport: "📊 BARM AI - Daily Performance Report",
-  weeklyReport: "📈 BARM AI - Weekly Performance Report",
-  stockout: "⚠️ BARM AI - Ad Spend on Out-of-Stock Products",
-  inventory: "BARM AI - Low Inventory Alert",
-  campaign: "BARM AI - High ACOS Campaign Alert",
-  summary: "BARM AI - Performance Summary",
+  test: "Marketplace360 - Email Connected Successfully!",
+  confirmation: "Marketplace360 - Alert Settings Saved & Active",
+  adAlert: "⚠️ Marketplace360 - Ad Alert",
+  dailyDigest: "📊 Marketplace360 - Daily Digest",
+  liveAlerts: "⚡ Marketplace360 - Needs Attention",
+  weeklyReport: "📈 Marketplace360 - Weekly Performance Report",
+  stockout: "⚠️ Marketplace360 - Ad Spend on Out-of-Stock Products",
+  inventory: "Marketplace360 - Low Inventory Alert",
+  campaign: "Marketplace360 - High ACOS Campaign Alert",
+  summary: "Marketplace360 - Performance Summary",
 };
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -641,10 +779,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     const html = buildHtml(type, data, to);
     const info = await transporter.sendMail({
-      from: `BARM AI Dashboard <${process.env.SMTP_FROM}>`,
+      from: `Marketplace360 Dashboard <${process.env.SMTP_FROM}>`,
       to,
       cc: cc || undefined,
-      subject: subject || SUBJECTS[type] || "BARM AI Notification",
+      subject: subject || SUBJECTS[type] || "Marketplace360 Notification",
       html,
       // attachments: [{ filename, content: <base64 string>, encoding: "base64" }] — content
       // travels as base64 over JSON since raw Buffers don't survive a fetch() body.

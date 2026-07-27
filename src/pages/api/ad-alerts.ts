@@ -27,7 +27,7 @@ export function bleedingEmail(items: any[], currency: string, rangeLabel = "") {
   const total = items.reduce((a, c) => a + c.spend, 0);
   const range = rangeLabel ? ` <span style="color:#9ca3af;font-weight:600;">· Data: ${rangeLabel}</span>` : "";
   return {
-    subject: "🚨 BARM AI - Bleeding Campaigns (high ACOS / no orders)",
+    subject: "🚨 Marketplace360 - Bleeding Campaigns (high ACOS / no orders)",
     data: {
       emoji: "&#128680;",
       title: "Bleeding Campaigns",
@@ -55,7 +55,7 @@ export function bleedingEmail(items: any[], currency: string, rangeLabel = "") {
 export function wastedTermsEmail(terms: any[], totalWasted: number, currency: string, rangeLabel = "") {
   const range = rangeLabel ? ` <span style="color:#9ca3af;font-weight:600;">· Data: ${rangeLabel}</span>` : "";
   return {
-    subject: "💸 BARM AI - Wasted Search Terms (spend, zero orders)",
+    subject: "💸 Marketplace360 - Wasted Search Terms (spend, zero orders)",
     data: {
       emoji: "&#128184;",
       title: "Wasted Search Terms",

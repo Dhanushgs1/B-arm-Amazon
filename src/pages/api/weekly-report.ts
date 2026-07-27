@@ -6,8 +6,9 @@
 // endDate: last day of "this week" (default: yesterday).
 
 import type { NextApiRequest, NextApiResponse } from "next";
-import { resolveSellerMateKey, fetchAsinSkuMap } from "@/lib/adAlerts";
-import { buildAmazonSalesWorkbookForAccount } from "@/lib/amazonSalesExport";
+import { resolveSellerMateKey } from "@/lib/adAlerts";
+import { buildWeeklySalesWorkbookFromHistorical } from "@/lib/weeklySalesExport";
+import { fetchAllRows } from "@/lib/historicalAnalysisReportExport";
 import { categorizeTitle, resolveProductName } from "@/lib/categoryMap";
 import * as XLSX from "xlsx-js-style";
 
@@ -47,16 +48,48 @@ const pctChange = (last: number, now: number) => {
   return ((now - last) / last) * 100;
 };
 
-async function retailMap(apiKey: string, base: any, start: string, end: string, skuByAsin: Map<string, string[]>) {
-  // 336 products fit in one page of 500
-  const res = await callTool("get_retail_product_performance", { ...base, start_date: start, end_date: end, page_size: 500 }, apiKey);
-  const map = new Map<string, { name: string; sku: string; sales: number; units: number }>();
-  for (const r of (res.data || [])) {
-    const sku = (skuByAsin.get(r.asin) || [])[0] || "";
-    const rawName = r.productName || r.asin;
-    map.set(r.asin, { name: resolveProductName(rawName, sku) || rawName, sku, sales: r.totalSales || 0, units: r.unitsOrdered || 0 });
+// SKU-wise, sourced from the uploaded Orders export (barm_amazon_am_orders) instead of
+// SellerMate's live get_retail_product_performance tool — that API only exposes ASIN-level data,
+// while the uploaded raw export carries the real per-order SKU.
+async function retailMapBySku(start: string, end: string) {
+  const [rows, priceRows] = await Promise.all([
+    fetchAllRows("barm_amazon_am_orders", (q) => q.gte("purchase_date", start).lte("purchase_date", end)),
+    fetchAllRows("barm_amazon_price_listing", (q) => q),
+  ]);
+  const listingPriceBySku = new Map<string, number>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (const r of priceRows as any[]) {
+    const price = Number(r.price) || 0;
+    if (r.seller_sku && price > 0 && !listingPriceBySku.has(r.seller_sku)) listingPriceBySku.set(r.seller_sku, price);
   }
-  return { map, summary: res.summary || {} };
+  const map = new Map<string, { name: string; sku: string; sales: number; units: number }>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (const r of rows as any[]) {
+    if (!r.sku) continue;
+    const cur = map.get(r.sku) || { name: "", sku: r.sku, sales: 0, units: 0 };
+    if (r.product_name && !cur.name) cur.name = r.product_name;
+    // Same three corrections as the Excel builder (see weeklySalesExport.ts): item_price is the
+    // line total, cancelled orders aren't revenue, and a 0 price on a real shipment falls back to
+    // the listing price. The email body and the attachment must not disagree.
+    if (String(r.order_status || "").toLowerCase().startsWith("cancelled")) continue;
+    const qty = r.quantity || 0;
+    const linePrice = Number(r.item_price) || 0;
+    cur.sales += linePrice > 0 ? linePrice : qty * (listingPriceBySku.get(r.sku) || 0);
+    cur.units += qty;
+    map.set(r.sku, cur);
+  }
+  map.forEach((p) => { p.name = resolveProductName(p.name || p.sku, p.sku) || p.name || p.sku; });
+  return map;
+}
+
+// Account-wide KPI totals (Total Sales, Ad Spend, ROAS, ACOS, ...) stay sourced from the live
+// SellerMate summary — these aren't ASIN/SKU-keyed at all, so they're out of scope for the
+// SKU-wise switch below. page_size is irrelevant to `summary` (it reflects the whole filtered
+// window regardless of how many product rows are paginated back); kept identical to the old
+// retailMap() call for safety.
+async function fetchSummary(apiKey: string, base: any, start: string, end: string) {
+  const res = await callTool("get_retail_product_performance", { ...base, start_date: start, end_date: end, page_size: 500 }, apiKey);
+  return res.summary || {};
 }
 
 async function returnsCount(apiKey: string, base: any, start: string, end: string) {
@@ -85,15 +118,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const base = { amazon_account_id, workspace_id };
 
   try {
-    const skuByAsin = await fetchAsinSkuMap({ apiKey, amazon_account_id, workspace_id });
-
     // Sequential — SellerMate rate-limits bursts of heavy report calls.
-    const tW = await retailMap(apiKey, base, T.start, T.end, skuByAsin);
-    const lW = await retailMap(apiKey, base, L.start, L.end, skuByAsin);
+    const ts = await fetchSummary(apiKey, base, T.start, T.end);
+    const ls = await fetchSummary(apiKey, base, L.start, L.end);
     const retThis = await returnsCount(apiKey, base, T.start, T.end);
     const retLast = await returnsCount(apiKey, base, L.start, L.end);
-
-    const ts = tW.summary, ls = lW.summary;
+    // Per-product data is SKU-wise, sourced from the uploaded Orders export (see retailMapBySku).
+    const tMap = await retailMapBySku(T.start, T.end);
+    const lMap = await retailMapBySku(L.start, L.end);
     const money = (v: number) => (currency === "INR" ? "₹" : "$") + new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(v || 0));
     const compare = [
       { label: "Total Sales", lastStr: money(ls.totalSales), thisStr: money(ts.totalSales), deltaPct: pctChange(ls.totalSales, ts.totalSales), goodUp: true },
@@ -106,13 +138,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     ];
 
     // Per-product movers: only products with meaningful sales in either week
-    const asins = new Set<string>([...tW.map.keys(), ...lW.map.keys()]);
+    const skus = new Set<string>([...tMap.keys(), ...lMap.keys()]);
     const movers: any[] = [];
-    for (const asin of asins) {
-      const t = tW.map.get(asin), l = lW.map.get(asin);
+    for (const sku of skus) {
+      const t = tMap.get(sku), l = lMap.get(sku);
       const thisSales = t?.sales || 0, lastSales = l?.sales || 0;
       if (thisSales < 500 && lastSales < 500) continue; // ignore noise
-      movers.push({ name: t?.name || l?.name || asin, this: thisSales, last: lastSales, diff: thisSales - lastSales, deltaPct: pctChange(lastSales, thisSales) });
+      movers.push({ name: t?.name || l?.name || sku, this: thisSales, last: lastSales, diff: thisSales - lastSales, deltaPct: pctChange(lastSales, thisSales) });
     }
     const gainers = movers.filter((m) => m.diff > 0).sort((a, b) => b.diff - a.diff).slice(0, 5);
     const losers = movers.filter((m) => m.diff < 0).sort((a, b) => a.diff - b.diff).slice(0, 5);
@@ -128,8 +160,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // fetched above, categorized via the product->department map (categoryMap.ts).
     function aggregateByDept(map: Map<string, { name: string; sku: string; sales: number; units: number }>) {
       const agg = new Map<string, { sales: number; units: number }>();
-      for (const [asin, p] of map.entries()) {
-        const dept = categorizeTitle(p.name, asin, p.sku);
+      for (const [sku, p] of map.entries()) {
+        const dept = categorizeTitle(p.name, undefined, sku);
         const d = agg.get(dept) || { sales: 0, units: 0 };
         d.sales += p.sales;
         d.units += p.units;
@@ -137,8 +169,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
       return agg;
     }
-    const deptThis = aggregateByDept(tW.map);
-    const deptLast = aggregateByDept(lW.map);
+    const deptThis = aggregateByDept(tMap);
+    const deptLast = aggregateByDept(lMap);
     const deptNames = new Set<string>([...deptThis.keys(), ...deptLast.keys()]);
     const departments = [...deptNames]
       .map((name) => {
@@ -165,19 +197,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       `🏥 *Department Breakup:* ${departments.map((d) => `${d.name} ${waMoney(d.sales)} (${d.units} units)`).join(" · ")}`,
     ].join("\n");
 
-    // Attach the full per-product Amazon Sales Report spanning last week + this week — same L/T
+    // Attach the full per-SKU Amazon Sales Report spanning last week + this week — same L/T
     // window as the WoW comparison above, so the attachment's Growth Summary sheet lines up
-    // exactly with the email body. Best-effort: a failure here must not block the email itself.
+    // exactly with the email body. Sourced from uploaded data (barm_amazon_am_orders/returns),
+    // not the live API. Best-effort: a failure here must not block the email itself.
     let attachments: any[] | undefined;
     try {
-      const { wb, filename } = await buildAmazonSalesWorkbookForAccount({
-        apiKey, accountId: amazon_account_id, workspaceId: workspace_id,
-        startDate: L.start, endDate: T.end, granularity: "weekly",
-      });
+      const { wb, filename } = await buildWeeklySalesWorkbookFromHistorical({ thisWeek: T, lastWeek: L });
       const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
       attachments = [{ filename, content: buf.toString("base64"), encoding: "base64" }];
     } catch (err) {
-      console.error("[BARM AI] Weekly Amazon Sales Report attachment failed:", err);
+      console.error("[Marketplace360] Weekly Amazon Sales Report attachment failed:", err);
     }
 
     let emailResult: any = null;

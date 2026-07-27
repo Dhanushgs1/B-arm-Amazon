@@ -14,6 +14,7 @@ import {
   setCampaignSku,
 } from "@/lib/amazonReportUpload";
 import { exportHistoricalAnalysisReport } from "@/lib/historicalAnalysisReportExport";
+import { exportWeeklySalesReport } from "@/lib/weeklySalesExport";
 
 const AD_ORDER_REPORT_TYPES: UploadReportType[] = [
   "sp_advertised_product",
@@ -141,7 +142,7 @@ function UploadCard({
 }
 
 export default function UploadReportsPage() {
-  const { account, keySlot } = useDashboard();
+  const { account, keySlot, endDate: dashboardEndDate } = useDashboard();
 
   const [cardState, setCardState] = useState<Record<UploadReportType, CardState>>(
     Object.fromEntries(REPORT_TYPES.map((t) => [t, { status: "idle" }])) as Record<UploadReportType, CardState>
@@ -151,18 +152,18 @@ export default function UploadReportsPage() {
   const [mappingBusy, setMappingBusy] = useState<string | null>(null);
   const [range, setRange] = useState<{ min: string | null; max: string | null }>({ min: null, max: null });
   const [dataInfo, setDataInfo] = useState<Partial<Record<UploadReportType, ReportDataInfo>>>({});
-  const [reportStart, setReportStart] = useState("");
   const [reportEnd, setReportEnd] = useState("");
   const [generating, setGenerating] = useState(false);
   const [reportMsg, setReportMsg] = useState<string | null>(null);
+  const [weeklyGenerating, setWeeklyGenerating] = useState(false);
+  const [weeklyMsg, setWeeklyMsg] = useState<string | null>(null);
 
   const refreshMeta = useCallback(async () => {
     const [r, um, info] = await Promise.all([fetchUploadedDateRange(), fetchUnmappedCampaigns(), fetchAllReportDataInfo()]);
     setRange(r);
     setUnmapped(um);
     setDataInfo(info);
-    setReportStart((prev) => prev || r.min || "");
-    setReportEnd((prev) => prev || r.max || "");
+    setReportEnd((prev: string) => prev || r.max || "");
   }, []);
 
   useEffect(() => {
@@ -205,14 +206,17 @@ export default function UploadReportsPage() {
   };
 
   const handleGenerate = async () => {
-    if (!reportStart || !reportEnd) {
-      alert("Pick a start and end date first.");
+    if (!reportEnd) {
+      alert("Pick an end date first.");
       return;
     }
     setGenerating(true);
     setReportMsg(null);
     try {
-      const res = await exportHistoricalAnalysisReport({ startDate: reportStart, endDate: reportEnd, account, keySlot });
+      // Only endDate: the report is built from a trailing 30-day and 7-day window that both end
+      // there, so it has no use for a caller-supplied start date. The UI used to collect one and
+      // pass it here, which never affected the output and broke the build.
+      const res = await exportHistoricalAnalysisReport({ endDate: reportEnd, account, keySlot });
       setReportMsg(
         `Downloaded ${res.filename} — ${res.skuCount} SKUs` +
           (res.unmappedCampaignSpend ? `, ₹${res.unmappedCampaignSpend.toFixed(0)} spend still unmapped to a SKU` : "") +
@@ -222,6 +226,19 @@ export default function UploadReportsPage() {
       setReportMsg("Failed: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       setGenerating(false);
+    }
+  };
+
+  const handleWeeklyDownload = async () => {
+    setWeeklyGenerating(true);
+    setWeeklyMsg(null);
+    try {
+      const res = await exportWeeklySalesReport({ endDate: dashboardEndDate || undefined });
+      setWeeklyMsg(`Downloaded ${res.filename} (${res.lastWeek.start} to ${res.thisWeek.end}).`);
+    } catch (err) {
+      setWeeklyMsg("Failed: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setWeeklyGenerating(false);
     }
   };
 
@@ -312,23 +329,38 @@ export default function UploadReportsPage() {
       )}
 
       <div className="glass rounded-2xl border border-border p-6 shadow-sm">
+        <h3 className="font-bold text-sm mb-1">Amazon Weekly Sales Report (SKU-wise)</h3>
+        <p className="text-xs text-muted-foreground mb-4">
+          Week-by-week Orders, Returns, Price, Total Sales, and Growth % per SKU, comparing last week vs this week —
+          the same report the Weekly Summary email attaches, sourced from the data uploaded above. Uses the date
+          selected at the top of the dashboard ({dashboardEndDate || "yesterday"}) as the end of &quot;this week&quot;.
+        </p>
+        <button
+          onClick={handleWeeklyDownload}
+          disabled={weeklyGenerating}
+          className="px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold rounded-lg transition-colors flex items-center gap-2 shadow-md disabled:opacity-50"
+        >
+          {weeklyGenerating ? (
+            <>
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Generating…
+            </>
+          ) : (
+            <>
+              <Download size={14} /> Download Weekly Report
+            </>
+          )}
+        </button>
+        {weeklyMsg && <p className="text-xs mt-3 font-semibold">{weeklyMsg}</p>}
+      </div>
+
+      <div className="glass rounded-2xl border border-border p-6 shadow-sm">
         <h3 className="font-bold text-sm mb-1">Generate Historical Analysis Report</h3>
         <p className="text-xs text-muted-foreground mb-4">
           Builds the same Analysis Report layout (Price, Spend+Tax, Units, Orders, Returns, CPC, ACOS, TACOS) from
-          the data uploaded above, for any date range — one row per SKU.
+          the data uploaded above — one row per SKU. The report compares a trailing 30-day window against a
+          trailing 7-day one, both ending on the date you pick, so only the end date is yours to choose.
         </p>
         <div className="flex flex-wrap items-end gap-3">
-          <div>
-            <label className="block text-[10px] uppercase font-black tracking-wider text-muted-foreground mb-1">
-              Start date
-            </label>
-            <input
-              type="date"
-              value={reportStart}
-              onChange={(e) => setReportStart(e.target.value)}
-              className="px-2 py-1.5 rounded-md border border-border bg-background text-xs"
-            />
-          </div>
           <div>
             <label className="block text-[10px] uppercase font-black tracking-wider text-muted-foreground mb-1">
               End date
@@ -342,7 +374,7 @@ export default function UploadReportsPage() {
           </div>
           <button
             onClick={handleGenerate}
-            disabled={generating || !reportStart || !reportEnd}
+            disabled={generating || !reportEnd}
             className="px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold rounded-lg transition-colors flex items-center gap-2 shadow-md disabled:opacity-50"
           >
             {generating ? (

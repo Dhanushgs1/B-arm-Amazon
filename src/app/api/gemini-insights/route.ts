@@ -14,11 +14,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Gemini API key is not configured on the server.' }, { status: 500 });
     }
 
-    // High-speed valid models (fastest first)
+    // High-speed valid models (fastest first). The old 1.5/2.0 model names are
+    // retired or quota-exhausted on this key's free tier (404/429) — the
+    // "-latest" aliases stay pointed at whatever current model Google serves.
     const models = [
-      'gemini-1.5-flash',
-      'gemini-2.0-flash',
-      'gemini-1.5-pro'
+      'gemini-flash-latest',
+      'gemini-flash-lite-latest',
+      'gemini-2.0-flash'
     ];
 
     let lastStatus = 0;
@@ -29,7 +31,7 @@ export async function POST(req: Request) {
 
       // 8-second strict timeout per model fetch
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      const timeoutId = setTimeout(() => controller.abort(), 12000);
 
       try {
         const response = await fetch(url, {
@@ -40,7 +42,15 @@ export async function POST(req: Request) {
           },
           body: JSON.stringify({
             contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { maxOutputTokens: 500, temperature: 0.5 },
+            // The "-latest" flash aliases resolve to thinking-capable models that
+            // spend part of maxOutputTokens on hidden reasoning before writing the
+            // visible answer — a low maxOutputTokens (previously 500) let thinking
+            // eat the whole budget and silently truncated real output to a
+            // sentence. thinkingBudget: 0 disable-thinking is rejected as invalid
+            // on these models, and even a requested budget (256) is only advisory —
+            // observed thinking spend up to ~800 tokens regardless — so the overall
+            // ceiling needs generous headroom rather than relying on the budget cap.
+            generationConfig: { maxOutputTokens: 2048, temperature: 0.5, thinkingConfig: { thinkingBudget: 256 } },
           }),
           signal: controller.signal,
         });
