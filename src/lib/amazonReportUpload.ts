@@ -2,17 +2,19 @@ import Papa from "papaparse";
 import { createClient } from "@supabase/supabase-js";
 import { lazySupabase, SUPABASE_URL, SUPABASE_ANON_KEY } from "@/lib/supabaseLazy";
 
-// The shared `supabase` client (src/lib/supabaseClient.ts) is pinned to the
-// `barm` Postgres schema, which turns out to be empty in this project — every
-// real table (shop_data, amazon_ads_advertised_product_dashboard, the
-// flipkart_*_dashboard tables, etc.) actually lives in the default `public`
-// schema. The tables this file writes to were created there too, so this
-// second client targets `public` explicitly rather than reusing the `barm`
-// one and silently hitting a schema with nothing in it.
+// All 20 barm_* tables (the ones in REPORT_TABLE below, plus barm_alert_state
+// and barm_amazon_campaign_sku_map) were moved out of `public` into a
+// dedicated `barm` Postgres schema. This client is scoped to that schema so
+// every read/write in this file (and in historicalAnalysisReportExport.ts /
+// weeklySalesExport.ts / live-alerts.ts, which import it) resolves against
+// the right place. Nothing else in the codebase uses this client for
+// non-barm_ tables, so pinning the schema here is safe.
 // Built on first use, not at import — see src/lib/supabaseLazy.ts. This module is pulled into the
 // client bundle by the Upload and Reports pages, so constructing eagerly meant a missing
 // NEXT_PUBLIC_SUPABASE_* variable crashed those pages outright instead of just this feature.
-export const supabasePublic = lazySupabase(() => createClient(SUPABASE_URL, SUPABASE_ANON_KEY));
+export const supabasePublic = lazySupabase(() =>
+  createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { db: { schema: "barm" } })
+);
 
 export type UploadReportType =
   | "sp_advertised_product"

@@ -273,6 +273,18 @@ export default function App({ initialTab } = {}) {
     return TABLE_NAME_MAP[baseName] || baseName;
   };
 
+  // The 8 barm_flipkart_* tables (and barm_amazon_*, barm_alert_state) were
+  // moved out of the `public` Postgres schema into a dedicated `barm` schema.
+  // PostgREST resolves unqualified table names against `public` by default,
+  // so any request that targets a barm_-prefixed table needs an explicit
+  // Accept-Profile (reads) / Content-Profile (writes) header, or it 404s.
+  // Non-barm_ tables (the Lkn account's *_dash_360 / *_dashboard tables)
+  // must NOT get this header — they still live in `public`.
+  const schemaHeaders = (tableName, isWrite = false) => {
+    if (!tableName || !tableName.startsWith('barm_')) return {};
+    return isWrite ? { 'Content-Profile': 'barm' } : { 'Accept-Profile': 'barm' };
+  };
+
   // Platform Performance Comparison States
   const [comparisonStats, setComparisonStats] = useState(null);
   const [isCompStatsLoading, setIsCompStatsLoading] = useState(false);
@@ -807,16 +819,18 @@ export default function App({ initialTab } = {}) {
       return;
     }
     const fetchPnlAdSpend = async () => {
+      const cpTable = getTableName('flipkart_campaign_performance');
       const headers = {
         'apikey': supabaseKey,
         'Authorization': `Bearer ${supabaseKey}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        ...schemaHeaders(cpTable)
       };
       let results = [];
       let offset = 0;
       const limit = 1000;
       while (true) {
-        const url = `${supabaseUrl}/rest/v1/${getTableName('flipkart_campaign_performance')}?select=*&report_date=gte.${pnlDateFrom}&report_date=lte.${pnlDateTo}&limit=${limit}&offset=${offset}`;
+        const url = `${supabaseUrl}/rest/v1/${cpTable}?select=*&report_date=gte.${pnlDateFrom}&report_date=lte.${pnlDateTo}&limit=${limit}&offset=${offset}`;
         try {
           const response = await fetch(url, { method: 'GET', headers });
           if (!response.ok) break;
@@ -2851,14 +2865,16 @@ Return ONLY valid JSON array, no markdown, no explanation:
           });
 
           // 1. Delete existing entries for this date first to avoid duplicates
+          const cpUploadTable = getTableName('flipkart_campaign_performance');
           const headers = {
             'apikey': supabaseKey,
             'Authorization': `Bearer ${supabaseKey}`,
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            ...schemaHeaders(cpUploadTable, true)
           };
 
           setUploadStatus(`Deleting old records for date ${campaignUploadDate} to prevent duplicates...`);
-          const delUrl = `${supabaseUrl}/rest/v1/${getTableName('flipkart_campaign_performance')}?report_date=eq.${campaignUploadDate}`;
+          const delUrl = `${supabaseUrl}/rest/v1/${cpUploadTable}?report_date=eq.${campaignUploadDate}`;
           const delRes = await fetch(delUrl, { method: 'DELETE', headers });
           if (!delRes.ok) {
             console.warn("Delete old data returned status:", delRes.status);
@@ -2866,7 +2882,7 @@ Return ONLY valid JSON array, no markdown, no explanation:
 
           // 2. Insert the new entries
           setUploadStatus(`Uploading ${formattedRows.length} rows...`);
-          const url = `${supabaseUrl}/rest/v1/${getTableName('flipkart_campaign_performance')}`;
+          const url = `${supabaseUrl}/rest/v1/${cpUploadTable}`;
           const res = await fetch(url, {
             method: 'POST',
             headers: {
@@ -3038,16 +3054,23 @@ Return ONLY valid JSON array, no markdown, no explanation:
           return;
         }
 
+        // baseHeaders is reused for both reads and writes to listings + price
+        // history below, so include both Accept-Profile and Content-Profile
+        // when this account's tables live in the `barm` schema — an extra
+        // profile header is harmless on requests that don't need it.
         const baseHeaders = {
           'apikey': supabaseKey,
           'Authorization': `Bearer ${supabaseKey}`,
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          ...(getTableName('flipkart_listings').startsWith('barm_')
+            ? { 'Accept-Profile': 'barm', 'Content-Profile': 'barm' }
+            : {})
         };
 
         // Compare new uploads with latest state from database to log price changes
         const priceHistoryChanges = [];
         let latestDbListings = [];
-        
+
         try {
           const listingsTable = getTableName('flipkart_listings');
           const urlListings = `${supabaseUrl}/rest/v1/${listingsTable}?select=listing_id,seller_sku_id,selling_price,mrp`;
@@ -3320,15 +3343,17 @@ Return ONLY valid JSON array, no markdown, no explanation:
             };
           });
 
+          const osUploadTable = getTableName('flipkart_overall_sales');
           const headers = {
             'apikey': supabaseKey,
             'Authorization': `Bearer ${supabaseKey}`,
             'Content-Type': 'application/json',
-            'Prefer': 'return=representation'
+            'Prefer': 'return=representation',
+            ...schemaHeaders(osUploadTable, true)
           };
 
           setUploadStatus(`Uploading ${formattedRows.length} rows...`);
-          const url = `${supabaseUrl}/rest/v1/${getTableName('flipkart_overall_sales')}`;
+          const url = `${supabaseUrl}/rest/v1/${osUploadTable}`;
           const res = await fetch(url, {
             method: 'POST',
             headers,
@@ -3768,7 +3793,8 @@ Return ONLY valid JSON array, no markdown, no explanation:
           const baseHeaders = {
             'apikey': supabaseKey,
             'Authorization': `Bearer ${supabaseKey}`,
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            ...schemaHeaders(getTableName('flipkart_pnl_sku'), true)
           };
 
           if (uniqueSkuRows.length > 0) {
@@ -4167,8 +4193,15 @@ Return ONLY valid JSON array, no markdown, no explanation:
       sales: { min: null, max: null }
     });
     try {
-      const headers = { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` };
-      
+      // Every table looked up below goes through getTableName(), which is
+      // consistent per logged-in user, so a single Accept-Profile check
+      // against one of them covers all the reads in this function.
+      const headers = {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        ...schemaHeaders(getTableName('flipkart_campaign_performance'))
+      };
+
       // Query campaign performance bounds (uses user-specific table prefix)
       const cpTable = getTableName('flipkart_campaign_performance');
       const resMaxCp = await fetch(`${supabaseUrl}/rest/v1/${cpTable}?select=report_date&order=report_date.desc&limit=1`, { headers });
@@ -4299,10 +4332,15 @@ Return ONLY valid JSON array, no markdown, no explanation:
       return;
     }
 
+    // This whole effect resolves every table via getTableName(), which is
+    // consistent per current username, so a single check (against the
+    // listings table) covers all the direct `headers`-using fetches below
+    // (listings, price history, keyword planner, pnl_sku, pnl_orders).
     const headers = {
       'apikey': supabaseKey,
       'Authorization': `Bearer ${supabaseKey}`,
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      ...schemaHeaders(getTableName('flipkart_listings'))
     };
 
     const fetchTableForRange = async (tableName, dateColumn, from, to) => {
@@ -4313,7 +4351,7 @@ Return ONLY valid JSON array, no markdown, no explanation:
         const url = `${supabaseUrl}/rest/v1/${tableName}?select=*&${dateColumn}=gte.${from}&${dateColumn}=lte.${to}&limit=${limit}&offset=${offset}`;
         console.log(`Fetching from Supabase (${tableName}):`, url);
         try {
-          const response = await fetch(url, { method: 'GET', headers });
+          const response = await fetch(url, { method: 'GET', headers: { ...headers, ...schemaHeaders(tableName) } });
           if (!response.ok) {
             console.warn(`Table ${tableName} might not exist or err: ${response.status}`);
             break;
@@ -4395,7 +4433,7 @@ Return ONLY valid JSON array, no markdown, no explanation:
         try {
           const kpTable = getTableName('flipkart_keyword_planner');
           const urlKp = `${supabaseUrl}/rest/v1/${kpTable}?select=*&order=saved_at.desc`;
-          const resKp = await fetch(urlKp, { method: 'GET', headers });
+          const resKp = await fetch(urlKp, { method: 'GET', headers: { ...headers, ...schemaHeaders(kpTable) } });
           if (resKp.ok) {
             const kpData = await resKp.json();
             if (Array.isArray(kpData) && kpData.length > 0) {
@@ -4508,7 +4546,7 @@ Return ONLY valid JSON array, no markdown, no explanation:
         const limit = 1000;
         while (true) {
           const url = `${supabaseUrl}/rest/v1/${table}?select=*&${dateCol}=gte.${fromStr}&${dateCol}=lte.${toStr}&limit=${limit}&offset=${offset}`;
-          const response = await fetch(url, { method: 'GET', headers });
+          const response = await fetch(url, { method: 'GET', headers: { ...headers, ...schemaHeaders(table) } });
           if (!response.ok) break;
           const data = await response.json();
           res = res.concat(data);
@@ -7242,13 +7280,13 @@ Return ONLY valid JSON array, no markdown, no explanation:
         return;
       }
 
+      const cpTable = getTableName('flipkart_campaign_performance');
       const headers = {
         'apikey': supabaseKey,
         'Authorization': `Bearer ${supabaseKey}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        ...schemaHeaders(cpTable)
       };
-
-      const cpTable = getTableName('flipkart_campaign_performance');
 
       // 1. Fetch report_dates and total_revenue_rs for peak lookup window:
       //    If single day selected → look back 2 months; otherwise use selected range
@@ -8643,10 +8681,11 @@ CRITICAL INSTRUCTIONS:
     }
 
     try {
-      let url = `${supabaseUrl}/rest/v1/${getTableName('flipkart_campaign_manager')}?select=*&order=revenue.desc&limit=1000`;
+      const cmTableName = getTableName('flipkart_campaign_manager');
+      let url = `${supabaseUrl}/rest/v1/${cmTableName}?select=*&order=revenue.desc&limit=1000`;
       if (fromDate) url += `&report_date=gte.${fromDate}`;
       if (toDate) url += `&report_date=lte.${toDate}`;
-      const res = await fetch(url, { headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` } });
+      const res = await fetch(url, { headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}`, ...schemaHeaders(cmTableName) } });
       if (!res.ok) throw new Error('Fetch failed');
       const data = await res.json();
       setCampaignDBData(data);
@@ -19376,8 +19415,8 @@ Campaigns: ${JSON.stringify(top20)}`;
                         // Save to Supabase if not demo
                         if (!isDemoMode && supabaseUrl && supabaseKey) {
                           try {
-                            const headers = { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' };
                             const kpTableName = getTableName('flipkart_keyword_planner');
+                            const headers = { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal', ...schemaHeaders(kpTableName, true) };
                             // Delete old keywords for this category
                             await fetch(`${supabaseUrl}/rest/v1/${kpTableName}?category=eq.${kpCategory}`, { method: 'DELETE', headers });
                             // Insert new keywords
@@ -19410,8 +19449,9 @@ Campaigns: ${JSON.stringify(top20)}`;
                           
                           if (!isDemoMode && supabaseUrl && supabaseKey) {
                             try {
-                              const headers = { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` };
-                              await fetch(`${supabaseUrl}/rest/v1/${getTableName('flipkart_keyword_planner')}?category=eq.${kpCategory}`, { method: 'DELETE', headers });
+                              const kpDelTable = getTableName('flipkart_keyword_planner');
+                              const headers = { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}`, ...schemaHeaders(kpDelTable, true) };
+                              await fetch(`${supabaseUrl}/rest/v1/${kpDelTable}?category=eq.${kpCategory}`, { method: 'DELETE', headers });
                             } catch (e) {
                               console.error("Failed to clear from Supabase", e);
                             }
