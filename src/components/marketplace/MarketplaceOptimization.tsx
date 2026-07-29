@@ -60,7 +60,7 @@ export function MarketplaceOptimization({ marketplace }: MarketplaceOptimization
       prev.map((r) => {
         if (r.id === id) {
           const next = !r.enabled;
-          triggerToast(`Rule "${r.name}" is now ${next ? "ACTIVE" : "PAUSED"}`);
+          triggerToast(`Rule "${r.name}" set to ${next ? "ACTIVE" : "PAUSED"} for this demo session.`);
           return { ...r, enabled: next };
         }
         return r;
@@ -70,14 +70,14 @@ export function MarketplaceOptimization({ marketplace }: MarketplaceOptimization
 
   const deleteRule = (id: string) => {
     setRules((prev) => prev.filter((r) => r.id !== id));
-    triggerToast("Rule deleted successfully.");
+    triggerToast("Rule removed for this demo session — no live rule was changed.");
   };
 
   const handleRunRuleNow = (rule: MarketplaceRule) => {
     setRunningRuleId(rule.id);
     setTimeout(() => {
       setRunningRuleId(null);
-      triggerToast(`Successfully executed "${rule.name}" across ${campaigns.length} active campaigns. 3 adjustments applied!`);
+      triggerToast(`Simulated run of "${rule.name}" — example only, no real campaigns were adjusted.`);
     }, 1200);
   };
 
@@ -121,7 +121,7 @@ export function MarketplaceOptimization({ marketplace }: MarketplaceOptimization
     setRules([newRule, ...rules]);
     setIsModalOpen(false);
     setRuleName("");
-    triggerToast(`New rule "${newRule.name}" created and enabled!`);
+    triggerToast(`New rule "${newRule.name}" added for this demo session.`);
   };
 
   const filteredRules = rules.filter((r) => {

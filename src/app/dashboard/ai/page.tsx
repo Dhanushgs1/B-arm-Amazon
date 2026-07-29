@@ -2,7 +2,7 @@
 
 import { useDashboard } from "@/lib/DashboardContext";
 import { useQuery } from "@tanstack/react-query";
-import { mcp } from "@/lib/api";
+import { mcp, mcpAllInventory } from "@/lib/api";
 import {
   Bot, Send, User, Sparkles, Loader2, ArrowRight,
   TrendingUp, TrendingDown, Package, Megaphone,
@@ -159,7 +159,10 @@ export default function AIPage() {
 
   const { data: inventoryData } = useQuery({
     queryKey: ["inventory_ai", keySlot, account?.id],
-    queryFn: () => mcp("get_inventory", { amazon_account_id: account?.id, workspace_id: account?.workspace_id, page_size: 100 }, keySlot),
+    // get_inventory paginates with limit/offset, not page_size — mcpAllInventory fetches every
+    // page instead of silently capping at the API's ~50-item default, so the assistant's
+    // stockout detection actually sees the full catalog.
+    queryFn: () => mcpAllInventory({ amazon_account_id: account?.id, workspace_id: account?.workspace_id }, keySlot),
     enabled: !!account,
   });
 
@@ -188,7 +191,7 @@ export default function AIPage() {
   const salesVal = cpData?.summary?.totalSales || 0;
   const acosVal = cpData?.summary?.overallAcos || 0;
   const roasVal = cpData?.summary?.overallRoas || 0;
-  const items = inventoryData?.items || [];
+  const items = inventoryData || [];
   const totalQty = items.reduce((acc: number, i: any) => acc + ((i.fbm?.quantity || 0) + (i.fba?.endingWarehouseBalance || 0)), 0);
   const totalVal = items.reduce((acc: number, i: any) => acc + ((i.fbm?.quantity || 0) + (i.fba?.endingWarehouseBalance || 0)) * (i.price || 0), 0);
 

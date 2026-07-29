@@ -10,6 +10,7 @@ import { PageHero } from "@/components/PageHero";
 import { KPICard } from "@/components/KPICard";
 import { KpiDrilldownModal } from "@/components/KpiDrilldownModal";
 import { AiSuggestionModal } from "@/components/AiSuggestionModal";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { Loader2, Bot, Rocket, AlertTriangle, Target } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -26,7 +27,7 @@ export default function PlacementsPage() {
   const [kpiModal, setKpiModal] = useState<{ title: string; data: any[] } | null>(null);
   const [aiModal, setAiModal] = useState(false);
 
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["placements", keySlot, account?.id, startDate, endDate],
     queryFn: async () => {
       const res = await mcp("get_placement_performance", {
@@ -137,6 +138,14 @@ export default function PlacementsPage() {
 
   return (
     <div className="space-y-8 pb-12">
+      {isError && (
+        <QueryErrorState
+          compact
+          message="Placement data couldn't load — retry, or the numbers you see may be incomplete rather than genuinely zero."
+          onRetry={() => refetch()}
+        />
+      )}
+
       <PageHero
         title="Placements Performance"
         subtitle="Analyze where your ads are showing, optimize bids for Top of Search, and improve ROAS using AI."

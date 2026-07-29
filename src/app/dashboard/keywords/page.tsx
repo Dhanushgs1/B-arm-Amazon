@@ -10,6 +10,7 @@ import { AiSuggestionModal } from "@/components/AiSuggestionModal";
 import { DataTable } from "@/components/DataTable";
 import { KPICard } from "@/components/KPICard";
 import { PageHero } from "@/components/PageHero";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { AcosBadge, ACOS_LIMIT, acosRowClass } from "@/components/AcosBadge";
 import { Loader2, KeyRound, Bot, Trophy, AlertTriangle, Rocket, Ban, Zap } from "lucide-react";
 import { motion } from "framer-motion";
@@ -82,7 +83,7 @@ export default function KeywordsPage() {
   const [kpiModal, setKpiModal] = useState<{ title: string; data: any[] } | null>(null);
   const [aiModal, setAiModal] = useState(false);
 
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["keywords", keySlot, account?.id, startDate, endDate],
     queryFn: async () => {
       return mcpAllPages("get_targeting_performance", {
@@ -230,6 +231,14 @@ export default function KeywordsPage() {
 
   return (
     <div className="space-y-8 pb-12">
+      {isError && (
+        <QueryErrorState
+          compact
+          message="Keyword data couldn't load — retry, or the numbers you see may be incomplete rather than genuinely zero."
+          onRetry={() => refetch()}
+        />
+      )}
+
       <PageHero
         title="AI Keyword Intelligence"
         subtitle="Monitor keyword performance, optimize bids, discover opportunities and eliminate wasted spend using AI."

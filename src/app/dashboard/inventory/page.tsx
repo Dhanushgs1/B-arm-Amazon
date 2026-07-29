@@ -6,6 +6,7 @@ import { mcpAllInventory, fetchSkuMap } from "@/lib/api";
 import { resolveProductName } from "@/lib/categoryMap";
 import { DataTable } from "@/components/DataTable";
 import { KPICard } from "@/components/KPICard";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { Loader2, PackageOpen, AlertTriangle, CheckCircle, XCircle } from "lucide-react";
 
 const cur = (val: number, currency?: string) => {
@@ -18,7 +19,7 @@ const num = (val: number) => new Intl.NumberFormat("en-IN").format(Math.round(va
 export default function InventoryPage() {
   const { keySlot, account, contextLoading } = useDashboard();
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["inventory_page", keySlot, account?.id],
     queryFn: async () => {
       const baseArgs = {
@@ -171,6 +172,14 @@ export default function InventoryPage() {
 
   return (
     <div className="space-y-6 pb-10">
+      {isError && (
+        <QueryErrorState
+          compact
+          message="Inventory data couldn't load — retry, or the stock levels below may be incomplete rather than genuinely zero."
+          onRetry={() => refetch()}
+        />
+      )}
+
       <div>
         <h1 className="text-2xl font-bold tracking-tight mb-0.5">Inventory & Stock</h1>
         <p className="text-muted-foreground text-sm">

@@ -10,6 +10,7 @@ import { AiSuggestionModal } from "@/components/AiSuggestionModal";
 import { DataTable } from "@/components/DataTable";
 import { KPICard } from "@/components/KPICard";
 import { PageHero } from "@/components/PageHero";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { Loader2, Bot, LayoutGrid, Rocket, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -39,7 +40,7 @@ export default function AdGroupsPage() {
   const [kpiModal, setKpiModal] = useState<{ title: string; data: any[] } | null>(null);
   const [aiModal, setAiModal] = useState(false);
 
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["adgroups", keySlot, account?.id, startDate, endDate],
     queryFn: async () => {
       const res = await mcp("get_campaign_performance", {
@@ -261,6 +262,14 @@ export default function AdGroupsPage() {
 
   return (
     <div className="space-y-8 pb-12">
+      {isError && (
+        <QueryErrorState
+          compact
+          message="Ad group data couldn't load — retry, or the numbers you see may be incomplete rather than genuinely zero."
+          onRetry={() => refetch()}
+        />
+      )}
+
       <PageHero
         title="Ad Groups Performance"
         subtitle="Monitor every ad group, optimize bids, improve ROAS and maximize sales using AI."

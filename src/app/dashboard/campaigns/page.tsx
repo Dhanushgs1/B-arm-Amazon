@@ -10,6 +10,7 @@ import { AiSuggestionModal } from "@/components/AiSuggestionModal";
 import { DataTable } from "@/components/DataTable";
 import { KPICard } from "@/components/KPICard";
 import { PageHero } from "@/components/PageHero";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { AcosBadge, ACOS_LIMIT, acosRowClass } from "@/components/AcosBadge";
 import { Loader2, Megaphone, Bot, Rocket, AlertTriangle, TrendingDown, Trophy, Zap, Plus, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -98,7 +99,7 @@ export default function CampaignsPage() {
     });
   };
 
-  const { data: performanceData, isLoading: perfLoading, refetch } = useQuery({
+  const { data: performanceData, isLoading: perfLoading, isError: perfError, refetch } = useQuery({
     queryKey: ["campaigns_performance", keySlot, account?.id, startDate, endDate],
     queryFn: async () => {
       const res = await mcp("get_campaign_performance", {
@@ -113,7 +114,7 @@ export default function CampaignsPage() {
     enabled: !!account,
   });
 
-  const { data: campaignList, isLoading: listLoading } = useQuery({
+  const { data: campaignList, isLoading: listLoading, isError: listError, refetch: refetchCampaignList } = useQuery({
     queryKey: ["campaigns_metadata_list", keySlot, account?.id],
     queryFn: async () => {
       const res = await mcp("list_campaigns", {
@@ -322,6 +323,14 @@ export default function CampaignsPage() {
 
   return (
     <div className="space-y-8 pb-12">
+      {(perfError || listError) && (
+        <QueryErrorState
+          compact
+          message="Campaign performance or campaign list data couldn't load — retry, or the metrics/campaigns you see may be incomplete rather than genuinely empty."
+          onRetry={() => { refetch(); refetchCampaignList(); }}
+        />
+      )}
+
       <PageHero
         title="Campaign Performance"
         subtitle="Manage every campaign, spot wasted spend, and scale winners with AI-powered recommendations."

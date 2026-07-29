@@ -8,6 +8,7 @@ import { DataTable } from "@/components/DataTable";
 import { KPICard } from "@/components/KPICard";
 import { KpiDrilldownModal } from "@/components/KpiDrilldownModal";
 import { PageHero } from "@/components/PageHero";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { AcosBadge, acosRowClass } from "@/components/AcosBadge";
 import {
   Loader2, ShieldAlert, TrendingUp, TrendingDown, PauseCircle,
@@ -82,7 +83,7 @@ export default function BidAdjustmentPage() {
 
   // ── Primary (fast) query: performance for the date range.
   // The page renders as soon as this arrives.
-  const { data: perfData, isLoading: perfLoading } = useQuery({
+  const { data: perfData, isLoading: perfLoading, isError: perfError, refetch: refetchPerf } = useQuery({
     queryKey: ["bid_perf", keySlot, account?.id, startDate, endDate],
     queryFn: async () =>
       mcpAllPages("get_targeting_performance", {
@@ -464,6 +465,14 @@ export default function BidAdjustmentPage() {
 
   return (
     <div className="space-y-8 pb-12">
+      {perfError && (
+        <QueryErrorState
+          compact
+          message="Bid performance data couldn't load — retry, or the suggestions below may be incomplete rather than genuinely empty."
+          onRetry={() => refetchPerf()}
+        />
+      )}
+
       <PageHero
         title="Bid Adjustment"
         subtitle="Performance-graded bid recommendations — raise winners, cut bleeders and pause dead spend."

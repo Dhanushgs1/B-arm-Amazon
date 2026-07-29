@@ -28,6 +28,7 @@ import {
   GitCompare,
   Store,
   UploadCloud,
+  Star,
   type LucideIcon
 } from "lucide-react";
 import { MARKETPLACE_META, getMarketplaceTab } from "@/lib/marketplace";
@@ -76,6 +77,7 @@ const NAV_SECTIONS: SidebarNavSection[] = [
   {
     label: "Intelligence",
     items: [
+      { id: "ratings-reviews", label: "⭐ Ratings & Reviews Intelligence", icon: Star },
       { id: "ai", label: "AI Assistant", icon: Bot },
       { id: "settings", label: "Settings", icon: Settings },
     ],
@@ -119,6 +121,7 @@ function marketplaceNavSections(marketplace: "flipkart"): SidebarNavSection[] {
     {
       label: "Intelligence & Workspace",
       items: [
+        { id: "ratings-reviews", label: "⭐ Ratings & Reviews Intelligence", icon: Star, path: `/dashboard/${marketplace}/ratings-reviews` },
         { id: "ai", label: "AI Assistant", icon: Bot, path: `/dashboard/${marketplace}/ai` },
         { id: "compare", label: "Combined Overall View", icon: GitCompare, path: "/dashboard/compare" },
         { id: "settings", label: "Settings", icon: Settings, path: "/dashboard/settings" },

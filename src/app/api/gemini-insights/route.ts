@@ -29,9 +29,12 @@ export async function POST(req: Request) {
     for (const model of models) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
-      // 8-second strict timeout per model fetch
+      // 8-second strict timeout per model fetch. Callers (see CampaignDetailDrawer's
+      // generateInsights) must give this route at least models.length * 8s before giving
+      // up client-side, or the fallback fires on every multi-model cascade, not just
+      // genuine outages.
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 12000);
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
 
       try {
         const response = await fetch(url, {

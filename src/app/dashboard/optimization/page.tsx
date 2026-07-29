@@ -7,6 +7,7 @@ import { mcp, mcpAllNegatives, mcpAllPages } from "@/lib/api";
 import { DataTable } from "@/components/DataTable";
 import { KPICard } from "@/components/KPICard";
 import { PageHero } from "@/components/PageHero";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { HourlyHeatmap } from "@/components/HourlyHeatmap";
 import { Loader2, Ban, Tag as TagIcon, CalendarClock, Sparkles, TrendingDown, Rocket, Moon, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -56,7 +57,7 @@ export default function OptimizationPage() {
   });
 
   // Full negatives inventory.
-  const { data: negatives, isLoading: negLoading } = useQuery({
+  const { data: negatives, isLoading: negLoading, isError: negError, refetch: refetchNegatives } = useQuery({
     queryKey: ["negatives", keySlot, account?.id],
     queryFn: () => mcpAllNegatives(baseArgs, keySlot),
     enabled: !!account,
@@ -523,6 +524,12 @@ export default function OptimizationPage() {
                 <Loader2 className="w-7 h-7 animate-spin text-primary" />
                 <p className="font-semibold text-sm">Loading negative targets...</p>
               </div>
+            ) : negError ? (
+              <QueryErrorState
+                compact
+                message="Negative targets couldn't load — retry, or the list below may be incomplete rather than genuinely empty."
+                onRetry={() => refetchNegatives()}
+              />
             ) : (
               <DataTable data={negRows} columns={negColumns} defaultSort="updatedAt" exportName="negative-targets" />
             )}

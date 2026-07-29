@@ -8,6 +8,7 @@ import { AiSuggestionModal } from "@/components/AiSuggestionModal";
 import { DataTable } from "@/components/DataTable";
 import { KPICard } from "@/components/KPICard";
 import { PageHero } from "@/components/PageHero";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { ScoreRing } from "@/components/ScoreRing";
 import { Loader2, Package, Bot, Trophy, AlertTriangle, Boxes, Zap, MousePointerClick, ArrowRight } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -44,7 +45,7 @@ function ProductsContent() {
   const [kpiModal, setKpiModal] = useState<{ title: string; data: any[] } | null>(null);
   const [aiModal, setAiModal] = useState(false);
 
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["products_tab", keySlot, account?.id, startDate, endDate],
     queryFn: async () => {
       const res = await mcp("get_advertised_product_performance", {
@@ -103,7 +104,7 @@ function ProductsContent() {
     }
   }, [urlCategory]);
   // Retail data: total sales, organic sales, sessions, page views, buy box, etc. per ASIN
-  const { data: retailData, isLoading: retailLoading } = useQuery({
+  const { data: retailData, isLoading: retailLoading, isError: retailError, refetch: refetchRetail } = useQuery({
     queryKey: ["products_tab_retail", keySlot, account?.id, startDate, endDate],
     queryFn: async () => {
       const res = await mcp("get_retail_product_performance", {
@@ -473,6 +474,14 @@ function ProductsContent() {
 
   return (
     <div className="space-y-8 pb-12">
+      {(isError || retailError) && (
+        <QueryErrorState
+          compact
+          message="Product or retail sales data couldn't load — retry, or the revenue/ACOS numbers below may be incomplete rather than genuinely zero."
+          onRetry={() => { refetch(); refetchRetail(); }}
+        />
+      )}
+
       <PageHero
         title="AI Product Intelligence"
         subtitle="Monitor every advertised ASIN, analyze profitability, optimize advertising, inventory and organic growth using AI."

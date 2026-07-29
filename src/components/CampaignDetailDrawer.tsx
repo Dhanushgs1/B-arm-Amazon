@@ -22,6 +22,10 @@ export function CampaignDetailDrawer() {
   const [loadingInsights, setLoadingInsights] = useState<boolean>(false);
   const [loadingProgress, setLoadingProgress] = useState<number>(0);
   const [insightError, setInsightError] = useState<string>("");
+  // True when geminiInsights holds the local rule-based fallback (generateInstantCampaignFallback)
+  // instead of a real Gemini response — drives the "Quick Summary" vs "Gemini AI" badge below so a
+  // fallback is never silently presented as AI output.
+  const [isFallbackInsight, setIsFallbackInsight] = useState<boolean>(false);
 
   // Sorting state
   const [sortField, setSortField] = useState<string>("spend");
@@ -41,6 +45,7 @@ export function CampaignDetailDrawer() {
     setActiveTab("overview");
     setGeminiInsights("");
     setInsightError("");
+    setIsFallbackInsight(false);
     setSortField("spend");
     setSortOrder("desc");
   }, [selectedCampaignName]);
@@ -119,7 +124,7 @@ export function CampaignDetailDrawer() {
     }, keySlot),
     enabled: !!account && !!selectedCampaignName && !!campaignMeta?.campaignId && activeTab === "placements",
   });
-  const filteredPlacements = placementsData?.data || [];
+  const filteredPlacements = placementsData?.placements || [];
 
   // 3. Products
   const { data: productsData, isLoading: productsLoading } = useQuery({
@@ -208,6 +213,7 @@ export function CampaignDetailDrawer() {
     setLoadingProgress(10);
     setGeminiInsights("");
     setInsightError("");
+    setIsFallbackInsight(false);
 
     // Progress bar simulation interval
     const progressInterval = setInterval(() => {
@@ -246,9 +252,11 @@ Provide analysis in 4 clear sections using bullet points:
 3. PLACEMENT & BUDGET STRATEGY
 4. TOP 3 ACTION ITEMS`;
 
-    // Strict 6-second timeout controller
+    // Client timeout must exceed the server route's worst case (3 models x 8s each =
+    // 24s, see src/app/api/gemini-insights/route.ts) or the fallback fires on every
+    // request that needs more than one model attempt, not just genuine failures.
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6000);
+    const timeoutId = setTimeout(() => controller.abort(), 25000);
 
     try {
       const response = await fetch("/api/gemini-insights", {
@@ -274,7 +282,13 @@ Provide analysis in 4 clear sections using bullet points:
         throw new Error(data.error || `API error ${response.status}`);
       }
 
-      setGeminiInsights(data.text || generateInstantCampaignFallback());
+      if (data.text) {
+        setGeminiInsights(data.text);
+        setIsFallbackInsight(false);
+      } else {
+        setGeminiInsights(generateInstantCampaignFallback());
+        setIsFallbackInsight(true);
+      }
     } catch (e: any) {
       clearTimeout(timeoutId);
       clearInterval(progressInterval);
@@ -282,6 +296,7 @@ Provide analysis in 4 clear sections using bullet points:
       console.warn("Gemini fetch fallback triggered:", e);
       // Instant real telemetry fallback on delay or error
       setGeminiInsights(generateInstantCampaignFallback());
+      setIsFallbackInsight(true);
     } finally {
       setLoadingInsights(false);
     }
@@ -480,30 +495,32 @@ Provide analysis in 4 clear sections using bullet points:
                   ) : filteredPlacements.length === 0 ? (
                     <div className="p-8 text-center text-muted-foreground text-xs font-semibold">No placement metrics recorded in date range.</div>
                   ) : (
-                    <table className="w-full text-left text-xs divide-y divide-border">
-                      <thead className="bg-muted/50 text-[10px] uppercase font-bold text-muted-foreground">
-                        <tr>
-                          <SortableHeader field="placementClassification" label="Placement" />
-                          <SortableHeader field="spend" label="Spend" />
-                          <SortableHeader field="sales" label="Sales" />
-                          <SortableHeader field="acos" label="ACOS" />
-                          <SortableHeader field="clicks" label="Clicks" />
-                          <SortableHeader field="orders" label="Orders" />
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border">
-                        {getSortedData(filteredPlacements).map((p: any, i: number) => (
-                          <tr key={i} className="hover:bg-muted/10 transition-colors">
-                            <td className="px-4 py-3 font-bold">{p.placementClassification || p.placement || "—"}</td>
-                            <td className="px-4 py-3">{cur(p.spend, currency)}</td>
-                            <td className="px-4 py-3 text-green-600 dark:text-green-400 font-bold">{cur(p.sales, currency)}</td>
-                            <td className="px-4 py-3 font-bold">{p.acos ? pct(p.acos) : "—"}</td>
-                            <td className="px-4 py-3">{num(p.clicks)}</td>
-                            <td className="px-4 py-3">{num(p.orders)}</td>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs divide-y divide-border">
+                        <thead className="bg-muted/50 text-[10px] uppercase font-bold text-muted-foreground">
+                          <tr>
+                            <SortableHeader field="placementClassification" label="Placement" />
+                            <SortableHeader field="spend" label="Spend" />
+                            <SortableHeader field="sales" label="Sales" />
+                            <SortableHeader field="acos" label="ACOS" />
+                            <SortableHeader field="clicks" label="Clicks" />
+                            <SortableHeader field="orders" label="Orders" />
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody className="divide-y divide-border">
+                          {getSortedData(filteredPlacements).map((p: any, i: number) => (
+                            <tr key={i} className="hover:bg-muted/10 transition-colors">
+                              <td className="px-4 py-3 font-bold whitespace-nowrap">{p.placementClassification || p.placement || "—"}</td>
+                              <td className="px-4 py-3 whitespace-nowrap">{cur(p.spend, currency)}</td>
+                              <td className="px-4 py-3 text-green-600 dark:text-green-400 font-bold whitespace-nowrap">{cur(p.sales, currency)}</td>
+                              <td className="px-4 py-3 font-bold whitespace-nowrap">{p.acos ? pct(p.acos) : "—"}</td>
+                              <td className="px-4 py-3 whitespace-nowrap">{num(p.clicks)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap">{num(p.orders)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
                 </div>
               )}
@@ -521,33 +538,35 @@ Provide analysis in 4 clear sections using bullet points:
                   ) : filteredProducts.length === 0 ? (
                     <div className="p-8 text-center text-muted-foreground text-xs font-semibold">No product telemetry recorded in date range.</div>
                   ) : (
-                    <table className="w-full text-left text-xs divide-y divide-border">
-                      <thead className="bg-muted/50 text-[10px] uppercase font-bold text-muted-foreground">
-                        <tr>
-                          <SortableHeader field="adAsin" label="Product / ASIN" />
-                          <SortableHeader field="spend" label="Spend" />
-                          <SortableHeader field="sales" label="Sales" />
-                          <SortableHeader field="acos" label="ACOS" />
-                          <SortableHeader field="clicks" label="Clicks" />
-                          <SortableHeader field="orders" label="Orders" />
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border">
-                        {getSortedData(filteredProducts).map((prod: any, i: number) => (
-                          <tr key={i} className="hover:bg-muted/10 transition-colors">
-                            <td className="px-4 py-3 max-w-[240px]">
-                              <p className="font-bold truncate" title={prod.adProductName}>{prod.adProductName || "—"}</p>
-                              <span className="text-[10px] text-muted-foreground font-mono font-bold">ASIN: {prod.adAsin || prod.asin || "—"}</span>
-                            </td>
-                            <td className="px-4 py-3">{cur(prod.spend, currency)}</td>
-                            <td className="px-4 py-3 text-green-600 dark:text-green-400 font-bold">{cur(prod.sales, currency)}</td>
-                            <td className="px-4 py-3 font-bold">{prod.acos ? pct(prod.acos) : "—"}</td>
-                            <td className="px-4 py-3">{num(prod.clicks)}</td>
-                            <td className="px-4 py-3">{num(prod.orders)}</td>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs divide-y divide-border">
+                        <thead className="bg-muted/50 text-[10px] uppercase font-bold text-muted-foreground">
+                          <tr>
+                            <SortableHeader field="adAsin" label="Product / ASIN" />
+                            <SortableHeader field="spend" label="Spend" />
+                            <SortableHeader field="sales" label="Sales" />
+                            <SortableHeader field="acos" label="ACOS" />
+                            <SortableHeader field="clicks" label="Clicks" />
+                            <SortableHeader field="orders" label="Orders" />
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody className="divide-y divide-border">
+                          {getSortedData(filteredProducts).map((prod: any, i: number) => (
+                            <tr key={i} className="hover:bg-muted/10 transition-colors">
+                              <td className="px-4 py-3 max-w-[240px]">
+                                <p className="font-bold truncate" title={prod.adProductName}>{prod.adProductName || "—"}</p>
+                                <span className="text-[10px] text-muted-foreground font-mono font-bold">ASIN: {prod.adAsin || prod.asin || "—"}</span>
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">{cur(prod.spend, currency)}</td>
+                              <td className="px-4 py-3 text-green-600 dark:text-green-400 font-bold whitespace-nowrap">{cur(prod.sales, currency)}</td>
+                              <td className="px-4 py-3 font-bold whitespace-nowrap">{prod.acos ? pct(prod.acos) : "—"}</td>
+                              <td className="px-4 py-3 whitespace-nowrap">{num(prod.clicks)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap">{num(prod.orders)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
                 </div>
               )}
@@ -565,33 +584,35 @@ Provide analysis in 4 clear sections using bullet points:
                   ) : filteredKeywords.length === 0 ? (
                     <div className="p-8 text-center text-muted-foreground text-xs font-semibold">No target telemetry in date range.</div>
                   ) : (
-                    <table className="w-full text-left text-xs divide-y divide-border">
-                      <thead className="bg-muted/50 text-[10px] uppercase font-bold text-muted-foreground">
-                        <tr>
-                          <SortableHeader field="targetingValue" label="Keyword / Target" />
-                          <SortableHeader field="spend" label="Spend" />
-                          <SortableHeader field="sales" label="Sales" />
-                          <SortableHeader field="acos" label="ACOS" />
-                          <SortableHeader field="clicks" label="Clicks" />
-                          <SortableHeader field="orders" label="Orders" />
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border">
-                        {getSortedData(filteredKeywords).map((k: any, i: number) => (
-                          <tr key={i} className="hover:bg-muted/10 transition-colors">
-                            <td className="px-4 py-3">
-                              <p className="font-bold">{k.targetingValue || k.keywordText || "—"}</p>
-                              <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-px rounded font-mono font-bold uppercase">{k.targetingType || "KEYWORD"}</span>
-                            </td>
-                            <td className="px-4 py-3">{cur(k.spend, currency)}</td>
-                            <td className="px-4 py-3 text-green-600 dark:text-green-400 font-bold">{cur(k.sales, currency)}</td>
-                            <td className="px-4 py-3 font-bold">{k.acos ? pct(k.acos) : "—"}</td>
-                            <td className="px-4 py-3">{num(k.clicks)}</td>
-                            <td className="px-4 py-3">{num(k.orders)}</td>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs divide-y divide-border">
+                        <thead className="bg-muted/50 text-[10px] uppercase font-bold text-muted-foreground">
+                          <tr>
+                            <SortableHeader field="targetingValue" label="Keyword / Target" />
+                            <SortableHeader field="spend" label="Spend" />
+                            <SortableHeader field="sales" label="Sales" />
+                            <SortableHeader field="acos" label="ACOS" />
+                            <SortableHeader field="clicks" label="Clicks" />
+                            <SortableHeader field="orders" label="Orders" />
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody className="divide-y divide-border">
+                          {getSortedData(filteredKeywords).map((k: any, i: number) => (
+                            <tr key={i} className="hover:bg-muted/10 transition-colors">
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                <p className="font-bold">{k.targetingValue || k.keywordText || "—"}</p>
+                                <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-px rounded font-mono font-bold uppercase">{k.targetingType || "KEYWORD"}</span>
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">{cur(k.spend, currency)}</td>
+                              <td className="px-4 py-3 text-green-600 dark:text-green-400 font-bold whitespace-nowrap">{cur(k.sales, currency)}</td>
+                              <td className="px-4 py-3 font-bold whitespace-nowrap">{k.acos ? pct(k.acos) : "—"}</td>
+                              <td className="px-4 py-3 whitespace-nowrap">{num(k.clicks)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap">{num(k.orders)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
                 </div>
               )}
@@ -609,30 +630,32 @@ Provide analysis in 4 clear sections using bullet points:
                   ) : filteredSearchTerms.length === 0 ? (
                     <div className="p-8 text-center text-muted-foreground text-xs font-semibold">No search term telemetry in date range.</div>
                   ) : (
-                    <table className="w-full text-left text-xs divide-y divide-border">
-                      <thead className="bg-muted/50 text-[10px] uppercase font-bold text-muted-foreground">
-                        <tr>
-                          <SortableHeader field="searchTerm" label="Search Term" />
-                          <SortableHeader field="spend" label="Spend" />
-                          <SortableHeader field="sales" label="Sales" />
-                          <SortableHeader field="acos" label="ACOS" />
-                          <SortableHeader field="clicks" label="Clicks" />
-                          <SortableHeader field="orders" label="Orders" />
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border">
-                        {getSortedData(filteredSearchTerms).map((s: any, i: number) => (
-                          <tr key={i} className="hover:bg-muted/10 transition-colors">
-                            <td className="px-4 py-3 font-bold">{s.searchTerm || "—"}</td>
-                            <td className="px-4 py-3">{cur(s.spend, currency)}</td>
-                            <td className="px-4 py-3 text-green-600 dark:text-green-400 font-bold">{cur(s.sales, currency)}</td>
-                            <td className="px-4 py-3 font-bold">{s.acos ? pct(s.acos) : "—"}</td>
-                            <td className="px-4 py-3">{num(s.clicks)}</td>
-                            <td className="px-4 py-3">{num(s.orders)}</td>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs divide-y divide-border">
+                        <thead className="bg-muted/50 text-[10px] uppercase font-bold text-muted-foreground">
+                          <tr>
+                            <SortableHeader field="searchTerm" label="Search Term" />
+                            <SortableHeader field="spend" label="Spend" />
+                            <SortableHeader field="sales" label="Sales" />
+                            <SortableHeader field="acos" label="ACOS" />
+                            <SortableHeader field="clicks" label="Clicks" />
+                            <SortableHeader field="orders" label="Orders" />
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody className="divide-y divide-border">
+                          {getSortedData(filteredSearchTerms).map((s: any, i: number) => (
+                            <tr key={i} className="hover:bg-muted/10 transition-colors">
+                              <td className="px-4 py-3 font-bold whitespace-nowrap">{s.searchTerm || "—"}</td>
+                              <td className="px-4 py-3 whitespace-nowrap">{cur(s.spend, currency)}</td>
+                              <td className="px-4 py-3 text-green-600 dark:text-green-400 font-bold whitespace-nowrap">{cur(s.sales, currency)}</td>
+                              <td className="px-4 py-3 font-bold whitespace-nowrap">{s.acos ? pct(s.acos) : "—"}</td>
+                              <td className="px-4 py-3 whitespace-nowrap">{num(s.clicks)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap">{num(s.orders)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
                 </div>
               )}
@@ -643,8 +666,14 @@ Provide analysis in 4 clear sections using bullet points:
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2 text-primary font-bold text-sm">
                       <Sparkles className="w-4 h-4" />
-                      <span>Gemini AI Campaign Analysis</span>
-                      <span className="text-[10px] text-muted-foreground font-normal bg-muted px-2 py-0.5 rounded-full">Real Telemetry</span>
+                      <span>{isFallbackInsight ? "Quick Summary" : "Gemini AI Campaign Analysis"}</span>
+                      {isFallbackInsight ? (
+                        <span className="text-[10px] text-amber-600 dark:text-amber-400 font-normal bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full" title="Gemini didn't respond in time — this is a rule-based summary from your real campaign numbers, not AI-generated text.">
+                          Offline fallback · Real Telemetry
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-muted-foreground font-normal bg-muted px-2 py-0.5 rounded-full">Real Telemetry</span>
+                      )}
                     </div>
                     {geminiInsights && !loadingInsights && (
                       <button

@@ -5,8 +5,9 @@ import { useQuery } from "@tanstack/react-query";
 
 import { useRouter } from "next/navigation";
 import { useDashboard } from "@/lib/DashboardContext";
-import { mcp, fetchUnifiedDailyTrend, aggregateTrend } from "@/lib/api";
+import { mcp, mcpAllInventory, fetchUnifiedDailyTrend, aggregateTrend } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { TrendChart, UnifiedTrendChart } from "@/components/TrendChart";
 import { CategoryPerformance } from "@/components/CategoryPerformance";
 import { Loader2, TrendingUp, Package, Megaphone, Bot, AlertTriangle, ChevronRight, Sparkles, Share2, Download, RefreshCw, ArrowRight, Search, RotateCcw, MapPin, SearchSlash, TrendingDown, ShoppingCart, Star, BarChart3 } from "lucide-react";
@@ -50,7 +51,7 @@ export default function DashboardOverview() {
   };
   const currency = account?.currency;
 
-  const { data: cpData, isLoading: cpLoading } = useQuery({
+  const { data: cpData, isLoading: cpLoading, isError: cpError, refetch: refetchCp } = useQuery({
     queryKey: ["cp", keySlot, account?.id, startDate, endDate],
     queryFn: () => mcp("get_campaign_performance", { ...baseArgs, page_size: 500 }, keySlot),
     enabled: !!account,
@@ -70,9 +71,12 @@ export default function DashboardOverview() {
     [dailyTrend, trendGranularity]
   );
 
-  const { data: inventoryData, isLoading: inventoryLoading } = useQuery({
+  const { data: inventoryData, isLoading: inventoryLoading, isError: inventoryError, refetch: refetchInventory } = useQuery({
     queryKey: ["inventory", keySlot, account?.id],
-    queryFn: () => mcp("get_inventory", { amazon_account_id: account?.id, workspace_id: account?.workspace_id, page_size: 200 }, keySlot),
+    // get_inventory paginates with limit/offset, not page_size — mcpAllInventory fetches
+    // every page instead of silently capping at the API's ~50-item default (see mcpAllInventory
+    // in lib/api.ts, the same helper the Inventory page already uses).
+    queryFn: () => mcpAllInventory({ amazon_account_id: account?.id, workspace_id: account?.workspace_id }, keySlot),
     enabled: !!account,
   });
 
@@ -187,7 +191,7 @@ export default function DashboardOverview() {
   const activeCampaigns = allCampaignList.filter((c: any) => c.state?.toUpperCase() === "ENABLED").length;
   const pausedCampaigns = allCampaignList.filter((c: any) => c.state?.toUpperCase() === "PAUSED").length;
 
-  const inventoryItems: any[] = inventoryData?.items || [];
+  const inventoryItems: any[] = inventoryData || [];
   const totalInventoryValue = inventoryItems.reduce((acc: number, i: any) => {
     const qty = (i.fbm?.quantity || 0) + (i.fba?.endingWarehouseBalance || 0);
     return acc + qty * (i.price || 0);
@@ -355,6 +359,14 @@ Write the 4 bullets now, one per line:`;
 
   return (
     <div className="space-y-6 pb-12">
+      {(cpError || inventoryError) && (
+        <QueryErrorState
+          compact
+          message="One or more widgets below couldn't load — retry, or the numbers you see may be incomplete rather than genuinely zero."
+          onRetry={() => { refetchCp(); refetchInventory(); }}
+        />
+      )}
+
       {/*  Page Header  */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200/50 dark:border-slate-800/50 pb-4">
         <div className="space-y-1">
@@ -562,7 +574,7 @@ Write the 4 bullets now, one per line:`;
         </div>
         <div className="space-y-0.5 md:border-r border-slate-200/50 dark:border-slate-800/50 pr-2">
           <p className="text-slate-400 dark:text-slate-500 font-bold uppercase tracking-wider text-[9px]">Total Products</p>
-          <p className="text-[15px] font-black text-slate-800 dark:text-white">{num(inventoryData?.total || inventoryItems.length)}</p>
+          <p className="text-[15px] font-black text-slate-800 dark:text-white">{num(inventoryItems.length)}</p>
         </div>
         <div className="space-y-0.5">
           <p className="text-slate-400 dark:text-slate-500 font-bold uppercase tracking-wider text-[9px]">Automations</p>

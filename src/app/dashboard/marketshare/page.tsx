@@ -6,6 +6,7 @@ import { useDashboard } from "@/lib/DashboardContext";
 import { mcp } from "@/lib/api";
 import { DataTable } from "@/components/DataTable";
 import { KPICard } from "@/components/KPICard";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { Loader2, TrendingUp } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -41,7 +42,7 @@ export default function MarketSharePage() {
     return { value: `${d.getFullYear()}-${d.getMonth() + 1}`, label: `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}` };
   });
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["sqp", keySlot, account?.id, refMonth],
     queryFn: async () => {
       const all: any[] = [];
@@ -127,6 +128,14 @@ export default function MarketSharePage() {
 
   return (
     <div className="space-y-6 pb-10">
+      {isError && (
+        <QueryErrorState
+          compact
+          message="Search query performance data couldn't load — retry, or the shares below may be incomplete rather than genuinely zero."
+          onRetry={() => refetch()}
+        />
+      )}
+
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold tracking-tight mb-0.5">Market Share (Search Query Performance)</h1>

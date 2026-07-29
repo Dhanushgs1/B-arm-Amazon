@@ -130,7 +130,7 @@ export function DateRangePicker() {
     }
 
     return (
-      <div className="w-[300px]">
+      <div className="w-full sm:w-[300px]">
         {/* Month Navigation */}
         <div className="flex items-center justify-between mb-3 px-1">
           <button onClick={() => { if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1); } else setViewMonth(m => m - 1); }}
@@ -205,9 +205,9 @@ export function DateRangePicker() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 z-50 shadow-2xl border border-border rounded-2xl bg-popover/95 backdrop-blur-xl overflow-hidden flex">
+        <div className="absolute right-0 top-full mt-2 z-50 shadow-2xl border border-border rounded-2xl bg-popover/95 backdrop-blur-xl overflow-hidden flex flex-col sm:flex-row w-[calc(100vw-2rem)] max-w-[360px] sm:w-auto sm:max-w-none">
           {/* Presets Panel */}
-          <div className="w-[160px] border-r border-border p-2 flex flex-col gap-0.5">
+          <div className="w-full sm:w-[160px] border-b sm:border-b-0 sm:border-r border-border p-2 flex flex-col gap-0.5">
             <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground px-2 py-1.5">Quick Select</p>
             {PRESETS.map((preset) => (
               <button

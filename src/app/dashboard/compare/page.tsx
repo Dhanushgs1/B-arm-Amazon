@@ -8,6 +8,7 @@ import {
 } from "recharts";
 import { motion } from "framer-motion";
 import { ScoreRing } from "@/components/ScoreRing";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { useDashboard } from "@/lib/DashboardContext";
 import { mcp, fetchUnifiedDailyTrend, type UnifiedTrendPoint } from "@/lib/api";
 import { generateMarketplaceOverview, generateMarketplaceRules, MARKETPLACE_META, computeGrowthPct, type MarketplaceId } from "@/lib/marketplace";
@@ -49,7 +50,7 @@ export default function ComparePage() {
   const currencySymbol = account?.currency === "USD" ? "$" : "₹";
   const cur = curWith(currencySymbol);
 
-  const { data: retailData, isLoading: retailLoading } = useQuery({
+  const { data: retailData, isLoading: retailLoading, isError: retailError, refetch: refetchRetail } = useQuery({
     queryKey: ["compare_retail", keySlot, account?.id, startDate, endDate],
     queryFn: () => mcp("get_retail_product_performance", { ...baseArgs, page_size: 200 }, keySlot),
     enabled: !!account,
@@ -224,6 +225,14 @@ export default function ComparePage() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }} className="space-y-6 pb-12">
+      {retailError && (
+        <QueryErrorState
+          compact
+          message="Amazon retail performance data couldn't load — retry, or the sales/ACOS numbers below may be incomplete rather than genuinely zero."
+          onRetry={() => refetchRetail()}
+        />
+      )}
+
       {/* Premium Header */}
       <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-900 via-purple-900 to-slate-900 p-6 border border-indigo-500/30 shadow-xl">
         <div className="absolute inset-0 bg-gradient-to-r from-indigo-600/10 via-transparent to-purple-600/10" />
