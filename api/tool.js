@@ -1,11 +1,9 @@
 // Server-side proxy for the SellerMate.AI Public API.
 //
-// Supports up to two separate SellerMate accounts ("key slots"). Each key
-// lives ONLY in a Vercel environment variable (Project Settings ->
-// Environment Variables) and is never present in this source file or sent
-// to the browser:
-//   Slot A: SELLERMATE_API_KEY_A  (falls back to legacy SELLERMATE_API_KEY)
-//   Slot B: SELLERMATE_API_KEY_B
+// Single-account setup. The API key lives ONLY in a Vercel environment
+// variable (Project Settings -> Environment Variables) and is never present
+// in this source file or sent to the browser:
+//   SELLERMATE_API_KEY_BARM  (falls back to SELLERMATE_API_KEY_A / SELLERMATE_API_KEY)
 //
 // Only read-only ("reporting") tools are allowlisted below, so this public
 // dashboard cannot be used to mutate campaigns/bids/budgets even if someone
@@ -29,11 +27,12 @@ const ALLOWED_TOOLS = new Set([
 
 const SELLERMATE_BASE_URL = 'https://api.sellermate.ai/public/v1/tools';
 
-function resolveApiKey(slot) {
-  if (slot === 'B') return process.env.SELLERMATE_API_KEY_B;
-  // Slot A (default): prefer the "_A" var, fall back to the original
-  // single-account variable name for backward compatibility.
-  return process.env.SELLERMATE_API_KEY_A || process.env.SELLERMATE_API_KEY;
+function resolveApiKey() {
+  return (
+    process.env.SELLERMATE_API_KEY_BARM ||
+    process.env.SELLERMATE_API_KEY_A ||
+    process.env.SELLERMATE_API_KEY
+  );
 }
 
 module.exports = async (req, res) => {
@@ -53,8 +52,7 @@ module.exports = async (req, res) => {
   }
   body = body || {};
 
-  const { tool, args, slot } = body;
-  const keySlot = slot === 'B' ? 'B' : 'A';
+  const { tool, args } = body;
 
   if (!tool || typeof tool !== 'string') {
     res.status(400).json({ error: 'Missing "tool" in request body.' });
@@ -66,8 +64,41 @@ module.exports = async (req, res) => {
     return;
   }
 
-  const apiKey = resolveApiKey(keySlot);
+  const apiKey = resolveApiKey();
   if (!apiKey) {
-    const varName = keySlot === 'B' ? 'SELLERMATE_API_KEY_B' : 'SELLERMATE_API_KEY_A (or SELLERMATE_API_KEY)';
     res.status(500).json({
-      error: `Server is missing ${varName} for Account ${keySlot}. Add i
+      error: 'Server is missing SELLERMATE_API_KEY_BARM. Add it in Vercel Project Settings -> Environment Variables and redeploy.',
+    });
+    return;
+  }
+
+  try {
+    const upstream = await fetch(`${SELLERMATE_BASE_URL}/${tool}`, {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(args || {}),
+    });
+
+    const text = await upstream.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      data = { raw: text };
+    }
+
+    if (!upstream.ok) {
+      res.status(upstream.status).json({
+        error: (data && (data.error || data.message)) || `SellerMate API error (${upstream.status}) from ${tool}`,
+      });
+      return;
+    }
+
+    res.status(200).json(data);
+  } catch (e) {
+    res.status(502).json({ error: `Upstream error calling SellerMate: ${e.message}` });
+  }
+};
