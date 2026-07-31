@@ -3,9 +3,8 @@ require('dotenv').config({ path: '../.env.local' });
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_ANON_KEY;
-// barm_amazon_campaign_sku_map now lives in the dedicated `barm` schema
-// (moved out of `public`), so this client must be scoped to it.
-const supabase = createClient(supabaseUrl, supabaseKey, { db: { schema: 'barm' } });
+// barm_amazon_campaign_sku_map lives in the default `public` schema.
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 const mappings = [
   { campaign_name: "Chewy Tube - Brand ad", sku: "B-CT-G-8" },

@@ -1,22 +1,38 @@
 import * as XLSX from "xlsx-js-style";
 import { mcp } from "@/lib/api";
 import { resolveProductName } from "@/lib/categoryMap";
+import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
 
 // ── Analysis Report (Ad Performance) ────────────────────────────────────────
 // Recreates the per-product "Analysis report" sheet from the seller's manual
-// Amazon-ads workbook, but sourced LIVE from the SellerMate API and rebuilt for
-// two fixed trailing windows: Last 30 days and Last 7 days (both ending today,
-// matching the dashboard's own "Last 30 Days" convention in DashboardContext).
+// Amazon-ads workbook, rebuilt for two fixed trailing windows: Last 30 days and
+// Last 7 days (both ending today, matching the dashboard's own "Last 30 Days"
+// convention in DashboardContext).
+//
+// Ad spend/units, Orders and Returns all come from the SAME manually-uploaded
+// tables historicalAnalysisReportExport.ts uses (SP advertised-product, AM
+// orders, AM returns, FBA returns) — this used to call
+// get_advertised_product_performance / get_retail_product_performance /
+// get_fba_customer_returns live, which drifts from a fixed uploaded snapshot
+// as new ad/order/return data lands on the live account between uploads, so
+// the two reports never agreed even for the exact same date range. Price/
+// FBA-MFN channel and FBA stock availability are still LIVE (product listing +
+// inventory feed) — those are current-moment snapshots, not windowed figures,
+// so there's no "which snapshot" drift to fix the way there was for Orders/
+// Returns/spend.
 //
 // The seller's original sheet was a per-SKU pivot of raw Amazon report exports
-// (SP advertised report + orders report + FBA/returns). The live API is
-// per-ASIN and ad-only, so this report is per-ASIN (with SKU(s) shown as a
-// column) — format-faithful, not a byte-identical clone. The CPC / ACOS / TACOS
+// (SP advertised report + orders report + FBA/returns). The uploaded SP report
+// is per-ASIN-and-SKU but this report only ever showed one row per ASIN, so it
+// stays per-ASIN (with the primary SKU shown as a column) — format-faithful,
+// not a byte-identical clone. SB/SD ad spend (campaign-level, no ASIN column)
+// isn't included here, matching the live call this replaces — that endpoint
+// only ever covered Sponsored Products too. The CPC / ACOS / TACOS
 // formulas are reproduced exactly as the original sheet computed them:
 //   Spend+Tax = ad spend × 1.18            (18% GST)
 //   Final     = Orders − Returns
 //   CPC       = Spend+Tax ÷ Advertised SKU Units   (÷1 when units = 0)
-//   ACOS      = Spend+Tax ÷ (Price × Total Units)   (÷1 when units = 0)
+//   ACOS      = CPC ÷ Price = Spend+Tax ÷ (Price × Advertised SKU Units)   (÷1 when units = 0)
 //   TACOS     = Spend+Tax ÷ (Price × Final)         (÷1 when final = 0)
 
 const GST_MULTIPLIER = 1.18;
@@ -53,13 +69,6 @@ export function fcToState(code: string): string {
   const prefix3 = up.slice(0, 3);
   const byPrefix = Object.entries(FC_STATE_MAP).find(([k]) => k.slice(0, 3) === prefix3);
   return byPrefix ? byPrefix[1] : up;
-}
-
-// Same courier-RTO filter used across the dashboard (see amazonSalesExport.ts):
-// an UNDELIVERABLE "return" never reached the customer, so it isn't a genuine
-// product return and is excluded from the Returns count.
-function isGenuineReturn(r: any) {
-  return !String(r.reason || "").toUpperCase().startsWith("UNDELIVERABLE");
 }
 
 // Local-time YYYY-MM-DD, matching DashboardContext.getLocalDateStr so the
@@ -118,17 +127,73 @@ interface ProductRow {
 
 export type ToolCaller = (tool: string, args: any) => Promise<any>;
 
-// get_fba_customer_returns rejects start_date === end_date, but our windows are
-// always ≥ 7 days so a straight paged fetch is fine here.
-async function fetchAllReturns(call: ToolCaller, args: any) {
-  const all: any[] = [];
-  for (let page = 0; page < 20; page++) {
-    const res = await call("get_fba_customer_returns", { ...args, page, page_size: 500 }).catch(() => null);
-    const rows = res?.order_returns || [];
-    all.push(...rows);
-    if (!res?.pagination?.hasMore || rows.length === 0) break;
-  }
-  return all;
+// Ad spend/units per ASIN, from the uploaded SP advertised-product report —
+// same table historicalAnalysisReportExport.ts reads (there, keyed by SKU;
+// here, by the row's own advertised_asin since this report is ASIN-grain).
+// SB/SD (campaign-level, no ASIN column) aren't included here, same as the
+// live get_advertised_product_performance call this replaces — that endpoint
+// only ever covered Sponsored Products too.
+function spRowsToAdRows(spRows: any[]): any[] {
+  return spRows
+    .filter((r) => r.advertised_asin)
+    .map((r) => ({
+      adAsin: r.advertised_asin,
+      spend: r.spend || 0,
+      sales: r.advertised_sku_sales_7d || r.sales_7d || 0,
+      orders: r.advertised_sku_units_7d || r.units_7d || 0,
+    }));
+}
+
+// Orders (units ordered, all channels) per ASIN, from the uploaded AM orders
+// table — same source + cancelled-order/non-standard-order-id exclusion as
+// historicalAnalysisReportExport.ts, mapped into the {asin, productName,
+// unitsOrdered, averageSellingPrice} shape aggregateWindow's retail-rows
+// branch expects.
+function ordersToRetailRows(orderRows: any[]): any[] {
+  return orderRows
+    .filter((r) => r.sku && !isCancelledOrder(r) && isStandardOrderId(r.amazon_order_id))
+    .map((r) => ({
+      asin: r.asin,
+      productName: r.product_name,
+      unitsOrdered: r.quantity || 0,
+      averageSellingPrice: r.item_price || 0,
+    }));
+}
+
+// Returns per ASIN — computed per SKU first (AM returns take priority; FBA +
+// SF returns only fill in for a SKU with NO AM return recorded, since the same
+// physical return can otherwise show up in both and get double-counted), then
+// rolled up to each SKU's own ASIN. Same rule as
+// historicalAnalysisReportExport.ts, verified directly against the seller's
+// workbook (AM-else-(FBA+SF) reproduced their Returns column for all 140 SKUs
+// it currently tracks — a plain sum or an AM-only figure each diverged).
+function returnsToReturnRows(amReturnRows: any[], fbaReturnRows: any[], sfReturnRows: any[]): any[] {
+  const amBySku = new Map<string, number>();
+  const skuAsin = new Map<string, string>();
+  amReturnRows.forEach((r) => {
+    if (!r.merchant_sku) return;
+    amBySku.set(r.merchant_sku, (amBySku.get(r.merchant_sku) || 0) + (r.return_quantity || 0));
+    if (r.asin) skuAsin.set(r.merchant_sku, r.asin);
+  });
+  const fbaSfBySku = new Map<string, number>();
+  fbaReturnRows.forEach((r) => {
+    if (!r.sku) return;
+    fbaSfBySku.set(r.sku, (fbaSfBySku.get(r.sku) || 0) + (r.quantity || 0));
+    if (r.asin) skuAsin.set(r.sku, r.asin);
+  });
+  sfReturnRows.forEach((r) => {
+    if (!r.msku) return;
+    fbaSfBySku.set(r.msku, (fbaSfBySku.get(r.msku) || 0) + (r.units || 0));
+    if (r.asin) skuAsin.set(r.msku, r.asin);
+  });
+  const out: any[] = [];
+  new Set([...amBySku.keys(), ...fbaSfBySku.keys()]).forEach((sku) => {
+    const asin = skuAsin.get(sku);
+    if (!asin) return;
+    const amSum = amBySku.get(sku) || 0;
+    out.push({ asin, quantity: amSum > 0 ? amSum : (fbaSfBySku.get(sku) || 0) });
+  });
+  return out;
 }
 
 // Per-location FBA view — each item carries fba.byLocation (FC code + warehouse
@@ -199,10 +264,11 @@ function aggregateWindow(
     if (asp && !p.price) p.price = asp;
   });
 
-  // Genuine customer returns per ASIN.
+  // Returns per ASIN — returnRows are already genuine-return-filtered by the
+  // caller (returnsToReturnRows), so this just sums quantity.
   const returnsByAsin = new Map<string, number>();
   returnRows.forEach((r: any) => {
-    if (!r.asin || !isGenuineReturn(r)) return;
+    if (!r.asin) return;
     returnsByAsin.set(r.asin, (returnsByAsin.get(r.asin) || 0) + (r.quantity || 1));
   });
   returnsByAsin.forEach((cnt, asin) => {
@@ -259,17 +325,24 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
 
   const args30 = { ...baseArgs, start_date: start30, end_date: end };
   const args7 = { ...baseArgs, start_date: start7, end_date: end };
+  // Orders/FBA-returns carry a timestamp — bucket by IST calendar day (see
+  // istDayWindowUtc), not the raw UTC instant.
+  const win30Ist = istDayWindowUtc(start30, end);
+  const win7Ist = istDayWindowUtc(start7, end);
 
   // Fire every fetch concurrently — same fan-out style as the Full report.
+  // Ad spend/orders/returns are fetched once for the 30-day window (a superset
+  // of the 7-day window) and the 7-day slice is filtered in memory below,
+  // matching historicalAnalysisReportExport.ts's single-fetch pattern for the
+  // same tables.
   const [
-    ad30, ad7, retail30, retail7, returns30, returns7, inventory, catalog,
+    spRows30, orderRows30, amReturnRows30, fbaReturnRows30, sfReturnRows30, inventory, catalog,
   ] = await Promise.all([
-    mcpAllPagesVia(call, "get_advertised_product_performance", args30),
-    mcpAllPagesVia(call, "get_advertised_product_performance", args7),
-    mcpAllPagesVia(call, "get_retail_product_performance", args30),
-    mcpAllPagesVia(call, "get_retail_product_performance", args7),
-    fetchAllReturns(call, args30),
-    fetchAllReturns(call, args7),
+    fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", start30).lte("report_date", end)),
+    fetchAllRows("barm_amazon_am_orders", (q) => q.gte("purchase_datetime", win30Ist.gte).lt("purchase_datetime", win30Ist.lt)),
+    fetchAllRows("barm_amazon_am_returns", (q) => q.gte("return_request_date", start30).lte("return_request_date", end)),
+    fetchAllRows("barm_amazon_fba_returns", (q) => q.gte("return_date", win30Ist.gte).lt("return_date", win30Ist.lt)),
+    fetchAllRows("barm_amazon_sf_return", (q) => q.gte("pickup_date", start30).lte("pickup_date", end)),
     fetchInventoryByLocation(call, baseArgs).catch(() => []),
     fetchFullCatalog(call, baseArgs).catch(() => []),
   ]);
@@ -307,8 +380,15 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
     if (!isFbaSku) s.fbmQty += Number(c.quantity) || 0;
   });
 
-  aggregateWindow(products, ensure, (p) => p.w30, ad30, retail30, returns30);
-  aggregateWindow(products, ensure, (p) => p.w7, ad7, retail7, returns7);
+  // 7-day subsets — filtered in memory from the same 30-day fetch (no second DB round-trip).
+  const spRows7 = spRows30.filter((r: any) => r.report_date >= start7);
+  const orderRows7 = orderRows30.filter((r: any) => r.purchase_datetime >= win7Ist.gte);
+  const amReturnRows7 = amReturnRows30.filter((r: any) => r.return_request_date >= start7);
+  const fbaReturnRows7 = fbaReturnRows30.filter((r: any) => r.return_date >= win7Ist.gte);
+  const sfReturnRows7 = sfReturnRows30.filter((r: any) => r.pickup_date >= start7);
+
+  aggregateWindow(products, ensure, (p) => p.w30, spRowsToAdRows(spRows30), ordersToRetailRows(orderRows30), returnsToReturnRows(amReturnRows30, fbaReturnRows30, sfReturnRows30));
+  aggregateWindow(products, ensure, (p) => p.w7, spRowsToAdRows(spRows7), ordersToRetailRows(orderRows7), returnsToReturnRows(amReturnRows7, fbaReturnRows7, sfReturnRows7));
 
   // Inventory (per-location): FBA warehouse balance per FC → aggregate by state,
   // keyed to the specific SKU each location row carries.
@@ -604,7 +684,7 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
     ["FBA availability (Available / Grand Total / Number of FBA Not Available / All FBA) is summed across every SKU of the product, not just the primary one - stock levels are genuinely known per SKU, unlike sales."],
     ["Price and FBA/MFN come from the live product listing (All-Listings feed) - the listing price and its fulfillment channel (AMAZON_IN = FBA, DEFAULT = MFN) of the primary SKU."],
     ["Inbound-shipped-quantity shows '—': Amazon's inbound / in-transit quantity is not exposed by the SP-API inventory feed (only the ledger warehouse balance is synced)."],
-    ["Returns exclude courier RTO / undeliverable (not genuine customer returns)."],
+    ["Returns = AM returns for a SKU if any were recorded, otherwise FBA + SF returns for that SKU (courier RTO / undeliverable included either way) — matching the seller's own workbook. AM and FBA/SF returns can both record the same physical return, so they aren't simply added together."],
     ["The most recent 1-2 days can look low - that's Amazon's own reporting sync lag, not a real drop."],
   ]);
   wsNote["!cols"] = [{ wch: 110 }];
@@ -613,19 +693,6 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
 
   const filename = `Analysis_Report_Ad_Performance_${start30}_to_${end}.xlsx`;
   return { wb, filename, productCount: emittedRows };
-}
-
-// Local copy of mcpAllPages that accepts an arbitrary ToolCaller (so this
-// builder stays transport-agnostic, mirroring amazonSalesExport.ts).
-async function mcpAllPagesVia(call: ToolCaller, tool: string, args: any, maxPages = 24) {
-  const all: any[] = [];
-  for (let page = 0; page < maxPages; page++) {
-    const res = await call(tool, { ...args, page, page_size: 500 }).catch(() => null);
-    const rows = res?.data || [];
-    all.push(...rows);
-    if (!res?.pagination?.hasMore || rows.length === 0) break;
-  }
-  return all;
 }
 
 // Browser entry point used by the Reports page — fetches through the /api/tool

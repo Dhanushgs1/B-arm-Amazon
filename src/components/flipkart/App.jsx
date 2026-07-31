@@ -273,17 +273,13 @@ export default function App({ initialTab } = {}) {
     return TABLE_NAME_MAP[baseName] || baseName;
   };
 
-  // The 8 barm_flipkart_* tables (and barm_amazon_*, barm_alert_state) were
-  // moved out of the `public` Postgres schema into a dedicated `barm` schema.
-  // PostgREST resolves unqualified table names against `public` by default,
-  // so any request that targets a barm_-prefixed table needs an explicit
-  // Accept-Profile (reads) / Content-Profile (writes) header, or it 404s.
-  // Non-barm_ tables (the Lkn account's *_dash_360 / *_dashboard tables)
-  // must NOT get this header — they still live in `public`.
-  const schemaHeaders = (tableName, isWrite = false) => {
-    if (!tableName || !tableName.startsWith('barm_')) return {};
-    return isWrite ? { 'Content-Profile': 'barm' } : { 'Accept-Profile': 'barm' };
-  };
+  // The barm_* tables used to live in a separate `barm` Postgres schema and
+  // needed an Accept-Profile/Content-Profile header to resolve. They've since
+  // moved back into the default `public` schema (Supabase's Data API gateway
+  // wouldn't reliably expose the separate `barm` schema), so no schema header
+  // is needed for any table anymore. Kept as a no-op rather than touching its
+  // ~20 call sites throughout this file.
+  const schemaHeaders = (_tableName, _isWrite = false) => ({});
 
   // Platform Performance Comparison States
   const [comparisonStats, setComparisonStats] = useState(null);
@@ -3055,16 +3051,12 @@ Return ONLY valid JSON array, no markdown, no explanation:
         }
 
         // baseHeaders is reused for both reads and writes to listings + price
-        // history below, so include both Accept-Profile and Content-Profile
-        // when this account's tables live in the `barm` schema — an extra
-        // profile header is harmless on requests that don't need it.
+        // history below — barm_* tables live in the default `public` schema
+        // like everything else, so no profile header is needed.
         const baseHeaders = {
           'apikey': supabaseKey,
           'Authorization': `Bearer ${supabaseKey}`,
           'Content-Type': 'application/json',
-          ...(getTableName('flipkart_listings').startsWith('barm_')
-            ? { 'Accept-Profile': 'barm', 'Content-Profile': 'barm' }
-            : {})
         };
 
         // Compare new uploads with latest state from database to log price changes

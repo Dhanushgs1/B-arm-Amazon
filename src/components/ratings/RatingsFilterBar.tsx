@@ -1,10 +1,11 @@
 "use client";
 
 import { Filter, FileSpreadsheet, FileText, RotateCcw } from "lucide-react";
-import type { RRProduct } from "@/lib/ratingsReviewsData";
+import type { RRProduct, RRPlatform } from "@/lib/ratingsReviewsData";
+import { channelLabel } from "@/lib/barmRatingReviewData";
 
 export interface RatingsFilters {
-  platform: "all" | "amazon" | "flipkart";
+  platform: "all" | RRPlatform;
   category: string;
   brand: string;
   product: string;
@@ -34,16 +35,21 @@ export function RatingsFilterBar({
   onChange,
   onExportExcel,
   onExportPDF,
+  // The sheet-backed source has no review text, so sentiment and return-reason
+  // filters would silently match nothing — hide them rather than offer dead controls.
+  hideSentimentFilters = false,
 }: {
   products: RRProduct[];
   filters: RatingsFilters;
   onChange: (next: RatingsFilters) => void;
   onExportExcel: () => void;
   onExportPDF: () => void;
+  hideSentimentFilters?: boolean;
 }) {
   const categories = Array.from(new Set(products.map((p) => p.category))).sort();
   const brands = Array.from(new Set(products.map((p) => p.brand))).sort();
   const productNames = Array.from(new Set(products.map((p) => p.name))).sort();
+  const platforms = Array.from(new Set(products.map((p) => p.platform))).sort();
 
   const set = <K extends keyof RatingsFilters>(key: K, value: RatingsFilters[K]) => onChange({ ...filters, [key]: value });
 
@@ -55,8 +61,9 @@ export function RatingsFilterBar({
 
       <select className={selectClass} value={filters.platform} onChange={(e) => set("platform", e.target.value as RatingsFilters["platform"])}>
         <option value="all">All Platforms</option>
-        <option value="amazon">Amazon</option>
-        <option value="flipkart">Flipkart</option>
+        {platforms.map((p) => (
+          <option key={p} value={p}>{channelLabel(p)}</option>
+        ))}
       </select>
 
       <select className={selectClass} value={filters.category} onChange={(e) => set("category", e.target.value)}>
@@ -86,25 +93,29 @@ export function RatingsFilterBar({
         <option value={3}>Below 3★</option>
       </select>
 
-      <select className={selectClass} value={filters.reviewType} onChange={(e) => set("reviewType", e.target.value as RatingsFilters["reviewType"])}>
-        <option value="all">Any Review Type</option>
-        <option value="negative">Mostly Negative</option>
-        <option value="positive">Mostly Positive</option>
-        <option value="neutral">High Neutral</option>
-      </select>
+      {!hideSentimentFilters && (
+        <>
+          <select className={selectClass} value={filters.reviewType} onChange={(e) => set("reviewType", e.target.value as RatingsFilters["reviewType"])}>
+            <option value="all">Any Review Type</option>
+            <option value="negative">Mostly Negative</option>
+            <option value="positive">Mostly Positive</option>
+            <option value="neutral">High Neutral</option>
+          </select>
 
-      <select className={selectClass} value={filters.returnReason} onChange={(e) => set("returnReason", e.target.value)}>
-        <option value="all">Any Return Reason</option>
-        {["Damaged", "Poor Quality", "Wrong Product", "Not as Expected", "Size Issue", "Others"].map((r) => (
-          <option key={r} value={r}>{r}</option>
-        ))}
-      </select>
+          <select className={selectClass} value={filters.returnReason} onChange={(e) => set("returnReason", e.target.value)}>
+            <option value="all">Any Return Reason</option>
+            {["Damaged", "Poor Quality", "Wrong Product", "Not as Expected", "Size Issue", "Others"].map((r) => (
+              <option key={r} value={r}>{r}</option>
+            ))}
+          </select>
+        </>
+      )}
 
       <select className={selectClass} value={filters.sortBy} onChange={(e) => set("sortBy", e.target.value as RatingsFilters["sortBy"])}>
         <option value="lowestRating">Sort: Lowest Rating</option>
         <option value="highestReturns">Sort: Highest Returns</option>
-        <option value="highestNegative">Sort: Highest Negative Reviews</option>
-        <option value="largestSalesDrop">Sort: Largest Sales Drop</option>
+        {!hideSentimentFilters && <option value="highestNegative">Sort: Highest Negative Reviews</option>}
+        <option value="largestSalesDrop">{hideSentimentFilters ? "Sort: Largest Orders Drop" : "Sort: Largest Sales Drop"}</option>
       </select>
 
       <button

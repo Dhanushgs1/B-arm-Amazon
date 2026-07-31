@@ -2,18 +2,17 @@ import Papa from "papaparse";
 import { createClient } from "@supabase/supabase-js";
 import { lazySupabase, SUPABASE_URL, SUPABASE_ANON_KEY } from "@/lib/supabaseLazy";
 
-// All 20 barm_* tables (the ones in REPORT_TABLE below, plus barm_alert_state
-// and barm_amazon_campaign_sku_map) were moved out of `public` into a
-// dedicated `barm` Postgres schema. This client is scoped to that schema so
-// every read/write in this file (and in historicalAnalysisReportExport.ts /
-// weeklySalesExport.ts / live-alerts.ts, which import it) resolves against
-// the right place. Nothing else in the codebase uses this client for
-// non-barm_ tables, so pinning the schema here is safe.
+// The 20 barm_* tables (the ones in REPORT_TABLE below, plus barm_alert_state
+// and barm_amazon_campaign_sku_map) live in the default `public` schema —
+// moved back here after Supabase's Data API gateway wouldn't reliably expose
+// a separate `barm` schema (the "Exposed schemas" dashboard setting showed
+// `barm` as saved, but the live API kept rejecting requests with
+// PGRST106/"Invalid schema: barm" even after a project restart).
 // Built on first use, not at import — see src/lib/supabaseLazy.ts. This module is pulled into the
 // client bundle by the Upload and Reports pages, so constructing eagerly meant a missing
 // NEXT_PUBLIC_SUPABASE_* variable crashed those pages outright instead of just this feature.
 export const supabasePublic = lazySupabase(() =>
-  createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { db: { schema: "barm" } })
+  createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
 );
 
 export type UploadReportType =
@@ -537,6 +536,26 @@ export interface UploadResult {
   skippedRows: number;
 }
 
+// Amazon's own orders/returns exports occasionally contain a literal
+// duplicate line (every column identical, not just the natural key) — with
+// no per-row upsert possible here (see REPLACE_DATE_FIELD above), those would
+// otherwise both get inserted and double-count in reports. Only rows that
+// match on EVERY field are collapsed; a genuine split-shipment row sharing
+// just order+SKU always differs in at least one other field (quantity,
+// order-item-id, ...) and is left untouched.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function dedupeExactRows(rows: any[]): any[] {
+  const seen = new Set<string>();
+  const out: typeof rows = [];
+  for (const r of rows) {
+    const key = JSON.stringify(r);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  return out;
+}
+
 // Parses a CSV file client-side and writes every row with a usable natural
 // key into its Supabase table, using one of three strategies depending on the
 // report type: ad-report files (SP/SB/SD) upsert on a clean date+campaign
@@ -558,14 +577,30 @@ export async function uploadReportFile(type: UploadReportType, file: File): Prom
 
   if (onConflict) {
     await upsertInChunks(table, valid, onConflict);
+    return {
+      totalRows: rawRows.length,
+      validRows: valid.length,
+      skippedRows: rawRows.length - valid.length,
+    };
   } else if (FULL_REPLACE_TYPES[type]) {
     await truncateAndInsert(table, valid);
+    return {
+      totalRows: rawRows.length,
+      validRows: valid.length,
+      skippedRows: rawRows.length - valid.length,
+    };
   } else if (replaceDateField && valid.length > 0) {
-    const dates = valid.map((r) => r[replaceDateField]).filter(Boolean).sort();
+    const deduped = dedupeExactRows(valid);
+    const dates = deduped.map((r) => r[replaceDateField]).filter(Boolean).sort();
     const minDate = dates[0].slice(0, 10);
     const maxDate = dates[dates.length - 1].slice(0, 10);
     await replaceDateRange(table, replaceDateField, !!REPLACE_IS_TIMESTAMP[type], minDate, maxDate);
-    await insertInChunks(table, valid);
+    await insertInChunks(table, deduped);
+    return {
+      totalRows: rawRows.length,
+      validRows: deduped.length,
+      skippedRows: rawRows.length - deduped.length,
+    };
   }
 
   return {
@@ -644,12 +679,124 @@ export async function fetchUnmappedCampaigns(): Promise<string[]> {
   return [...all].filter((c) => !mappedSet.has(c)).sort();
 }
 
-export async function setCampaignSku(campaignName: string, sku: string): Promise<void> {
+export interface CampaignSkuWeight {
+  sku: string;
+  /** Relative share, not a fraction — see setCampaignSkus. */
+  weight: number;
+}
+
+/**
+ * Replace a campaign's whole SKU allocation.
+ *
+ * Amazon's Sponsored Brands / Display exports carry no SKU column, so a
+ * campaign's spend has to be routed to SKUs by the seller. `weight` is a
+ * RELATIVE share: the export divides each weight by the campaign's total, so
+ * {2,1,1} and {50,25,25} allocate identically and adding a SKU never forces
+ * the existing rows to be rebalanced.
+ *
+ * Rows are replaced, not merged — a SKU dropped from `entries` is removed from
+ * the map, which is what makes this safe to call straight from the editor UI.
+ */
+export async function setCampaignSkus(campaignName: string, entries: CampaignSkuWeight[]): Promise<void> {
+  const clean = entries
+    .map((e) => ({ sku: e.sku.trim(), weight: Number(e.weight) }))
+    .filter((e) => e.sku && Number.isFinite(e.weight) && e.weight > 0);
+
+  const { error: delErr } = await supabasePublic
+    .from("barm_amazon_campaign_sku_map")
+    .delete()
+    .eq("campaign_name", campaignName);
+  if (delErr) throw new Error(delErr.message);
+
+  if (!clean.length) return;
+
+  const now = new Date().toISOString();
   const { error } = await supabasePublic
     .from("barm_amazon_campaign_sku_map")
     .upsert(
-      { campaign_name: campaignName, sku, updated_at: new Date().toISOString() },
-      { onConflict: "campaign_name" }
+      clean.map((e) => ({ campaign_name: campaignName, sku: e.sku, weight: e.weight, updated_at: now })),
+      { onConflict: "campaign_name,sku" }
     );
   if (error) throw new Error(error.message);
+}
+
+/** Single-SKU convenience wrapper — the whole campaign goes to one SKU. */
+export async function setCampaignSku(campaignName: string, sku: string): Promise<void> {
+  return setCampaignSkus(campaignName, [{ sku, weight: 1 }]);
+}
+
+export interface CampaignAllocation {
+  campaignName: string;
+  /** Which export the campaign came from — Sponsored Brands or Display. */
+  source: "SB" | "SD";
+  /** Total uploaded spend for the campaign, so the UI can price the split. */
+  spend: number;
+  skus: CampaignSkuWeight[];
+}
+
+/**
+ * Every Sponsored Brands / Display campaign with its current weighted SKU
+ * allocation — including ones already mapped, so an existing split stays
+ * editable (fetchUnmappedCampaigns only ever surfaces the untouched ones).
+ */
+export async function fetchCampaignAllocations(): Promise<CampaignAllocation[]> {
+  // Supabase caps an unbounded select at 1000 rows; page explicitly so a long
+  // upload history cannot silently hide campaigns.
+  const pageAll = async (table: string): Promise<{ campaign_name: string; spend: number | null }[]> => {
+    const out: { campaign_name: string; spend: number | null }[] = [];
+    const PAGE = 1000;
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await supabasePublic
+        .from(table)
+        .select("campaign_name, spend")
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(error.message);
+      const rows = data || [];
+      out.push(...rows);
+      if (rows.length < PAGE) return out;
+    }
+  };
+
+  const [sb, sd, weights] = await Promise.all([
+    pageAll("barm_amazon_sb_campaign"),
+    pageAll("barm_amazon_sd_campaign"),
+    fetchCampaignSkuWeights(),
+  ]);
+
+  const byName = new Map<string, CampaignAllocation>();
+  const add = (rows: { campaign_name: string; spend: number | null }[], source: "SB" | "SD") => {
+    rows.forEach((r) => {
+      if (!r.campaign_name) return;
+      const cur = byName.get(r.campaign_name) || { campaignName: r.campaign_name, source, spend: 0, skus: [] };
+      cur.spend += Number(r.spend) || 0;
+      byName.set(r.campaign_name, cur);
+    });
+  };
+  add(sb, "SB");
+  add(sd, "SD");
+  byName.forEach((c) => { c.skus = weights.get(c.campaignName) || []; });
+
+  // Unmapped first (they are what needs attention), then by spend descending.
+  return [...byName.values()].sort((a, b) => {
+    const am = a.skus.length === 0 ? 0 : 1;
+    const bm = b.skus.length === 0 ? 0 : 1;
+    if (am !== bm) return am - bm;
+    return b.spend - a.spend;
+  });
+}
+
+/** campaign name -> its weighted SKU allocation, for the report exporters. */
+export async function fetchCampaignSkuWeights(): Promise<Map<string, CampaignSkuWeight[]>> {
+  const { data, error } = await supabasePublic
+    .from("barm_amazon_campaign_sku_map")
+    .select("campaign_name, sku, weight");
+  if (error) throw new Error(error.message);
+  const map = new Map<string, CampaignSkuWeight[]>();
+  (data || []).forEach((r: { campaign_name: string; sku: string; weight: number | string | null }) => {
+    const weight = Number(r.weight);
+    const list = map.get(r.campaign_name) || [];
+    list.push({ sku: r.sku, weight: Number.isFinite(weight) && weight > 0 ? weight : 1 });
+    map.set(r.campaign_name, list);
+  });
+  return map;
 }

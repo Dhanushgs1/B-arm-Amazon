@@ -9,9 +9,10 @@ import {
   type ReportDataInfo,
   REPORT_LABEL,
   fetchUploadedDateRange,
-  fetchUnmappedCampaigns,
+  fetchCampaignAllocations,
   fetchAllReportDataInfo,
-  setCampaignSku,
+  setCampaignSkus,
+  type CampaignAllocation,
 } from "@/lib/amazonReportUpload";
 import { exportHistoricalAnalysisReport } from "@/lib/historicalAnalysisReportExport";
 import { exportWeeklySalesReport } from "@/lib/weeklySalesExport";
@@ -147,23 +148,26 @@ export default function UploadReportsPage() {
   const [cardState, setCardState] = useState<Record<UploadReportType, CardState>>(
     Object.fromEntries(REPORT_TYPES.map((t) => [t, { status: "idle" }])) as Record<UploadReportType, CardState>
   );
-  const [unmapped, setUnmapped] = useState<string[]>([]);
-  const [skuDrafts, setSkuDrafts] = useState<Record<string, string>>({});
+  const [allocations, setAllocations] = useState<CampaignAllocation[]>([]);
+  /** Unsaved edits, keyed by campaign; absent means "show what's saved". */
+  const [allocDrafts, setAllocDrafts] = useState<Record<string, { sku: string; weight: string }[]>>({});
   const [mappingBusy, setMappingBusy] = useState<string | null>(null);
   const [range, setRange] = useState<{ min: string | null; max: string | null }>({ min: null, max: null });
   const [dataInfo, setDataInfo] = useState<Partial<Record<UploadReportType, ReportDataInfo>>>({});
-  const [reportEnd, setReportEnd] = useState("");
   const [generating, setGenerating] = useState(false);
   const [reportMsg, setReportMsg] = useState<string | null>(null);
   const [weeklyGenerating, setWeeklyGenerating] = useState(false);
   const [weeklyMsg, setWeeklyMsg] = useState<string | null>(null);
 
   const refreshMeta = useCallback(async () => {
-    const [r, um, info] = await Promise.all([fetchUploadedDateRange(), fetchUnmappedCampaigns(), fetchAllReportDataInfo()]);
+    const [r, allocs, info] = await Promise.all([
+      fetchUploadedDateRange(),
+      fetchCampaignAllocations(),
+      fetchAllReportDataInfo(),
+    ]);
     setRange(r);
-    setUnmapped(um);
+    setAllocations(allocs);
     setDataInfo(info);
-    setReportEnd((prev: string) => prev || r.max || "");
   }, []);
 
   useEffect(() => {
@@ -191,23 +195,32 @@ export default function UploadReportsPage() {
     }
   };
 
-  const handleSaveSku = async (campaign: string) => {
-    const sku = (skuDrafts[campaign] || "").trim();
-    if (!sku) return;
+  const handleSaveAllocation = async (campaign: string, draft: { sku: string; weight: string }[]) => {
+    const entries = draft
+      .map((e) => ({ sku: e.sku.trim(), weight: Number(e.weight) }))
+      .filter((e) => e.sku && Number.isFinite(e.weight) && e.weight > 0);
+    if (!entries.length) return;
     setMappingBusy(campaign);
     try {
-      await setCampaignSku(campaign, sku);
-      setUnmapped((prev) => prev.filter((c) => c !== campaign));
+      await setCampaignSkus(campaign, entries);
+      // Reflect the saved split locally and drop the draft, so the row switches
+      // from "unassigned" styling without a full refetch.
+      setAllocations((prev) => prev.map((a) => (a.campaignName === campaign ? { ...a, skus: entries } : a)));
+      setAllocDrafts((prev) => {
+        const next = { ...prev };
+        delete next[campaign];
+        return next;
+      });
     } catch (err) {
-      alert("Failed to save mapping: " + (err instanceof Error ? err.message : String(err)));
+      alert("Failed to save split: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       setMappingBusy(null);
     }
   };
 
   const handleGenerate = async () => {
-    if (!reportEnd) {
-      alert("Pick an end date first.");
+    if (!dashboardEndDate) {
+      alert("Pick a date at the top of the dashboard first.");
       return;
     }
     setGenerating(true);
@@ -215,8 +228,10 @@ export default function UploadReportsPage() {
     try {
       // Only endDate: the report is built from a trailing 30-day and 7-day window that both end
       // there, so it has no use for a caller-supplied start date. The UI used to collect one and
-      // pass it here, which never affected the output and broke the build.
-      const res = await exportHistoricalAnalysisReport({ endDate: reportEnd, account, keySlot });
+      // pass it here, which never affected the output and broke the build. Now sourced from the
+      // dashboard's own date picker instead of its own separate field, matching the Weekly Report
+      // download below — one date control for the whole page, not two that can disagree.
+      const res = await exportHistoricalAnalysisReport({ endDate: dashboardEndDate, account, keySlot });
       setReportMsg(
         `Downloaded ${res.filename} — ${res.skuCount} SKUs` +
           (res.unmappedCampaignSpend ? `, ₹${res.unmappedCampaignSpend.toFixed(0)} spend still unmapped to a SKU` : "") +
@@ -294,36 +309,91 @@ export default function UploadReportsPage() {
         </div>
       </div>
 
-      {unmapped.length > 0 && (
+      {allocations.length > 0 && (
         <div className="glass rounded-2xl border border-amber-500/40 p-6 shadow-sm">
-          <h3 className="font-bold text-sm mb-1">Campaigns needing a SKU ({unmapped.length})</h3>
+          <h3 className="font-bold text-sm mb-1">
+            Sponsored Brands / Display → SKU split ({allocations.filter((a) => a.skus.length === 0).length} still unassigned)
+          </h3>
           <p className="text-xs text-muted-foreground mb-4">
-            Sponsored Brands and Sponsored Display exports don&apos;t include a SKU column — assign the SKU each
-            campaign advertises so its spend is counted in the SKU-wise report instead of landing in
-            &quot;Unmapped&quot;.
+            These exports carry no SKU column, so each campaign&apos;s spend has to be split across the SKUs it
+            advertises. Give every SKU a weight — they&apos;re relative, so <b>2,1,1</b> and <b>50,25,25</b> split the
+            same. Leave one SKU at weight 1 to send the whole campaign to it.
           </p>
-          <div className="space-y-2">
-            {unmapped.map((c) => (
-              <div key={c} className="flex items-center gap-2 text-xs">
-                <span className="flex-1 truncate" title={c}>
-                  {c}
-                </span>
-                <input
-                  type="text"
-                  placeholder="SKU"
-                  value={skuDrafts[c] || ""}
-                  onChange={(e) => setSkuDrafts((prev) => ({ ...prev, [c]: e.target.value }))}
-                  className="w-40 px-2 py-1 rounded-md border border-border bg-background text-xs"
-                />
-                <button
-                  onClick={() => handleSaveSku(c)}
-                  disabled={mappingBusy === c || !(skuDrafts[c] || "").trim()}
-                  className="px-3 py-1 bg-primary text-primary-foreground rounded-md text-xs font-bold disabled:opacity-50"
+          <div className="space-y-4">
+            {allocations.map((a) => {
+              const draft = allocDrafts[a.campaignName] ?? a.skus.map((s) => ({ sku: s.sku, weight: String(s.weight) }));
+              const totalWeight = draft.reduce((sum, e) => sum + (Number(e.weight) || 0), 0);
+              const valid = draft.filter((e) => e.sku.trim() && Number(e.weight) > 0);
+              const setDraft = (next: { sku: string; weight: string }[]) =>
+                setAllocDrafts((prev) => ({ ...prev, [a.campaignName]: next }));
+              return (
+                <div
+                  key={a.campaignName}
+                  className={`rounded-xl border p-3 ${a.skus.length === 0 ? "border-amber-500/50 bg-amber-500/5" : "border-border"}`}
                 >
-                  {mappingBusy === c ? <Loader2 className="w-3 h-3 animate-spin" /> : "Save"}
-                </button>
-              </div>
-            ))}
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-primary/15 text-primary">{a.source}</span>
+                    <span className="flex-1 truncate text-xs font-semibold" title={a.campaignName}>
+                      {a.campaignName}
+                    </span>
+                    <span className="text-xs text-muted-foreground whitespace-nowrap">
+                      ₹{a.spend.toLocaleString("en-IN", { maximumFractionDigits: 0 })} spend
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {draft.map((e, i) => {
+                      const share = totalWeight > 0 ? (Number(e.weight) || 0) / totalWeight : 0;
+                      return (
+                        <div key={i} className="flex items-center gap-2 text-xs">
+                          <input
+                            type="text"
+                            placeholder="SKU"
+                            value={e.sku}
+                            onChange={(ev) => setDraft(draft.map((d, j) => (j === i ? { ...d, sku: ev.target.value } : d)))}
+                            className="flex-1 min-w-0 px-2 py-1 rounded-md border border-border bg-background text-xs"
+                          />
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            placeholder="wt"
+                            value={e.weight}
+                            onChange={(ev) => setDraft(draft.map((d, j) => (j === i ? { ...d, weight: ev.target.value } : d)))}
+                            className="w-16 px-2 py-1 rounded-md border border-border bg-background text-xs"
+                          />
+                          <span className="w-28 text-right text-muted-foreground whitespace-nowrap tabular-nums">
+                            {(share * 100).toFixed(1)}% · ₹{Math.round(a.spend * share).toLocaleString("en-IN")}
+                          </span>
+                          <button
+                            onClick={() => setDraft(draft.filter((_, j) => j !== i))}
+                            className="px-1.5 py-1 rounded-md border border-border text-muted-foreground hover:text-foreground"
+                            title="Remove this SKU"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="flex items-center gap-2 mt-2">
+                    <button
+                      onClick={() => setDraft([...draft, { sku: "", weight: "1" }])}
+                      className="px-2 py-1 rounded-md border border-border text-xs font-semibold"
+                    >
+                      + Add SKU
+                    </button>
+                    <div className="flex-1" />
+                    <button
+                      onClick={() => handleSaveAllocation(a.campaignName, draft)}
+                      disabled={mappingBusy === a.campaignName || valid.length === 0}
+                      className="px-3 py-1 bg-primary text-primary-foreground rounded-md text-xs font-bold disabled:opacity-50"
+                    >
+                      {mappingBusy === a.campaignName ? <Loader2 className="w-3 h-3 animate-spin" /> : "Save split"}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -358,36 +428,24 @@ export default function UploadReportsPage() {
         <p className="text-xs text-muted-foreground mb-4">
           Builds the same Analysis Report layout (Price, Spend+Tax, Units, Orders, Returns, CPC, ACOS, TACOS) from
           the data uploaded above — one row per SKU. The report compares a trailing 30-day window against a
-          trailing 7-day one, both ending on the date you pick, so only the end date is yours to choose.
+          trailing 7-day one, both ending on the date selected at the top of the dashboard (
+          {dashboardEndDate || "yesterday"}).
         </p>
-        <div className="flex flex-wrap items-end gap-3">
-          <div>
-            <label className="block text-[10px] uppercase font-black tracking-wider text-muted-foreground mb-1">
-              End date
-            </label>
-            <input
-              type="date"
-              value={reportEnd}
-              onChange={(e) => setReportEnd(e.target.value)}
-              className="px-2 py-1.5 rounded-md border border-border bg-background text-xs"
-            />
-          </div>
-          <button
-            onClick={handleGenerate}
-            disabled={generating || !reportEnd}
-            className="px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold rounded-lg transition-colors flex items-center gap-2 shadow-md disabled:opacity-50"
-          >
-            {generating ? (
-              <>
-                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Generating…
-              </>
-            ) : (
-              <>
-                <Download size={14} /> Generate &amp; Download
-              </>
-            )}
-          </button>
-        </div>
+        <button
+          onClick={handleGenerate}
+          disabled={generating || !dashboardEndDate}
+          className="px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold rounded-lg transition-colors flex items-center gap-2 shadow-md disabled:opacity-50"
+        >
+          {generating ? (
+            <>
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Generating…
+            </>
+          ) : (
+            <>
+              <Download size={14} /> Generate &amp; Download
+            </>
+          )}
+        </button>
         {range.min && range.max && (
           <p className="text-[10px] text-muted-foreground mt-3">
             Uploaded data currently covers {range.min} to {range.max}.

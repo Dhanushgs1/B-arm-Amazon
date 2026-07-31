@@ -11,7 +11,22 @@
 // (thresholds → template strings), the same idiom CampaignDetailDrawer already
 // uses for its fallback recommendations — not a live LLM call.
 
-export type RRPlatform = "amazon" | "flipkart";
+// The demo generator only ever produces "amazon" | "flipkart", but the real
+// tracker in barmRatingReviewData.ts spans every channel the sheet records, so
+// the union covers all of them. Use channelLabel() there for display names.
+export type RRPlatform =
+  | "amazon"
+  | "amazon_ca"
+  | "amazon_us"
+  | "flipkart"
+  | "shopsy"
+  | "meesho"
+  | "jiomart"
+  | "blinkit"
+  | "barm"
+  | "sbi"
+  | "1mg"
+  | "other";
 
 function seedFromString(s: string): number {
   let h = 0;
@@ -186,6 +201,19 @@ export interface RRProduct {
   ratingStatus: RatingStatus;
   actionRequired: string;
   recommendations: string[];
+
+  // Populated only by the real sheet-backed source (barmRatingReviewData.ts).
+  // The demo generator leaves these undefined.
+  /** Customer rating count — distinct from reviewCount when a source has both. */
+  ratingsCount?: number;
+  /** Written-review count; far smaller than ratingsCount on Amazon listings. */
+  textReviewCount?: number;
+  ordersCount?: number;
+  priorOrdersCount?: number;
+  latchOnSeller?: string;
+  asin?: string;
+  /** False when the tracker recorded no star value for this SKU that week. */
+  hasRating?: boolean;
 }
 
 export interface CategoryInsight {
@@ -228,14 +256,14 @@ export interface RatingsReviewsDataset {
   executiveSummary: ExecutiveSummary;
 }
 
-function healthTier(score: number): HealthStatus {
+export function healthTier(score: number): HealthStatus {
   if (score >= 85) return "Excellent";
   if (score >= 70) return "Good";
   if (score >= 50) return "Needs Attention";
   return "Critical";
 }
 
-function ratingTier(avgRating: number): RatingStatus {
+export function ratingTier(avgRating: number): RatingStatus {
   if (avgRating >= 4.5) return "Excellent";
   if (avgRating >= 4.0) return "Good";
   if (avgRating >= 3.0) return "Watch";

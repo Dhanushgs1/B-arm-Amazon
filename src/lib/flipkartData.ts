@@ -25,16 +25,6 @@ export function getFlipkartTableName(baseName: string, loggedInUser: string): st
   return LKN_TABLE_MAP[baseName] || baseName;
 }
 
-// The 8 barm_flipkart_* tables live in the dedicated `barm` Postgres schema
-// (moved out of `public`); everything else (the Lkn account's *_dash_360 /
-// *_dashboard tables) is still in `public`. PostgREST resolves unqualified
-// table names against `public` by default, so requests for a barm_ table
-// need an explicit Accept-Profile (reads) / Content-Profile (writes) header
-// or they'll 404. Non-barm_ tables must NOT get this header.
-function schemaHeaders(tableName: string): Record<string, string> {
-  return tableName.startsWith("barm_") ? { "Accept-Profile": "barm" } : {};
-}
-
 async function fetchTableForRange(
   tableName: string,
   dateColumn: string,
@@ -42,7 +32,7 @@ async function fetchTableForRange(
   to: string
 ): Promise<any[]> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return [];
-  const headers = { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, ...schemaHeaders(tableName) };
+  const headers = { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` };
   let results: any[] = [];
   let offset = 0;
   const limit = 1000;
@@ -66,7 +56,7 @@ async function fetchTableForRange(
 // listings, whose rows carry a single current stock/price state.
 async function fetchTableAll(tableName: string, select = "*"): Promise<any[]> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return [];
-  const headers = { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, ...schemaHeaders(tableName) };
+  const headers = { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` };
   let results: any[] = [];
   let offset = 0;
   const limit = 1000;
@@ -90,7 +80,7 @@ async function fetchTableAll(tableName: string, select = "*"): Promise<any[]> {
 // has data (e.g. P&L order-level rows only cover the uploaded periods).
 async function fetchDateBounds(tableName: string, dateColumn: string): Promise<{ min: string | null; max: string | null }> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return { min: null, max: null };
-  const headers = { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, ...schemaHeaders(tableName) };
+  const headers = { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` };
   try {
     const maxRes = await fetch(`${SUPABASE_URL}/rest/v1/${tableName}?select=${dateColumn}&order=${dateColumn}.desc&limit=1`, { headers });
     const minRes = await fetch(`${SUPABASE_URL}/rest/v1/${tableName}?select=${dateColumn}&order=${dateColumn}.asc&limit=1`, { headers });
