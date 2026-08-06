@@ -67,15 +67,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const dateLabel = new Date(day + "T00:00:00").toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
 
   try {
-    // The three detectors look back `lookbackDays`; the KPI block reports the single day. A
-    // detector that throws must not take the whole digest down — the day's numbers are still
-    // worth sending, so each degrades to an empty list and is reported as such below.
+    // Every call here must degrade to an empty/zero default on failure, never throw — a single
+    // SellerMate hiccup on any one of these previously took the whole Promise.all down, which
+    // killed the entire digest send with nothing surfaced anywhere the recipient would see it
+    // (only a Vercel function log nobody was watching). That silently reproduced exactly the
+    // "quiet day vs. broken cron" ambiguity this digest exists to avoid — see the file comment
+    // above. The KPI block reports the single day; the three detectors below it look back
+    // `lookbackDays`.
     const [cp, st, prod, retail, inv, stockoutItems, bleedingItems, wasted] = await Promise.all([
-      callTool("get_campaign_performance", { ...base, page_size: 500 }, apiKey),
-      callTool("get_search_term_performance", { ...base, page_size: 100, sort_field: "attributedSales14d", sort_direction: "desc" }, apiKey),
-      callTool("get_advertised_product_performance", { ...base, page_size: 100, sort_field: "attributedSales14d", sort_direction: "desc" }, apiKey),
+      callTool("get_campaign_performance", { ...base, page_size: 500 }, apiKey).catch(() => ({ data: [], summary: {} })),
+      callTool("get_search_term_performance", { ...base, page_size: 100, sort_field: "attributedSales14d", sort_direction: "desc" }, apiKey).catch(() => ({ data: [] })),
+      callTool("get_advertised_product_performance", { ...base, page_size: 100, sort_field: "attributedSales14d", sort_direction: "desc" }, apiKey).catch(() => ({ data: [] })),
       callTool("get_retail_product_performance", { ...base, page_size: 500 }, apiKey).catch(() => ({ summary: {} })),
-      callTool("get_inventory", { amazon_account_id, workspace_id, limit: 200, offset: 0 }, apiKey),
+      callTool("get_inventory", { amazon_account_id, workspace_id, limit: 200, offset: 0 }, apiKey).catch(() => ({ items: [] })),
       findStockoutAdSpend({ apiKey, amazon_account_id, workspace_id, lowStockThreshold, lookbackDays }).catch(() => []),
       findBleedingCampaigns({ apiKey, amazon_account_id, workspace_id, acosThreshold, minSpend, lookbackDays }).catch(() => []),
       findWastedSearchTerms({ apiKey, amazon_account_id, workspace_id, minSpend: 100, lookbackDays }).catch(() => ({ terms: [], totalWasted: 0 })),
