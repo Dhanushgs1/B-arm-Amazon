@@ -307,6 +307,16 @@ export default function BidAdjustmentPage() {
       ),
     },
     {
+      key: "adGroupName",
+      label: "Ad Group",
+      sortable: true,
+      render: (val: string) => (
+        <span className="text-xs text-muted-foreground font-semibold block max-w-[200px] whitespace-normal break-words leading-tight" title={val}>
+          {val || "—"}
+        </span>
+      ),
+    },
+    {
       key: "bid",
       label: "Current Bid",
       sortable: true,
