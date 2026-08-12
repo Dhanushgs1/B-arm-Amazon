@@ -59,24 +59,8 @@ async function sendMonthlyPlaceholder(toEmail: string, ccEmail?: string) {
 
 async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, isFirstOfMonth: boolean, dryRun: boolean) {
   const s = await readEmailSettings(slot);
-  if (!(s.amazonAccountId && s.workspaceId)) {
-    return { skipped: true, reason: "No account context saved — save Settings once to store it." };
-  }
-
-  // Runs regardless of the email toggles below — it only logs to Supabase
-  // (barm_campaign_pause_log), it never sends anything, so it doesn't need
-  // notifEmail/emailAlerts configured.
-  const campaignStateCheck = dryRun
-    ? { dryRun: true }
-    : await callReportEndpoint(
-        req,
-        "/api/campaign-state-check",
-        { slot, amazon_account_id: s.amazonAccountId, workspace_id: s.workspaceId },
-        `[${slot}] Campaign state check`
-      );
-
-  if (!(s.emailAlerts && s.notifEmail)) {
-    return { skipped: true, reason: "Email alerts not configured — save Settings once to enable emailed reports.", campaignStateCheck };
+  if (!(s.emailAlerts && s.notifEmail && s.amazonAccountId && s.workspaceId)) {
+    return { skipped: true, reason: "Email alerts not configured — save Settings once to store account context." };
   }
 
   if (dryRun) {
@@ -100,7 +84,7 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
     currency: s.currency || "INR",
   };
 
-  const results: Record<string, any> = { campaignStateCheck };
+  const results: Record<string, any> = {};
 
   // `dailySummary` now means the combined digest. The separate daily report was deleted — it
   // showed only counts of the stockout / bleeding / wasted-term findings (computed by a different
