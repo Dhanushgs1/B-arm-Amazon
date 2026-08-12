@@ -25,19 +25,36 @@ export function isConfigured() {
   return !!(SUPABASE_URL && SUPABASE_ANON_KEY);
 }
 
+// The cron path (scheduled-reports.ts) treats an empty {} return here as "this
+// account was never configured" and silently skips that day's email — correct
+// for a genuinely-empty row, but WRONG for a transient Supabase hiccup (seen in
+// practice: brief "statement timeout" blips against this project's DB), which
+// used to collapse into the exact same {} on the FIRST failed attempt and
+// vanish a whole day's digest with nothing visible anywhere. Retrying gives a
+// transient blip 2 more chances to clear before this falls back to {} — same
+// return contract as before (every existing caller still gets a plain object,
+// never a throw), just less likely to mistake "Supabase hiccupped for a
+// second" for "never configured".
 export async function readEmailSettings(keySlot: string): Promise<Record<string, any>> {
   if (!isConfigured()) return {};
-  try {
-    const r = await fetch(
-      `${SUPABASE_URL}/rest/v1/email_settings?key_slot=eq.${encodeURIComponent(keySlot)}&select=settings`,
-      { headers: headers() }
-    );
-    if (!r.ok) return {};
-    const rows = await r.json();
-    return rows?.[0]?.settings || {};
-  } catch {
-    return {};
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const r = await fetch(
+        `${SUPABASE_URL}/rest/v1/email_settings?key_slot=eq.${encodeURIComponent(keySlot)}&select=settings`,
+        { headers: headers() }
+      );
+      if (!r.ok) throw new Error(`Supabase read failed: ${r.status} ${await r.text().catch(() => "")}`);
+      const rows = await r.json();
+      return rows?.[0]?.settings || {};
+    } catch (err) {
+      if (attempt < 2) {
+        await new Promise((res) => setTimeout(res, 500 * (attempt + 1)));
+        continue;
+      }
+      console.error(`[emailSettingsStore] readEmailSettings(${keySlot}) failed after 3 attempts:`, err);
+    }
   }
+  return {};
 }
 
 export async function writeEmailSettings(keySlot: string, patch: Record<string, any>): Promise<Record<string, any>> {

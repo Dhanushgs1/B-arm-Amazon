@@ -59,8 +59,24 @@ async function sendMonthlyPlaceholder(toEmail: string, ccEmail?: string) {
 
 async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, isFirstOfMonth: boolean, dryRun: boolean) {
   const s = await readEmailSettings(slot);
-  if (!(s.emailAlerts && s.notifEmail && s.amazonAccountId && s.workspaceId)) {
-    return { skipped: true, reason: "Email alerts not configured — save Settings once to store account context." };
+  if (!(s.amazonAccountId && s.workspaceId)) {
+    return { skipped: true, reason: "No account context saved — save Settings once to store it." };
+  }
+
+  // Runs regardless of the email toggles below — it only logs to Supabase
+  // (barm_campaign_pause_log), it never sends anything, so it doesn't need
+  // notifEmail/emailAlerts configured.
+  const campaignStateCheck = dryRun
+    ? { dryRun: true }
+    : await callReportEndpoint(
+        req,
+        "/api/campaign-state-check",
+        { slot, amazon_account_id: s.amazonAccountId, workspace_id: s.workspaceId },
+        `[${slot}] Campaign state check`
+      );
+
+  if (!(s.emailAlerts && s.notifEmail)) {
+    return { skipped: true, reason: "Email alerts not configured — save Settings once to enable emailed reports.", campaignStateCheck };
   }
 
   if (dryRun) {
@@ -84,7 +100,7 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
     currency: s.currency || "INR",
   };
 
-  const results: Record<string, any> = {};
+  const results: Record<string, any> = { campaignStateCheck };
 
   // `dailySummary` now means the combined digest. The separate daily report was deleted — it
   // showed only counts of the stockout / bleeding / wasted-term findings (computed by a different
@@ -142,9 +158,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const isMonday = now.getUTCDay() === 1;
   const isFirstOfMonth = now.getUTCDate() === 1;
 
+  // Each slot is isolated: one account's unexpected throw (a bug, an unguarded
+  // Supabase/SellerMate call) must never take the other account's email down
+  // with it — that's exactly the failure mode that made whole days of digest
+  // mail vanish for BOTH accounts when only one of them was actually affected.
   const bySlot: Record<string, any> = {};
   for (const slot of KEY_SLOTS) {
-    bySlot[slot] = await runForSlot(req, slot, isMonday, isFirstOfMonth, dryRun);
+    try {
+      bySlot[slot] = await runForSlot(req, slot, isMonday, isFirstOfMonth, dryRun);
+    } catch (err: any) {
+      console.error(`[Marketplace360 Cron] ❌ [${slot}] runForSlot threw:`, err);
+      bySlot[slot] = { error: err?.message || String(err) };
+    }
   }
 
   return res.status(200).json({ ranAt: now.toISOString(), isMonday, isFirstOfMonth, dryRun, bySlot });
