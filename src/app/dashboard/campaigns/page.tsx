@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useDashboard } from "@/lib/DashboardContext";
 import { mcp, mcpAllPages, fetchSkuMap } from "@/lib/api";
+import { fetchMissingCampaignHistory, injectMissingCampaignsAsPaused } from "@/lib/campaignPersistence";
 import { exportToExcel } from "@/lib/excelExport";
 import { KpiDrilldownModal } from "@/components/KpiDrilldownModal";
 import { AiSuggestionModal } from "@/components/AiSuggestionModal";
@@ -159,10 +160,21 @@ export default function CampaignsPage() {
     enabled: !!account,
   });
 
+  // Campaigns absent from today's live list_campaigns pull but present in prior daily
+  // snapshots — re-added as Paused so a transient API gap (or a genuine pause) never just
+  // drops the campaign off the dashboard. See campaignPersistence.ts / campaignStateTracker.ts.
+  const { data: missingHistory } = useQuery({
+    queryKey: ["campaigns_missing_history", keySlot],
+    queryFn: () => fetchMissingCampaignHistory(keySlot),
+    enabled: !!account,
+    staleTime: 5 * 60 * 1000,
+  });
+
   const isLoading = perfLoading || listLoading;
   const currency = account?.currency;
 
-  const rawList = Array.isArray(campaignList) ? campaignList : (campaignList as any)?.campaigns || [];
+  const liveList = Array.isArray(campaignList) ? campaignList : (campaignList as any)?.campaigns || [];
+  const rawList = injectMissingCampaignsAsPaused(liveList, missingHistory || []);
 
   const campaigns = (rawList || []).map((meta: any) => {
     const perf = (performanceData || []).find((p: any) => p.campaignId === meta.campaignId);

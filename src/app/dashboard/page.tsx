@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useState, useCallback } from "react";
+import { useMemo, useState, useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { useRouter } from "next/navigation";
 import { useDashboard } from "@/lib/DashboardContext";
 import { mcp, mcpAllInventory, fetchUnifiedDailyTrend, aggregateTrend } from "@/lib/api";
+import { fetchMissingCampaignHistory, injectMissingCampaignsAsPaused } from "@/lib/campaignPersistence";
 import { KPICard } from "@/components/KPICard";
 import { QueryErrorState } from "@/components/QueryErrorState";
 import { TrendChart, UnifiedTrendChart } from "@/components/TrendChart";
@@ -36,7 +37,7 @@ const getDynamicTrend = (name: string, value: number, start: string, end: string
 
 export default function DashboardOverview() {
   const router = useRouter();
-  const { keySlot, startDate, endDate, account, contextLoading, setSelectedCampaignName, setSelectedAsin } = useDashboard();
+  const { keySlot, startDate, endDate, account, contextLoading, setSelectedCampaignName, setSelectedAsin, setLastDataDate } = useDashboard();
   const [trendGranularity, setTrendGranularity] = useState<'daily' | 'weekly' | 'monthly'>('daily');
   const [searchTermTab, setSearchTermTab] = useState<'top' | 'wasted'>('top');
   const [campaignTab, setCampaignTab] = useState<'top' | 'down'>('top');
@@ -70,6 +71,16 @@ export default function DashboardOverview() {
     () => aggregateTrend(dailyTrend || [], trendGranularity),
     [dailyTrend, trendGranularity]
   );
+
+  // Update context with the last date that has actual data
+  useEffect(() => {
+    if (dailyTrend && dailyTrend.length > 0) {
+      const sorted = [...dailyTrend].sort((a, b) => b.rawDate.localeCompare(a.rawDate));
+      if (sorted[0]) {
+        setLastDataDate(sorted[0].rawDate);
+      }
+    }
+  }, [dailyTrend, setLastDataDate]);
 
   const { data: inventoryData, isLoading: inventoryLoading, isError: inventoryError, refetch: refetchInventory } = useQuery({
     queryKey: ["inventory", keySlot, account?.id],
@@ -148,7 +159,7 @@ export default function DashboardOverview() {
 
   const totalSales = rs.totalSales || 0;
   const adSales = rs.totalAdSales || s.totalSales || 0;
-  const organicSales = totalSales - adSales;
+  const organicSales = Math.max(0, totalSales - adSales);
   const totalUnits = rs.totalUnitsOrdered || 0;
   const tacos = rs.overallTacos || 0;
 
@@ -186,8 +197,20 @@ export default function DashboardOverview() {
   // instead of showing a cancellation count we can't actually measure.
   const returnRatePct = totalUnits > 0 ? (totalReturns / totalUnits) * 100 : 0;
 
+  // Campaigns absent from today's live list_campaigns pull but present in prior daily
+  // snapshots — re-added as Paused here too, so the Active/Paused KPI cards and the AI
+  // summary agree with the Campaigns page instead of quietly losing a campaign from
+  // the count whenever the live pull omits it. See campaignPersistence.ts.
+  const { data: missingCampaignHistory } = useQuery({
+    queryKey: ["campaigns_missing_history", keySlot],
+    queryFn: () => fetchMissingCampaignHistory(keySlot),
+    enabled: !!account,
+    staleTime: 5 * 60 * 1000,
+  });
+
   const allCampaigns: any[] = cpData?.data || cpData?.rows || [];
-  const allCampaignList: any[] = allCampaignListData?.data || allCampaignListData?.rows || allCampaignListData?.campaigns || [];
+  const liveCampaignList: any[] = allCampaignListData?.data || allCampaignListData?.rows || allCampaignListData?.campaigns || [];
+  const allCampaignList: any[] = injectMissingCampaignsAsPaused(liveCampaignList, missingCampaignHistory || []);
   const activeCampaigns = allCampaignList.filter((c: any) => c.state?.toUpperCase() === "ENABLED").length;
   const pausedCampaigns = allCampaignList.filter((c: any) => c.state?.toUpperCase() === "PAUSED").length;
 
@@ -284,12 +307,19 @@ export default function DashboardOverview() {
       : "All tracked products are sufficiently stocked.",
   ];
 
-  // Real AI Executive Summary — sends the same metrics behind the rule-based
-  // bullets above to Gemini so the panel gives genuine analysis instead of
-  // templated sentences. Keyed off a metrics fingerprint (not just date range)
-  // so it regenerates when the underlying numbers actually change, and cached
-  // for 10 minutes to stay within Gemini's free-tier rate limit. Falls back to
-  // executiveSummaryPoints above on any error so the panel never breaks.
+  // Structured AI Executive Summary — Gemini returns categorised insights
+  // tagged as WIN / ALERT / OPPORTUNITY / ACTION so the panel can colour-code
+  // them. Falls back to rule-based bullets on any error.
+  type SummaryItem = { tag: string; text: string };
+
+  const SUMMARY_TAG_CONFIG: Record<string, { label: string; textColor: string; bgColor: string; borderColor: string; icon: string }> = {
+    WIN:         { label: 'Win',         textColor: 'text-emerald-700 dark:text-emerald-400', bgColor: 'bg-emerald-100 dark:bg-emerald-900/40', borderColor: 'border-emerald-300 dark:border-emerald-700', icon: '🏆' },
+    ALERT:       { label: 'Alert',       textColor: 'text-red-700 dark:text-red-400',     bgColor: 'bg-red-100 dark:bg-red-900/40',     borderColor: 'border-red-300 dark:border-red-700',     icon: '⚠️' },
+    OPPORTUNITY: { label: 'Opportunity', textColor: 'text-blue-700 dark:text-blue-400',   bgColor: 'bg-blue-100 dark:bg-blue-900/40',   borderColor: 'border-blue-300 dark:border-blue-700',   icon: '💡' },
+    ACTION:      { label: 'Action',      textColor: 'text-orange-700 dark:text-orange-400', bgColor: 'bg-orange-100 dark:bg-orange-900/40', borderColor: 'border-orange-300 dark:border-orange-700', icon: '🚀' },
+    INSIGHT:     { label: 'Insight',     textColor: 'text-slate-600 dark:text-slate-400', bgColor: 'bg-slate-100 dark:bg-slate-800/60', borderColor: 'border-slate-200 dark:border-slate-700', icon: '📊' },
+  };
+
   const summaryMetricsKey = JSON.stringify({
     totalSales, adSpend: s.totalSpend, adSales, organicSales,
     roas: s.overallRoas, acos: s.overallAcos,
@@ -306,25 +336,39 @@ export default function DashboardOverview() {
     isFetching: geminiFetching,
     refetch: refetchGeminiSummary,
   } = useQuery({
-    queryKey: ["ai_exec_summary", keySlot, account?.id, startDate, endDate, summaryMetricsKey],
-    queryFn: async () => {
-      const prompt = `You are an expert Amazon PPC/e-commerce analyst. Write exactly 4 short, punchy executive-summary bullet points for a seller dashboard, based ONLY on the real metrics below for "${account?.name}" (currency ${currency}) for the period ${startDate} to ${endDate}. Each bullet must be one plain sentence, no markdown, no bullet symbols, no numbering — just plain text, one bullet per line. Reference specific numbers from the data. Prioritize what changed, what's working best, and what needs urgent action.
+    queryKey: ["ai_exec_summary_v2", keySlot, account?.id, startDate, endDate, summaryMetricsKey],
+    queryFn: async (): Promise<SummaryItem[]> => {
+      const prompt = `You are an expert Amazon PPC & e-commerce analyst. Analyse the metrics below for "${account?.name}" (currency ${currency}) for ${startDate} to ${endDate}.
+
+Write exactly 6 insight lines. Each line MUST start with one of these exact tags followed by a colon:
+[WIN]: something that is working well — cite a specific number
+[ALERT]: something critical that needs immediate attention — cite a specific number
+[OPPORTUNITY]: an area with clear upside potential — be specific
+[ACTION]: a concrete step the seller should take right now
+
+Rules: plain text only, no markdown, no bullet symbols, one tag+sentence per line. Reference real numbers from the data. Be direct and specific — no generic advice.
 
 Metrics:
 - Total Sales (retail + ads): ${cur(totalSales, currency)}
 - Ad Spend: ${cur(s.totalSpend || 0, currency)}
-- Ad Sales: ${cur(adSales, currency)}
+- Ad Sales (attributed): ${cur(adSales, currency)}
 - Organic Sales: ${cur(organicSales, currency)}
+- Organic Share: ${totalSales > 0 ? Math.round((organicSales / totalSales) * 100) : 0}%
 - Overall ROAS: ${fx(s.overallRoas)}x
 - Overall ACOS: ${pct(s.overallAcos)}
-- ACOS trend within period: ${acosSeries.length >= 2 ? `${acosStart.toFixed(0)}% -> ${acosEnd.toFixed(0)}%` : "not enough data yet"}
-- Latest day's sales vs period average: ${latestDayDeltaPct != null ? `${latestDayDeltaPct >= 0 ? "+" : ""}${latestDayDeltaPct.toFixed(0)}%` : "not enough data yet"}
-- Top campaign by spend: ${topCampaign ? `"${topCampaign.campaignName}" — ${cur(topCampaign.spend, currency)} spend, ${fx(topCampaign.roas || 0)}x ROAS` : "no active campaigns"}
-- Campaigns overspending (ACOS > 50%): ${downCampaigns.length}${downCampaigns[0] ? ` (worst: "${downCampaigns[0].campaignName}")` : ""}
-- Search terms with spend but zero sales: ${wastedTerms.length}
-- Products low on stock (<=10 units): ${lowInventory.length}${criticalLowStock ? ` (most critical: "${(criticalLowStock.itemName || "").substring(0, 40)}", ${criticalLowStock.totalQty} units left)` : ""}
+- TACOS: ${pct(tacos)}
+- CTR: ${pct(ctr)} | CPC: ${cur(cpc, currency)} | CVR: ${pct(cvr)}
+- ACOS trend this period: ${acosSeries.length >= 2 ? `${acosStart.toFixed(0)}% → ${acosEnd.toFixed(0)}%` : 'not enough data'}
+- Latest day vs period avg: ${latestDayDeltaPct != null ? `${latestDayDeltaPct >= 0 ? '+' : ''}${latestDayDeltaPct.toFixed(0)}%` : 'not enough data'}
+- Active campaigns: ${activeCampaigns} | Paused: ${pausedCampaigns}
+- Top campaign: ${topCampaign ? `"${topCampaign.campaignName}" — ${cur(topCampaign.spend, currency)} spend, ${fx(topCampaign.roas || 0)}x ROAS` : 'none'}
+- Campaigns with ACOS >50%: ${downCampaigns.length}${downCampaigns[0] ? ` (worst: "${downCampaigns[0].campaignName}", ${pct(downCampaigns[0].acos)})` : ''}
+- Wasted search terms (spend, 0 sales): ${wastedTerms.length}
+- Products low on stock (≤10 units): ${lowInventory.length}${criticalLowStock ? ` (most critical: "${(criticalLowStock.itemName || '').substring(0, 40)}", ${criticalLowStock.totalQty} units)` : ''}
+- Total units ordered: ${num(totalUnits)}
+- Return rate: ${returnRatePct.toFixed(1)}%
 
-Write the 4 bullets now, one per line:`;
+Write 6 tagged insight lines now:`;
 
       const response = await fetch("/api/gemini-insights", {
         method: "POST",
@@ -336,17 +380,70 @@ Write the 4 bullets now, one per line:`;
 
       const lines: string[] = (resData.text || "")
         .split("\n")
-        .map((l: string) => l.replace(/^[\s*\-\d.•]+/, "").trim())
+        .map((l: string) => l.trim())
         .filter((l: string) => l.length > 0);
-      if (!lines.length) throw new Error("Gemini returned no insights");
-      return lines.slice(0, 5);
+
+      const parsed: SummaryItem[] = lines.map((line) => {
+        const match = line.match(/^\[?(WIN|ALERT|OPPORTUNITY|ACTION)\]?[:\s]+(.+)/i);
+        if (match) return { tag: match[1].toUpperCase(), text: match[2].trim() };
+        const clean = line.replace(/^[\s*\-\d.•\[\]]+/, "").trim();
+        return { tag: 'INSIGHT', text: clean };
+      }).filter(item => item.text.length > 0);
+
+      if (!parsed.length) throw new Error("Gemini returned no insights");
+      return parsed.slice(0, 6);
     },
     enabled: !!account,
     staleTime: 10 * 60 * 1000,
     retry: false,
   });
 
-  const finalSummaryPoints = geminiSummary && geminiSummary.length > 0 ? geminiSummary : executiveSummaryPoints;
+  // Smart rule-based fallback — always meaningful, uses real numbers, never says "not enough data"
+  const orgPct = totalSales > 0 ? Math.round((organicSales / totalSales) * 100) : 0;
+  const fallbackSummaryItems: SummaryItem[] = [
+    // 1. ACOS health
+    s.overallAcos > 0
+      ? s.overallAcos > 40
+          ? { tag: 'ALERT',  text: `ACOS is at ${pct(s.overallAcos)}, well above the 40% healthy benchmark — pause high-ACOS campaigns and reduce bids immediately to stop budget drain.` }
+          : { tag: 'WIN',    text: `ACOS is healthy at ${pct(s.overallAcos)}, below the 40% benchmark — campaigns are spending efficiently with good cost-of-sales control.` }
+      : { tag: 'INSIGHT', text: 'No ACOS data available — ensure ad campaigns are active and reporting.' },
+
+    // 2. ROAS
+    s.overallRoas > 0
+      ? s.overallRoas >= 2
+          ? { tag: 'WIN',    text: `ROAS of ${fx(s.overallRoas)}x means every rupee spent on ads is returning ${fx(s.overallRoas)}x in attributed sales — strong ad efficiency this period.` }
+          : { tag: 'ALERT',  text: `ROAS of ${fx(s.overallRoas)}x is below the 2x breakeven benchmark — ad spend of ${cur(s.totalSpend || 0, currency)} is not returning enough revenue; reduce bids on underperformers.` }
+      : { tag: 'INSIGHT', text: 'ROAS data unavailable — check campaign settings and attribution window.' },
+
+    // 3. Organic vs Ad split
+    totalSales > 0
+      ? orgPct >= 50
+          ? { tag: 'WIN',         text: `${orgPct}% of ${cur(totalSales, currency)} total sales (${cur(organicSales, currency)}) is organic — strong brand presence is reducing reliance on paid ads.` }
+          : { tag: 'OPPORTUNITY', text: `Only ${orgPct}% of revenue is organic. Strengthen product listings, keyword relevance, and reviews to grow organic share and lower TACOS from ${pct(tacos)}.` }
+      : { tag: 'INSIGHT', text: 'No retail sales data available — upload a sales report to enable organic vs ad analysis.' },
+
+    // 4. Top campaign
+    topCampaign
+      ? topCampaign.roas >= 2
+          ? { tag: 'WIN',    text: `Top campaign "${topCampaign.campaignName.substring(0, 40)}" is your star performer — ${cur(topCampaign.spend, currency)} spend at ${fx(topCampaign.roas)}x ROAS this period.` }
+          : { tag: 'ACTION', text: `Top-spend campaign "${topCampaign.campaignName.substring(0, 40)}" is consuming ${cur(topCampaign.spend, currency)} but only returning ${fx(topCampaign.roas)}x ROAS — lower bids or pause underperforming ad groups.` }
+      : { tag: 'INSIGHT', text: 'No active campaigns found — start a Sponsored Products campaign to grow attributed sales.' },
+
+    // 5. Wasted search terms
+    wastedTerms.length > 0
+      ? { tag: 'ACTION', text: `${wastedTerms.length} search term${wastedTerms.length > 1 ? 's are' : ' is'} consuming ad budget with zero sales — add these as negative keywords immediately to stop wasted spend.` }
+      : { tag: 'WIN',    text: 'No wasted search terms detected — every term is driving conversions and keyword targeting is clean.' },
+
+    // 6. Inventory / overspending campaigns
+    criticalLowStock
+      ? { tag: 'ALERT',  text: `Stock alert: "${(criticalLowStock.itemName || '').substring(0, 45)}" has only ${criticalLowStock.totalQty} units left — restock now to avoid losing sales momentum and ranking.` }
+      : downCampaigns.length > 0
+          ? { tag: 'ACTION', text: `${downCampaigns.length} campaign${downCampaigns.length > 1 ? 's are' : ' is'} critically overspending with ACOS above 50% — review bids on "${downCampaigns[0]?.campaignName?.substring(0, 35) || 'top offender'}" first.` }
+          : { tag: 'WIN',    text: 'All products are well-stocked and no campaigns are critically overspending — overall account health looks good.' },
+  ];
+
+  const finalSummaryItems: SummaryItem[] = geminiSummary && geminiSummary.length > 0 ? geminiSummary : fallbackSummaryItems;
+  const finalSummaryPoints = finalSummaryItems.map(i => i.text); // keep backward compat
 
   if (contextLoading || cpLoading) {
     return (
@@ -378,7 +475,12 @@ Write the 4 bullets now, one per line:`;
 
         <div className="flex-1 flex justify-center">
           <h2 className="text-lg font-black text-slate-800 dark:text-slate-100 flex items-center gap-2">
-            Good Morning, {account?.name || "Barm Account"}! <span className="text-xl">☀️</span>
+            {(() => {
+              const hour = new Date().getHours();
+              if (hour < 12) return <>Good Morning, {account?.name || "Barm Account"}! <span className="text-xl">🌅</span></>;
+              if (hour < 17) return <>Good Afternoon, {account?.name || "Barm Account"}! <span className="text-xl">☀️</span></>;
+              return <>Good Evening, {account?.name || "Barm Account"}! <span className="text-xl">🌙</span></>;
+            })()}
           </h2>
         </div>
 
@@ -472,38 +574,90 @@ Write the 4 bullets now, one per line:`;
           </div>
         </div>
         <div className="xl:col-span-1 flex flex-col h-full gap-4">
-          <div className="glass rounded-3xl border border-border p-6 flex-1 flex flex-col shadow-sm relative overflow-hidden">
-            <div className="flex items-center gap-2 mb-4 relative z-10">
-              <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/30">
-                <Sparkles className="w-3.5 h-3.5 text-white" />
-              </div>
-              <h3 className="font-extrabold text-[16px] tracking-tight bg-gradient-to-r from-indigo-600 to-purple-600 dark:from-indigo-400 dark:to-purple-400 bg-clip-text text-transparent">
-                AI Executive Summary
-              </h3>
-            </div>
-            <div className="flex-1 space-y-3 relative z-10 overflow-y-auto pr-1 custom-scrollbar">
-              {finalSummaryPoints.map((point, i) => (
-                <div key={i} className={cn("flex gap-2.5 items-start p-3 rounded-2xl bg-muted/40 transition-opacity", geminiFetching && "opacity-50")}>
-                  <div className="mt-1.5 w-1.5 h-1.5 rounded-full bg-indigo-500 flex-shrink-0" />
-                  <p className="text-[12px] leading-relaxed font-semibold text-slate-700 dark:text-slate-300">
-                    {point}
-                  </p>
+          <div className="glass rounded-3xl border border-border p-5 flex-1 flex flex-col shadow-sm relative overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between mb-3 relative z-10">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/30">
+                  <Sparkles className="w-3.5 h-3.5 text-white" />
                 </div>
-              ))}
+                <h3 className="font-extrabold text-[15px] tracking-tight bg-gradient-to-r from-indigo-600 to-purple-600 dark:from-indigo-400 dark:to-purple-400 bg-clip-text text-transparent">
+                  AI Executive Summary
+                </h3>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => refetchGeminiSummary()}
+                  disabled={geminiFetching}
+                  title="Regenerate with Gemini"
+                  className="text-slate-400 hover:text-indigo-500 transition-colors disabled:opacity-50"
+                >
+                  <RotateCcw className={cn("w-3.5 h-3.5", geminiFetching && "animate-spin")} />
+                </button>
+                <Link href="/dashboard/ai" className="flex items-center gap-1 text-[10px] font-black text-indigo-500 hover:text-indigo-600 transition-colors">
+                  Full AI <ChevronRight className="w-3 h-3" />
+                </Link>
+              </div>
             </div>
-            <div className="mt-3 pt-3 border-t border-slate-200/50 dark:border-slate-800/50 flex items-center justify-between">
-              <span className="text-[9px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-1">
-                <Sparkles className="w-3 h-3" />
-                {geminiFetching ? "GENERATING WITH GEMINI…" : geminiSummary?.length ? "AUTO-GENERATED BY GEMINI" : "RULE-BASED SUMMARY"}
-              </span>
-              <button
-                onClick={() => refetchGeminiSummary()}
-                disabled={geminiFetching}
-                title="Regenerate with Gemini"
-                className="text-slate-400 hover:text-indigo-500 transition-colors disabled:opacity-50"
-              >
-                <RotateCcw className={cn("w-3 h-3", geminiFetching && "animate-spin")} />
-              </button>
+
+            {/* Insights */}
+            <div className="flex-1 space-y-2 relative z-10 overflow-y-auto pr-1 custom-scrollbar">
+              {geminiFetching ? (
+                <div className="flex flex-col gap-2">
+                  {[1,2,3,4,5,6].map(i => (
+                    <div key={i} className="h-12 rounded-xl bg-muted/40 animate-pulse" />
+                  ))}
+                </div>
+              ) : (
+                finalSummaryItems.map((item, i) => {
+                  const cfg = SUMMARY_TAG_CONFIG[item.tag] || SUMMARY_TAG_CONFIG.INSIGHT;
+                  return (
+                    <div key={i} className={cn("flex gap-2.5 items-start p-2.5 rounded-xl border", cfg.bgColor, cfg.borderColor)}>
+                      <span className="text-base leading-none mt-0.5 flex-shrink-0">{cfg.icon}</span>
+                      <div className="min-w-0">
+                        <span className={cn("text-[9px] font-black uppercase tracking-widest block mb-0.5", cfg.textColor)}>{cfg.label}</span>
+                        <p className="text-[11px] leading-relaxed font-semibold text-slate-700 dark:text-slate-300">{item.text}</p>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Quick Actions — smart links based on detected issues */}
+            <div className="mt-3 pt-3 border-t border-slate-200/50 dark:border-slate-800/50">
+              <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">Quick Actions</p>
+              <div className="flex flex-wrap gap-1.5">
+                <Link href="/dashboard/campaigns"
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors">
+                  <Megaphone className="w-2.5 h-2.5" /> Campaigns
+                </Link>
+                {wastedTerms.length > 0 && (
+                  <Link href="/dashboard/searchterms"
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-orange-50 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400 text-[10px] font-bold border border-orange-200 dark:border-orange-800 hover:bg-orange-100 transition-colors">
+                    <SearchSlash className="w-2.5 h-2.5" /> Neg. Keywords
+                  </Link>
+                )}
+                {lowInventory.length > 0 && (
+                  <Link href="/dashboard/inventory"
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400 text-[10px] font-bold border border-red-200 dark:border-red-800 hover:bg-red-100 transition-colors">
+                    <Package className="w-2.5 h-2.5" /> Restock ({lowInventory.length})
+                  </Link>
+                )}
+                {downCampaigns.length > 0 && (
+                  <Link href="/dashboard/optimization"
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400 text-[10px] font-bold border border-red-200 dark:border-red-800 hover:bg-red-100 transition-colors">
+                    <TrendingDown className="w-2.5 h-2.5" /> Fix ACOS ({downCampaigns.length})
+                  </Link>
+                )}
+                <Link href="/dashboard/ai"
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-[10px] font-bold border border-purple-200 dark:border-purple-800 hover:bg-purple-100 transition-colors">
+                  <Bot className="w-2.5 h-2.5" /> Full AI
+                </Link>
+              </div>
+              <div className="mt-2 flex justify-end">
+                <span className="text-[9px] text-slate-400 font-semibold">{startDate} → {endDate}</span>
+              </div>
             </div>
           </div>
         </div>

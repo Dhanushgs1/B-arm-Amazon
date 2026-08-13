@@ -86,6 +86,18 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
 
   const results: Record<string, any> = {};
 
+  // Campaign history persistence — unconditional, unlike the email sends below: it
+  // writes today's campaign-history row to Supabase (see campaignStateTracker.ts) so
+  // the dashboard can keep showing a campaign as Paused instead of losing it entirely
+  // if a later API pull omits it. Independent of whether this account has any email
+  // toggle on, so it must not be gated behind s.dailySummary etc.
+  results.campaignHistory = await callReportEndpoint(
+    req,
+    "/api/campaign-state-check",
+    { slot, amazon_account_id: acct.amazon_account_id, workspace_id: acct.workspace_id },
+    `[${slot}] Campaign history snapshot`
+  );
+
   // `dailySummary` now means the combined digest. The separate daily report was deleted — it
   // showed only counts of the stockout / bleeding / wasted-term findings (computed by a different
   // one-day heuristic, so its numbers disagreed with the alert emails' 7-day detectors), and the

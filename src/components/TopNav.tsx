@@ -65,7 +65,7 @@ interface TopNavProps {
 }
 
 export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
-  const { loggedInUser, contextLoading } = useDashboard();
+  const { loggedInUser, contextLoading, lastDataDate } = useDashboard();
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [showNotifications, setShowNotifications] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -161,7 +161,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
       <div className="flex-grow" />
 
       {/* Date Range Picker */}
-      <DateRangePicker />
+      <DateRangePicker lastDataDate={lastDataDate || undefined} />
 
       {/* Refresh */}
       <button

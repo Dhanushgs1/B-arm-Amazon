@@ -48,7 +48,11 @@ function formatDisplay(start: string, end: string) {
   return `${fmt(start)} – ${fmt(end)}`;
 }
 
-export function DateRangePicker() {
+interface DateRangePickerProps {
+  lastDataDate?: string;
+}
+
+export function DateRangePicker({ lastDataDate }: DateRangePickerProps) {
   const { startDate, endDate, dateLabel, setDateRange } = useDashboard();
   const [open, setOpen] = useState(false);
   const [selectStart, setSelectStart] = useState<string>(startDate);
@@ -73,21 +77,23 @@ export function DateRangePicker() {
 
   const applyPreset = (preset: typeof PRESETS[0]) => {
     const now = new Date();
+    // Use last data date if available, otherwise use today
+    const endDate = lastDataDate ? parseDate(lastDataDate) : now;
     let start: Date, end: Date;
 
     if (preset.thisMonth) {
       start = new Date(now.getFullYear(), now.getMonth(), 1);
-      end = now;
+      end = endDate;
     } else if (preset.lastMonth) {
       start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
       end = new Date(now.getFullYear(), now.getMonth(), 0);
     } else if (preset.single) {
-      const d = new Date(now);
+      const d = new Date(endDate);
       d.setDate(d.getDate() - 1);
       start = end = d;
     } else {
-      end = now;
-      start = new Date(now);
+      end = endDate;
+      start = new Date(endDate);
       start.setDate(start.getDate() - ((preset.days ?? 0) - 1));
     }
 
