@@ -15,6 +15,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import nodemailer from "nodemailer";
 import { readEmailSettings } from "@/lib/emailSettingsStore";
+import { internalFetch } from "@/lib/internalFetch";
 
 const KEY_SLOTS = ["A", "B"] as const;
 
@@ -26,7 +27,7 @@ function baseUrl(req: NextApiRequest) {
 
 async function callReportEndpoint(req: NextApiRequest, pathname: string, body: Record<string, any>, label: string) {
   try {
-    const r = await fetch(`${baseUrl(req)}${pathname}`, {
+    const r = await internalFetch(`${baseUrl(req)}${pathname}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

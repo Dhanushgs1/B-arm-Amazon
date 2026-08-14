@@ -10,6 +10,7 @@ import { resolveSellerMateKey } from "@/lib/adAlerts";
 import { buildWeeklySalesWorkbookFromHistorical } from "@/lib/weeklySalesExport";
 import { fetchAllRows } from "@/lib/historicalAnalysisReportExport";
 import { categorizeTitle, resolveProductName } from "@/lib/categoryMap";
+import { internalFetch } from "@/lib/internalFetch";
 import * as XLSX from "xlsx-js-style";
 
 const SELLERMATE_BASE_URL = "https://api.sellermate.ai/public/v1/tools";
@@ -214,7 +215,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (send && to) {
       const proto = (req.headers["x-forwarded-proto"] as string) || "http";
       const host = req.headers.host;
-      const r = await fetch(`${proto}://${host}/api/send-email`, {
+      const r = await internalFetch(`${proto}://${host}/api/send-email`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: "weeklyReport", to, cc, data: emailData, attachments }),
       });

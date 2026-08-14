@@ -6,6 +6,7 @@
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import { findStockoutAdSpend, resolveSellerMateKey } from "@/lib/stockout";
+import { internalFetch } from "@/lib/internalFetch";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
@@ -37,7 +38,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (send && to && items.length > 0) {
       const proto = (req.headers["x-forwarded-proto"] as string) || "http";
       const host = req.headers.host;
-      const r = await fetch(`${proto}://${host}/api/send-email`, {
+      const r = await internalFetch(`${proto}://${host}/api/send-email`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: "stockout", to, cc, data: { items, currency } }),
