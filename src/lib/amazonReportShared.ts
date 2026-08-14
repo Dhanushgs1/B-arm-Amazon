@@ -7,13 +7,34 @@ import { supabasePublic } from "@/lib/amazonReportUpload";
 // fcToState already flow the other way, analysisReportExport.ts -> here would
 // have made that a cycle).
 
+/**
+ * Page through a whole table.
+ *
+ * `orderBy` is the column (or columns) used to make pagination deterministic;
+ * it must be UNIQUE across the rows being fetched. Defaults to "id", which
+ * every barm_* upload table has — except the two hand-maintained mapping
+ * tables, which are keyed by their natural columns instead. Passing a column
+ * that doesn't exist makes PostgREST reject the request outright ("column ...
+ * does not exist"), and because callers fetch inside a Promise.all that
+ * rejection takes the entire report down — so the default is not safe to
+ * assume blindly.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function fetchAllRows(table: string, apply: (q: any) => any): Promise<any[]> {
+export async function fetchAllRows(table: string, apply: (q: any) => any, orderBy: string | string[] = "id"): Promise<any[]> {
   const all: unknown[] = [];
   const PAGE = 1000;
+  const orderCols = Array.isArray(orderBy) ? orderBy : [orderBy];
   let from = 0;
   for (let i = 0; i < 200; i++) {
-    const { data, error } = await apply(supabasePublic.from(table).select("*")).range(from, from + PAGE - 1);
+    // .range() pagination is only stable when paired with .order() on a
+    // unique column — without it, Postgres/PostgREST doesn't guarantee the
+    // same row order across separate paginated requests, so pages taken more
+    // than ~1000 rows into a table can silently skip and re-return rows. That
+    // surfaced as corrupted week-over-week totals on tables that cross the
+    // 1000-row page boundary.
+    let q = apply(supabasePublic.from(table).select("*"));
+    for (const col of orderCols) q = q.order(col, { ascending: true });
+    const { data, error } = await q.range(from, from + PAGE - 1);
     if (error) throw new Error(`Fetch ${table} failed: ${error.message}`);
     const rows = data || [];
     all.push(...rows);

@@ -62,12 +62,12 @@ export function FlipkartOverview() {
 
       {!hasAnyData && (
         <div className="rounded-2xl border border-amber-300/40 bg-amber-50 dark:bg-amber-950/20 px-4 py-3 text-xs font-semibold text-amber-700 dark:text-amber-300 flex items-center justify-between gap-3 flex-wrap">
-          <span>No {accountLabel} Flipkart data found for this date range yet. Upload data from the Flipkart Hub, or pick a different range.</span>
+          <span>No {accountLabel} Flipkart data found for this date range yet. Upload data on the Upload page, or pick a different range.</span>
           <button
-            onClick={() => router.push("/dashboard/flipkart/hub")}
+            onClick={() => router.push("/dashboard/flipkart/upload")}
             className="flex items-center gap-1.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-700 dark:text-amber-300 px-3 py-1.5 rounded-full text-[11px] font-bold transition-all flex-shrink-0"
           >
-            Open Flipkart Hub <ArrowRight className="w-3 h-3" />
+            Go to Upload <ArrowRight className="w-3 h-3" />
           </button>
         </div>
       )}

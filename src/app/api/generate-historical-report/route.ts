@@ -4,7 +4,7 @@ import { exportHistoricalAnalysisReport } from '@/lib/historicalAnalysisReportEx
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { accountId, workspaceId, accountName, keySlot, endDate } = body;
+    const { accountId, workspaceId, accountName, keySlot, startDate, endDate } = body;
 
     if (!keySlot) {
       return NextResponse.json(
@@ -13,7 +13,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Generate the report
+    if (startDate && endDate && startDate > endDate) {
+      return NextResponse.json(
+        { error: `startDate (${startDate}) is after endDate (${endDate})` },
+        { status: 400 }
+      );
+    }
+
+    // Generate the report — endDate only, the report is a fixed trailing 30/7-day
+    // window ending there (see the function's own signature); startDate is validated
+    // above but not passed through, since the function has no use for it.
     const result = await exportHistoricalAnalysisReport({
       account: {
         id: accountId,

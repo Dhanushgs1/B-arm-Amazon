@@ -71,6 +71,47 @@ export function fcToState(code: string): string {
   return byPrefix ? byPrefix[1] : up;
 }
 
+// Transcription of the IFS formula in the "Area" column of the seller's own
+// "Inventory ledger" sheet — no prefix fallback, no extra FCs, anything
+// unlisted becomes "UNKNOWN", exactly as their formula's TRUE branch does.
+// Used ONLY where this workbook has to reconcile 1:1 with their manual pivot
+// (the FBA status sheet, the Analysis report's FBA columns, and the raw
+// Inventory ledger mirror). Everywhere else uses fcToState above.
+//
+// This map is CITY-grained, matching the labels their formula already emits
+// (BANGALORE, HYDERABAD, JAIPUR, LUCKNOW, DELHI). fcToState is STATE-grained
+// for the same codes, on purpose — it is joined against order ship_state, which
+// carries real state names (GUJARAT, HARYANA, ...). So the two disagreeing is
+// correct, not a bug:
+//   DEL4/DEL5 -> DELHI here, HARYANA in fcToState (they are Haryana FCs).
+//   AMD2/AMD3/SAMD -> AHMEDABAD here, GUJARAT in fcToState.
+//
+// The one deliberate deviation from their formula: it never listed the
+// Ahmedabad FCs at all, so AMD stock fell through to UNKNOWN in their pivot.
+// Dhanush confirmed 08-08-2026 that AMD means Ahmedabad, so it is labelled
+// rather than left unknown. Unit counts are unaffected — same bucket, real name.
+const FC_AREA_MAP_MANUAL: Record<string, string> = {
+  BLR4: "BANGALORE", BLR7: "BANGALORE", BLR8: "BANGALORE",
+  BOM5: "MAHARASHTRA", BOM7: "MAHARASHTRA", ISK3: "MAHARASHTRA", NAX1: "MAHARASHTRA", PNQ3: "MAHARASHTRA",
+  CCX1: "WEST BENGAL", CCX2: "WEST BENGAL",
+  CJB1: "TAMIL NADU", MAA4: "TAMIL NADU",
+  DED3: "DELHI", DED4: "DELHI", DED5: "DELHI", DEL2: "DELHI", DEL8: "DELHI",
+  DEL4: "DELHI", DEL5: "DELHI",
+  HYD3: "HYDERABAD", HYD8: "HYDERABAD",
+  LKO1: "LUCKNOW",
+  JPX1: "JAIPUR", JPX2: "JAIPUR",
+  GAX1: "ASSAM",
+  ATX1: "PUNJAB", LDX1: "PUNJAB",
+  BBX1: "ODISHA",
+  AMD2: "AHMEDABAD", AMD3: "AHMEDABAD", SAMD: "AHMEDABAD",
+  VSNC: "VSNC",
+};
+
+export function fcToAreaManual(code: string): string {
+  if (!code) return "UNKNOWN";
+  return FC_AREA_MAP_MANUAL[code.toUpperCase()] || "UNKNOWN";
+}
+
 // Local-time YYYY-MM-DD, matching DashboardContext.getLocalDateStr so the
 // windows line up with the rest of the dashboard (no UTC timezone shift).
 function localDateStr(d: Date) {

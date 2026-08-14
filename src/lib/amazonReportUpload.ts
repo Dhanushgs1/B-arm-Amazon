@@ -184,9 +184,11 @@ function parseDDMonYY(v: string): string | null {
   return `${year}-${mm}-${m[1].padStart(2, "0")}`;
 }
 
-// "07/22/2026" -> "2026-07-22" (Inventory ledger "Date" column, US MM/DD/YYYY)
+// "07/22/2026" or "08-09-2026" -> "2026-07-22" / "2026-08-09" (Inventory
+// ledger "Date" column, US MM/DD/YYYY — Amazon's export has been seen with
+// both "/" and "-" separators).
 function parseMDY(v: string): string | null {
-  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(v.trim());
+  const m = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(v.trim());
   if (!m) return null;
   return `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}`;
 }
@@ -651,9 +653,14 @@ export async function fetchReportDataInfo(type: UploadReportType): Promise<Repor
     return { rowCount: count || 0, minDate: null, maxDate: null };
   }
 
+  // Rows with no date yet (e.g. an SF/AM return not picked up, so its
+  // pickup/return-request date is still blank) must be excluded here —
+  // Postgres sorts NULLs FIRST on a descending order by default, so without
+  // this filter the "max date" query returns one of those blank rows instead
+  // of the latest real date, showing an empty end date in the upload card.
   const [{ data: minRows, count }, { data: maxRows }] = await Promise.all([
-    supabasePublic.from(table).select(dateCol, { count: "exact" }).order(dateCol, { ascending: true }).limit(1),
-    supabasePublic.from(table).select(dateCol).order(dateCol, { ascending: false }).limit(1),
+    supabasePublic.from(table).select(dateCol, { count: "exact" }).not(dateCol, "is", null).order(dateCol, { ascending: true }).limit(1),
+    supabasePublic.from(table).select(dateCol).not(dateCol, "is", null).order(dateCol, { ascending: false }).limit(1),
   ]);
   const minDate = (minRows?.[0] as Record<string, string> | undefined)?.[dateCol] ?? null;
   const maxDate = (maxRows?.[0] as Record<string, string> | undefined)?.[dateCol] ?? null;

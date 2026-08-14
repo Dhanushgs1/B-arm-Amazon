@@ -50,8 +50,8 @@ const NAV_SECTIONS: SidebarNavSection[] = [
     label: "Workspace",
     items: [
       { id: "overview", label: "Overview", icon: LayoutDashboard },
-      { id: "upload", label: "Upload Reports", icon: UploadCloud },
-      { id: "reports", label: "Reports", icon: BarChart3 },
+      { id: "upload", label: "Upload", icon: UploadCloud },
+      { id: "reports", label: "Download", icon: BarChart3 },
     ],
   },
   {
@@ -94,8 +94,8 @@ function marketplaceNavSections(marketplace: "flipkart"): SidebarNavSection[] {
       label: `${mName} Workspace`,
       items: [
         { id: "overview", label: "Overview", icon: LayoutDashboard, path: `/dashboard/${marketplace}` },
-        { id: "hub", label: "Upload Data", icon: UploadCloud, path: `/dashboard/${marketplace}/hub` },
-        { id: "reports", label: "Reports", icon: BarChart3, path: `/dashboard/${marketplace}/reports` },
+        { id: "upload", label: "Upload", icon: UploadCloud, path: `/dashboard/${marketplace}/upload` },
+        { id: "reports", label: "Download", icon: BarChart3, path: `/dashboard/${marketplace}/reports` },
       ],
     },
     {

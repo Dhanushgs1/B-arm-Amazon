@@ -9,7 +9,7 @@ import { KPICard } from "@/components/KPICard";
 import { PageHero } from "@/components/PageHero";
 import { QueryErrorState } from "@/components/QueryErrorState";
 import { HourlyHeatmap } from "@/components/HourlyHeatmap";
-import { Loader2, Ban, Tag as TagIcon, CalendarClock, Sparkles, TrendingDown, Rocket, Moon, ChevronDown } from "lucide-react";
+import { Loader2, Ban, Tag as TagIcon, CalendarClock, Sparkles, TrendingDown, Rocket, Moon, ChevronDown, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const cur = (val: number, currency?: string) => {
@@ -39,6 +39,18 @@ export default function OptimizationPage() {
   const { keySlot, startDate, endDate, account, contextLoading } = useDashboard();
   const currency = account?.currency;
   const [expandedAction, setExpandedAction] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  // Copy an action's rows as tab-separated text — pastes straight into Excel/
+  // Google Sheets or most bulk-upload UIs. No mutation call — this dashboard
+  // is deliberately read-only against the ads account (see api/tool.js).
+  const copyActionList = (a: { id: string; detailCols: string[]; items: string[][] }) => {
+    const tsv = [a.detailCols, ...a.items].map((row) => row.join("\t")).join("\n");
+    navigator.clipboard.writeText(tsv).then(() => {
+      setCopiedId(a.id);
+      setTimeout(() => setCopiedId((c) => (c === a.id ? null : c)), 1800);
+    });
+  };
 
   const baseArgs = {
     amazon_account_id: account?.id,
@@ -421,9 +433,20 @@ export default function OptimizationPage() {
 
                       {isOpen && (
                         <div className="px-4 pb-4">
-                          <p className="text-[11px] font-bold text-muted-foreground mb-2">
-                            👉 {a.howTo}
-                          </p>
+                          <div className="flex items-start justify-between gap-3 mb-2">
+                            <p className="text-[11px] font-bold text-muted-foreground">
+                              👉 {a.howTo}
+                            </p>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); copyActionList(a); }}
+                              className="flex-shrink-0 flex items-center gap-1.5 text-[11px] font-extrabold px-2.5 py-1 rounded-full bg-white/70 dark:bg-black/30 border border-current/20 hover:bg-white dark:hover:bg-black/50 transition-colors"
+                              title="Copy this list — paste into Excel/Sheets or your bulk-upload sheet"
+                            >
+                              {copiedId === a.id
+                                ? <><Check className="w-3 h-3" /> Copied</>
+                                : <><Copy className="w-3 h-3" /> Copy list</>}
+                            </button>
+                          </div>
                           <div className="rounded-xl border border-current/15 bg-white/60 dark:bg-black/20 overflow-x-auto max-h-[340px] overflow-y-auto">
                             <table className="w-full text-left text-xs whitespace-nowrap">
                               <thead className="sticky top-0 bg-white/90 dark:bg-slate-950/90 backdrop-blur-sm">

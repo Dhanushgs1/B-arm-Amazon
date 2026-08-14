@@ -176,7 +176,7 @@ export default function KeywordsPage() {
       label: "Ad Group",
       sortable: true,
       render: (val: string) => (
-        <span className="text-xs font-semibold text-muted-foreground bg-muted px-2 py-0.5 rounded-md block max-w-[140px] truncate" title={val}>
+        <span className="text-xs font-semibold text-muted-foreground bg-muted px-2 py-0.5 rounded-md block max-w-[200px] whitespace-normal break-words leading-tight" title={val}>
           {val || "—"}
         </span>
       ),
@@ -388,8 +388,8 @@ export default function KeywordsPage() {
                 </div>
               </div>
               <div className="flex flex-wrap gap-2">
-                {negativeCandidates.slice(0, 12).map((k: any) => (
-                  <span key={k.targetingValue + k.campaignName} className="flex items-center gap-2 bg-amber-500/5 border border-amber-500/20 text-amber-700 dark:text-amber-400 px-3 py-1.5 rounded-full text-xs font-bold" title={`${k.clicks} clicks · ${cur(k.spend, currency)} wasted`}>
+                {negativeCandidates.slice(0, 12).map((k: any, i: number) => (
+                  <span key={`${k.targetingValue}-${k.campaignName}-${i}`} className="flex items-center gap-2 bg-amber-500/5 border border-amber-500/20 text-amber-700 dark:text-amber-400 px-3 py-1.5 rounded-full text-xs font-bold" title={`${k.clicks} clicks · ${cur(k.spend, currency)} wasted`}>
                     <Ban className="w-3 h-3" /> {k.targetingValue}
                     <span className="text-[10px] text-muted-foreground font-extrabold">{cur(k.spend, currency)}</span>
                   </span>

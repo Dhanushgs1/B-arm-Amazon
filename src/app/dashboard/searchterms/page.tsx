@@ -90,7 +90,7 @@ export default function SearchTermsPage() {
       label: "Ad Group",
       sortable: true,
       render: (val: string) => (
-        <span className="text-xs font-semibold text-muted-foreground bg-muted px-2 py-0.5 rounded-md block max-w-[140px] truncate" title={val}>
+        <span className="text-xs font-semibold text-muted-foreground bg-muted px-2 py-0.5 rounded-md block max-w-[200px] whitespace-normal break-words leading-tight" title={val}>
           {val || "—"}
         </span>
       ),
