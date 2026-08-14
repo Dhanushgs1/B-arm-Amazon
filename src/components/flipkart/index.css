@@ -1,0 +1,662 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300;0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;0,14..32,800;0,14..32,900;1,14..32,400&family=Outfit:wght@300;400;500;600;700;800;900&display=swap');
+
+@import "tailwindcss";
+
+/* ============================================================
+   DESIGN TOKENS — Single source of truth
+   ============================================================ */
+:root {
+  /* Brand */
+  --brand:        #059669;   /* emerald-600 — slightly deeper, better contrast */
+  --brand-light:  #d1fae5;   /* emerald-100 */
+  --brand-mid:    #10B981;   /* emerald-500 — accents, icons */
+  --brand-dark:   #047857;   /* emerald-700 — hover states */
+  --brand-glow:   rgba(5, 150, 105, 0.12);
+
+  /* Semantic */
+  --color-success: #16a34a;
+  --color-danger:  #dc2626;
+  --color-warning: #d97706;
+  --color-info:    #2563eb;
+
+  --bg-success:    #f0fdf4;
+  --bg-danger:     #fef2f2;
+  --bg-warning:    #fffbeb;
+  --bg-info:       #eff6ff;
+
+  --border-success: #bbf7d0;
+  --border-danger:  #fecaca;
+  --border-warning: #fde68a;
+  --border-info:    #bfdbfe;
+
+  /* Surfaces — warm-neutral, not cold slate */
+  --surface-page:   #f5f6f8;
+  --surface-card:   #ffffff;
+  --surface-raised: #ffffff;
+  --surface-subtle: #f8f9fa;
+  --surface-muted:  #f1f2f4;
+
+  /* Borders */
+  --border-default: rgba(0, 0, 0, 0.08);
+  --border-strong:  rgba(0, 0, 0, 0.13);
+  --border-muted:   rgba(0, 0, 0, 0.05);
+
+  /* Text */
+  --text-primary:   #111827;
+  --text-secondary: #4b5563;
+  --text-muted:     #9ca3af;
+  --text-inverse:   #ffffff;
+
+  /* Shadows — refined, single-source */
+  --shadow-xs:  0 1px 2px rgba(0,0,0,0.05);
+  --shadow-sm:  0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md:  0 4px 6px rgba(0,0,0,0.04), 0 2px 4px rgba(0,0,0,0.04);
+  --shadow-lg:  0 10px 15px rgba(0,0,0,0.04), 0 4px 6px rgba(0,0,0,0.03);
+  --shadow-card: 0 0 0 1px rgba(0,0,0,0.06), 0 2px 8px rgba(0,0,0,0.04);
+
+  /* Spacing & Shape */
+  --radius-sm:  8px;
+  --radius-md:  12px;
+  --radius-lg:  16px;
+  --radius-xl:  20px;
+  --radius-full: 9999px;
+
+  /* Layout */
+  --sidebar-width:     220px;
+  --sidebar-collapsed: 60px;
+  --topbar-height:     58px;
+
+  /* Typography */
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-feature-settings: 'cv02','cv03','cv04','cv11';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ============================================================
+   TAILWIND THEME BRIDGE
+   ============================================================ */
+@theme {
+  --color-brand-green: #059669;
+  --color-brand-red:   #dc2626;
+  --color-brand-amber: #d97706;
+  --color-brand-blue:  #2563eb;
+  /* Removed: olive, gold — not used, hurt palette coherence */
+}
+
+/* ============================================================
+   BASE
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--surface-page);
+  color: var(--text-primary);
+  min-height: 100vh;
+  line-height: 1.5;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Outfit', sans-serif;
+  letter-spacing: -0.025em;
+  line-height: 1.25;
+}
+
+/* ============================================================
+   SCROLLBAR
+   ============================================================ */
+::-webkit-scrollbar          { width: 4px; height: 4px; }
+::-webkit-scrollbar-track    { background: transparent; }
+::-webkit-scrollbar-thumb    { background: rgba(0,0,0,0.15); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.25); }
+.scrollbar-none::-webkit-scrollbar { display: none; }
+.scrollbar-none { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* ============================================================
+   LAYOUT
+   ============================================================ */
+aside { will-change: width; }
+
+@media (max-width: 768px) {
+  html, body, #root { max-width: 100vw !important; overflow-x: hidden !important; }
+  .overflow-x-auto { -webkit-overflow-scrolling: touch; }
+}
+
+@media (min-width: 768px) {
+  .group:hover .sidebar-tooltip { opacity: 1; pointer-events: none; }
+}
+
+/* ============================================================
+   BRAND COLOR UTILITIES
+   Keep all 4. Olive & Gold removed — use semantic colors instead.
+   ============================================================ */
+.bg-brand-green  { background-color: var(--brand) !important; }
+.bg-brand-red    { background-color: var(--color-danger) !important; }
+.bg-brand-amber  { background-color: var(--color-warning) !important; }
+.bg-brand-blue   { background-color: var(--color-info) !important; }
+
+.text-brand-green  { color: var(--brand-mid) !important; }
+.text-brand-red    { color: var(--color-danger) !important; }
+.text-brand-amber  { color: var(--color-warning) !important; }
+.text-brand-blue   { color: var(--color-info) !important; }
+
+.border-brand-green  { border-color: var(--brand-mid) !important; }
+.border-brand-red    { border-color: var(--color-danger) !important; }
+.border-brand-amber  { border-color: var(--color-warning) !important; }
+.border-brand-blue   { border-color: var(--color-info) !important; }
+
+/* backward-compat stubs — olive & gold now map to amber */
+.bg-brand-olive, .bg-brand-gold   { background-color: var(--color-warning) !important; }
+.text-brand-olive, .text-brand-gold { color: var(--color-warning) !important; }
+.border-brand-olive, .border-brand-gold { border-color: var(--border-warning) !important; }
+
+/* ============================================================
+   TOPBAR
+   ============================================================ */
+.topbar {
+  height: var(--topbar-height);
+  background: rgba(255, 255, 255, 0.97);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--border-default);
+  box-shadow: var(--shadow-xs);
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+
+/* ============================================================
+   SIDEBAR
+   ============================================================ */
+.sidebar-active-glow {
+  background: var(--brand-light) !important;
+}
+
+/* ============================================================
+   KPI CARDS  — Premium elevation, single system
+   ============================================================ */
+.kpi-card {
+  position: relative;
+  background: var(--surface-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: 22px 20px 18px;
+  box-shadow: var(--shadow-card);
+  transition: box-shadow 0.18s ease, transform 0.18s ease;
+  overflow: hidden;
+}
+
+/* Subtle top-accent strip using brand color */
+.kpi-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--brand), var(--brand-mid));
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+.kpi-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+
+.kpi-card:hover::before {
+  opacity: 1;
+}
+
+.kpi-number {
+  font-family: 'Outfit', sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  line-height: 1;
+  color: var(--text-primary);
+}
+
+/* ============================================================
+   DATA CARDS / PANELS
+   ============================================================ */
+.data-card {
+  background: var(--surface-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.data-card-header {
+  background: var(--surface-subtle);
+  border-bottom: 1px solid var(--border-muted);
+  padding: 13px 18px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ============================================================
+   TABLES — Clean, minimal, high-readability
+   ============================================================ */
+.dashboard-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+}
+
+.dashboard-table thead tr th {
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-strong);
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.dashboard-table tbody tr {
+  transition: background-color 0.1s ease;
+}
+
+.dashboard-table tbody tr:hover {
+  background: var(--brand-glow) !important;
+}
+
+.dashboard-table tbody td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-muted);
+  color: var(--text-secondary);
+  vertical-align: middle;
+}
+
+/* Table footer — stays in-theme, no jarring dark block */
+.dashboard-table tfoot tr td {
+  background: var(--surface-muted);
+  color: var(--text-primary);
+  font-weight: 700;
+  font-size: 0.75rem;
+  padding: 10px 14px;
+  border-top: 2px solid var(--border-strong);
+  letter-spacing: 0.01em;
+}
+
+.dashboard-table tbody tr.clickable { cursor: pointer; }
+.dashboard-table tbody tr.row-selected { background: rgba(5,150,105,0.07) !important; }
+
+/* ============================================================
+   BADGES / STATUS PILLS
+   ============================================================ */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+  line-height: 1.6;
+}
+
+.badge-green  { background: var(--bg-success);  color: var(--color-success); border-color: var(--border-success); }
+.badge-red    { background: var(--bg-danger);   color: var(--color-danger);  border-color: var(--border-danger);  }
+.badge-amber  { background: var(--bg-warning);  color: var(--color-warning); border-color: var(--border-warning); }
+.badge-blue   { background: var(--bg-info);     color: var(--color-info);    border-color: var(--border-info);    }
+.badge-slate  { background: var(--surface-muted); color: var(--text-secondary); border-color: var(--border-default); }
+
+/* ============================================================
+   SECTION HEADINGS
+   ============================================================ */
+.section-heading {
+  font-family: 'Outfit', sans-serif;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.section-heading-bar {
+  width: 3px;
+  height: 1em;
+  border-radius: 99px;
+  background: var(--brand);
+  flex-shrink: 0;
+}
+
+/* ============================================================
+   BUTTONS
+   ============================================================ */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 15px;
+  background: var(--brand);
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.8125rem;
+  border-radius: var(--radius-sm);
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.1), 0 0 0 1px var(--brand-dark);
+  transition: background 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease;
+  letter-spacing: 0.01em;
+}
+
+.btn-primary:hover {
+  background: var(--brand-dark);
+  box-shadow: 0 2px 8px rgba(4, 120, 87, 0.3), 0 0 0 1px var(--brand-dark);
+  transform: translateY(-1px);
+}
+
+.btn-primary:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+}
+
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  background: var(--surface-card);
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 0.8125rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.btn-secondary:hover {
+  background: var(--surface-muted);
+  border-color: var(--border-default);
+  color: var(--text-primary);
+}
+
+/* ============================================================
+   HERO BANNER — Redesigned: stays in-theme, no jarring dark block
+   ============================================================ */
+.hero-banner {
+  position: relative;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--surface-card);
+  border: 1px solid var(--border-default);
+  border-left: 4px solid var(--brand);
+  padding: 24px 28px;
+  box-shadow: var(--shadow-md);
+}
+
+/* Subtle brand wash in background */
+.hero-banner::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 90% 50%, rgba(5,150,105,0.06) 0%, transparent 60%);
+  pointer-events: none;
+}
+
+/* ============================================================
+   STAT ROWS
+   ============================================================ */
+.stat-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border-muted);
+}
+.stat-row:last-child { border-bottom: none; }
+.stat-label { font-size: 0.75rem; font-weight: 500; color: var(--text-muted); }
+.stat-value { font-size: 0.875rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+
+/* ============================================================
+   INLINE DRILL-DOWN
+   ============================================================ */
+.drill-row td {
+  padding: 0 !important;
+  background: transparent !important;
+}
+
+.drill-content {
+  border-top: 2px solid var(--brand);
+  border-bottom: 1px solid var(--border-muted);
+  background: var(--bg-success);
+  padding: 16px;
+}
+
+/* ============================================================
+   CHART CONTAINERS
+   ============================================================ */
+.chart-container {
+  background: var(--surface-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+}
+
+/* ============================================================
+   TREND BADGES
+   ============================================================ */
+.trend-up      { color: var(--color-success); background: var(--bg-success); border: 1px solid var(--border-success); border-radius: var(--radius-full); padding: 2px 7px; font-size: 0.75rem; font-weight: 600; display: inline-flex; align-items: center; gap: 3px; }
+.trend-down    { color: var(--color-danger);  background: var(--bg-danger);  border: 1px solid var(--border-danger);  border-radius: var(--radius-full); padding: 2px 7px; font-size: 0.75rem; font-weight: 600; display: inline-flex; align-items: center; gap: 3px; }
+.trend-neutral { color: var(--text-muted);    background: var(--surface-muted); border: 1px solid var(--border-default); border-radius: var(--radius-full); padding: 2px 7px; font-size: 0.75rem; font-weight: 600; display: inline-flex; align-items: center; gap: 3px; }
+
+/* ============================================================
+   MOBILE
+   ============================================================ */
+.scroll-mask-right {
+  mask-image: linear-gradient(to right, black 80%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, black 80%, transparent 100%);
+}
+.efficiency-bar { height: 6px; border-radius: 99px; overflow: hidden; display: flex; background: var(--border-default); }
+
+/* ============================================================
+   ANIMATIONS
+   ============================================================ */
+@keyframes fadeSlideUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-up { animation: fadeSlideUp 0.2s ease forwards; }
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--surface-muted) 25%, var(--border-default) 50%, var(--surface-muted) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: var(--radius-sm);
+}
+
+/* ============================================================
+   GLASS PANEL — tasteful, not overdone
+   ============================================================ */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+}
+
+/* ============================================================
+   FOCUS RINGS — accessible, on-brand
+   ============================================================ */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-color: var(--brand) !important;
+}
+
+/* Legacy (non-focus-visible browsers) */
+input:focus, select:focus, textarea:focus {
+  outline: 2px solid rgba(5, 150, 105, 0.35);
+  outline-offset: 0;
+  border-color: var(--brand) !important;
+}
+
+/* ============================================================
+   UTILITY — Number display
+   ============================================================ */
+.tabular-nums { font-variant-numeric: tabular-nums; }
+.font-display { font-family: 'Outfit', sans-serif; }
+
+/* ============================================================
+   DARK MODE SYSTEM OVERRIDES
+   ============================================================ */
+html.dark {
+  color-scheme: dark;
+}
+
+html.dark body {
+  background-color: #090d16 !important;
+  color: #f3f4f6 !important;
+}
+
+html.dark :root {
+  --surface-page:   #090d16;
+  --surface-card:   #111827;
+  --surface-raised: #1f2937;
+  --surface-subtle: #1e293b;
+  --surface-muted:  #334155;
+  --border-default: rgba(255, 255, 255, 0.08);
+  --border-strong:  rgba(255, 255, 255, 0.15);
+  --border-muted:   rgba(255, 255, 255, 0.05);
+  --text-primary:   #f9fafb;
+  --text-secondary: #e5e7eb;
+  --text-muted:     #9ca3af;
+}
+
+/* Background overrides */
+html.dark .bg-white {
+  background-color: #111827 !important;
+}
+html.dark .bg-slate-50 {
+  background-color: #1e293b !important;
+}
+html.dark .bg-slate-100 {
+  background-color: #1f2937 !important;
+}
+html.dark .bg-slate-200 {
+  background-color: #374151 !important;
+}
+html.dark .bg-slate-900 {
+  background-color: #030712 !important;
+}
+html.dark .bg-slate-950 {
+  background-color: #020617 !important;
+}
+html.dark .bg-slate-50\/30 {
+  background-color: rgba(30, 41, 59, 0.3) !important;
+}
+html.dark .bg-slate-50\/50 {
+  background-color: rgba(30, 41, 59, 0.5) !important;
+}
+
+/* Hover background overrides */
+html.dark .hover\:bg-slate-50:hover {
+  background-color: #1e293b !important;
+}
+html.dark .hover\:bg-slate-100:hover {
+  background-color: #1f2937 !important;
+}
+html.dark .hover\:bg-slate-200:hover {
+  background-color: #374151 !important;
+}
+
+/* Text color overrides */
+html.dark .text-slate-800 {
+  color: #f3f4f6 !important;
+}
+html.dark .text-slate-700 {
+  color: #e5e7eb !important;
+}
+html.dark .text-slate-650 {
+  color: #d1d5db !important;
+}
+html.dark .text-slate-600 {
+  color: #d1d5db !important;
+}
+html.dark .text-slate-500 {
+  color: #9ca3af !important;
+}
+html.dark .text-slate-400 {
+  color: #9ca3af !important;
+}
+html.dark .text-slate-900 {
+  color: #ffffff !important;
+}
+html.dark .text-slate-850 {
+  color: #ffffff !important;
+}
+
+/* Border overrides */
+html.dark .border-slate-100 {
+  border-color: #1e293b !important;
+}
+html.dark .border-slate-150 {
+  border-color: #1e293b !important;
+}
+html.dark .border-slate-200 {
+  border-color: #1e293b !important;
+}
+html.dark .border-slate-250 {
+  border-color: #374151 !important;
+}
+html.dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #1e293b !important;
+}
+html.dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #374151 !important;
+}
+
+/* Input / Form controls styling in dark mode */
+html.dark input,
+html.dark select,
+html.dark textarea {
+  background-color: #1f2937 !important;
+  color: #ffffff !important;
+  border-color: #374151 !important;
+}
+html.dark input:focus,
+html.dark select:focus {
+  border-color: var(--brand) !important;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2) !important;
+}
+html.dark input::placeholder {
+  color: #6b7280 !important;
+}
+
+/* custom scrollbar for dark mode */
+html.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+}
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+

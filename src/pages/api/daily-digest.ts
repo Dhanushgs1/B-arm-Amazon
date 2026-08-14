@@ -1,0 +1,182 @@
+// The one scheduled morning email, replacing four that used to arrive separately:
+//   1. Daily Performance Report          — endpoint deleted; its KPIs and top-5 lists live here
+//   2. Ad Spend on Out-of-Stock Products (/api/stockout-alert)
+//   3. Bleeding Campaigns                (/api/ad-alerts)
+//   4. Wasted Search Terms               (/api/ad-alerts)
+//
+// The three alert endpoints still exist for manual one-off sends; this calls the same shared
+// detectors (src/lib/stockout.ts, src/lib/adAlerts.ts), so the numbers agree. The old daily
+// report did not — it recomputed its own counts from a single day with a separate heuristic
+// while the alerts used a 7-day lookback, so the two disagreed on the same morning.
+//
+// Unlike the separate alerts, this always sends: a quiet day is worth one line saying so, and
+// silence is indistinguishable from a broken cron.
+//
+// POST body: { slot?, amazon_account_id, workspace_id, to, cc?, currency?, date?, send?,
+//              acosThreshold?, minSpend?, lookbackDays?, lowStockThreshold?, attachWorkbook? }
+
+import type { NextApiRequest, NextApiResponse } from "next";
+import { findBleedingCampaigns, findWastedSearchTerms, resolveSellerMateKey, fetchAsinSkuMap } from "@/lib/adAlerts";
+import { findStockoutAdSpend } from "@/lib/stockout";
+import { buildAmazonSalesWorkbookForAccount } from "@/lib/amazonSalesExport";
+import { resolveProductName } from "@/lib/categoryMap";
+import { internalFetch } from "@/lib/internalFetch";
+import * as XLSX from "xlsx-js-style";
+
+const SELLERMATE_BASE_URL = "https://api.sellermate.ai/public/v1/tools";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function callTool(tool: string, args: Record<string, any>, apiKey: string) {
+  const r = await fetch(`${SELLERMATE_BASE_URL}/${tool}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+    body: JSON.stringify(args),
+  });
+  if (!r.ok) throw new Error(`${tool}: ${await r.text()}`);
+  return r.json();
+}
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+
+  const {
+    slot = "B", amazon_account_id, workspace_id, to, cc, currency = "INR",
+    date, send = true, accountName = "B-ARM",
+    acosThreshold = 40, minSpend = 500, lookbackDays = 7, lowStockThreshold = 5,
+    // The detailed per-product workbook lives in the Monday weekly report, which is built from the
+    // uploaded SKU-level exports and carries the full Growth Summary with category insights. The
+    // daily attachment was the ASIN-level SellerMate build of the same sheet — thinner, and a
+    // second thing to keep in step — so the digest ships as a body-only email. Pass
+    // attachWorkbook:true to get it back for a one-off.
+    attachWorkbook = false,
+  } = req.body || {};
+
+  if (!amazon_account_id || !workspace_id) {
+    return res.status(400).json({ error: "amazon_account_id and workspace_id are required" });
+  }
+  const apiKey = resolveSellerMateKey(slot === "B" ? "B" : "A");
+  if (!apiKey) return res.status(500).json({ error: `Missing SellerMate API key for slot ${slot}` });
+
+  // Default to yesterday — the current day is still inside Amazon's reporting sync lag.
+  let day = date as string | undefined;
+  if (!day) {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    day = d.toISOString().slice(0, 10);
+  }
+  const base = { amazon_account_id, workspace_id, start_date: day, end_date: day };
+  const dateLabel = new Date(day + "T00:00:00").toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+
+  try {
+    // Every call here must degrade to an empty/zero default on failure, never throw — a single
+    // SellerMate hiccup on any one of these previously took the whole Promise.all down, which
+    // killed the entire digest send with nothing surfaced anywhere the recipient would see it
+    // (only a Vercel function log nobody was watching). That silently reproduced exactly the
+    // "quiet day vs. broken cron" ambiguity this digest exists to avoid — see the file comment
+    // above. The KPI block reports the single day; the three detectors below it look back
+    // `lookbackDays`.
+    const [cp, st, prod, retail, inv, stockoutItems, bleedingItems, wasted] = await Promise.all([
+      callTool("get_campaign_performance", { ...base, page_size: 500 }, apiKey).catch(() => ({ data: [], summary: {} })),
+      callTool("get_search_term_performance", { ...base, page_size: 100, sort_field: "attributedSales14d", sort_direction: "desc" }, apiKey).catch(() => ({ data: [] })),
+      callTool("get_advertised_product_performance", { ...base, page_size: 100, sort_field: "attributedSales14d", sort_direction: "desc" }, apiKey).catch(() => ({ data: [] })),
+      callTool("get_retail_product_performance", { ...base, page_size: 500 }, apiKey).catch(() => ({ summary: {} })),
+      callTool("get_inventory", { amazon_account_id, workspace_id, limit: 200, offset: 0 }, apiKey).catch(() => ({ items: [] })),
+      findStockoutAdSpend({ apiKey, amazon_account_id, workspace_id, lowStockThreshold, lookbackDays }).catch(() => []),
+      findBleedingCampaigns({ apiKey, amazon_account_id, workspace_id, acosThreshold, minSpend, lookbackDays }).catch(() => []),
+      findWastedSearchTerms({ apiKey, amazon_account_id, workspace_id, minSpend: 100, lookbackDays }).catch(() => ({ terms: [], totalWasted: 0 })),
+    ]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cpRows: any[] = cp.data || [];
+    const cs = cp.summary || {};
+    const rs = retail.summary || {};
+
+    const metrics = {
+      totalSales: rs.totalSales || cs.totalSales || 0,
+      adSpend: cs.totalSpend || 0,
+      adSales: rs.totalAdSales || cs.totalSales || 0,
+      roas: cs.overallRoas || 0,
+      acos: cs.overallAcos || 0,
+      orders: cs.totalOrders || 0,
+      units: rs.totalUnitsOrdered || 0,
+    };
+
+    const topCampaigns = [...cpRows]
+      .filter((c) => c.sales > 0).sort((a, b) => b.sales - a.sales).slice(0, 5)
+      .map((c) => ({ name: c.campaignName, sales: c.sales, acos: c.acos }));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const topTerms = (st.data || []).filter((t: any) => t.sales > 0).slice(0, 5)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .map((t: any) => ({ term: t.searchTerm, sales: t.sales, orders: t.orders }));
+
+    const skuByAsin = await fetchAsinSkuMap({ apiKey, amazon_account_id, workspace_id }).catch(() => new Map<string, string[]>());
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const topProducts = (prod.data || []).filter((p: any) => p.sales > 0).slice(0, 5)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .map((p: any) => {
+        const sku = (skuByAsin.get(p.adAsin) || [])[0] || "";
+        return { name: resolveProductName(p.adProductName, sku) || p.adProductName, sales: p.sales, acos: p.acos };
+      });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const invItems: any[] = inv.items || [];
+    let outOfStock = 0, low = 0, totalValue = 0;
+    for (const it of invItems) {
+      const q = (it.fbm?.quantity || 0) + (it.fba?.endingWarehouseBalance || 0);
+      totalValue += q * (it.price || 0);
+      if (q === 0) outOfStock++; else if (q <= 5) low++;
+    }
+
+    const wastedTerms = wasted.terms || [];
+    const emailData = {
+      dateLabel, accountName, currency, metrics,
+      stockoutItems, bleedingItems, wastedTerms,
+      topCampaigns, topProducts, topTerms,
+      inventory: { outOfStock, low, totalValue },
+    };
+
+    // Full per-product workbook, same as the standalone daily report attached. Best-effort: the
+    // digest must still go out if the workbook build fails.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let attachments: any[] | undefined;
+    if (attachWorkbook) {
+      try {
+        const weekStart = new Date(day + "T00:00:00Z");
+        weekStart.setUTCDate(weekStart.getUTCDate() - 6);
+        const { wb, filename } = await buildAmazonSalesWorkbookForAccount({
+          apiKey, accountId: amazon_account_id, workspaceId: workspace_id,
+          startDate: weekStart.toISOString().slice(0, 10), endDate: day, granularity: "daily",
+        });
+        const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+        attachments = [{ filename, content: buf.toString("base64"), encoding: "base64" }];
+      } catch (err) {
+        console.error("[Marketplace360] Daily digest attachment failed:", err);
+      }
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let emailResult: any = null;
+    if (send && to) {
+      const proto = (req.headers["x-forwarded-proto"] as string) || "http";
+      const host = req.headers.host;
+      const r = await internalFetch(`${proto}://${host}/api/send-email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "dailyDigest", to, cc, data: emailData, attachments }),
+      });
+      emailResult = await r.json().catch(() => ({}));
+      if (!r.ok) emailResult = { error: emailResult?.error || "send-email failed" };
+    }
+
+    return res.status(200).json({
+      date: day, dateLabel, metrics,
+      counts: { stockout: stockoutItems.length, bleeding: bleedingItems.length, wastedTerms: wastedTerms.length },
+      attached: !!attachments,
+      emailed: !!(send && to),
+      emailResult,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : "daily-digest failed" });
+  }
+}

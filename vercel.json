@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    { "source": "/sm/(.*)", "destination": "/api/sm?path=$1" }
+  ],
+  "crons": [
+    { "path": "/api/cron/scheduled-reports", "schedule": "30 3 * * *" }
+  ]
+}
