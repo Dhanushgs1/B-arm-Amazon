@@ -1,9 +1,13 @@
 // Server-side proxy for the SellerMate.AI Public API.
 //
-// Single-account setup. The API key lives ONLY in a Vercel environment
-// variable (Project Settings -> Environment Variables) and is never present
-// in this source file or sent to the browser:
-//   SELLERMATE_API_KEY_BARM  (falls back to SELLERMATE_API_KEY_A / SELLERMATE_API_KEY)
+// Two-account setup, routed by the "slot" the client sends (A = Lkn, B = Barm).
+// The keys live ONLY in Vercel environment variables (Project Settings ->
+// Environment Variables) and are never present in this source file or sent to
+// the browser:
+//   SELLERMATE_API_KEY_A / SELLERMATE_API_KEY_LKN   (slot "A")
+//   SELLERMATE_API_KEY_B / SELLERMATE_API_KEY_BARM  (slot "B")
+// A missing slot (or an unrecognized value) falls back to slot A, then to the
+// single-account SELLERMATE_API_KEY for back-compat.
 //
 // Only read-only ("reporting") tools are allowlisted below, so this public
 // dashboard cannot be used to mutate campaigns/bids/budgets even if someone
@@ -37,10 +41,17 @@ const ALLOWED_TOOLS = new Set([
 
 const SELLERMATE_BASE_URL = 'https://api.sellermate.ai/public/v1/tools';
 
-function resolveApiKey() {
+function resolveApiKey(slot) {
+  if (slot === 'B') {
+    return (
+      process.env.SELLERMATE_API_KEY_B ||
+      process.env.SELLERMATE_API_KEY_BARM ||
+      process.env.SELLERMATE_API_KEY
+    );
+  }
   return (
-    process.env.SELLERMATE_API_KEY_BARM ||
     process.env.SELLERMATE_API_KEY_A ||
+    process.env.SELLERMATE_API_KEY_LKN ||
     process.env.SELLERMATE_API_KEY
   );
 }
@@ -62,7 +73,7 @@ module.exports = async (req, res) => {
   }
   body = body || {};
 
-  const { tool, args } = body;
+  const { tool, args, slot } = body;
 
   if (!tool || typeof tool !== 'string') {
     res.status(400).json({ error: 'Missing "tool" in request body.' });
@@ -74,10 +85,10 @@ module.exports = async (req, res) => {
     return;
   }
 
-  const apiKey = resolveApiKey();
+  const apiKey = resolveApiKey(slot);
   if (!apiKey) {
     res.status(500).json({
-      error: 'Server is missing SELLERMATE_API_KEY_BARM. Add it in Vercel Project Settings -> Environment Variables and redeploy.',
+      error: `Server is missing the SellerMate API key for slot "${slot || 'A'}". Add SELLERMATE_API_KEY_${slot === 'B' ? 'B' : 'A'} in Vercel Project Settings -> Environment Variables and redeploy.`,
     });
     return;
   }
