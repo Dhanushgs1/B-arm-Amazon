@@ -169,7 +169,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     fetchAllRows("barm_amazon_am_orders", (q) => q.gte("purchase_datetime", win30Ist.gte).lt("purchase_datetime", win30Ist.lt)),
     fetchAllRows("barm_amazon_am_returns", (q) => q.gte("return_request_date", win30.start).lte("return_request_date", endDate)),
     fetchAllRows("barm_amazon_fba_returns", (q) => q.gte("return_date", win30Ist.gte).lt("return_date", win30Ist.lt)),
-    fetchAllRows("barm_amazon_campaign_sku_map", (q) => q),
+    fetchAllRows("barm_amazon_campaign_sku_map", (q) => q, ["campaign_name", "sku"]),
     fetchAllRows("barm_amazon_price_listing", (q) => q),
     fetchAllRows("barm_amazon_fba_inventory", (q) => q),
     // Ledger "as of" endDate — every SELLABLE row up to and including endDate;
