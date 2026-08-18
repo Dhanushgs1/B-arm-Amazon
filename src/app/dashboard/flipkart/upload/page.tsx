@@ -15,8 +15,12 @@ import {
 // Mirrors /dashboard/upload (Amazon) card-for-card. The grouping differs only
 // because Flipkart's four exports split into "what the report is built from"
 // and "operational detail" rather than Amazon's required/optional split.
-const CORE_REPORT_TYPES: FlipkartUploadReportType[] = ["fsn_report", "earn_more"];
-const DETAIL_REPORT_TYPES: FlipkartUploadReportType[] = ["order_report", "settlement", "returns"];
+//
+// Earn More's upload card is intentionally hidden (its parser, table, and the
+// revenue/price-fallback calculations in flipkartHistoricalReportExport.ts are
+// untouched) — this only removes the path to upload new files through this UI.
+const CORE_REPORT_TYPES: FlipkartUploadReportType[] = ["fsn_report"];
+const DETAIL_REPORT_TYPES: FlipkartUploadReportType[] = ["order_report", "returns"];
 // Current-moment snapshot (no date column) — mirrors Amazon's "Price & Inventory" group.
 const SNAPSHOT_REPORT_TYPES: FlipkartUploadReportType[] = ["listings"];
 const REPORT_TYPES: FlipkartUploadReportType[] = [...CORE_REPORT_TYPES, ...DETAIL_REPORT_TYPES, ...SNAPSHOT_REPORT_TYPES];
@@ -262,10 +266,10 @@ export default function FlipkartUploadReportsPage() {
 
       <div>
         <h2 className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-3">
-          Ads &amp; sales (required — the report is built from these)
+          Ads &amp; sales (required — the report is built from this)
         </h2>
         <p className="text-xs text-muted-foreground mb-3 -mt-2">
-          Uploading these also refreshes the live Flipkart dashboard pages (Overview, Campaigns, Sales, Products), so
+          Uploading this also refreshes the live Flipkart dashboard pages (Overview, Campaigns, Sales, Products), so
           you don&apos;t have to upload the same file again on the Upload Data tab.
         </p>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
@@ -277,14 +281,11 @@ export default function FlipkartUploadReportsPage() {
 
       <div>
         <h2 className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-3">
-          Orders &amp; settlement (optional — adds operational and P&amp;L detail)
+          Orders &amp; returns (optional — adds operational detail)
         </h2>
         <p className="text-xs text-muted-foreground mb-3 -mt-2">
           The order report adds order-item detail (statuses, SLA breaches, return reasons); the returns report tracks
-          a return through in-transit/completed even before the order report&apos;s own status catches up; the settled
-          transaction report adds the P&amp;L sheet — fees, taxes and what actually landed in the bank. Note the
-          settlement file is scoped by <b>payment date</b>, not order date, so it covers orders placed well before the
-          window.
+          a return through in-transit/completed even before the order report&apos;s own status catches up.
         </p>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {DETAIL_REPORT_TYPES.map((type) => (

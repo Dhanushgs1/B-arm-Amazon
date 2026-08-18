@@ -353,6 +353,44 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
       </table>`);
   }
 
+  if (type === "campaignPause") {
+    const transitions: any[] = data.transitions || [];
+    const rows = transitions.map((t: any) => `
+      <tr>
+        <td style="padding:12px 10px;border-bottom:1px solid #f0f0f0;font-size:13px;font-weight:700;color:#111;">${t.campaignName}</td>
+        <td align="center" style="padding:12px 10px;border-bottom:1px solid #f0f0f0;">
+          <span style="background:#fee2e2;color:#991b1b;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:800;">${t.previousState} &#8594; ${t.newState}</span>
+        </td>
+      </tr>`).join("");
+
+    return w(`
+      <table width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr><td style="padding-bottom:20px;">
+          <table width="100%" cellpadding="16" cellspacing="0" border="0" style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;">
+            <tr><td>
+              <p style="margin:0;font-size:24px;">&#9208;</p>
+              <h2 style="margin:8px 0 4px;color:#991b1b;font-size:17px;font-weight:800;">Campaign${transitions.length > 1 ? "s" : ""} Paused</h2>
+              <p style="margin:0;color:#b91c1c;font-size:13px;font-weight:600;">${transitions.length} campaign${transitions.length > 1 ? "s" : ""} stopped running since the last check (within the last 30 min)</p>
+            </td></tr>
+          </table>
+        </td></tr>
+        <tr><td>
+          <table width="100%" cellpadding="0" cellspacing="0" border="1" style="border-collapse:collapse;border-color:#f0f0f0;">
+            <thead>
+              <tr style="background:#f9fafb;">
+                <th style="padding:10px;text-align:left;font-size:11px;font-weight:800;color:#6b7280;text-transform:uppercase;">Campaign</th>
+                <th style="padding:10px;text-align:center;font-size:11px;font-weight:800;color:#6b7280;text-transform:uppercase;">State change</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </td></tr>
+        <tr><td align="center" style="padding-top:24px;">
+          <a href="${SITE_URL}/dashboard/campaigns" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">View Campaigns &#8594;</a>
+        </td></tr>
+      </table>`);
+  }
+
   if (type === "weeklyReport") {
     const currency = data.currency === "INR" ? "₹" : "$";
     const money = (v: number) => currency + new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(v || 0));
@@ -764,6 +802,7 @@ const SUBJECTS: Record<string, string> = {
   inventory: "Marketplace360 - Low Inventory Alert",
   campaign: "Marketplace360 - High ACOS Campaign Alert",
   summary: "Marketplace360 - Performance Summary",
+  campaignPause: "⏸️ Marketplace360 - Campaign Paused",
 };
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {

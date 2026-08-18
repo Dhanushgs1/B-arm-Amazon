@@ -45,7 +45,8 @@ export default function ReportsPage() {
     if (!endDate) { alert("Pick a date at the top of the dashboard first."); return; }
     setHistGenerating(true); setHistMsg(null);
     try {
-      const res = await exportHistoricalAnalysisReport({ endDate, account, keySlot });
+      // No keySlot: this report is built from the uploaded tables only.
+      const res = await exportHistoricalAnalysisReport({ endDate, account });
       setHistMsg(`Downloaded ${res.filename} — ${res.skuCount} SKUs${res.unmappedCampaignSpend ? `, ₹${res.unmappedCampaignSpend.toFixed(0)} spend unmapped` : ""}.`);
     } catch (err) {
       setHistMsg("Failed: " + (err instanceof Error ? err.message : String(err)));
@@ -93,7 +94,6 @@ export default function ReportsPage() {
         // TS excess-property error that fails the build without changing behavior.
         const { filename: historicalName } = await exportHistoricalAnalysisReport({
           account,
-          keySlot,
           endDate: effEnd,
         });
         setHistory(prev => [{ filename: historicalName, timestamp: new Date() }, ...prev]);

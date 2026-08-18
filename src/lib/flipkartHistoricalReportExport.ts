@@ -30,8 +30,6 @@ import { FK_REPORT_LABEL } from "@/lib/flipkartReportUpload";
 //                                   see aggregateWindow). Earn more is used only
 //                                   for revenue (Final Sale Value, Price fallback)
 //                                   since it carries no per-order-item status.
-//   Fees / net settlement           Settled transaction report (per order item,
-//                                   scoped by PAYMENT date)
 //   Stock / listing price / status  barm_flipkart_listings snapshot
 //
 // Unlike Amazon, Flipkart's ad export IS per-SKU for every campaign type, so
@@ -49,7 +47,6 @@ const NO_ADS = "(no ads data)";
 const FSN_TABLE = "barm_flipkart_fsn_report";
 const ORDER_TABLE = "barm_flipkart_order_report";
 const EARN_MORE_TABLE = "barm_flipkart_earn_more";
-const SETTLEMENT_TABLE = "barm_flipkart_settlement";
 const LISTINGS_TABLE = "barm_flipkart_listings";
 const RETURNS_TABLE = "barm_flipkart_returns";
 
@@ -119,11 +116,12 @@ function computeCpc(w: WindowAgg): number {
 function computeAcos(w: WindowAgg, price: number): number {
   return price > 0 ? computeCpc(w) / price : 0;
 }
-function computeTacos(w: WindowAgg, price: number): number {
-  const final = Math.max(0, w.orderUnits - w.returns);
-  const denom = price * (final || 1);
-  return denom > 0 ? w.spendTax / denom : 0;
-}
+// No computeTacos here on purpose: the seller's Flipkart workbook has no TACOS
+// column, so the Analysis sheet doesn't carry one (it uses their real-time
+// cpc/acos pair instead — see the Analysis report block). The TACOS *sheet*
+// further down is per-SKU by construction and computes its own ratio inline
+// from the rolled-up SKU spend, so it needs nothing here. The Amazon report
+// keeps a computeTacos because its Analysis sheet does show TACOS.
 
 interface SkuMeta {
   sku: string;
@@ -141,21 +139,6 @@ interface SkuMeta {
 }
 const emptyMeta = (sku: string): SkuMeta => ({
   sku, name: sku, campaignName: "", price: 0, mrp: 0, stock: 0, listingStatus: "", hasListing: false, fulfilment: "", category: "",
-});
-
-/** Per-SKU settled P&L over one payment-date window. */
-interface SettleAgg {
-  units: number;
-  saleAmount: number;
-  offerAmount: number;
-  marketplaceFee: number;
-  taxes: number;
-  refund: number;
-  settlement: number;
-  orders: number;
-}
-const emptySettle = (): SettleAgg => ({
-  units: 0, saleAmount: 0, offerAmount: 0, marketplaceFee: 0, taxes: 0, refund: 0, settlement: 0, orders: 0,
 });
 
 // ── workbook builder ────────────────────────────────────────────────────────
@@ -196,11 +179,10 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
   const win7 = getDateWindow(endDate, 7);
 
   // One 30-day fetch per source; the 7-day block is a filter over these.
-  const [fsnRows, earnRows, orderRows, settleRows, listingRows, returnsRows] = await Promise.all([
+  const [fsnRows, earnRows, orderRows, listingRows, returnsRows] = await Promise.all([
     fetchAllRows(FSN_TABLE, (q) => q.gte("report_date", win30.start).lte("report_date", endDate)),
     fetchAllRows(EARN_MORE_TABLE, (q) => q.gte("order_date", win30.start).lte("order_date", endDate)),
     fetchAllRows(ORDER_TABLE, (q) => q.gte("order_date", win30.start).lte("order_date", endDate)),
-    fetchAllRows(SETTLEMENT_TABLE, (q) => q.gte("payment_date", win30.start).lte("payment_date", endDate)),
     fetchAllRows(LISTINGS_TABLE, (q) => q).catch(() => []),
     fetchAllRows(RETURNS_TABLE, (q) => q.gte("return_requested_date", win30.start).lte("return_requested_date", endDate)).catch(() => []),
   ]);
@@ -225,7 +207,7 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
     return true;
   });
 
-  if (!fsnRows.length && !earnRows.length && !dedupedOrderRows.length && !settleRows.length) {
+  if (!fsnRows.length && !earnRows.length && !dedupedOrderRows.length) {
     throw new Error(
       `No uploaded Flipkart data in ${dotDate(win30.start)} to ${dotDate(endDate)}. ` +
         `Upload the reports for that period first, or pick an end date the uploaded data covers.`
@@ -342,7 +324,8 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
       const p = ensurePair(r.campaign_name || "", r.sku_id);
       skusWithAds.add(r.sku_id);
       const units = num(r.direct_units_sold) + num(r.indirect_units_sold);
-      p.spendTax += num(r.ad_spend) * GST_MULTIPLIER;
+      const taxed = num(r.ad_spend) * GST_MULTIPLIER;
+      p.spendTax += taxed;
       p.adUnits += units;
       p.adRevenue += num(r.total_revenue);
       ensureSku(r.sku_id).adUnitsTotal += units;
@@ -496,47 +479,72 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
   // ═══════════════════════════════════════════════════════════════════════
   // Analysis report — one row per CAMPAIGN x SKU, dual 30-day / 7-day block
   // ═══════════════════════════════════════════════════════════════════════
-  const WIN_COLS = ["Spend+Tax", "Ad Units (#)", "Ad Revenue", "Total Units (#)", "Orders", "Returns", "Final", "CPC", "ACOS", "TACOS"];
-  const LISTING_COLS = ["Stock", "Listing Price", "MRP", "Listing Status"];
-  const LEAD_COLS = ["Row Labels", "Campaign", "SKU ID", "Fulfilment", "Price"];
+  // Column layout is copied VERBATIM from the seller's own "Fk Final Report "
+  // sheet — including its trailing spaces and inconsistent casing ("Ad Spent
+  // with Tax " vs "Ad spent with Tax ", "acos" vs "acos ", "real Time cpc") — so
+  // the two line up column-for-column and any formula, pivot or VLOOKUP they
+  // already built against it keeps working. Two things differ from the Amazon
+  // report on purpose, because their Flipkart workbook is built differently:
+  //
+  //   * the 7-DAY block comes FIRST, then the 30-day one, and Stock sits up
+  //     front as a lead column rather than in a trailing listing block.
+  //   * there is no TACOS column at all. Instead they carry a second pair of
+  //     ratios: cpc/acos measure spend against AD-attributed orders, while
+  //     "real time" cpc/acos measure the same spend against ALL of that SKU's
+  //     orders — which is what shows whether the ad cost is carrying the SKU's
+  //     whole demand or only the slice the ads can claim.
+  //
+  // Verified against their workbook (SKU A006-1, 7-day block): Ad Spent 403.28
+  // -> with-tax 475.8704, cpc 475.8704/3 = 158.6235, acos /556 = 0.28529,
+  // real time CPC 475.8704/6 = 79.3117, Real Time ACOS = 0.14265.
+  const FK_WIN_7 = ["Ad Spent ", "Ad Spent with Tax ", "Orders by Ad spent ", "Orders ", "Returns ", "Final Orders ", "cpc", "acos", "real time CPC ", "Real Time ACOS "];
+  const FK_WIN_30 = ["Ad Spent ", "Ad spent with Tax ", "Orders by Ads ", "Orders ", "Returns ", "Final Orders ", "cpc", "acos ", "real Time cpc", "real time acos "];
+  // Additive, so columns 0-25 stay exactly where their sheet has them: Orders /
+  // Returns / Final repeat on every campaign row of a multi-campaign SKU, so
+  // SUMming those columns double-counts. A 1 marks the one row per SKU that is
+  // safe to include.
+  const FLAG_COL_NAME = "First Row (SKU)?";
 
+  // Fixed positions — nothing below counts columns by hand.
+  const C_KEY = 0, C_SKU = 1, C_PRICE = 2, C_STOCK = 3;
+  const C_LABEL_7 = 4;
+  const B7 = C_LABEL_7 + 1;                    // first metric column, 7-day block
+  const C_LABEL_30 = B7 + FK_WIN_7.length;
+  const B30 = C_LABEL_30 + 1;                  // first metric column, 30-day block
+  const FLAG = B30 + FK_WIN_30.length;
+
+  // The Analysis sheet's own headers are just "7 Days " / "30 DAYS " to match
+  // their workbook, so the dated labels are only used by the other sheets
+  // (TACOS, non-advertised sales) and the Notes sheet.
   const label30 = `Last 30 days (${dotDate(win30.start)} to ${dotDate(win30.end)})`;
   const label7 = `Last 7 days (${dotDate(win7.start)} to ${dotDate(win7.end)})`;
 
-  const header0: (string | number)[] = Array(LEAD_COLS.length).fill("");
-  const header1: (string | number)[] = [...LEAD_COLS];
-  header0.push(label30, ...Array(WIN_COLS.length - 1).fill(""));
-  header1.push(...WIN_COLS);
-  header0.push(label7, ...Array(WIN_COLS.length - 1).fill(""));
-  header1.push(...WIN_COLS);
-  header0.push("Listing (current snapshot)", ...Array(LISTING_COLS.length - 1).fill(""));
-  header1.push(...LISTING_COLS);
-  // Helper flag for anyone who pivots/SUMs this sheet directly in Excel: only
-  // the first campaign row for a given SKU carries a 1. Orders/Returns/Final
-  // repeat on every campaign row of a multi-campaign SKU (see GRAIN note), so
-  // summing them without this flag double/triple-counts that SKU.
-  header0.push("");
-  header1.push("First Row (SKU)?");
+  const header: (string | number)[] = [
+    "Campaign Name *SKU*Campaign Id ", "SKU ", "Price ", "Stock ",
+    "7 Days ", ...FK_WIN_7,
+    "30 DAYS ", ...FK_WIN_30,
+    FLAG_COL_NAME,
+  ];
 
-  const buildWinCells = (w: WindowAgg, price: number) => {
-    const final = w.orderUnits - w.returns; // unclamped — matches the Final formula written below
+  // Their header carries no dates (just "7 Days " / "30 DAYS "), so the exact
+  // windows live on the Notes sheet instead of being baked into the labels.
+  const fkWinCells = (w: WindowAgg, price: number): number[] => {
+    const spendTax = w.spendTax;
+    const orders = w.orderUnits;
+    // computeCpc already falls back to the untouched spend when there are no
+    // ad-attributed orders, which is what their sheet shows (a row with 0
+    // "Orders by Ad spent" reads cpc = Ad Spent with Tax).
+    const cpc = computeCpc(w);
+    const rtCpc = orders > 0 ? spendTax / orders : spendTax;
     return [
-      w.spendTax, w.adUnits, w.adRevenue, w.totalUnits, w.orderUnits, w.returns, final,
-      computeCpc(w), computeAcos(w, price), computeTacos(w, price),
+      spendTax / GST_MULTIPLIER, spendTax, w.adUnits, orders, w.returns, orders - w.returns,
+      cpc, computeAcos(w, price),
+      rtCpc, price > 0 ? rtCpc / price : 0,
     ];
   };
-  // Only ever shows figures that genuinely came from the listings snapshot. The
-  // Price lead column may be a realised-ASP fallback, but a column headed
-  // "Listing Price" must not quietly repeat that — it would read as a listed
-  // price the seller could go and check on Flipkart.
-  const listingCells = (m: SkuMeta): (string | number)[] =>
-    m.hasListing
-      ? [m.stock, Math.round(m.price), Math.round(m.mrp), m.listingStatus || "—"]
-      : ["—", "—", "—", hasListings ? "not listed" : "not uploaded"];
 
-  // Rows are already sorted by SKU (excelSortKey above), so the first time a
-  // SKU is seen here IS its first row — matches the live COUNTIF formula
-  // written onto this column below.
+  // Rows are already sorted by SKU, so the first time a SKU is seen here IS its
+  // first row — matching the live COUNTIF written onto the flag column below.
   const seenSkuForFlag = new Set<string>();
   const isFirstRowForSku = (sku: string): number => {
     if (seenSkuForFlag.has(sku)) return 0;
@@ -544,125 +552,126 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
     return 1;
   };
 
-  const aoa: (string | number)[][] = [header0, header1];
+  const aoa: (string | number)[][] = [header];
   rows.forEach((row) => {
     const campaignName = row.campaign || row.meta.campaignName;
     const campaignId = campaignIdByName.get(campaignName) || "—";
     aoa.push([
       `${row.campaign || row.meta.name}*${row.sku}*${campaignId}`,
-      campaignName,
       row.sku,
-      row.meta.fulfilment || "—",
       Math.round(row.meta.price),
-      ...buildWinCells(row.wA, row.meta.price),
-      ...buildWinCells(row.wB, row.meta.price),
-      ...listingCells(row.meta),
+      row.meta.hasListing ? row.meta.stock : "—",
+      "",
+      ...fkWinCells(row.wB, row.meta.price),
+      "",
+      ...fkWinCells(row.wA, row.meta.price),
       isFirstRowForSku(row.sku),
     ]);
   });
 
-  // Grand total. Spend / ad units / ad revenue sum over the campaign x SKU rows
-  // (each is that pair's own figure). Total Units / Orders / Returns are SKU
-  // figures repeated on every campaign row for that SKU, so they are summed over
-  // the DEDUPLICATED per-SKU view instead — which is why this row will not equal
-  // a plain SUM() of the column above it. Ratios are recomputed from aggregated
-  // numerators and denominators, never averaged from the per-row ratios.
+  // Grand total. Ad Spent and Orders-by-Ad are per campaign x SKU so they sum
+  // plainly; Orders and Returns are SKU figures repeated across that SKU's
+  // campaign rows, so they are summed over the DEDUPLICATED per-SKU view —
+  // which is why this row will not equal a plain SUM() of the column above it.
+  // Ratios are recomputed from aggregated numerators/denominators, never
+  // averaged from the per-row ratios.
   const shownSkus = new Set(rows.map((r) => r.sku));
-  const totalRowCells = (getW: (r: Row) => WindowAgg, getSkuW: (r: SkuRow) => WindowAgg) => {
-    let spendTax = 0, adUnits = 0, adRevenue = 0, acosDenom = 0;
+  const fkTotalCells = (getW: (r: Row) => WindowAgg, getSkuW: (r: SkuRow) => WindowAgg): number[] => {
+    let spendTax = 0, adUnits = 0, acosDenom = 0;
     rows.forEach((row) => {
       const w = getW(row);
       spendTax += w.spendTax;
       adUnits += w.adUnits;
-      adRevenue += w.adRevenue;
       acosDenom += row.meta.price * w.adUnits;
     });
-    let totalUnits = 0, orderUnits = 0, returns = 0, tacosDenom = 0;
+    let orders = 0, returns = 0, rtDenom = 0;
     skuRows.filter((r) => shownSkus.has(r.sku)).forEach((row) => {
       const w = getSkuW(row);
-      totalUnits += w.totalUnits;
-      orderUnits += w.orderUnits;
+      orders += w.orderUnits;
       returns += w.returns;
-      tacosDenom += row.meta.price * Math.max(0, w.orderUnits - w.returns);
+      rtDenom += row.meta.price * w.orderUnits;
     });
     return [
-      spendTax, adUnits, adRevenue, totalUnits, orderUnits, returns, Math.max(0, orderUnits - returns),
+      spendTax / GST_MULTIPLIER, spendTax, adUnits, orders, returns, orders - returns,
       adUnits > 0 ? spendTax / adUnits : spendTax,
       acosDenom > 0 ? spendTax / acosDenom : 0,
-      tacosDenom > 0 ? spendTax / tacosDenom : 0,
+      orders > 0 ? spendTax / orders : spendTax,
+      rtDenom > 0 ? spendTax / rtDenom : 0,
     ];
   };
   const grandRowIdx = aoa.length;
   aoa.push([
-    "GRAND TOTAL", "", "", "", "", "",
-    ...totalRowCells((r) => r.wA, (r) => r.wA),
-    ...totalRowCells((r) => r.wB, (r) => r.wB),
-    skuRows.reduce((s, r) => s + r.meta.stock, 0), "", "", "",
+    "GRAND TOTAL", "", "", "", "",
+    ...fkTotalCells((r) => r.wB, (r) => r.wB),
+    "",
+    ...fkTotalCells((r) => r.wA, (r) => r.wA),
     "",
   ]);
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  const totalCols = header1.length;
-  const b30 = LEAD_COLS.length;
-  const b7 = b30 + WIN_COLS.length;
-  const bList = b7 + WIN_COLS.length;
-  const flagCol = bList + LISTING_COLS.length;
-  const priceCol = colLetter(LEAD_COLS.length - 1);
+  const totalCols = header.length;
+  const priceCol = colLetter(C_PRICE);
 
-  // Final / CPC / ACOS are written as live formulas so an analyst can change a
-  // price or an orders figure in Excel and watch the ratios follow.
-  for (const blockStart of [b30, b7]) {
-    const spendTaxCol = colLetter(blockStart);
-    const adUnitsCol = colLetter(blockStart + 1);
-    const ordersCol = colLetter(blockStart + 4);
-    const returnsCol = colLetter(blockStart + 5);
-    const finalCol = colLetter(blockStart + 6);
-    const cpcCol = colLetter(blockStart + 7);
-    const acosCol = colLetter(blockStart + 8);
-    for (let r = 2; r < grandRowIdx; r++) {
+  // Live formulas so an analyst can change a price, an orders figure or the GST
+  // multiplier in Excel and watch every ratio follow. These are set on cells
+  // that already hold a computed value, which matters: xlsx-js-style DROPS a
+  // formula cell that has no cached value, so a formula-only cell would vanish
+  // from the file entirely.
+  for (const blockStart of [B7, B30]) {
+    const adSpendCol = colLetter(blockStart);
+    const spendTaxCol = colLetter(blockStart + 1);
+    const byAdCol = colLetter(blockStart + 2);
+    const ordersCol = colLetter(blockStart + 3);
+    const returnsCol = colLetter(blockStart + 4);
+    const finalCol = colLetter(blockStart + 5);
+    const cpcCol = colLetter(blockStart + 6);
+    const acosCol = colLetter(blockStart + 7);
+    const rtCpcCol = colLetter(blockStart + 8);
+    const rtAcosCol = colLetter(blockStart + 9);
+    for (let r = 1; r < grandRowIdx; r++) {
+      const n = r + 1; // 1 header row, so aoa row 1 is Excel row 2
+      const set = (col: string, f: string) => { if (ws[`${col}${n}`]) ws[`${col}${n}`].f = f };
+      set(spendTaxCol, `${adSpendCol}${n}*${GST_MULTIPLIER}`);
+      set(finalCol, `${ordersCol}${n}-${returnsCol}${n}`);
+      set(cpcCol, `IF(${byAdCol}${n}=0,${spendTaxCol}${n},${spendTaxCol}${n}/${byAdCol}${n})`);
+      set(acosCol, `IF(${priceCol}${n}=0,0,${cpcCol}${n}/${priceCol}${n})`);
+      set(rtCpcCol, `IF(${ordersCol}${n}=0,${spendTaxCol}${n},${spendTaxCol}${n}/${ordersCol}${n})`);
+      set(rtAcosCol, `IF(${priceCol}${n}=0,0,${rtCpcCol}${n}/${priceCol}${n})`);
+    }
+  }
+
+  // Live COUNTIF flag: 1 only on the first row for that SKU, so an analyst who
+  // reorders or filters rows in Excel still gets a correct flag.
+  {
+    const skuCol = colLetter(C_SKU);
+    const flagColLetter = colLetter(FLAG);
+    for (let r = 1; r < grandRowIdx; r++) {
       const n = r + 1;
-      if (ws[`${finalCol}${n}`]) ws[`${finalCol}${n}`].f = `${ordersCol}${n}-${returnsCol}${n}`;
-      if (ws[`${cpcCol}${n}`]) ws[`${cpcCol}${n}`].f = `IF(${adUnitsCol}${n}=0,${spendTaxCol}${n},${spendTaxCol}${n}/${adUnitsCol}${n})`;
-      if (ws[`${acosCol}${n}`]) ws[`${acosCol}${n}`].f = `IF(${priceCol}${n}=0,0,${cpcCol}${n}/${priceCol}${n})`;
+      if (ws[`${flagColLetter}${n}`]) {
+        ws[`${flagColLetter}${n}`].f = `IF(COUNTIF($${skuCol}$2:${skuCol}${n},${skuCol}${n})=1,1,0)`;
+      }
     }
   }
 
-  // Live COUNTIF flag: 1 only on the first campaign row for that SKU ID, so
-  // an analyst who edits/reorders rows in Excel still gets a correct flag
-  // rather than the stale one-time value computed above.
-  const skuCol = colLetter(LEAD_COLS.indexOf("SKU ID"));
-  const flagColLetter = colLetter(flagCol);
-  for (let r = 2; r < grandRowIdx; r++) {
-    const n = r + 1;
-    if (ws[`${flagColLetter}${n}`]) {
-      ws[`${flagColLetter}${n}`].f = `IF(COUNTIF($${skuCol}$3:${skuCol}${n},${skuCol}${n})=1,1,0)`;
-    }
+  // Header — single row, matching their sheet. The two window blocks get
+  // distinct fills so the 7/30 split is still readable at a glance without a
+  // banner row above it.
+  for (let c = 0; c < totalCols; c++) {
+    const addr = XLSX.utils.encode_cell({ r: 0, c });
+    if (!ws[addr]) ws[addr] = { t: "s", v: "" };
+    let fill = "312E81";                                  // lead columns
+    if (c === C_LABEL_7 || (c >= B7 && c < C_LABEL_30)) fill = "4F46E5";
+    else if (c === C_LABEL_30 || (c >= B30 && c < FLAG)) fill = "3730A3";
+    else if (c === FLAG) fill = "374151";
+    ws[addr].s = {
+      font: { bold: true, color: { rgb: "FFFFFF" }, sz: 10 },
+      fill: { fgColor: { rgb: fill } },
+      alignment: { horizontal: "center", vertical: "center", wrapText: true },
+      border: { bottom: { style: "medium", color: { rgb: "1E1B4B" } } },
+    };
   }
 
-  ws["!merges"] = [
-    { s: { r: 0, c: b30 }, e: { r: 0, c: b30 + WIN_COLS.length - 1 } },
-    { s: { r: 0, c: b7 }, e: { r: 0, c: b7 + WIN_COLS.length - 1 } },
-    { s: { r: 0, c: bList }, e: { r: 0, c: bList + LISTING_COLS.length - 1 } },
-  ];
-
-  for (let r = 0; r <= 1; r++) {
-    for (let c = 0; c < totalCols; c++) {
-      const addr = XLSX.utils.encode_cell({ r, c });
-      if (!ws[addr]) ws[addr] = { t: "s", v: "" };
-      let fill = r === 0 ? "312E81" : "4F46E5";
-      if (c >= b7 && c < bList) fill = r === 0 ? "3730A3" : "6366F1";
-      if (c >= bList && c < flagCol) fill = r === 0 ? "065F46" : "059669";
-      if (c >= flagCol) fill = r === 0 ? "374151" : "6B7280";
-      ws[addr].s = {
-        font: { bold: true, color: { rgb: "FFFFFF" }, sz: r === 0 ? 11 : 10 },
-        fill: { fgColor: { rgb: fill } },
-        alignment: { horizontal: "center", vertical: "center", wrapText: true },
-        border: { bottom: { style: "medium", color: { rgb: "1E1B4B" } } },
-      };
-    }
-  }
-
-  for (let r = 2; r < aoa.length; r++) {
+  for (let r = 1; r < aoa.length; r++) {
     const isGrand = r === grandRowIdx;
     for (let c = 0; c < totalCols; c++) {
       const addr = XLSX.utils.encode_cell({ r, c });
@@ -671,36 +680,39 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const style: any = {
         font: { color: { rgb: "1F2937" }, bold: isGrand },
-        alignment: { vertical: "center", horizontal: c === 0 ? "left" : "center" },
+        alignment: { vertical: "center", horizontal: c === C_KEY ? "left" : "center" },
         border: {
           bottom: { style: isGrand ? "medium" : "thin", color: { rgb: isGrand ? "312E81" : "E5E7EB" } },
           ...(isGrand ? { top: { style: "medium", color: { rgb: "312E81" } } } : {}),
         },
       };
-      let posInWin = -1;
-      if (c >= b30 && c < b7) posInWin = c - b30;
-      else if (c >= b7 && c < bList) posInWin = c - b7;
 
-      if (c === LEAD_COLS.length - 1) {
+      let pos = -1;
+      if (c >= B7 && c < C_LABEL_30) pos = c - B7;
+      else if (c >= B30 && c < FLAG) pos = c - B30;
+
+      if (c === C_KEY || c === C_SKU) {
+        style.font = { color: { rgb: "111827" }, bold: true };
+      } else if (c === C_PRICE) {
         style.numFmt = "#,##0";
-      } else if (posInWin >= 0) {
-        if (posInWin === 0 || posInWin === 2 || posInWin === 7) style.numFmt = "#,##0.00";
-        else if (posInWin >= 1 && posInWin <= 6) style.numFmt = "#,##0";
-        else if (posInWin === 8 || posInWin === 9) {
+        style.font = { color: { rgb: "111827" }, bold: true };
+      } else if (c === C_STOCK) {
+        style.numFmt = "#,##0";
+        style.font = { color: { rgb: "4338CA" }, bold: true };
+      } else if (pos >= 0) {
+        if (pos === 0 || pos === 1 || pos === 6 || pos === 8) style.numFmt = "#,##0.00";
+        else if (pos >= 2 && pos <= 5) style.numFmt = "#,##0";
+        if (pos === 5 && typeof cell.v === "number" && cell.v < 0) {
+          style.font = { color: { rgb: "B91C1C" }, bold: true };
+        }
+        if (pos === 7 || pos === 9) {
           style.numFmt = "0.00%";
           if (typeof cell.v === "number" && cell.v > 0) {
             style.fill = { fgColor: { rgb: acosColor(cell.v) } };
             style.font = { color: { rgb: cell.v > 0.4 ? "FFFFFF" : "000000" }, bold: true };
           }
         }
-        if (posInWin === 6 && typeof cell.v === "number" && cell.v < 0) {
-          style.font = { color: { rgb: "B91C1C" }, bold: true };
-        }
-      } else if (c === 0 || c === 1 || c === 2) {
-        style.font = { color: { rgb: "111827" }, bold: true };
-      } else if (c === 3) {
-        style.font = { color: { rgb: "4338CA" }, bold: true };
-      } else if (c === flagCol) {
+      } else if (c === FLAG) {
         style.numFmt = "0";
         if (typeof cell.v === "number" && cell.v === 1) style.font = { color: { rgb: "047857" }, bold: true };
       }
@@ -708,15 +720,15 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
     }
   }
 
-  const cols = [{ wch: 52 }, { wch: 38 }, { wch: 16 }, { wch: 24 }, { wch: 16 }, { wch: 10 }];
-  for (let i = 0; i < 2; i++) {
-    cols.push({ wch: 11 }, { wch: 10 }, { wch: 11 }, { wch: 11 }, { wch: 9 }, { wch: 9 }, { wch: 8 }, { wch: 10 }, { wch: 9 }, { wch: 9 });
-  }
-  cols.push({ wch: 9 }, { wch: 12 }, { wch: 9 }, { wch: 14 });
+  const cols = [{ wch: 52 }, { wch: 24 }, { wch: 9 }, { wch: 8 }];
+  cols.push({ wch: 9 });                                   // "7 Days " label
+  for (let i = 0; i < FK_WIN_7.length; i++) cols.push({ wch: i <= 1 ? 12 : 11 });
+  cols.push({ wch: 10 });                                  // "30 DAYS " label
+  for (let i = 0; i < FK_WIN_30.length; i++) cols.push({ wch: i <= 1 ? 12 : 11 });
   cols.push({ wch: 13 });
   ws["!cols"] = cols;
-  ws["!rows"] = [{ hpt: 22 }, { hpt: 40 }];
-  ws["!views"] = [{ state: "frozen", xSplit: LEAD_COLS.length, ySplit: 2 }];
+  ws["!rows"] = [{ hpt: 40 }];
+  ws["!views"] = [{ state: "frozen", xSplit: 4, ySplit: 1 }];
   XLSX.utils.book_append_sheet(wb, ws, "Analysis report");
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -853,99 +865,6 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
   XLSX.utils.book_append_sheet(wb, wsTacos, "TACOS");
 
   // ═══════════════════════════════════════════════════════════════════════
-  // P&L (settled) — per SKU, from the settled transaction report. Scoped by
-  // PAYMENT date, so this sheet's windows describe money that actually landed
-  // in the 30/7 days, not orders placed in them (those are months apart for
-  // returns and postpaid settlements).
-  // ═══════════════════════════════════════════════════════════════════════
-  const settleWindow = (rowsIn: unknown[]): Map<string, SettleAgg> => {
-    const out = new Map<string, SettleAgg>();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (rowsIn as any[]).forEach((r) => {
-      const sku = r.seller_sku || "(no SKU)";
-      let a = out.get(sku);
-      if (!a) { a = emptySettle(); out.set(sku, a); }
-      a.units += num(r.quantity);
-      a.orders += 1;
-      a.saleAmount += num(r.sale_amount);
-      a.offerAmount += num(r.total_offer_amount);
-      a.marketplaceFee += num(r.marketplace_fee);
-      a.taxes += num(r.taxes);
-      a.refund += num(r.refund);
-      a.settlement += num(r.bank_settlement_value);
-    });
-    return out;
-  };
-  const settleA = settleWindow(settleRows);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const settleB = settleWindow((settleRows as any[]).filter((r) => r.payment_date >= win7.start));
-
-  const PNL_WIN = ["Settled Lines", "Units", "Sale Amount", "Refunds", "Marketplace Fee", "Taxes", "Net Settled", "Net / Unit"];
-  const pnlAoa: (string | number)[][] = [
-    ["", "", label30, "", "", "", "", "", "", "", label7, "", "", "", "", "", "", ""],
-    ["SKU ID", "Product", ...PNL_WIN, ...PNL_WIN],
-  ];
-  const pnlCells = (a: SettleAgg | undefined): number[] => {
-    const s = a || emptySettle();
-    return [s.orders, s.units, s.saleAmount, s.refund, s.marketplaceFee, s.taxes, s.settlement, s.units > 0 ? s.settlement / s.units : 0];
-  };
-  const pnlSkus = [...new Set([...settleA.keys(), ...settleB.keys()])].sort(
-    (a, b) => (settleB.get(b)?.settlement || 0) + (settleA.get(b)?.settlement || 0) - ((settleB.get(a)?.settlement || 0) + (settleA.get(a)?.settlement || 0))
-  );
-  pnlSkus.forEach((sku) => {
-    pnlAoa.push([sku, metaMap.get(sku)?.name || "", ...pnlCells(settleA.get(sku)), ...pnlCells(settleB.get(sku))]);
-  });
-  const pnlTotal = (m: Map<string, SettleAgg>): number[] => {
-    const t = emptySettle();
-    m.forEach((a) => {
-      t.orders += a.orders; t.units += a.units; t.saleAmount += a.saleAmount;
-      t.refund += a.refund; t.marketplaceFee += a.marketplaceFee; t.taxes += a.taxes; t.settlement += a.settlement;
-    });
-    return pnlCells(t);
-  };
-  const pnlGrandIdx = pnlAoa.length;
-  pnlAoa.push(["GRAND TOTAL", "", ...pnlTotal(settleA), ...pnlTotal(settleB)]);
-
-  const wsPnl = XLSX.utils.aoa_to_sheet(pnlAoa);
-  wsPnl["!merges"] = [
-    { s: { r: 0, c: 2 }, e: { r: 0, c: 9 } },
-    { s: { r: 0, c: 10 }, e: { r: 0, c: 17 } },
-  ];
-  for (let r = 0; r <= 1; r++) {
-    for (let c = 0; c < 18; c++) {
-      const addr = XLSX.utils.encode_cell({ r, c });
-      if (!wsPnl[addr]) wsPnl[addr] = { t: "s", v: "" };
-      wsPnl[addr].s = {
-        font: { bold: true, color: { rgb: "FFFFFF" }, sz: 10 },
-        fill: { fgColor: { rgb: c >= 10 ? (r === 0 ? "065F46" : "059669") : r === 0 ? "064E3B" : "047857" } },
-        alignment: { horizontal: "center", vertical: "center", wrapText: true },
-      };
-    }
-  }
-  for (let r = 2; r < pnlAoa.length; r++) {
-    const isGrand = r === pnlGrandIdx;
-    for (let c = 0; c < 18; c++) {
-      const cell = wsPnl[XLSX.utils.encode_cell({ r, c })];
-      if (!cell) continue;
-      const pos = c >= 10 ? c - 10 : c >= 2 ? c - 2 : -1;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const style: any = {
-        font: { bold: isGrand, color: { rgb: "1F2937" } },
-        alignment: { vertical: "center", horizontal: c <= 1 ? "left" : "center" },
-      };
-      if (pos === 0 || pos === 1) style.numFmt = "#,##0";
-      else if (pos >= 2) {
-        style.numFmt = "#,##0.00";
-        if (typeof cell.v === "number" && cell.v < 0) style.font = { color: { rgb: "B91C1C" }, bold: isGrand };
-      }
-      cell.s = style;
-    }
-  }
-  wsPnl["!cols"] = [{ wch: 24 }, { wch: 50 }, ...Array(16).fill({ wch: 14 })];
-  wsPnl["!views"] = [{ state: "frozen", xSplit: 2, ySplit: 2 }];
-  // P&L (settled) sheet removed
-
-  // ═══════════════════════════════════════════════════════════════════════
   // Orders, returns, adspend — four INDEPENDENT top-20 lists side by side.
   // A given row is not a joined record: the SKU in the Orders columns has no
   // relation to whatever SKU appears in the Returns columns of that same row.
@@ -1054,12 +973,20 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
   // ═══════════════════════════════════════════════════════════════════════
   // Key Insights
   // ═══════════════════════════════════════════════════════════════════════
-  const [gSpendTax, gAdUnits, gAdRevenue, , gOrderUnits, gReturns] = totalRowCells((r) => r.wA, (r) => r.wA);
+  // Computed directly rather than destructured out of the grand-total display
+  // array: that coupled these figures to the Analysis sheet's column ORDER, so
+  // rearranging that sheet silently reassigned them. Spend/ad figures sum per
+  // campaign x SKU; Orders/Returns are SKU figures and must be summed over the
+  // deduplicated per-SKU view or every multi-campaign SKU is counted twice.
+  const gSpendTax = rows.reduce((s, r) => s + r.wA.spendTax, 0);
+  const gAdUnits = rows.reduce((s, r) => s + r.wA.adUnits, 0);
+  const gAdRevenue = rows.reduce((s, r) => s + r.wA.adRevenue, 0);
+  const shownSkuRows = skuRows.filter((r) => shownSkus.has(r.sku));
+  const gOrderUnits = shownSkuRows.reduce((s, r) => s + r.wA.orderUnits, 0);
+  const gReturns = shownSkuRows.reduce((s, r) => s + r.wA.returns, 0);
   const gAcosDenom = rows.reduce((s, r) => s + r.meta.price * r.wA.adUnits, 0);
   const gTacosDenom = skuRows.reduce((s, r) => s + r.meta.price * Math.max(0, r.wA.orderUnits - r.wA.returns), 0);
   const gGrossSales = skuRows.reduce((s, r) => s + (winA.skus.get(r.sku)?.saleAmount || 0), 0);
-  const gSettled = [...settleA.values()].reduce((s, a) => s + a.settlement, 0);
-  const gFees = [...settleA.values()].reduce((s, a) => s + a.marketplaceFee + a.taxes, 0);
 
   // Zero-order spend is the cleanest waste signal Flipkart's export gives:
   // the campaign ran, cost money, and produced no attributed unit at all.
@@ -1149,11 +1076,6 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
       returnsReconcile ? `✅ PASS (${directReturnsTotal30})` : `⚠️ FAIL — ${gReturns + nonAdsReturns30} vs ${directReturnsTotal30}`,
       "", "",
     ],
-    ["", "", "", ""],
-    ["💰 SETTLED MONEY (by payment date, same 30-day window)", "", "", ""],
-    ["Net settled to bank (₹)", Math.round(gSettled), "", ""],
-    ["Marketplace fees + taxes deducted (₹)", Math.round(gFees), "", ""],
-    ["Settlement lines", [...settleA.values()].reduce((s, a) => s + a.orders, 0), "", ""],
     ["", "", "", ""],
     ["🎯 BEST PERFORMING (lowest ACOS, spend > 0)", "SKU", "ACOS", "Spend+Tax (₹)"],
     ...rows
@@ -1253,9 +1175,8 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
         : "No listings snapshot is on file, so Price is the window's realised ASP (final sale value / final units) for every SKU, and Stock / MRP / Listing Status are blank. Upload the Flipkart listings file on the Upload Data tab to pin these to the real listing.",
     ],
     ["The listing block is a CURRENT snapshot, not time-windowed — it is shared by both the 30-day and 7-day blocks."],
-    ["P&L (settled) sheet is scoped by PAYMENT DATE, not order date: the settled transaction report covers a settlement window and legitimately contains orders placed months earlier (returns and postpaid payouts settle late). So this sheet answers 'what money moved in these 30/7 days', which will NOT tie back to the Orders figures on the Analysis report for the same window."],
     ["'Orders, returns, adspend' sheet: 4 independent top-20 lists side by side. A given row is NOT a joined record — the SKU in the Orders columns has no relation to the SKU in the Returns columns of that row."],
-    ["FSN report / Earn more / Order report / Settlement sheets: verbatim dumps of the uploaded files for the 30-day window, every original column kept (each uploaded row stores its source row, so nothing is trimmed)."],
+    ["FSN report / Returns report sheets: verbatim dumps of the uploaded files for the 30-day window, every original column kept (each uploaded row stores its source row, so nothing is trimmed)."],
     ["Order report rows are order-item level and include RETURNED, CANCELLED and in-flight statuses (READY_TO_SHIP, RETURN_REQUESTED, ...). It is now the SOURCE of the Orders/Returns figures (see the Orders line above) as well as operational detail (SLA breaches, logistics partner, return reasons)."],
     ["Earn more report is used ONLY for revenue now: Final Sale Value (Key Insights) and the Price ASP-fallback (final sale value / final units, for a SKU with no listings snapshot row). It no longer drives Orders/Returns — Order report carries no monetary columns at all, so Earn more is still needed for those two figures, but it is not required for Orders/Returns to be non-zero."],
     ["Order report rows repeating an (Order item ID, status, Quantity) triple are collapsed to one before this sheet is built (both here and at upload time) — Flipkart's export occasionally repeats a line item verbatim. This key deliberately does NOT include Order ID + SKU: Flipkart splits a 2-unit order of one SKU into two SEPARATE order item IDs of quantity 1, so keying on (Order ID, SKU, Quantity) silently deleted one leg of every such order and made Orders read low. The two legs of a partial return, which share ONE order item ID, both survive because their status and quantity differ."],
@@ -1283,7 +1204,6 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
       !fsnRows.length && FK_REPORT_LABEL.fsn_report,
       !earnRows.length && FK_REPORT_LABEL.earn_more,
       !orderRows.length && FK_REPORT_LABEL.order_report,
-      !settleRows.length && FK_REPORT_LABEL.settlement,
       !returnsRows.length && FK_REPORT_LABEL.returns,
     ].filter(Boolean) as string[],
   };

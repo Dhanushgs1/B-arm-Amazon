@@ -4,14 +4,11 @@ import { exportHistoricalAnalysisReport } from '@/lib/historicalAnalysisReportEx
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { accountId, workspaceId, accountName, keySlot, startDate, endDate } = body;
+    const { accountId, workspaceId, accountName, startDate, endDate } = body;
 
-    if (!keySlot) {
-      return NextResponse.json(
-        { error: 'Missing keySlot parameter' },
-        { status: 400 }
-      );
-    }
+    // keySlot is no longer required: this report is built entirely from the
+    // uploaded Supabase tables, so it needs no SellerMate API key. Callers may
+    // still send one — it is simply ignored rather than rejected.
 
     if (startDate && endDate && startDate > endDate) {
       return NextResponse.json(
@@ -29,7 +26,6 @@ export async function POST(request: NextRequest) {
         workspace_id: workspaceId,
         name: accountName || 'Marketplace360 Account',
       },
-      keySlot,
       endDate: endDate || new Date().toISOString().split('T')[0],
     });
 

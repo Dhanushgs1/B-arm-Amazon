@@ -217,6 +217,24 @@ export async function register() {
       }
     }, { timezone: "UTC" });
 
-    console.log("[Marketplace360] ✅ Email scheduler started — Daily 10AM / Weekly Monday / Monthly 1st");
+    // ── Campaign pause monitor — every 30 minutes, independent of the daily
+    //    report/alert schedule above. Mirrors src/pages/api/cron/campaign-monitor.ts,
+    //    which is what actually runs on Vercel — keep the two in step. No email; this
+    //    only shrinks how stale barm_campaign_pause_log can get (see that file's
+    //    header comment for what it still can't catch: a pause-and-resume that both
+    //    happen inside the same 30-minute gap). ──
+    cron.schedule("*/30 * * * *", async () => {
+      for (const slot of KEY_SLOTS) {
+        const s = await readEmailSettings(slot);
+        if (!(s.amazonAccountId && s.workspaceId)) continue;
+        await runAlertEndpoint(
+          "/api/campaign-state-check",
+          { slot, amazon_account_id: s.amazonAccountId, workspace_id: s.workspaceId },
+          `[${slot}] Campaign monitor (30min)`
+        );
+      }
+    }, { timezone: "UTC" });
+
+    console.log("[Marketplace360] ✅ Email scheduler started — Daily 10AM / Weekly Monday / Monthly 1st / Campaign monitor every 30min");
   }
 }

@@ -24,7 +24,6 @@ export type FlipkartUploadReportType =
   | "fsn_report"
   | "order_report"
   | "earn_more"
-  | "settlement"
   | "returns"
   | "listings";
 
@@ -34,7 +33,6 @@ export const FK_REPORT_LABEL: Record<FlipkartUploadReportType, string> = {
   fsn_report: "Flipkart FSN report",
   order_report: "Flipkart order report",
   earn_more: "Flipkart earn more report",
-  settlement: "Settled transaction report",
   returns: "Flipkart returns report",
   listings: "Flipkart listings (price/stock)",
 };
@@ -44,7 +42,6 @@ export const FK_REPORT_HINT: Record<FlipkartUploadReportType, string> = {
     "Ads › Reports › FSN report — one CSV per day (its Start Time line sets the date), or a multi-day XLSX with a 'Spend' sheet (Date column per row).",
   order_report: "Orders › Download orders — order-item level XLSX.",
   earn_more: "Growth › Earn more — per-day, per-SKU sales XLSX.",
-  settlement: "Payments › Settled transactions — the multi-sheet XLSX (Orders sheet is read).",
   returns:
     "Returns › Returns report — one row per return, richer than the order report's status (tracks in-transit/completed returns the order report can still show as pending).",
   listings:
@@ -53,9 +50,8 @@ export const FK_REPORT_HINT: Record<FlipkartUploadReportType, string> = {
 
 export const FK_REPORT_ACCEPT: Record<FlipkartUploadReportType, string> = {
   fsn_report: ".csv,.xlsx,.xls",
-  order_report: ".xlsx,.xls",
+  order_report: ".csv,.xlsx,.xls",
   earn_more: ".xlsx,.xls",
-  settlement: ".xlsx,.xls",
   returns: ".csv,.xlsx,.xls",
   listings: ".xls,.xlsx",
 };
@@ -64,21 +60,17 @@ export const FK_REPORT_TABLE: Record<FlipkartUploadReportType, string> = {
   fsn_report: "barm_flipkart_fsn_report",
   order_report: "barm_flipkart_order_report",
   earn_more: "barm_flipkart_earn_more",
-  settlement: "barm_flipkart_settlement",
   returns: "barm_flipkart_returns",
   listings: "barm_flipkart_listings",
 };
 
-// The date column each report's "data on file" caption is scoped by. Settlement
-// is scoped by PAYMENT date, not order date — the file covers a settlement
-// window and legitimately contains orders placed months before it. Listings has
-// no date column at all — see FULL_REPLACE_TYPES below — so it's absent here,
-// same as Amazon's price_listing/fba_inventory in amazonReportUpload.ts.
+// The date column each report's "data on file" caption is scoped by. Listings
+// has no date column at all — see FULL_REPLACE_TYPES below — so it's absent
+// here, same as Amazon's price_listing/fba_inventory in amazonReportUpload.ts.
 export const FK_DATE_COLUMN: Partial<Record<FlipkartUploadReportType, string>> = {
   fsn_report: "report_date",
   order_report: "order_date",
   earn_more: "order_date",
-  settlement: "payment_date",
   returns: "return_requested_date",
 };
 
@@ -157,9 +149,9 @@ function normalizeHeaderKey(s: string): string {
 /**
  * Read one sheet as objects.
  *
- * `headerRow` is the 0-based row the column names live on (the settlement
- * report puts a merged "group" caption above the real header, so its Orders
- * sheet needs headerRow=1).
+ * `headerRow` is the 0-based row the column names live on — some Flipkart
+ * exports put a merged "group" caption row above the real header, needing
+ * headerRow=1 instead of the default 0.
  *
  * The used range is recomputed from the sheet's own cells because Flipkart's
  * exporter writes a `<dimension ref="A1:AM1"/>` that describes only the header
@@ -217,6 +209,30 @@ function readSheetRows(ws: XLSX.WorkSheet, headerRow = 0): RawRow[] {
     });
     return row;
   });
+}
+
+/**
+ * Index of the row that actually holds the column names.
+ *
+ * Some Flipkart exports put a preamble above the header — the FSN "Spend" sheet
+ * leads with `Start Time` / `End Time` rows describing the window, exactly like
+ * its CSV sibling does. Reading from row 0 there names the columns "Start Time"
+ * and a timestamp, so every real column lookup misses and every row is dropped
+ * as undated: the upload reports "0 rows saved, N skipped" while the file is
+ * perfectly good. Locating the header by one of its own column names handles
+ * both layouts without hardcoding how tall the preamble is.
+ *
+ * Returns 0 when no probe matches, so a sheet whose header genuinely is the
+ * first row behaves exactly as before.
+ */
+function findHeaderRow(ws: XLSX.WorkSheet, probes: string[], maxScan = 12): number {
+  const aoa = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: "" }) as unknown[][];
+  const want = probes.map((p) => normalizeHeaderKey(p));
+  for (let r = 0; r < Math.min(maxScan, aoa.length); r++) {
+    const cells = (aoa[r] || []).map((c) => normalizeHeaderKey(str(c)));
+    if (want.some((w) => cells.includes(w))) return r;
+  }
+  return 0;
 }
 
 async function readWorkbook(file: File): Promise<XLSX.WorkBook> {
@@ -359,7 +375,10 @@ async function parseFsnReportCsv(file: File): Promise<ParsedUpload> {
  */
 async function parseFsnReportXlsx(file: File): Promise<ParsedUpload> {
   const wb = await readWorkbook(file);
-  const raw = readSheetRows(pickSheet(wb, "Spend", 0));
+  const sheet = pickSheet(wb, "Spend", 0);
+  // The seller's combined workbook keeps the CSV's Start Time / End Time
+  // preamble above the real header on this sheet — see findHeaderRow.
+  const raw = readSheetRows(sheet, findHeaderRow(sheet, ["Date", "Campaign ID"]));
   const rows = raw
     .map((r) => {
       const p = makePicker(r);
@@ -387,11 +406,25 @@ async function parseFsnReportXlsx(file: File): Promise<ParsedUpload> {
   return { rows, totalRows: raw.length, ...dateBounds(rows, "report_date") };
 }
 
-/** Order report XLSX — the "Orders" sheet, one row per order item (or per
- *  return leg of a partially-returned item). */
+/** Order report — the "Orders" sheet (XLSX/XLS) or a raw CSV export, one row
+ *  per order item (or per return leg of a partially-returned item). Same
+ *  CSV-or-XLSX acceptance as parseReturnsReport, for sellers whose Orders >
+ *  Download orders export comes back as a plain CSV rather than the combined
+ *  workbook's "Orders" tab. */
 async function parseOrderReport(file: File): Promise<ParsedUpload> {
-  const wb = await readWorkbook(file);
-  const raw = readSheetRows(pickSheet(wb, "Orders", wb.SheetNames.length - 1));
+  const name = file.name.toLowerCase();
+  let raw: RawRow[];
+  if (name.endsWith(".csv")) {
+    const text = await file.text();
+    raw = (Papa.parse<Record<string, string>>(text, {
+      header: true,
+      skipEmptyLines: true,
+      transformHeader: (h: string) => h.trim(),
+    }) as unknown as { data: Record<string, string>[] }).data;
+  } else {
+    const wb = await readWorkbook(file);
+    raw = readSheetRows(pickSheet(wb, "Orders", wb.SheetNames.length - 1));
+  }
   const rows = raw
     .map((r) => {
       const p = makePicker(r);
@@ -461,76 +494,6 @@ async function parseEarnMore(file: File): Promise<ParsedUpload> {
     .filter((r) => r.order_date && r.sku_id);
 
   return { rows, totalRows: raw.length, ...dateBounds(rows, "order_date") };
-}
-
-/**
- * Settled transaction report — the "Orders" sheet only.
- *
- * That sheet has a two-tier header: row 0 is a merged group caption
- * ("Payment Details", "Marketplace Fees", ...) and row 1 the real column names,
- * with row 2 a mostly-blank sub-header. Reading from row 1 and dropping rows
- * without an Order item ID skips the sub-header without hardcoding its position.
- */
-async function parseSettlement(file: File): Promise<ParsedUpload> {
-  const wb = await readWorkbook(file);
-  const raw = readSheetRows(pickSheet(wb, "Orders", 2), 1);
-  const rows = raw
-    .map((r) => {
-      const p = makePicker(r);
-      return {
-        neft_id: str(p("NEFT ID")),
-        neft_type: str(p("Neft Type")),
-        payment_date: toDate(p("Payment Date")),
-        bank_settlement_value: num(p(/^Bank Settlement Value/i)),
-        input_gst_tcs_credits: num(p(/^Input GST \+ TCS Credits/i)),
-        income_tax_credits: num(p(/^Income Tax Credits/i)),
-        order_id: clean(p("Order ID")),
-        order_item_id: clean(p("Order item ID", "Order Item ID")),
-        sale_amount: num(p("Sale Amount (Rs.)")),
-        total_offer_amount: num(p("Total Offer Amount (Rs.)")),
-        my_share: num(p("My share (Rs.)")),
-        customer_addons_amount: num(p("Customer Add-ons Amount (Rs.)")),
-        marketplace_fee: num(p(/^Marketplace Fee/i)),
-        taxes: num(p("Taxes (Rs.)")),
-        offer_adjustments: num(p("Offer Adjustments (Rs.)")),
-        protection_fund: num(p("Protection Fund (Rs.)")),
-        refund: num(p("Refund (Rs.)")),
-        tier: str(p("Tier")),
-        commission_rate: num(p("Commission Rate (%)")),
-        commission: num(p("Commission (Rs.)")),
-        fixed_fee: num(p(/^Fixed Fee/i)),
-        collection_fee: num(p("Collection Fee (Rs.)")),
-        pick_and_pack_fee: num(p("Pick And Pack Fee (Rs.)")),
-        shipping_fee: num(p("Shipping Fee (Rs.)")),
-        reverse_shipping_fee: num(p("Reverse Shipping Fee (Rs.)")),
-        installation_fee: num(p("Installation Fee (Rs.)")),
-        franchise_fee: num(p("Franchise Fee (Rs.)")),
-        shopsy_marketing_fee: num(p("Shopsy Marketing Fee (Rs.)")),
-        product_cancellation_fee: num(p("Product Cancellation Fee (Rs.)")),
-        tcs: num(p("TCS (Rs.)")),
-        tds: num(p("TDS (Rs.)")),
-        gst_on_mp_fees: num(p("GST on MP Fees (Rs.)")),
-        item_gst_rate: num(p("Item GST Rate (%)")),
-        total_discount_in_mp_fee: num(p(/^Total Discount in MP Fee/i)),
-        offer_adjustment: num(p(/^Offer Adjustment \(Rs\.\)/i)),
-        shipping_zone: str(p("Shipping Zone")),
-        order_date: toDate(p("Order Date")),
-        dispatch_date: toDate(p("Dispatch Date")),
-        fulfilment_type: str(p("Fulfilment Type", "Fulfillment Type")),
-        seller_sku: clean(p("Seller SKU")),
-        quantity: num(p("Quantity")),
-        product_sub_category: str(p("Product Sub Category")),
-        return_type: str(p("Return Type")),
-        shopsy_order: str(p("Shopsy Order")),
-        item_return_status: str(p("Item Return Status")),
-        invoice_id: clean(p("Invoice ID")),
-        invoice_date: toDate(p("Invoice Date")),
-        raw: r,
-      };
-    })
-    .filter((r) => r.order_item_id && r.payment_date);
-
-  return { rows, totalRows: raw.length, ...dateBounds(rows, "payment_date") };
 }
 
 /**
@@ -637,7 +600,6 @@ const PARSER: Record<FlipkartUploadReportType, (file: File) => Promise<ParsedUpl
   fsn_report: parseFsnReport,
   order_report: parseOrderReport,
   earn_more: parseEarnMore,
-  settlement: parseSettlement,
   returns: parseReturnsReport,
   listings: parseListingsReport,
 };

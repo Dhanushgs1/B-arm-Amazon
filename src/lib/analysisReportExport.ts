@@ -44,15 +44,15 @@ const GST_MULTIPLIER = 1.18;
 // per-location breakdown. Unknown codes fall back to the raw code so nothing is
 // silently dropped.
 const FC_STATE_MAP: Record<string, string> = {
-  BLR4: "KARNATAKA", BLR7: "KARNATAKA", BLR8: "KARNATAKA",
+  BLR4: "BANGALORE", BLR7: "BANGALORE", BLR8: "BANGALORE",
   BOM5: "MAHARASHTRA", BOM7: "MAHARASHTRA", ISK3: "MAHARASHTRA", NAX1: "MAHARASHTRA", PNQ3: "MAHARASHTRA", PNQ2: "MAHARASHTRA",
   CCX1: "WEST BENGAL", CCX2: "WEST BENGAL",
   CJB1: "TAMIL NADU", MAA4: "TAMIL NADU", MAA1: "TAMIL NADU",
   DED3: "DELHI", DED4: "DELHI", DED5: "DELHI", DEL2: "DELHI", DEL8: "DELHI",
   DEL4: "HARYANA", DEL5: "HARYANA",
-  HYD3: "TELANGANA", HYD8: "TELANGANA", HYD2: "TELANGANA",
+  HYD3: "HYDERABAD", HYD8: "HYDERABAD", HYD2: "HYDERABAD",
   LKO1: "LUCKNOW",
-  JPX1: "RAJASTHAN", JPX2: "RAJASTHAN",
+  JPX1: "JAIPUR", JPX2: "JAIPUR",
   GAX1: "ASSAM",
   ATX1: "PUNJAB", LDX1: "PUNJAB",
   BBX1: "ODISHA",
@@ -732,7 +732,7 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
   wsNote["A1"].s = { font: { bold: true, sz: 13, color: { rgb: "312E81" } } };
   XLSX.utils.book_append_sheet(wb, wsNote, "Notes");
 
-  const filename = `Analysis_Report_Ad_Performance_${start30}_to_${end}.xlsx`;
+  const filename = `Amazon_Analysis_Report_Ad_Performance_${start30}_to_${end}.xlsx`;
   return { wb, filename, productCount: emittedRows };
 }
 

@@ -1,12 +1,11 @@
 import * as XLSX from "xlsx-js-style";
-import { fetchFullCatalog, fetchInventoryByLocation, fcToState, type ToolCaller } from "@/lib/analysisReportExport";
-import { mcp } from "@/lib/api";
+import { fcToState } from "@/lib/analysisReportExport";
 import { fetchAllRows, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
 
 // Re-exported for existing importers (weeklySalesExport.ts) — the actual
 // definitions live in amazonReportShared.ts so analysisReportExport.ts can use
-// them too without an import cycle (this file already imports fetchFullCatalog
-// etc. FROM analysisReportExport.ts).
+// them too without an import cycle (this file still imports fcToState FROM
+// analysisReportExport.ts).
 export { fetchAllRows, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn };
 
 // ── Historical Analysis Report (Ad Performance) ─────────────────────────────
@@ -30,10 +29,14 @@ export { fetchAllRows, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn }
 // convention (DashboardContext), just computed from uploaded data so it stays
 // correct even when the live account's trailing window has since moved on.
 //
-// Price, FBA/MFN channel, and FBA inventory availability prefer the uploaded
-// Price / FBA Inventory / Inventory Ledger reports (a snapshot, not itself
-// windowed) — falling back independently per field to the live SellerMate
-// catalog/inventory when a given file hasn't been uploaded.
+// EVERY figure in this report comes from the uploaded tables — there is no live
+// SellerMate call anywhere in this file. Price, FBA/MFN channel and FBA
+// availability used to fall back to the live catalog/inventory feed when their
+// file was missing, which quietly mixed TODAY's snapshot into a historical
+// window: the sheet looked complete while describing the wrong point in time,
+// and nothing on the face of it said which rows were affected. Now a missing
+// upload shows as missing data and is named on the Notes sheet, so the reader
+// can see exactly what is absent and upload it.
 
 const GST_MULTIPLIER = 1.18;
 
@@ -79,9 +82,16 @@ interface SkuAgg {
   /** "Orders" — SUM of order quantity, excluding cancelled orders. */
   orderUnits: number;
   returns: number;
+  /**
+   * This SKU's Spend+Tax across ALL its campaigns — the numerator TACOS needs.
+   * TACOS asks "is this SKU's advertising paying for itself", which is a
+   * question about the SKU's whole ad cost, so it cannot be answered from one
+   * campaign's slice of the spend. See computeTacos.
+   */
+  spendTaxTotal: number;
 }
 function emptySkuAgg(): SkuAgg {
-  return { advUnitsTotal: 0, orderUnits: 0, returns: 0 };
+  return { advUnitsTotal: 0, orderUnits: 0, returns: 0, spendTaxTotal: 0 };
 }
 
 /** One Analysis-report row: a campaign x SKU pair plus its SKU-level figures. */
@@ -91,6 +101,8 @@ interface WindowAgg {
   totalUnits: number;
   orderUnits: number;
   returns: number;
+  /** SKU-grain Spend+Tax — TACOS only. See SkuAgg.spendTaxTotal. */
+  skuSpendTax: number;
 }
 function combineAgg(p: PairAgg | undefined, s: SkuAgg | undefined): WindowAgg {
   return {
@@ -99,6 +111,7 @@ function combineAgg(p: PairAgg | undefined, s: SkuAgg | undefined): WindowAgg {
     totalUnits: s?.advUnitsTotal || 0,
     orderUnits: s?.orderUnits || 0,
     returns: s?.returns || 0,
+    skuSpendTax: s?.spendTaxTotal || 0,
   };
 }
 function computeCpc(w: WindowAgg): number {
@@ -107,10 +120,26 @@ function computeCpc(w: WindowAgg): number {
 function computeAcos(w: WindowAgg, price: number): number {
   return price > 0 ? computeCpc(w) / price : 0;
 }
+/**
+ * TACOS is measured at SKU grain, matching the seller's own workbook: the
+ * numerator is the SKU's TOTAL Spend+Tax across every campaign advertising it,
+ * so the same value repeats on each of that SKU's campaign rows. That is the
+ * figure they read to decide whether a SKU's advertising pays for itself.
+ *
+ * Dividing only ONE campaign's spend by the SKU's whole net order volume — which
+ * this used to do — answers a different question ("which campaign eats the
+ * margin") and understates every multi-campaign SKU relative to their workbook.
+ * It also disagreed with this file's own TACOS sheet, which was already per-SKU.
+ *
+ * Final = 0 means spend with no net orders, so TACOS is genuinely undefined
+ * rather than zero — but their workbook prints 0 there, and inventing a
+ * denominator of 1 (the previous behaviour) is worse: it silently reports
+ * Spend+Tax / Price as though exactly one unit had sold.
+ */
 function computeTacos(w: WindowAgg, price: number): number {
   const final = Math.max(0, w.orderUnits - w.returns);
-  const denom = price * (final || 1);
-  return denom > 0 ? w.spendTax / denom : 0;
+  if (final <= 0 || price <= 0) return 0;
+  return w.skuSpendTax / (price * final);
 }
 
 // Excel sorts "B-OT-DT12" before "BMN132" because its collation ignores the
@@ -138,16 +167,14 @@ function emptyMeta(sku: string): SkuMeta {
 }
 
 interface BuildOpts {
-  call: ToolCaller;
-  accountId: string | undefined;
-  workspaceId: string | undefined;
+  /** Shown on the Notes sheet only — no account credentials are needed, since
+   *  every figure comes from the uploaded tables rather than the live API. */
   accountName: string | undefined;
   endDate: string; // 'YYYY-MM-DD' — both windows are trailing windows ending here
 }
 
 export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
-  const { call, accountId, workspaceId, accountName, endDate } = opts;
-  const baseArgs = { amazon_account_id: accountId, workspace_id: workspaceId };
+  const { accountName, endDate } = opts;
 
   const win30 = getDateWindow(endDate, 30);
   const win7 = getDateWindow(endDate, 7);
@@ -169,13 +196,20 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     fetchAllRows("barm_amazon_am_orders", (q) => q.gte("purchase_datetime", win30Ist.gte).lt("purchase_datetime", win30Ist.lt)),
     fetchAllRows("barm_amazon_am_returns", (q) => q.gte("return_request_date", win30.start).lte("return_request_date", endDate)),
     fetchAllRows("barm_amazon_fba_returns", (q) => q.gte("return_date", win30Ist.gte).lt("return_date", win30Ist.lt)),
-    fetchAllRows("barm_amazon_campaign_sku_map", (q) => q),
+    // No "id" column on this table (it's a plain campaign->SKU weight map,
+    // upserted rather than appended) — fetchAllRows defaults to ordering by
+    // "id" for stable pagination, which errors here. Order by its natural
+    // (campaign_name, sku) key instead.
+    fetchAllRows("barm_amazon_campaign_sku_map", (q) => q, ["campaign_name", "sku"]),
     fetchAllRows("barm_amazon_price_listing", (q) => q),
     fetchAllRows("barm_amazon_fba_inventory", (q) => q),
-    // Ledger "as of" endDate — every SELLABLE row up to and including endDate;
-    // the latest one per (SKU, location) is that location's true balance as
-    // of the report period, not today.
-    fetchAllRows("barm_amazon_inventory_ledger", (q) => q.lte("ledger_date", endDate).eq("disposition", "SELLABLE")),
+    // Whole SELLABLE ledger, deliberately NOT filtered by date. The ledger is a
+    // point-in-time stock snapshot, not a per-day history, so the uploaded file
+    // is normally dated AFTER the report window (the seller exports it today).
+    // Filtering to <= endDate matched nothing and made every FBA SKU read 0 —
+    // the same trap weeklySalesExport.ts documents. The snapshot to use is
+    // chosen below, preferring one at or before endDate.
+    fetchAllRows("barm_amazon_inventory_ledger", (q) => q.eq("disposition", "SELLABLE")),
     // Raw "Inventory ledger" sheet — every disposition, mirroring what was
     // actually uploaded for the 30-day window.
     fetchAllRows("barm_amazon_inventory_ledger", (q) => q.gte("ledger_date", win30.start).lte("ledger_date", endDate)),
@@ -226,9 +260,30 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   });
   const hasUploadedFbaInv = inboundShippedBySku.size > 0;
 
+  // Which snapshot date the stock figures actually describe. Ideally the latest
+  // one at or before endDate — a true "as of the window" reading. When the
+  // upload only covers later dates (the normal case, since the ledger is
+  // exported today) fall back to the EARLIEST available snapshot: it is the
+  // closest thing to the window that exists, it is uploaded and dated rather
+  // than a live snapshot, and the Notes sheet states the date so the reader
+  // knows the stock describes that day rather than the report period. Reporting
+  // nothing here would be worse — the FBA status sheet would lose every state
+  // column over a technicality about which day the file was pulled.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ledgerDates = [...new Set((ledgerRows as any[]).map((r) => r.ledger_date).filter(Boolean))].sort();
+  const atOrBefore = ledgerDates.filter((d) => d <= endDate);
+  const ledgerAsOf: string | null = atOrBefore.length ? atOrBefore[atOrBefore.length - 1] : (ledgerDates[0] ?? null);
+  const ledgerIsAfterWindow = !!ledgerAsOf && ledgerAsOf > endDate;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ledgerInScope = (ledgerRows as any[]).filter((r) => r.ledger_date && r.ledger_date <= (ledgerAsOf ?? ""));
+  // When the only snapshots are after the window, `ledgerInScope` is empty by
+  // that test, so use the chosen snapshot's own rows instead.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ledgerEffective: any[] = ledgerInScope.length ? ledgerInScope : (ledgerRows as any[]).filter((r) => r.ledger_date === ledgerAsOf);
+
   const ledgerLatestByKey = new Map<string, { ledger_date: string; msku: string; location: string; ending_balance: number }>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ledgerRows.forEach((r: any) => {
+  ledgerEffective.forEach((r: any) => {
     if (!r.msku) return;
     const key = `${r.msku}|${r.location}`;
     const cur = ledgerLatestByKey.get(key);
@@ -255,10 +310,10 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   });
   const hasUploadedLedger = ledgerBySku.size > 0;
 
-  const [catalog, inventory] = await Promise.all([
-    hasUploadedPrice ? Promise.resolve([]) : fetchFullCatalog(call, baseArgs).catch(() => []),
-    hasUploadedLedger ? Promise.resolve([]) : fetchInventoryByLocation(call, baseArgs).catch(() => []),
-  ]);
+  // No live-API fallback here by design — see this file's header comment. Every
+  // figure comes from the uploaded exports, so a missing file shows as missing
+  // data (and is named on the Notes sheet) rather than being quietly filled in
+  // with today's live snapshot for a historical window.
 
   const metaMap = new Map<string, SkuMeta>();
   const ensureMeta = (sku: string): SkuMeta => {
@@ -298,63 +353,34 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     if (r.product_name && m.name === m.sku) m.name = r.product_name;
   });
 
-  // Price / FBA-MFN channel — uploaded Price report when available, else live catalog.
-  if (hasUploadedPrice) {
-    priceBySku.forEach((info, sku) => {
-      const m = ensureMeta(sku);
-      m.isFba = info.isFba;
-      m.channel = info.channel;
-      if (info.price > 0) m.price = info.price;
-      m.fbmQty += info.fbmQty;
-    });
-  } else {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    catalog.forEach((c: any) => {
-      if (!c.sku) return;
-      const m = ensureMeta(c.sku);
-      if (c.itemName && m.name === m.sku) m.name = c.itemName;
-      const isFbaSku = typeof c.fulfillmentChannel === "string" && c.fulfillmentChannel.toUpperCase().startsWith("AMAZON");
-      m.isFba = isFbaSku;
-      m.channel = isFbaSku ? "AMAZON_IN" : "DEFAULT";
-      const price = Number(c.price) || 0;
-      if (price > 0) m.price = price;
-      if (!isFbaSku) m.fbmQty += Number(c.quantity) || 0;
-    });
-  }
+  // Price / FBA-MFN channel — from the uploaded Price (All Listings) report.
+  // Without it, price stays 0, which zeroes ACOS and TACOS (both guard on
+  // price > 0). That is the honest outcome: those ratios are meaningless
+  // without the price the SKU actually sold at during the window, and the
+  // Notes sheet says so rather than substituting today's live catalog price.
+  priceBySku.forEach((info, sku) => {
+    const m = ensureMeta(sku);
+    m.isFba = info.isFba;
+    m.channel = info.channel;
+    if (info.price > 0) m.price = info.price;
+    m.fbmQty += info.fbmQty;
+  });
 
-  // FBA inventory availability — uploaded Inventory Ledger (as of endDate)
-  // when available, else the live per-location breakdown.
+  // FBA availability — from the uploaded Inventory Ledger, taken as of endDate
+  // so the stock shown belongs to the report's window rather than to today.
+  // Without the ledger there is no per-state stock at all: accountStates stays
+  // empty, so the FBA status sheet loses its state columns and the Analysis
+  // report's Available column reads 0. Previously this fell back to the live
+  // per-location feed, which pulled TODAY's balances into a historical window —
+  // the numbers looked complete while describing the wrong point in time.
   const accountStates = new Set<string>();
-  if (hasUploadedLedger) {
-    ledgerBySku.forEach((info, sku) => {
-      const m = ensureMeta(sku);
-      m.isFba = true;
-      m.fbaTotal += info.fbaTotal;
-      info.stateBalances.forEach((v, st) => m.stateBalances.set(st, (m.stateBalances.get(st) || 0) + v));
-    });
-    ledgerStates.forEach((st) => accountStates.add(st));
-  } else {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    inventory.forEach((i: any) => {
-      for (const loc of i.fba?.byLocation || []) {
-        const sku = loc.sku || i.sku;
-        if (!sku) continue;
-        const bal = loc.endingWarehouseBalance || 0;
-        const m = ensureMeta(sku);
-        m.isFba = true;
-        if (bal <= 0) continue;
-        m.fbaTotal += bal;
-        const state = fcToState(loc.location);
-        m.stateBalances.set(state, (m.stateBalances.get(state) || 0) + bal);
-        accountStates.add(state);
-      }
-      if (!(i.fba?.byLocation?.length) && (i.fba?.endingWarehouseBalance || 0) > 0 && i.sku) {
-        const m = ensureMeta(i.sku);
-        m.isFba = true;
-        m.fbaTotal += i.fba.endingWarehouseBalance;
-      }
-    });
-  }
+  ledgerBySku.forEach((info, sku) => {
+    const m = ensureMeta(sku);
+    m.isFba = true;
+    m.fbaTotal += info.fbaTotal;
+    info.stateBalances.forEach((v, st) => m.stateBalances.set(st, (m.stateBalances.get(st) || 0) + v));
+  });
+  ledgerStates.forEach((st) => accountStates.add(st));
 
   // ── Per-window numeric aggregation — same function run twice: once over
   // the full 30-day rows, once over the 7-day-filtered subset. ──
@@ -383,10 +409,16 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     };
     /** Ad spend + ad-attributed units land on BOTH grains at once. */
     const addAd = (campaign: string, sku: string, spend: number, units: number) => {
+      const taxed = spend * GST_MULTIPLIER;
       const p = ensurePair(campaign, sku);
-      p.spendTax += spend * GST_MULTIPLIER;
+      p.spendTax += taxed;
       p.advUnits += units;
-      ensureSku(sku).advUnitsTotal += units;
+      const s = ensureSku(sku);
+      s.advUnitsTotal += units;
+      // Every rupee of spend — SP, SB and SD, including the unmapped bucket —
+      // funnels through here, so this is the one place that can total spend per
+      // SKU without re-walking the pair map later.
+      s.spendTaxTotal += taxed;
     };
     // SP: true SKU-level ad spend + ad-attributed units, straight from the CSV.
     // "Advertised SKU Units (#)" is deliberately populated from Amazon's "7 Day
@@ -515,7 +547,10 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
       let w = out.get(sku);
       if (!w) {
         const s = m.skus.get(sku);
-        w = { spendTax: 0, advUnits: 0, totalUnits: s?.advUnitsTotal || 0, orderUnits: s?.orderUnits || 0, returns: s?.returns || 0 };
+        // spendTax accumulates from the pairs below and lands on the same total
+        // as skuSpendTax; taking skuSpendTax straight from SkuAgg keeps one
+        // source of truth for the TACOS numerator at either grain.
+        w = { spendTax: 0, advUnits: 0, totalUnits: s?.advUnitsTotal || 0, orderUnits: s?.orderUnits || 0, returns: s?.returns || 0, skuSpendTax: s?.spendTaxTotal || 0 };
         out.set(sku, w);
       }
       return w;
@@ -532,7 +567,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   };
   const skuRollA = rollUpToSku(winAMap);
   const skuRollB = rollUpToSku(winBMap);
-  const emptyWindowAgg = (): WindowAgg => ({ spendTax: 0, advUnits: 0, totalUnits: 0, orderUnits: 0, returns: 0 });
+  const emptyWindowAgg = (): WindowAgg => ({ spendTax: 0, advUnits: 0, totalUnits: 0, orderUnits: 0, returns: 0, skuSpendTax: 0 });
 
   const activeSkus = new Set<string>();
   skuRollA.forEach((w, sku) => { if (w.spendTax || w.advUnits || w.orderUnits || w.returns) activeSkus.add(sku); });
@@ -900,15 +935,29 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     const allFbaCol = colLetter(1 + stateList.length + 4);
     for (let i = 0; i < fbaRows.length; i++) {
       const r = i + 2;
+      const meta = fbaRows[i].meta;
       const ifParts = stateList
         .map((_, si) => {
           const letter = colLetter(1 + si);
           return `IF(${letter}${r}>0,$${letter}$1&", ","")`;
         })
         .join("&");
-      wsFba[`${availCol}${r}`] = { t: "s", f: `TRIM(SUBSTITUTE(${ifParts},", "," ",LEN(${ifParts})-LEN(SUBSTITUTE(${ifParts},",",""))))` };
-      wsFba[`${notAvailCol}${r}`] = { t: "n", f: `COUNTIF(${stateColStart}${r}:${stateColEnd}${r},0)` };
-      wsFba[`${allFbaCol}${r}`] = { t: "s", f: `IF(${notAvailCol}${r}>0,"No","Yes")` };
+      // Each of these carries BOTH the formula (so the sheet stays live and
+      // editable like the seller's own workbook) and a pre-computed value.
+      // The value is not optional: xlsx-js-style DROPS a formula cell that has
+      // no cached `v` when writing the file, so a formula-only cell vanished
+      // entirely and these three columns arrived blank in every export.
+      // Computed from the same state balances the formula ranges over, so the
+      // two can't disagree — and Excel still recalculates on edit.
+      const withStock = stateList.filter((st) => (meta.stateBalances.get(st) ?? 0) > 0);
+      const availableVal = withStock.length ? withStock.join(", ") : "0";
+      // Mirrors COUNTIF(states,0): only a state the ledger actually reported
+      // and is currently zero counts as "not available" — a state this SKU
+      // simply never shipped to is blank, and COUNTIF ignores blanks.
+      const notAvailVal = stateList.filter((st) => meta.stateBalances.get(st) === 0).length;
+      wsFba[`${availCol}${r}`] = { t: "s", v: availableVal, f: `TRIM(SUBSTITUTE(${ifParts},", "," ",LEN(${ifParts})-LEN(SUBSTITUTE(${ifParts},",",""))))` };
+      wsFba[`${notAvailCol}${r}`] = { t: "n", v: notAvailVal, f: `COUNTIF(${stateColStart}${r}:${stateColEnd}${r},0)` };
+      wsFba[`${allFbaCol}${r}`] = { t: "s", v: notAvailVal > 0 ? "No" : "Yes", f: `IF(${notAvailCol}${r}>0,"No","Yes")` };
     }
   }
   for (let c = 0; c < fbaHeader.length; c++) {
@@ -1022,10 +1071,14 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   const lbSpendTaxCol = (groupIdx: number) => colLetter(lbStarts[groupIdx] + 2);
   for (let i = 0; i < lbRowCount; i++) {
     const r = i + 3; // 2 header rows
-    const put = (groupIdx: number, present: unknown) => {
+    // Campaign x SKU rows are [key, spend]; by-SKU rows add advertised units.
+    const put = (groupIdx: number, present: readonly [string, number, ...number[]] | undefined) => {
       if (!present) return;
       const spendCol = colLetter(lbStarts[groupIdx] + 1);
-      wsLb[`${lbSpendTaxCol(groupIdx)}${r}`] = { t: "n", f: `${spendCol}${r}*${GST_MULTIPLIER}` };
+      // Cached value as well as the formula — xlsx-js-style drops a formula
+      // cell with no `v`, which silently blanked this whole column. present[1]
+      // is the pre-tax spend, so this is the same arithmetic the formula shows.
+      wsLb[`${lbSpendTaxCol(groupIdx)}${r}`] = { t: "n", v: present[1] * GST_MULTIPLIER, f: `${spendCol}${r}*${GST_MULTIPLIER}` };
     };
     put(0, lbAdCamp30[i]); put(1, lbAdCamp7[i]); put(2, lbAdSku30[i]); put(3, lbAdSku7[i]);
   }
@@ -1525,7 +1578,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     [`Last 30 days: ${dotDate(win30.start)} to ${dotDate(win30.end)}`],
     [`Last 7 days: ${dotDate(win7.start)} to ${dotDate(win7.end)}`],
     [""],
-    ["Sourced from the manually uploaded reports (Upload Reports page), not the live SellerMate API — this is what lets both trailing windows be recomputed from a fixed historical upload instead of only 'as of today'. The live API is consulted ONLY as a fallback for Price, FBA/MFN channel and FBA availability, and never for spend, orders or returns."],
+    ["Every figure here comes from the manually uploaded reports (Upload Reports page). The live SellerMate API is NOT called at all — not for spend, orders, returns, price, channel or FBA stock. That is what lets both trailing windows be recomputed from a fixed historical upload instead of only 'as of today', and it means a missing upload shows up as missing data (flagged below) rather than being filled in with today's snapshot."],
     ["Analysis report / TACOS sheets: both windows always end on the same date and are recomputed from the SAME 30-day fetch — the 7-day block is simply the last 7 days of that data, not a separate query."],
     ["GRAIN — the Analysis report has ONE ROW PER CAMPAIGN x SKU. Only Spend+Tax and Advertised SKU Units are per-campaign. Total Units, Orders and Returns belong to the SKU (Amazon reports them per SKU, never per campaign), so a SKU advertised by two campaigns shows the SAME Orders/Returns on both of its rows. Summing an Orders column therefore double-counts such SKUs — the GRAND TOTAL row deliberately sums those three columns over distinct SKUs instead, which is why it will not equal a plain SUM() of the column above it."],
     ["Sponsored Brands / Display spend is only ever known per campaign (Amazon's own export has no SKU column). Each such campaign's spend is split across the SKUs assigned to it on the Upload Reports page, in proportion to the WEIGHT given to each. Weights are relative, so {2,1,1} and {50,25,25} split identically. Campaigns with no mapping at all are grouped under the '⚠ Unmapped SB/SD campaigns' row rather than being dropped, so their spend still appears in the totals."],
@@ -1539,17 +1592,19 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     [
       hasUploadedPrice
         ? "Price and FBA/MFN channel come from the uploaded Price (All Listings) report."
-        : "Price and FBA/MFN channel come from the LIVE product catalog (today's snapshot) — no Price report has been uploaded, so this may not match what price actually was during this date range.",
+        : "⚠ NO Price (All Listings) report uploaded — Price reads 0 for every SKU, and because ACOS and TACOS both divide by Price they read 0 too. Those two columns are therefore NOT usable in this file. Upload the Price report and regenerate. (Nothing is substituted from the live catalog: today's price is not the price this window sold at.)",
     ],
     [
       hasUploadedLedger
-        ? `FBA availability comes from the uploaded Inventory Ledger report, as of ${dotDate(win30.end)} (the latest SELLABLE balance per SKU/location on or before that date) — not today. Not time-windowed like the ad/order metrics — it's a single current snapshot shared by both the 30-day and 7-day blocks.`
-        : "FBA availability comes from the LIVE inventory feed (today's snapshot) — no Inventory Ledger report has been uploaded, so this may not match actual stock during this date range.",
+        ? (ledgerIsAfterWindow
+            ? `⚠ FBA availability comes from the uploaded Inventory Ledger snapshot dated ${dotDate(ledgerAsOf!)}, which is AFTER this report's window (ends ${dotDate(win30.end)}) — the ledger is a point-in-time stock snapshot, not a per-day history, and no snapshot on or before the window end has been uploaded. So the stock/state figures describe ${dotDate(ledgerAsOf!)}, not the report period. Upload a ledger dated on or before ${dotDate(win30.end)} for a true as-of reading.`
+            : `FBA availability comes from the uploaded Inventory Ledger snapshot dated ${dotDate(ledgerAsOf!)} (the latest SELLABLE balance per SKU/location on or before ${dotDate(win30.end)}) — not today. Not time-windowed like the ad/order metrics: it's a single snapshot shared by both the 30-day and 7-day blocks.`)
+        : "⚠ NO Inventory Ledger report uploaded — there is no per-state FBA stock in this file, so the FBA status sheet has no state columns and the Available column reads 0. Upload the Inventory Ledger and regenerate. (Nothing is substituted from the live inventory feed: today's balances do not describe this window.)",
     ],
     [
       hasUploadedFbaInv
         ? "Inbound-shipped-quantity comes from the uploaded FBA Inventory report."
-        : "Inbound-shipped-quantity shows '—': not exposed by the live inventory feed, and no FBA Inventory report has been uploaded.",
+        : "Inbound-shipped-quantity shows '—': no FBA Inventory report has been uploaded.",
     ],
     ["FBA status sheet: per-state stock pivot for FBA SKUs only (a snapshot, not time-windowed), with the same Available / Number of FBA Not Available / All FBA formulas as the seller's original workbook."],
     ["Price / AM orders / AM returns / FBA returns / SF returns / Adspend / Inventory ledger / FBA inventory sheets: verbatim dumps of the uploaded exports, every original column kept (each uploaded row stores its source CSV row, so nothing is trimmed). A few columns in these sheets are DERIVED, not from Amazon: 'IST with Time' and 'Date ' on AM orders (from the UTC purchase-date), 'return-time' on FBA returns (split out of return-date), 'Area' on Inventory ledger (from Location), and on Adspend the 'Start/End Date' pair plus the 'Campaign Name*Advertised SKU' pivot key."],
@@ -1578,7 +1633,10 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     return (ia < 0 ? SHEET_ORDER.length : ia) - (ib < 0 ? SHEET_ORDER.length : ib);
   });
 
-  const filename = `Historical_Analysis_Report_${win30.start}_to_${endDate}.xlsx`;
+  // Marketplace-prefixed so an Amazon and a Flipkart export of the same window
+  // don't sit in Downloads as near-identical names (the Flipkart builder already
+  // prefixes; this one used to be the odd one out).
+  const filename = `Amazon_Historical_Analysis_Report_${win30.start}_to_${endDate}.xlsx`;
   return {
     wb,
     filename,
@@ -1591,19 +1649,19 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   };
 }
 
+/**
+ * No API key parameter by design — this report reads only the uploaded tables
+ * (enforced by the no-restricted-imports rule for this file in
+ * eslint.config.mjs). `account` is used for the display name on the Notes sheet.
+ */
 export async function exportHistoricalAnalysisReport(opts: {
   endDate?: string;
   account: { id?: string; workspace_id?: string; name?: string } | null | undefined;
-  keySlot: string;
 }) {
-  const { account, keySlot } = opts;
+  const { account } = opts;
   const endDate = opts.endDate || new Date().toISOString().slice(0, 10);
-  const call: ToolCaller = (tool, args) => mcp(tool, args, keySlot);
 
   const { wb, filename, ...stats } = await buildHistoricalAnalysisReportWorkbook({
-    call,
-    accountId: account?.id,
-    workspaceId: account?.workspace_id,
     accountName: account?.name,
     endDate,
   });
