@@ -210,9 +210,13 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     // the same trap weeklySalesExport.ts documents. The snapshot to use is
     // chosen below, preferring one at or before endDate.
     fetchAllRows("barm_amazon_inventory_ledger", (q) => q.eq("disposition", "SELLABLE")),
-    // Raw "Inventory ledger" sheet — every disposition, mirroring what was
-    // actually uploaded for the 30-day window.
-    fetchAllRows("barm_amazon_inventory_ledger", (q) => q.gte("ledger_date", win30.start).lte("ledger_date", endDate)),
+    // Raw "Inventory ledger" sheet — every disposition, deliberately NOT filtered
+    // by date, for the exact same reason as the SELLABLE fetch just above: the
+    // ledger is a point-in-time snapshot normally dated AFTER the report window,
+    // so a `.gte(win30.start).lte(endDate)` filter here matched zero rows and the
+    // sheet rendered as header-only. Narrowed to the chosen snapshot (ledgerAsOf,
+    // computed below from the SELLABLE fetch) right before it's written to the sheet.
+    fetchAllRows("barm_amazon_inventory_ledger", (q) => q),
     fetchAllRows("barm_amazon_sf_return", (q) => q.gte("pickup_date", win30.start).lte("pickup_date", endDate)),
   ]);
 
@@ -272,7 +276,11 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const ledgerDates = [...new Set((ledgerRows as any[]).map((r) => r.ledger_date).filter(Boolean))].sort();
   const atOrBefore = ledgerDates.filter((d) => d <= endDate);
-  const ledgerAsOf: string | null = atOrBefore.length ? atOrBefore[atOrBefore.length - 1] : (ledgerDates[0] ?? null);
+  // No snapshot on or before the window end (the common case — ledger exports are
+  // dated when pulled, not backdated) falls back to the MOST RECENT snapshot
+  // available at all, not the oldest — the freshest stock read is the closest
+  // stand-in for "current" when nothing inside the window exists.
+  const ledgerAsOf: string | null = atOrBefore.length ? atOrBefore[atOrBefore.length - 1] : (ledgerDates[ledgerDates.length - 1] ?? null);
   const ledgerIsAfterWindow = !!ledgerAsOf && ledgerAsOf > endDate;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const ledgerInScope = (ledgerRows as any[]).filter((r) => r.ledger_date && r.ledger_date <= (ledgerAsOf ?? ""));
@@ -280,6 +288,13 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   // that test, so use the chosen snapshot's own rows instead.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const ledgerEffective: any[] = ledgerInScope.length ? ledgerInScope : (ledgerRows as any[]).filter((r) => r.ledger_date === ledgerAsOf);
+
+  // Raw "Inventory ledger" sheet: every currently-uploaded row, every date it
+  // covers — no single-snapshot narrowing. Deliberately just ledgerRawRows
+  // itself (fetched with no date filter above); kept as its own name so the
+  // book_append_sheet call below stays self-documenting about which set backs
+  // the raw dump vs which backs the FBA status sheet's deduped stock numbers.
+  const ledgerRawEffective = ledgerRawRows;
 
   const ledgerLatestByKey = new Map<string, { ledger_date: string; msku: string; location: string; ending_balance: number }>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1399,7 +1414,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     "Vendor Returns", "Warehouse Transfer In/Out", "Found", "Lost", "Damaged", "Disposed",
     "Other Events", "Ending Warehouse Balance", "Unknown Events", "Location", "Area",
   ];
-  XLSX.utils.book_append_sheet(wb, buildRawSheet(ledgerRawRows, LEDGER_HEADERS, {
+  XLSX.utils.book_append_sheet(wb, buildRawSheet(ledgerRawEffective, LEDGER_HEADERS, {
     Area: (r, get) => fcToState(String(get("Location") ?? r.location ?? "")),
   }), "Inventory ledger");
 
