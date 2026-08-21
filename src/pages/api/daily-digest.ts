@@ -9,8 +9,13 @@
 // report did not — it recomputed its own counts from a single day with a separate heuristic
 // while the alerts used a 7-day lookback, so the two disagreed on the same morning.
 //
-// Unlike the separate alerts, this always sends: a quiet day is worth one line saying so, and
-// silence is indistinguishable from a broken cron.
+// Skips the actual email when SellerMate returns no real numbers for the day (totalSales,
+// adSpend, adSales and orders all zero) — that combination isn't "a quiet day" for an active
+// account, it's SellerMate's sync lag or an API hiccup for that single day (the 7-day-lookback
+// bleeding/wasted-term detectors below can still show real, non-zero numbers on that same
+// no-data day, which is what a zero-everywhere-except-alerts email looked like and prompted
+// this change). The response JSON below still reports `emailed:false` either way, so a genuinely
+// broken cron stays visible in the Vercel logs even though no confusing mail goes out.
 //
 // POST body: { slot?, amazon_account_id, workspace_id, to, cc?, currency?, date?, send?,
 //              acosThreshold?, minSpend?, lookbackDays?, lowStockThreshold?, attachWorkbook? }
@@ -155,9 +160,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
+    // All four headline numbers at zero means SellerMate had nothing for this single day —
+    // see the file header comment. Sending anyway is what produced a "₹0 sales, ₹89,906 at
+    // risk" email that read as broken rather than quiet.
+    const hasRealData = metrics.totalSales > 0 || metrics.adSpend > 0 || metrics.adSales > 0 || metrics.orders > 0;
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let emailResult: any = null;
-    if (send && to) {
+    if (send && to && hasRealData) {
       const proto = (req.headers["x-forwarded-proto"] as string) || "http";
       const host = req.headers.host;
       const r = await internalFetch(`${proto}://${host}/api/send-email`, {
@@ -167,13 +177,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
       emailResult = await r.json().catch(() => ({}));
       if (!r.ok) emailResult = { error: emailResult?.error || "send-email failed" };
+    } else if (send && to && !hasRealData) {
+      console.warn(`[Marketplace360] Daily digest for ${day} skipped — SellerMate returned no sales/spend/orders for this day (sync lag or API issue).`);
     }
 
     return res.status(200).json({
       date: day, dateLabel, metrics,
       counts: { stockout: stockoutItems.length, bleeding: bleedingItems.length, wastedTerms: wastedTerms.length },
       attached: !!attachments,
-      emailed: !!(send && to),
+      emailed: !!(send && to && hasRealData),
+      skippedNoData: !!(send && to && !hasRealData),
       emailResult,
     });
   } catch (err) {
