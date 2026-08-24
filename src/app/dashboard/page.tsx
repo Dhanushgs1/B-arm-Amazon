@@ -25,14 +25,34 @@ const num = (val: number) => new Intl.NumberFormat("en-IN").format(Math.round(va
 const pct = (val: number) => `${(val || 0).toFixed(2)}%`;
 const fx = (val: number) => (val || 0).toFixed(2);
 
-const getDynamicTrend = (name: string, value: number, start: string, end: string, accountId?: string) => {
-  const seed = `${name}-${value}-${start}-${end}-${accountId || ""}`;
-  let hash = 0;
-  for (let i = 0; i < seed.length; i++) {
-    hash = seed.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  const rawPct = (hash % 185) / 10;
-  return parseFloat(rawPct.toFixed(1));
+const isoDate = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+// The window of identical length immediately preceding [start, end]. A 7-day
+// selection compares against the 7 days before it, a 30-day one against the 30
+// before it — the same basis the weekly report already uses.
+const previousWindow = (start: string, end: string) => {
+  if (!start || !end) return { start: "", end: "" };
+  const s = new Date(`${start}T00:00:00`);
+  const e = new Date(`${end}T00:00:00`);
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime()) || e < s) return { start: "", end: "" };
+  const days = Math.round((e.getTime() - s.getTime()) / 86400000) + 1;
+  const prevEnd = new Date(s);
+  prevEnd.setDate(s.getDate() - 1);
+  const prevStart = new Date(prevEnd);
+  prevStart.setDate(prevEnd.getDate() - (days - 1));
+  return { start: isoDate(prevStart), end: isoDate(prevEnd) };
+};
+
+// Real period-over-period change. Returns undefined when there is no usable
+// baseline, so the KPI card renders no trend badge rather than an invented one.
+// (This replaced a hash of the metric name and value, which produced a stable
+// but entirely fictional percentage — an 80% sales collapse could show as green
+// growth, and a one-rupee change swung the badge by ten points.)
+const pctChange = (current: number, previous: number): number | undefined => {
+  if (!Number.isFinite(current) || !Number.isFinite(previous)) return undefined;
+  if (previous === 0) return undefined;
+  return ((current - previous) / Math.abs(previous)) * 100;
 };
 
 export default function DashboardOverview() {
@@ -103,6 +123,28 @@ export default function DashboardOverview() {
     enabled: !!account,
   });
 
+  // Baseline for the KPI trend badges: the same two summaries, fetched for the
+  // window immediately before the selected one.
+  const prevRange = useMemo(() => previousWindow(startDate, endDate), [startDate, endDate]);
+  const prevArgs = {
+    amazon_account_id: account?.id,
+    workspace_id: account?.workspace_id,
+    start_date: prevRange.start,
+    end_date: prevRange.end,
+  };
+
+  const { data: prevCpData } = useQuery({
+    queryKey: ["cp_prev", keySlot, account?.id, prevRange.start, prevRange.end],
+    queryFn: () => mcp("get_campaign_performance", { ...prevArgs, page_size: 500 }, keySlot),
+    enabled: !!account && !!prevRange.start,
+  });
+
+  const { data: prevRetailData } = useQuery({
+    queryKey: ["retail_prev", keySlot, account?.id, prevRange.start, prevRange.end],
+    queryFn: () => mcp("get_retail_product_performance", { ...prevArgs, page_size: 200 }, keySlot),
+    enabled: !!account && !!prevRange.start,
+  });
+
   const { data: allCampaignListData } = useQuery({
     queryKey: ["campaigns_list", keySlot, account?.id],
     queryFn: () => mcp("list_campaigns", {
@@ -162,6 +204,25 @@ export default function DashboardOverview() {
   const organicSales = Math.max(0, totalSales - adSales);
   const totalUnits = rs.totalUnitsOrdered || 0;
   const tacos = rs.overallTacos || 0;
+
+  // Same derivations against the previous window, so every trend badge compares
+  // like with like. While these queries are in flight the values are 0 and
+  // pctChange returns undefined, which renders no badge rather than a wrong one.
+  const ps = prevCpData?.summary || {};
+  const prs = prevRetailData?.summary || {};
+  const prevCtr = ps.totalImpressions ? (ps.totalClicks / ps.totalImpressions) * 100 : 0;
+  const prevCpc = ps.totalClicks ? ps.totalSpend / ps.totalClicks : 0;
+  const prevCvr = ps.totalClicks ? (ps.totalOrders / ps.totalClicks) * 100 : 0;
+  const prevTotalSales = prs.totalSales || 0;
+  const prevAdSales = prs.totalAdSales || ps.totalSales || 0;
+  const prevOrganicSales = Math.max(0, prevTotalSales - prevAdSales);
+  const prevTotalUnits = prs.totalUnitsOrdered || 0;
+  const prevTacos = prs.overallTacos || 0;
+
+  // Shown on the badge tooltip so the number is self-explanatory.
+  const trendBasisLabel = prevRange.start
+    ? `vs ${prevRange.start} – ${prevRange.end}`
+    : "no comparable prior period";
 
   // Calculate Returns & Cancellations from FBA returns data
   const returnsArray = returnsData || [];
@@ -442,7 +503,8 @@ Write 6 tagged insight lines now:`;
           : { tag: 'WIN',    text: 'All products are well-stocked and no campaigns are critically overspending — overall account health looks good.' },
   ];
 
-  const finalSummaryItems: SummaryItem[] = geminiSummary && geminiSummary.length > 0 ? geminiSummary : fallbackSummaryItems;
+  const usingGemini = !!(geminiSummary && geminiSummary.length > 0);
+  const finalSummaryItems: SummaryItem[] = usingGemini ? geminiSummary! : fallbackSummaryItems;
   const finalSummaryPoints = finalSummaryItems.map(i => i.text); // keep backward compat
 
   if (contextLoading || cpLoading) {
@@ -496,11 +558,11 @@ Write 6 tagged insight lines now:`;
 
       {/*  Top Row: 5 Large KPI Cards  */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-        <KPICard title="Total Sales" value={cur(totalSales, currency)} subtitle="Retail + Ads combined" trend={getDynamicTrend("Total Sales", totalSales, startDate, endDate, account?.id)} delay={0.02} accent="green" />
-        <KPICard title="Ad Spend" value={cur(s.totalSpend || 0, currency)} subtitle="Advertising Spend" trend={getDynamicTrend("Ad Spend", s.totalSpend || 0, startDate, endDate, account?.id)} delay={0.03} accent="pink" />
-        <KPICard title="Ad Sales" value={cur(adSales, currency)} subtitle="Ads-Attributed" trend={getDynamicTrend("Ad Sales", adSales, startDate, endDate, account?.id)} delay={0.04} accent="blue" />
-        <KPICard title="Organic Sales" value={cur(organicSales, currency)} subtitle="Non-Ads Revenue" trend={getDynamicTrend("Organic Sales", organicSales, startDate, endDate, account?.id)} delay={0.06} accent="orange" />
-        <KPICard title="Units Ordered" value={num(totalUnits)} subtitle="Total Units Sold" trend={getDynamicTrend("Units Ordered", totalUnits, startDate, endDate, account?.id)} delay={0.08} accent="purple" />
+        <KPICard title="Total Sales" value={cur(totalSales, currency)} subtitle="Retail + Ads combined" trend={pctChange(totalSales, prevTotalSales)} trendBasis={trendBasisLabel} delay={0.02} accent="green" />
+        <KPICard title="Ad Spend" value={cur(s.totalSpend || 0, currency)} subtitle="Advertising Spend" trend={pctChange(s.totalSpend || 0, ps.totalSpend || 0)} trendBasis={trendBasisLabel} delay={0.03} accent="pink" />
+        <KPICard title="Ad Sales" value={cur(adSales, currency)} subtitle="Ads-Attributed" trend={pctChange(adSales, prevAdSales)} trendBasis={trendBasisLabel} delay={0.04} accent="blue" />
+        <KPICard title="Organic Sales" value={cur(organicSales, currency)} subtitle="Non-Ads Revenue" trend={pctChange(organicSales, prevOrganicSales)} trendBasis={trendBasisLabel} delay={0.06} accent="orange" />
+        <KPICard title="Units Ordered" value={num(totalUnits)} subtitle="Total Units Sold" trend={pctChange(totalUnits, prevTotalUnits)} trendBasis={trendBasisLabel} delay={0.08} accent="purple" />
       </div>
 
       {/* AI Quick-Action Bar */}
@@ -586,6 +648,24 @@ Write 6 tagged insight lines now:`;
                 </h3>
               </div>
               <div className="flex items-center gap-1.5">
+                {/* Gemini frequently times out or hits the free-tier rate limit,
+                    in which case the panel silently renders the rule-based
+                    bullets instead. Same layout either way, so say which. */}
+                {!geminiFetching && (
+                  <span
+                    title={usingGemini
+                      ? "Written by Gemini from this period's metrics"
+                      : "Gemini was unavailable — these are computed directly from this period's metrics"}
+                    className={cn(
+                      "text-[9px] font-black px-1.5 py-0.5 rounded-full border",
+                      usingGemini
+                        ? "text-indigo-500 bg-indigo-500/8 border-indigo-500/15"
+                        : "text-slate-400 dark:text-slate-500 bg-slate-500/8 border-slate-500/15"
+                    )}
+                  >
+                    {usingGemini ? "AI" : "Rule-based"}
+                  </span>
+                )}
                 <button
                   onClick={() => refetchGeminiSummary()}
                   disabled={geminiFetching}
@@ -672,12 +752,12 @@ Write 6 tagged insight lines now:`;
             <span className="text-[10px] bg-[#10B981]/10 text-[#10B981] font-bold px-2 py-0.5 rounded-full ml-1">Target Met</span>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
-            <KPICard title="ROAS" value={`${fx(s.overallRoas)}x`} subtitle="Return on ad spend" trend={getDynamicTrend("ROAS", s.overallRoas, startDate, endDate, account?.id)} delay={0.1} accent="purple" />
-            <KPICard title="ACOS" value={pct(s.overallAcos)} subtitle="Cost of sales" trend={getDynamicTrend("ACOS", s.overallAcos, startDate, endDate, account?.id)} inverseTrend={true} delay={0.12} accent="pink" />
-            <KPICard title="TACOS" value={pct(tacos)} subtitle="Total ACOS" trend={getDynamicTrend("TACOS", tacos, startDate, endDate, account?.id)} inverseTrend={true} delay={0.14} accent="orange" />
-            <KPICard title="CTR" value={pct(ctr)} subtitle="Click-through rate" trend={getDynamicTrend("CTR", ctr, startDate, endDate, account?.id)} delay={0.16} accent="cyan" />
-            <KPICard title="CPC" value={cur(cpc, currency)} subtitle="Cost per click" trend={getDynamicTrend("CPC", cpc, startDate, endDate, account?.id)} inverseTrend={true} delay={0.18} accent="blue" />
-            <KPICard title="CVR" value={pct(cvr)} subtitle="Conversion rate" trend={getDynamicTrend("CVR", cvr, startDate, endDate, account?.id)} delay={0.2} accent="green" />
+            <KPICard title="ROAS" value={`${fx(s.overallRoas)}x`} subtitle="Return on ad spend" trend={pctChange(s.overallRoas || 0, ps.overallRoas || 0)} trendBasis={trendBasisLabel} delay={0.1} accent="purple" />
+            <KPICard title="ACOS" value={pct(s.overallAcos)} subtitle="Cost of sales" trend={pctChange(s.overallAcos || 0, ps.overallAcos || 0)} trendBasis={trendBasisLabel} inverseTrend={true} delay={0.12} accent="pink" />
+            <KPICard title="TACOS" value={pct(tacos)} subtitle="Total ACOS" trend={pctChange(tacos, prevTacos)} trendBasis={trendBasisLabel} inverseTrend={true} delay={0.14} accent="orange" />
+            <KPICard title="CTR" value={pct(ctr)} subtitle="Click-through rate" trend={pctChange(ctr, prevCtr)} trendBasis={trendBasisLabel} delay={0.16} accent="cyan" />
+            <KPICard title="CPC" value={cur(cpc, currency)} subtitle="Cost per click" trend={pctChange(cpc, prevCpc)} trendBasis={trendBasisLabel} inverseTrend={true} delay={0.18} accent="blue" />
+            <KPICard title="CVR" value={pct(cvr)} subtitle="Conversion rate" trend={pctChange(cvr, prevCvr)} trendBasis={trendBasisLabel} delay={0.2} accent="green" />
           </div>
         </div>
         <div className="xl:col-span-1">

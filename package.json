@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "check:theme": "node tools/check-theme-variant.mjs",
+    "prebuild": "node tools/check-theme-variant.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
