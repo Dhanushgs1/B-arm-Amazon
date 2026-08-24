@@ -96,3 +96,16 @@ export function istDayWindowUtc(start: string, end: string): { gte: string; lt: 
   // AFTER `end` (the exclusive upper bound) = 18:30 UTC on `end` itself.
   return { gte: `${prevDay(start)}T18:30:00.000Z`, lt: `${end}T18:30:00.000Z` };
 }
+
+// Buckets a single raw UTC timestamp into its IST calendar day ("YYYY-MM-DD") —
+// the per-row counterpart to istDayWindowUtc's range, for callers that fetch a
+// wider span in one query and then need to sort individual rows into narrower
+// periods in memory (e.g. weeklySalesExport.ts's last-week/this-week split).
+// Bucketing by the raw UTC date instead (`isoString.slice(0,10)`) puts any
+// order/return from ~18:30 UTC onward on the wrong (earlier) calendar day —
+// the same drift istDayWindowUtc's own comment documents.
+export function istDateOnly(utcIso: string): string {
+  const d = new Date(utcIso);
+  d.setUTCMinutes(d.getUTCMinutes() + 330);
+  return d.toISOString().slice(0, 10);
+}

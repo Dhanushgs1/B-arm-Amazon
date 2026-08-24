@@ -90,6 +90,18 @@ const FULL_REPLACE_TYPES: Partial<Record<UploadReportType, true>> = {
   fba_inventory: true,
 };
 
+// These two report tables (plus Flipkart's fsn_report/order_report — see
+// PRUNE_TO_UPLOAD_RANGE in flipkartReportUpload.ts) are meant to hold only
+// the date range the seller's own export covers, not full history: the
+// seller's "Last N days" downloads are themselves the retention window, so
+// once a fresh file lands, any row outside that file's min/max date is from
+// an earlier upload's window and should be dropped rather than accumulate
+// forever.
+const PRUNE_TO_UPLOAD_RANGE: Partial<Record<UploadReportType, true>> = {
+  sp_advertised_product: true,
+  am_orders: true,
+};
+
 // The date column each report's table is scoped by — used to show "data on
 // file: X to Y" per upload card. price_listing/fba_inventory are absent here
 // (snapshots, no date column) — that card just shows a row count instead.
@@ -108,7 +120,11 @@ const DATE_COLUMN: Partial<Record<UploadReportType, string>> = {
 // campaign/sku) are dropped client-side rather than sent to Supabase, where a
 // NOT NULL violation would abort the whole chunk.
 const REQUIRED_FIELDS: Record<UploadReportType, string[]> = {
-  sp_advertised_product: ["report_date", "campaign_name", "advertised_sku"],
+  // campaign_name is deliberately NOT required here — some sellers' exports
+  // carry SKU-level spend rows with no campaign attached (a manual
+  // allocation row rather than a tracked-campaign one), and dropping those
+  // would silently lose real spend instead of just saving it uncategorized.
+  sp_advertised_product: ["report_date", "advertised_sku"],
   sb_campaign: ["report_date", "campaign_name"],
   sd_campaign: ["report_date", "campaign_name"],
   am_orders: ["amazon_order_id", "order_item_id", "purchase_date", "sku"],
@@ -376,6 +392,11 @@ function mapPriceListingRow(row: RawRow) {
     fulfillment_channel: pick(row, /^fulfillment-channel$/i),
     asin1: pick(row, /^asin1$/i),
     item_condition: pick(row, /^item-condition$/i),
+    // "Active" / "Inactive" on Amazon's own All-Listings export — lets a report
+    // tell a genuinely delisted SKU apart from one that simply sold nothing
+    // this window. Blank when the export doesn't carry the column at all
+    // (older exports), which callers must treat as "unknown", not "inactive".
+    status: pick(row, /^status$/i),
     raw: row,
   };
 }
@@ -460,6 +481,76 @@ const REPORT_MAPPER: Record<UploadReportType, (row: RawRow) => any> = {
   sf_return: mapSfReturnRow,
 };
 
+// Additive metrics to sum when two rows in the same file collapse onto the
+// same upsert key — only possible now that sp_advertised_product no longer
+// requires campaign_name: two campaign-less rows for the same SKU/date have
+// an identical key (date, "", "", sku) despite being genuinely separate
+// spend entries, and Postgres upsert errors ("cannot affect row a second
+// time") if a single batch has two rows with the same conflict key.
+const SUMMABLE_FIELDS: Partial<Record<UploadReportType, string[]>> = {
+  sp_advertised_product: [
+    "impressions", "clicks", "spend", "sales_7d", "orders_7d", "units_7d",
+    "advertised_sku_units_7d", "other_sku_units_7d", "advertised_sku_sales_7d", "other_sku_sales_7d",
+  ],
+  sb_campaign: ["impressions", "clicks", "spend", "sales", "orders", "units"],
+  sd_campaign: ["impressions", "clicks", "spend", "sales_14d", "orders_14d", "units_14d"],
+};
+
+// Ratio/rate fields can't be summed (that double-counts fractions) — they're
+// recomputed from the merged group's summed base counts instead.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function recomputeRatios(type: UploadReportType, row: any): void {
+  const n = (v: unknown) => Number(v) || 0;
+  if (type === "sp_advertised_product") {
+    row.ctr = n(row.impressions) ? n(row.clicks) / n(row.impressions) : null;
+    row.cpc = n(row.clicks) ? n(row.spend) / n(row.clicks) : null;
+    row.acos = n(row.sales_7d) ? n(row.spend) / n(row.sales_7d) : null;
+    row.roas = n(row.spend) ? n(row.sales_7d) / n(row.spend) : null;
+    row.conversion_rate_7d = n(row.clicks) ? n(row.orders_7d) / n(row.clicks) : null;
+  } else if (type === "sb_campaign") {
+    row.ctr = n(row.impressions) ? n(row.clicks) / n(row.impressions) : null;
+    row.cpc = n(row.clicks) ? n(row.spend) / n(row.clicks) : null;
+    row.acos = n(row.sales) ? n(row.spend) / n(row.sales) : null;
+    row.roas = n(row.spend) ? n(row.sales) / n(row.spend) : null;
+    row.conversion_rate = n(row.clicks) ? n(row.orders) / n(row.clicks) : null;
+  } else if (type === "sd_campaign") {
+    row.ctr = n(row.impressions) ? n(row.clicks) / n(row.impressions) : null;
+    row.cpc = n(row.clicks) ? n(row.spend) / n(row.clicks) : null;
+    row.acos = n(row.sales_14d) ? n(row.spend) / n(row.sales_14d) : null;
+    row.roas = n(row.spend) ? n(row.sales_14d) / n(row.spend) : null;
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mergeDuplicateKeyRows(type: UploadReportType, rows: any[], onConflict: string): any[] {
+  const summable = SUMMABLE_FIELDS[type];
+  if (!summable) return rows;
+  const keyFields = onConflict.split(",");
+  const groups = new Map<string, typeof rows>();
+  rows.forEach((r) => {
+    const key = keyFields.map((f) => String(r[f] ?? "")).join(" ");
+    const list = groups.get(key) || [];
+    list.push(r);
+    groups.set(key, list);
+  });
+
+  const out: typeof rows = [];
+  groups.forEach((list) => {
+    if (list.length === 1) {
+      out.push(list[0]);
+      return;
+    }
+    const merged = { ...list[0] };
+    summable.forEach((f) => {
+      merged[f] = list.reduce((sum, r) => sum + (Number(r[f]) || 0), 0);
+    });
+    merged.raw = list.map((r) => r.raw);
+    recomputeRatios(type, merged);
+    out.push(merged);
+  });
+  return out;
+}
+
 // ── Supabase writes ──────────────────────────────────────────────────────────
 
 export async function upsertInChunks(
@@ -516,6 +607,18 @@ async function replaceDateRange(
   if (error) throw new Error(`Delete existing ${table} rows in range failed: ${error.message}`);
 }
 
+// Deletes every row OUTSIDE [minDate, maxDate] — the opposite of
+// replaceDateRange/deleteDateRange, which only clear the overlapping range
+// before a fresh insert. Used for PRUNE_TO_UPLOAD_RANGE report types, where
+// the latest upload's own date span defines everything that should still be
+// on file.
+export async function pruneOutsideRange(table: string, dateCol: string, minDate: string, maxDate: string): Promise<void> {
+  const { error: belowErr } = await supabasePublic.from(table).delete().lt(dateCol, minDate);
+  if (belowErr) throw new Error(`Pruning ${table} rows before ${minDate} failed: ${belowErr.message}`);
+  const { error: aboveErr } = await supabasePublic.from(table).delete().gt(dateCol, maxDate);
+  if (aboveErr) throw new Error(`Pruning ${table} rows after ${maxDate} failed: ${aboveErr.message}`);
+}
+
 // Wipes the whole table before inserting — for the two catalog/stock snapshot
 // types (see FULL_REPLACE_TYPES) where every upload supersedes the last one
 // entirely rather than merging by date or key. `.gte("id", 0)` matches every
@@ -536,6 +639,11 @@ export interface UploadResult {
   totalRows: number;
   validRows: number;
   skippedRows: number;
+  // Only populated for the upsert path (SP/SB/SD ad reports) — lets the
+  // upload page check the just-uploaded campaigns for high ACOS without a
+  // second round-trip to Supabase.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  rows?: any[];
 }
 
 // Amazon's own orders/returns exports occasionally contain a literal
@@ -578,11 +686,18 @@ export async function uploadReportFile(type: UploadReportType, file: File): Prom
   const replaceDateField = REPLACE_DATE_FIELD[type];
 
   if (onConflict) {
-    await upsertInChunks(table, valid, onConflict);
+    const deduped = mergeDuplicateKeyRows(type, valid, onConflict);
+    await upsertInChunks(table, deduped, onConflict);
+    if (PRUNE_TO_UPLOAD_RANGE[type] && deduped.length > 0) {
+      const dateCol = DATE_COLUMN[type]!;
+      const dates = deduped.map((r) => r[dateCol]).filter(Boolean).sort();
+      await pruneOutsideRange(table, dateCol, dates[0].slice(0, 10), dates[dates.length - 1].slice(0, 10));
+    }
     return {
       totalRows: rawRows.length,
       validRows: valid.length,
       skippedRows: rawRows.length - valid.length,
+      rows: deduped,
     };
   } else if (FULL_REPLACE_TYPES[type]) {
     await truncateAndInsert(table, valid);
@@ -598,6 +713,9 @@ export async function uploadReportFile(type: UploadReportType, file: File): Prom
     const maxDate = dates[dates.length - 1].slice(0, 10);
     await replaceDateRange(table, replaceDateField, !!REPLACE_IS_TIMESTAMP[type], minDate, maxDate);
     await insertInChunks(table, deduped);
+    if (PRUNE_TO_UPLOAD_RANGE[type]) {
+      await pruneOutsideRange(table, replaceDateField, minDate, maxDate);
+    }
     return {
       totalRows: rawRows.length,
       validRows: deduped.length,

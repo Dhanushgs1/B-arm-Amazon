@@ -9,6 +9,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { resolveSellerMateKey } from "@/lib/adAlerts";
 import { buildWeeklySalesWorkbookFromHistorical } from "@/lib/weeklySalesExport";
 import { fetchAllRows } from "@/lib/historicalAnalysisReportExport";
+import { istDayWindowUtc, isStandardOrderId } from "@/lib/amazonReportShared";
 import { categorizeTitle, resolveProductName } from "@/lib/categoryMap";
 import { internalFetch } from "@/lib/internalFetch";
 import * as XLSX from "xlsx-js-style";
@@ -53,8 +54,15 @@ const pctChange = (last: number, now: number) => {
 // SellerMate's live get_retail_product_performance tool — that API only exposes ASIN-level data,
 // while the uploaded raw export carries the real per-order SKU.
 async function retailMapBySku(start: string, end: string) {
+  // IST calendar day (istDayWindowUtc), not the raw UTC purchase_date column —
+  // matching historicalAnalysisReportExport.ts's convention. Filtering by the
+  // raw UTC date instead put orders from the last ~5.5 hours of the UTC day on
+  // the wrong side of the window, so this route's per-SKU movers (and the
+  // Units Ordered summary line) could disagree with the attached Weekly Sales
+  // Report XLSX by exactly the boundary orders.
+  const window = istDayWindowUtc(start, end);
   const [rows, priceRows] = await Promise.all([
-    fetchAllRows("barm_amazon_am_orders", (q) => q.gte("purchase_date", start).lte("purchase_date", end)),
+    fetchAllRows("barm_amazon_am_orders", (q) => q.gte("purchase_datetime", window.gte).lt("purchase_datetime", window.lt)),
     fetchAllRows("barm_amazon_price_listing", (q) => q),
   ]);
   const listingPriceBySku = new Map<string, number>();
@@ -69,10 +77,11 @@ async function retailMapBySku(start: string, end: string) {
     if (!r.sku) continue;
     const cur = map.get(r.sku) || { name: "", sku: r.sku, sales: 0, units: 0 };
     if (r.product_name && !cur.name) cur.name = r.product_name;
-    // Same three corrections as the Excel builder (see weeklySalesExport.ts): item_price is the
-    // line total, cancelled orders aren't revenue, and a 0 price on a real shipment falls back to
-    // the listing price. The email body and the attachment must not disagree.
+    // Same corrections as the Excel builder (see weeklySalesExport.ts): item_price is the line
+    // total, cancelled/non-standard-order-id rows aren't real sales, and a 0 price on a real
+    // shipment falls back to the listing price. The email body and the attachment must not disagree.
     if (String(r.order_status || "").toLowerCase().startsWith("cancelled")) continue;
+    if (!isStandardOrderId(r.amazon_order_id)) continue;
     const qty = r.quantity || 0;
     const linePrice = Number(r.item_price) || 0;
     cur.sales += linePrice > 0 ? linePrice : qty * (listingPriceBySku.get(r.sku) || 0);

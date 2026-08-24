@@ -175,6 +175,12 @@ interface BuildOpts {
 
 export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   const { accountName, endDate } = opts;
+  // Stamped once, at the moment this build actually reads its source tables —
+  // written to the Notes sheet below so a reader can tell this file and a
+  // Weekly Sales Report apart when the two were generated minutes (or days)
+  // apart and therefore don't see the same upload state, instead of assuming
+  // any mismatch is a bug.
+  const dataPulledAt = new Date().toISOString();
 
   const win30 = getDateWindow(endDate, 30);
   const win7 = getDateWindow(endDate, 7);
@@ -255,6 +261,27 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     priceBySku.set(r.seller_sku, cur);
   });
   const hasUploadedPrice = priceBySku.size > 0;
+
+  // Listing status ("Active"/"Inactive" on Amazon's own All-Listings export) —
+  // used below to stop a delisted SKU's leftover FBA ledger balance alone from
+  // pulling it into this report when it had no orders or ad spend in the
+  // window. That was the source of SKUs appearing ONLY in this report and
+  // never in the order-driven Weekly Sales Report: a discontinued listing can
+  // carry stale FBA stock (and this report's stock rule treated any stock as
+  // "active") for months after its last real order. Blank/missing status is
+  // treated as unknown, not inactive, since older Price exports don't carry
+  // the column at all — the rule below must never be the reason a genuinely
+  // active SKU with real sales silently drops out.
+  const listingStatusBySku = new Map<string, string>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  priceListingRows.forEach((r: any) => {
+    if (!r.seller_sku || !r.status) return;
+    listingStatusBySku.set(r.seller_sku, String(r.status));
+  });
+  const isInactiveListing = (sku: string): boolean => {
+    const s = listingStatusBySku.get(sku);
+    return !!s && s.trim().toLowerCase() !== "active";
+  };
 
   const inboundShippedBySku = new Map<string, number>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -545,6 +572,30 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
       wA: combineAgg(winAMap.pairs.get(k), winAMap.skus.get(id.sku)),
       wB: combineAgg(winBMap.pairs.get(k), winBMap.skus.get(id.sku)),
     }));
+
+  // Every SKU with orders/returns in the 30-day window gets a row even when it
+  // was never advertised — winAMap.skus already holds it (orders are recorded
+  // per SKU regardless of ad activity), only winAMap.pairIds (ad rows only)
+  // left it out above. Without this, the sheet was silently scoped to
+  // advertised/FBA-tracked SKUs only: a SKU with real sales but no campaign
+  // and no FBA stock never appeared here at all, while it was fully present in
+  // the order-driven Weekly Sales Report — the source of SKUs missing from
+  // this report entirely. campaign: "" falls through to the SKU's product name
+  // in the row-render below, exactly like the "no campaign yet" case already
+  // handled there.
+  const skusWithAdPair = new Set(rows.map((r) => r.sku));
+  winAMap.skus.forEach((s, sku) => {
+    if (skusWithAdPair.has(sku) || sku === UNMAPPED) return;
+    if (!s.orderUnits && !s.returns) return;
+    rows.push({
+      campaign: "",
+      sku,
+      meta: metaMap.get(sku) || emptyMeta(sku),
+      wA: combineAgg(undefined, s),
+      wB: combineAgg(undefined, winBMap.skus.get(sku)),
+    });
+  });
+
   rows.sort((a, b) => {
     const ka = excelSortKey(a.sku), kb = excelSortKey(b.sku);
     if (ka !== kb) return ka < kb ? -1 : 1;
@@ -586,7 +637,15 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
 
   const activeSkus = new Set<string>();
   skuRollA.forEach((w, sku) => { if (w.spendTax || w.advUnits || w.orderUnits || w.returns) activeSkus.add(sku); });
-  metaMap.forEach((m, sku) => { if (m.fbaTotal > 0 || m.fbmQty > 0) activeSkus.add(sku); });
+  metaMap.forEach((m, sku) => {
+    if (m.fbaTotal <= 0 && m.fbmQty <= 0) return;
+    // Real 30-day activity (checked above, order matters — activeSkus is
+    // already fully populated by it) always wins regardless of listing
+    // status. Only a SKU with NO activity at all, admitted purely because old
+    // stock is still on the books, gets held back for being inactive.
+    if (isInactiveListing(sku) && !activeSkus.has(sku)) return;
+    activeSkus.add(sku);
+  });
   const skuRows: SkuRow[] = [...activeSkus].map((sku) => ({
     sku,
     meta: metaMap.get(sku) || emptyMeta(sku),
@@ -594,6 +653,28 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     wB: skuRollB.get(sku) || emptyWindowAgg(),
   }));
   skuRows.sort((a, b) => (b.wA.spendTax - a.wA.spendTax) || (b.wA.orderUnits - a.wA.orderUnits));
+
+  // Final is deliberately left unclamped (see buildWinCells below) because
+  // that is what the seller's own workbook does — a return is dated by
+  // request, not by its original order date, so it can legitimately belong to
+  // an order placed before this window and outnumber this window's orders.
+  // Clamping it to 0 would disagree with their workbook. Surfaced here as an
+  // explicit, named list instead, so a negative Final reads as "a real return
+  // against an earlier order", not as a bug in this report.
+  const negativeFinalNote = (w: (r: SkuRow) => WindowAgg, label: string): string | null => {
+    const hits = skuRows
+      .filter((r) => r.sku !== UNMAPPED)
+      .map((r) => ({ sku: r.sku, w: w(r) }))
+      .filter(({ w }) => w.orderUnits - w.returns < 0);
+    if (!hits.length) return null;
+    return (
+      `⚠ ${label}: Final (Orders − Returns) is negative for ${hits.length} SKU(s) — a return was recorded with no matching order in this window, so it belongs to an order placed in an earlier period ("returns without matching in-window order"). Left unclamped, matching the seller's own workbook: ` +
+      hits.map((h) => `${h.sku} (Orders ${h.w.orderUnits}, Returns ${h.w.returns}, Final ${h.w.orderUnits - h.w.returns})`).join("; ") +
+      "."
+    );
+  };
+  const negativeFinalNote30 = negativeFinalNote((r) => r.wA, "Last 30 days");
+  const negativeFinalNote7 = negativeFinalNote((r) => r.wB, "Last 7 days");
 
   const buildAvailCells = (m: SkuMeta): (string | number)[] => {
     if (!m.isFba && m.fbaTotal <= 0) return ["0", "", "", "", ""];
@@ -1592,10 +1673,12 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     [`Account: ${accountName || "-"}`],
     [`Last 30 days: ${dotDate(win30.start)} to ${dotDate(win30.end)}`],
     [`Last 7 days: ${dotDate(win7.start)} to ${dotDate(win7.end)}`],
+    [`Data pulled at: ${dataPulledAt} (compare this against the Weekly Sales Report's own "Data pulled at" — the two files disagree on a SKU whenever they were generated far enough apart to see different uploads, not because either one is wrong).`],
     [""],
     ["Every figure here comes from the manually uploaded reports (Upload Reports page). The live SellerMate API is NOT called at all — not for spend, orders, returns, price, channel or FBA stock. That is what lets both trailing windows be recomputed from a fixed historical upload instead of only 'as of today', and it means a missing upload shows up as missing data (flagged below) rather than being filled in with today's snapshot."],
     ["Analysis report / TACOS sheets: both windows always end on the same date and are recomputed from the SAME 30-day fetch — the 7-day block is simply the last 7 days of that data, not a separate query."],
-    ["GRAIN — the Analysis report has ONE ROW PER CAMPAIGN x SKU. Only Spend+Tax and Advertised SKU Units are per-campaign. Total Units, Orders and Returns belong to the SKU (Amazon reports them per SKU, never per campaign), so a SKU advertised by two campaigns shows the SAME Orders/Returns on both of its rows. Summing an Orders column therefore double-counts such SKUs — the GRAND TOTAL row deliberately sums those three columns over distinct SKUs instead, which is why it will not equal a plain SUM() of the column above it."],
+    ["GRAIN — the Analysis report has ONE ROW PER CAMPAIGN x SKU. Only Spend+Tax and Advertised SKU Units are per-campaign. Total Units, Orders and Returns belong to the SKU (Amazon reports them per SKU, never per campaign), so a SKU advertised by two campaigns — most commonly one campaign per fulfillment channel, e.g. an FBA campaign and an MFN campaign for the same SKU — shows the SAME Orders/Returns on BOTH of its rows. Summing this sheet's Orders column therefore double-counts every such SKU (looks like ~2x for a dual-channel SKU with exactly one campaign per channel). For a genuine per-SKU total, either read the GRAND TOTAL row (which deliberately sums Orders/Returns/Total Units over distinct SKUs, not over rows, and so will not equal a plain SUM() of the column above it) or the TACOS sheet, which is already one row per SKU."],
+    ["A SKU that had orders or returns this window but was never advertised and carries no FBA stock still gets a row here (Row Labels blank campaign, falls back to its product name) — Orders/Returns are real, Spend+Tax and Advertised SKU Units are correctly 0. Previously such SKUs were left out of this sheet entirely (it only covered advertised/FBA-tracked SKUs), which is why a plain SKU export could show far fewer rows here than on the order-driven Weekly Sales Report."],
     ["Sponsored Brands / Display spend is only ever known per campaign (Amazon's own export has no SKU column). Each such campaign's spend is split across the SKUs assigned to it on the Upload Reports page, in proportion to the WEIGHT given to each. Weights are relative, so {2,1,1} and {50,25,25} split identically. Campaigns with no mapping at all are grouped under the '⚠ Unmapped SB/SD campaigns' row rather than being dropped, so their spend still appears in the totals."],
     ["Spend+Tax = ad spend x 1.18 (18% GST) — computed from each row's raw 'spend' field, summed per campaign x SKU, then multiplied once by 1.18. Not a formula in the Analysis report/TACOS sheets (matches the original workbook), but is a live formula (Spend x 1.18) in the 'Orders, returns, adspend' sheet."],
     ["Orders = the SUM OF ORDER QUANTITY for the SKU (units ordered), NOT the number of order records — matching the seller's own pivot. CANCELLED orders are excluded: they were never sold, so counting them would inflate Orders and depress ACOS/TACOS."],
@@ -1627,6 +1710,9 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     ["SF returns sheet: raw dump of uploaded SellerFlex (self-fulfilled) returns for the 30-day window, if any were uploaded. Folded into the Returns / Final / ACOS / TACOS figures elsewhere in this workbook, same as AM returns + FBA returns."],
     ["'Orders, returns, adspend' sheet: 4 independent top-N lists side by side (Adspend by campaign x SKU, Adspend by SKU, Orders by SKU, Returns by SKU), each split into its own 30-day/7-day pair — a given row is NOT a joined record; the SKU in the Orders columns has no relation to whatever SKU appears in the Returns columns of that same row."],
     ["Key Insights sheet: State-wise analysis and recommendations are based on the 30-day window only."],
+    ["A delisted/discontinued SKU's leftover FBA stock no longer pulls it into the TACOS/FBA-status sheets on its own once the uploaded Price (All Listings) report marks it 'Inactive' AND it had no orders, returns or ad spend in the 30-day window — that combination was the source of SKUs appearing ONLY in this report and never in the order-driven Weekly Sales Report. A SKU with any real activity this window still appears regardless of listing status; an account without a Status column in its Price upload is unaffected (treated as unknown, not inactive)."],
+    ...(negativeFinalNote30 ? [[negativeFinalNote30]] : []),
+    ...(negativeFinalNote7 ? [[negativeFinalNote7]] : []),
   ]);
   wsNote["!cols"] = [{ wch: 110 }];
   wsNote["A1"].s = { font: { bold: true, sz: 13, color: { rgb: "312E81" } } };

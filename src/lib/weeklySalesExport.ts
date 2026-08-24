@@ -1,5 +1,6 @@
 import * as XLSX from "xlsx-js-style";
 import { fetchAllRows, isGenuineAmReturn, isGenuineFbaReturn } from "@/lib/historicalAnalysisReportExport";
+import { istDayWindowUtc, istDateOnly, isStandardOrderId } from "@/lib/amazonReportShared";
 import { categorizeTitle, resolveProductName, CATEGORY_COLORS } from "@/lib/categoryMap";
 
 // SKU-wise sibling of amazonSalesExport.ts's buildAmazonSalesWorkbook, built for the Weekly
@@ -42,12 +43,6 @@ function weekLabel(start: string, end: string): string {
   return `${fmtDot(start)}-${fmtDot(end)}`;
 }
 
-function nextDayIsoUtc(iso: string): string {
-  const d = new Date(`${iso}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + 1);
-  return d.toISOString().slice(0, 10);
-}
-
 const EXCLUDED_CATEGORIES = new Set(["Discontinued", "Other"]);
 
 export async function buildWeeklySalesWorkbookFromHistorical(opts: {
@@ -55,6 +50,11 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
   lastWeek: { start: string; end: string };
 }) {
   const { thisWeek, lastWeek } = opts;
+  // Stamped once at the moment this build reads its source tables, written to
+  // the Notes sheet below — the same field historicalAnalysisReportExport.ts
+  // carries, so the two reports' generation times can be compared directly
+  // instead of assuming any per-SKU drift between them is a bug.
+  const dataPulledAt = new Date().toISOString();
   const periods: PeriodWindow[] = [
     { label: weekLabel(lastWeek.start, lastWeek.end), start: lastWeek.start, end: lastWeek.end },
     { label: weekLabel(thisWeek.start, thisWeek.end), start: thisWeek.start, end: thisWeek.end },
@@ -62,13 +62,24 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
   const periodForDate = (dayIso: string): PeriodWindow | undefined =>
     periods.find((p) => dayIso >= p.start && dayIso <= p.end);
 
+  // Both windows' order/return timestamps are bucketed by IST calendar day
+  // (istDayWindowUtc), not the raw UTC instant — matching
+  // historicalAnalysisReportExport.ts's own convention (see amazonReportShared.ts's
+  // comment: truncating the UTC instant directly puts any row from ~18:30 UTC
+  // onward on the wrong, earlier calendar day). The two reports used to disagree
+  // by a handful of units on exactly the SKUs with orders/returns near midnight
+  // IST, because this file bucketed by the raw UTC purchase_date/return_date
+  // while the Historical report already shifted into IST.
+  const ordersWindow = istDayWindowUtc(lastWeek.start, thisWeek.end);
+  const fbaReturnsWindow = istDayWindowUtc(lastWeek.start, thisWeek.end);
+
   // Fetch every relevant row once across the combined 2-week span, split by date in memory below —
   // same "fetch once, filter twice" approach historicalAnalysisReportExport.ts uses for its 30/7-day windows.
   const [orderRows, amReturnRows, fbaReturnRows, priceListingRows, ledgerRows, adRows] = await Promise.all([
-    fetchAllRows("barm_amazon_am_orders", (q) => q.gte("purchase_date", lastWeek.start).lte("purchase_date", thisWeek.end)),
+    fetchAllRows("barm_amazon_am_orders", (q) => q.gte("purchase_datetime", ordersWindow.gte).lt("purchase_datetime", ordersWindow.lt)),
     fetchAllRows("barm_amazon_am_returns", (q) => q.gte("return_request_date", lastWeek.start).lte("return_request_date", thisWeek.end)),
     fetchAllRows("barm_amazon_fba_returns", (q) =>
-      q.gte("return_date", `${lastWeek.start}T00:00:00Z`).lt("return_date", `${nextDayIsoUtc(thisWeek.end)}T00:00:00Z`)
+      q.gte("return_date", fbaReturnsWindow.gte).lt("return_date", fbaReturnsWindow.lt)
     ),
     fetchAllRows("barm_amazon_price_listing", (q) => q),
     // The ledger is a point-in-time snapshot of stock on hand, not a per-day history — it holds
@@ -120,13 +131,25 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows.forEach((r: any) => {
-    if (!r.sku || !r.purchase_date) return;
-    const pd = periodForDate(String(r.purchase_date).slice(0, 10));
+    if (!r.sku || !r.purchase_datetime) return;
+    // IST calendar day, not the raw UTC purchase_date column — see the fetch
+    // above's comment. Bucketing by purchase_date here (this file's old
+    // behaviour) put any order from ~18:30 UTC onward a day earlier than the
+    // Historical Analysis Report placed the exact same order.
+    const pd = periodForDate(istDateOnly(r.purchase_datetime));
     if (!pd) return;
     if (r.product_name && !nameBySku.has(r.sku)) nameBySku.set(r.sku, r.product_name);
     // A cancelled order never became revenue. Amazon still exports a row for it, usually with no
     // quantity but occasionally carrying a price — counting those added phantom sales.
     if (String(r.order_status || "").toLowerCase().startsWith("cancelled")) return;
+    // Non-standard order IDs ("S02-..." instead of "NNN-NNNNNNN-NNNNNNN") aren't
+    // real sales — historicalAnalysisReportExport.ts already excludes these,
+    // verified against the seller's own workbook (every S02- row is absent from
+    // their Orders sheet). Without this exclusion here too, a single SKU with a
+    // couple of large S02- rows could read many times its real order count —
+    // e.g. one live SKU read 214 units here against 8 on the Historical report,
+    // entirely from two 103-unit S02- rows.
+    if (!isStandardOrderId(r.amazon_order_id)) return;
     const qty = r.quantity || 0;
     const s = ensurePeriodStat(r.sku, pd.label);
     s.orders += qty;
@@ -160,6 +183,26 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
   });
   const adsOf = (sku: string, label: string) => adsBySkuPeriod.get(`${sku}|${label}`);
   const hasAdData = adRows.length > 0;
+  // AM-else-(FBA+SF) returns per SKU per period — the same physical return can
+  // be recorded in BOTH the AM returns export and the FBA/SF returns export,
+  // so historicalAnalysisReportExport.ts's Final column (verified against the
+  // seller's own workbook) takes the AM figure when one exists and only falls
+  // back to FBA+SF otherwise, never adds them together. "All Returns"/
+  // "Customer Returns" below stay a plain additive dump on purpose (they are
+  // meant to show every return reported, not a deduped figure) — only
+  // totalOrders (this file's Final-equivalent) needs the deduped version, so
+  // it is tracked separately here rather than changing allReturns' meaning.
+  const amReturnQtyBySkuPeriod = new Map<string, number>();
+  const fbaSfReturnQtyBySkuPeriod = new Map<string, number>();
+  const addReturnQty = (map: Map<string, number>, sku: string, label: string, qty: number) => {
+    const key = `${sku}|${label}`;
+    map.set(key, (map.get(key) || 0) + qty);
+  };
+  const dedupedReturnsOf = (sku: string, label: string): number => {
+    const key = `${sku}|${label}`;
+    const amQty = amReturnQtyBySkuPeriod.get(key) || 0;
+    return amQty > 0 ? amQty : (fbaSfReturnQtyBySkuPeriod.get(key) || 0);
+  };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   amReturnRows.forEach((r: any) => {
     if (!r.merchant_sku || !r.return_request_date) return;
@@ -169,16 +212,22 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
     const s = ensurePeriodStat(r.merchant_sku, pd.label);
     s.allReturns += qty;
     if (isGenuineAmReturn(r)) s.returns += qty;
+    addReturnQty(amReturnQtyBySkuPeriod, r.merchant_sku, pd.label, qty);
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   fbaReturnRows.forEach((r: any) => {
     if (!r.sku || !r.return_date) return;
-    const pd = periodForDate(String(r.return_date).slice(0, 10));
+    // IST calendar day, same reasoning as the orders block above —
+    // return_date is a timestamptz, and slicing its raw UTC value put a
+    // late-evening-IST return on the wrong day relative to the Historical
+    // Analysis Report, which already bucketed FBA returns by IST.
+    const pd = periodForDate(istDateOnly(r.return_date));
     if (!pd) return;
     const qty = r.quantity || 0;
     const s = ensurePeriodStat(r.sku, pd.label);
     s.allReturns += qty;
     if (isGenuineFbaReturn(r)) s.returns += qty;
+    addReturnQty(fbaSfReturnQtyBySkuPeriod, r.sku, pd.label, qty);
   });
 
   // ── Stock-on-hand (best-effort — only used for the Growth Summary's "Low stock" reason) ──
@@ -233,7 +282,14 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
     periods.forEach((pd) => {
       const raw = periodMap.get(pd.label);
       if (!raw) return;
-      const totalOrders = Math.max(0, raw.orders - raw.allReturns);
+      // Total Orders = Orders - Returns, using the SAME deduped (AM-else-
+      // FBA+SF) return figure the Historical Analysis Report's Final column
+      // uses — NOT raw.allReturns, which sums AM and FBA/SF unconditionally
+      // and so double-counts a return that both exports recorded. Left
+      // unclamped for the same reason Historical's Final is unclamped: a
+      // return recorded with no matching order THIS window (the order
+      // belongs to an earlier period) legitimately goes negative.
+      const totalOrders = raw.orders - dedupedReturnsOf(sku, pd.label);
       const price = raw.orders > 0 ? raw.totalSales / raw.orders : 0;
       p.periods[pd.label] = { orders: raw.orders, allReturns: raw.allReturns, returns: raw.returns, totalOrders, price, totalSales: raw.totalSales };
       p.grandTotalSales += raw.totalSales;
@@ -665,6 +721,12 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
         style.font = { color: { rgb: catColor.replace("#", "") }, bold: true };
       } else {
         const posInPeriod = (c - LEAD_COLS) % COLS_PER_PERIOD;
+        // Total Orders — flagged, not clamped, when it goes negative: a
+        // return landed in this period with no matching order in it (see the
+        // totalOrders comment above).
+        if (posInPeriod === 3 && typeof cell.v === "number" && cell.v < 0) {
+          style.font = { color: { rgb: "B91C1C" }, bold: true };
+        }
         if (posInPeriod === 4) style.numFmt = "#,##0.00"; // Price
         if (posInPeriod === 5) {
           style.numFmt = "#,##0.00"; // Total Sales
@@ -1873,6 +1935,26 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
     });
 
     XLSX.utils.book_append_sheet(wb, wsCeo, "CEO Decision Center");
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ── Notes sheet — carries the same "data_pulled_at" field
+  // historicalAnalysisReportExport.ts writes to its own Notes sheet, so a
+  // per-SKU mismatch between the two files can be checked against how far
+  // apart they were actually generated before it's treated as a bug.
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    const wsNote = XLSX.utils.aoa_to_sheet([
+      ["Amazon Weekly Sales Report"],
+      [`Last week: ${lastLabel}    This week: ${thisLabel}`],
+      [`Data pulled at: ${dataPulledAt} (compare against the Historical Analysis Report's own "Data pulled at" — a per-SKU difference between the two files is expected, not a bug, when they were generated far enough apart to see different uploads).`],
+      [""],
+      ["Orders/returns are bucketed by IST calendar day (purchase_datetime / return_date shifted +5:30), matching the Historical Analysis Report's convention, not by the raw UTC date — an order or return from the last ~5.5 hours of the UTC day would otherwise land on the wrong day in one report but not the other."],
+      ["Total Orders = Orders − All Returns, left UNCLAMPED — it can go negative for a SKU that had a return recorded this period with no matching order in it (the order belongs to an earlier period). Matches the Historical Analysis Report's 'Final' column, which is unclamped for the same reason."],
+    ]);
+    wsNote["!cols"] = [{ wch: 110 }];
+    if (wsNote.A1) wsNote.A1.s = { font: { bold: true, sz: 13, color: { rgb: "312E81" } } };
+    XLSX.utils.book_append_sheet(wb, wsNote, "Notes");
   }
 
   const filename = `Amazon_Weekly_Sales_Report_${lastWeek.start}_to_${thisWeek.end}.xlsx`;
