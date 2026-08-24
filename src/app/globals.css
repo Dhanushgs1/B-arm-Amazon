@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+/* Tailwind v4 defaults `dark:` to prefers-color-scheme (the OS setting).
+   This app toggles a `.dark` class on <html> instead, so bind the variant
+   to that class — otherwise a machine set to OS dark mode gets dark: text
+   colours on light card backgrounds and the text turns invisible. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
