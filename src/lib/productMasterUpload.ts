@@ -1,12 +1,21 @@
 import * as XLSX from "xlsx";
 import { supabasePublic } from "@/lib/amazonReportUpload";
 
-// The seller's own hand-curated "Product Master" workbook (see e.g.
-// "Product_Master_REBUILT_Aug2026_Update.xlsx") — a full snapshot of every
-// approved SKU -> canonical product name, re-uploaded whenever the workbook
-// is rebuilt. No date column, so each upload truncates and replaces the
-// whole table rather than merging (same pattern as Amazon's Price/FBA
-// Inventory snapshots — see amazonReportUpload.ts's FULL_REPLACE_TYPES).
+// The seller's own hand-curated product master workbook — a full snapshot of
+// every SKU -> canonical product name, re-uploaded whenever the workbook is
+// rebuilt. No date column, so each upload truncates and replaces the whole
+// table rather than merging (same pattern as Amazon's Price/FBA Inventory
+// snapshots — see amazonReportUpload.ts's FULL_REPLACE_TYPES).
+//
+// Two file shapes have been seen, both supported by the header picker below:
+//   - "Master SKU sheet with Category.xlsx": Product, Product name, SKU ID,
+//     Platforms, Category — one row per SKU *variant* (a product advertised
+//     on 3 platforms under 3 different SKU spellings gets 3 rows, all
+//     pointing to the same Product name). This is the preferred shape — it
+//     resolves exact variant spellings ("B-CRACKNIP-SPRAY-100ML-1") that the
+//     other shape's single canonical SKU per product can't match directly.
+//   - "Product_Master_REBUILT_Aug2026_Update.xlsx": Master SKU ID, Approved
+//     Product Name, Category — one row per canonical product.
 //
 // adSpendReportExport.ts checks this table FIRST when resolving a product's
 // display name for a SKU — ahead of the order-report/price-listing derived
@@ -53,11 +62,18 @@ async function readRows(file: File): Promise<RawRow[]> {
   return XLSX.utils.sheet_to_json<RawRow>(ws, { defval: "", raw: true });
 }
 
+// Placeholder tokens some rows use for "no SKU assigned yet" — must never be
+// treated as a real SKU, or every product using that placeholder collides on
+// the same primary key and only one survives.
+const SKU_PLACEHOLDERS = new Set(["nil", "na", "n/a", "-", "tbd", "none"]);
+
 function mapRow(row: RawRow): { sku: string; product_name: string; category: string; approval_status: string; raw: RawRow } {
   const p = makePicker(row);
+  let sku = str(p("SKU ID", "Master SKU ID", "SKU"));
+  if (SKU_PLACEHOLDERS.has(sku.toLowerCase())) sku = "";
   return {
-    sku: str(p("Master SKU ID", "SKU", "SKU ID")),
-    product_name: str(p("Approved Product Name", "Master Product", "Product Name")),
+    sku,
+    product_name: str(p("Product name", "Approved Product Name", "Master Product", "Product Name", "Product")),
     category: str(p("Category")),
     approval_status: str(p("Approval Status")),
     raw: row,
