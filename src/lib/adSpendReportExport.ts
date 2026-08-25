@@ -554,6 +554,22 @@ function styleLabel(ws: XLSX.WorkSheet, addr: string, fill: string): void {
   if (!ws[addr]) ws[addr] = { t: "s", v: "" };
   ws[addr].s = { font: { bold: true, color: { rgb: "FFFFFF" }, sz: 11 }, fill: { fgColor: { rgb: fill } } };
 }
+const CURRENCY_FMT = '"₹"#,##0.00';
+const PERCENT_FMT = "0%";
+// Every value in this workbook is written as a plain number — Excel shows it
+// as a bare decimal (0.7645, 16778.91) unless a display format is set on the
+// cell. Applies one to every numeric cell in the given columns, over
+// [rowStart, rowEnd) — currency (₹#,##0.00) or percent (0%), matching the
+// hand-built workbook's own formatting.
+function applyNumberFormats(ws: XLSX.WorkSheet, rowStart: number, rowEnd: number, colFormats: Record<number, string>): void {
+  for (let r = rowStart; r < rowEnd; r++) {
+    for (const [colStr, fmt] of Object.entries(colFormats)) {
+      const addr = XLSX.utils.encode_cell({ r, c: Number(colStr) });
+      const cell = ws[addr];
+      if (cell && typeof cell.v === "number") cell.z = fmt;
+    }
+  }
+}
 
 // Every uploaded row keeps its original file's columns verbatim in a `raw`
 // JSONB field (see *ReportUpload.ts) — dumping that, rather than the parsed
@@ -861,6 +877,11 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 60 }, { wch: 10 },
     ...Array.from({ length: 10 }, () => ({ wch: 13 })), { wch: 10 }, { wch: 14 },
   ];
+  applyNumberFormats(wsSummary, 5, sumAoa.length, {
+    1: CURRENCY_FMT, 2: CURRENCY_FMT, 4: CURRENCY_FMT, 5: CURRENCY_FMT, 6: CURRENCY_FMT,
+    8: CURRENCY_FMT, 9: PERCENT_FMT, 10: CURRENCY_FMT, 11: CURRENCY_FMT, 13: CURRENCY_FMT,
+    14: PERCENT_FMT, 16: CURRENCY_FMT,
+  });
   // Long titles (a SKU with no product-master entry falls back to the raw
   // marketing title) need to wrap within the column instead of overflowing
   // or reading as clipped — same fix applied to the Ad spend report sheet's
@@ -905,6 +926,10 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   detailLabelCells.forEach(({ addr, platform }) => styleLabel(wsDetail, addr, PLATFORM_FILL[platform]));
   detailHeaderRows.forEach((row) => { styleHeader(wsDetail, row, DETAIL_COLS, "312E81"); styleHeader(wsDetail, row + 1, DETAIL_COLS, "312E81"); });
   wsDetail["!cols"] = [{ wch: 20 }, { wch: 60 }, { wch: 10 }, ...Array.from({ length: DETAIL_COLS - 3 }, () => ({ wch: 13 }))];
+  applyNumberFormats(wsDetail, 0, detailAoa.length, {
+    2: CURRENCY_FMT, 3: CURRENCY_FMT, 4: CURRENCY_FMT, 6: CURRENCY_FMT, 7: PERCENT_FMT,
+    8: CURRENCY_FMT, 9: CURRENCY_FMT, 11: CURRENCY_FMT, 12: PERCENT_FMT,
+  });
   // Long titles (a SKU with no product-master entry falls back to the raw
   // marketing title) need to wrap within the column instead of overflowing.
   for (let r = 0; r < detailAoa.length; r++) {
@@ -949,6 +974,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   styleHeader(wsLow, 0, 3, "6B7280");
   wsLow["!cols"] = [{ wch: 12 }, { wch: 50 }, { wch: 16 }];
   wsLow["!views"] = [{ state: "frozen", ySplit: 1 }];
+  applyNumberFormats(wsLow, 1, lowAoa.length, { 2: CURRENCY_FMT });
   XLSX.utils.book_append_sheet(wb, wsLow, "Low Spend Campaigns");
 
   // ── Raw per-platform sheets — mirrors the hand-built workbook's own
@@ -978,6 +1004,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   styleHeader(wsBArm, 0, 4, "6B7280");
   wsBArm["!cols"] = [{ wch: 60 }, { wch: 10 }, { wch: 10 }, { wch: 14 }];
   wsBArm["!views"] = [{ state: "frozen", ySplit: 1 }];
+  applyNumberFormats(wsBArm, 1, bArmAoa.length, { 2: CURRENCY_FMT, 3: CURRENCY_FMT });
   XLSX.utils.book_append_sheet(wb, wsBArm, "B Arm orders");
 
   // ── Notes ──
