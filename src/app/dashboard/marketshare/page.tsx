@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useDashboard } from "@/lib/DashboardContext";
 import { mcp } from "@/lib/api";
@@ -30,11 +30,29 @@ const shareBadge = (val: number | null | undefined) => (
 export default function MarketSharePage() {
   const { keySlot, endDate, account, contextLoading, setSelectedAsin } = useDashboard();
 
-  // SQP is a monthly report — default to the last full month before endDate
-  const end = new Date(endDate);
+  // SQP is a monthly report — default to the last full month before endDate.
+  // `endDate` starts as "" until DashboardContext populates it, which made
+  // `new Date("")` an Invalid Date here on first render — NaN everywhere it
+  // touched (the dropdown's "undefined NaN" options, and refMonth's initial
+  // state permanently locked to "NaN-NaN" since useState only runs once).
+  // Falling back to "now" keeps every date valid; the effect below re-syncs
+  // refMonth once the real endDate arrives, same as the guard reports/page.tsx
+  // already uses for its own endDate-dependent date math.
+  const end = endDate ? new Date(endDate) : new Date();
   const defaultRef = new Date(end.getFullYear(), end.getMonth() - 1, 1);
   const [refMonth, setRefMonth] = useState<string>(`${defaultRef.getFullYear()}-${defaultRef.getMonth() + 1}`);
   const [year, month] = refMonth.split("-").map(Number);
+
+  // Only auto-correct refMonth up until the user picks one themselves —
+  // otherwise a later endDate change would silently override their choice.
+  const userPickedRef = useRef(false);
+  useEffect(() => {
+    if (userPickedRef.current || !endDate) return;
+    const realEnd = new Date(endDate);
+    const realDefault = new Date(realEnd.getFullYear(), realEnd.getMonth() - 1, 1);
+    setRefMonth(`${realDefault.getFullYear()}-${realDefault.getMonth() + 1}`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [endDate]);
 
   // Last 6 selectable months
   const monthOptions = Array.from({ length: 6 }, (_, i) => {
@@ -145,7 +163,7 @@ export default function MarketSharePage() {
         </div>
         <select
           value={refMonth}
-          onChange={(e) => setRefMonth(e.target.value)}
+          onChange={(e) => { userPickedRef.current = true; setRefMonth(e.target.value); }}
           className="bg-background border border-border rounded-xl px-3 py-2 text-sm font-bold focus:border-primary focus:outline-none"
         >
           {monthOptions.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}

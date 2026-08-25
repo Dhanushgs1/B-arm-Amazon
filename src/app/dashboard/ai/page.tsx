@@ -205,6 +205,28 @@ export default function AIPage() {
     setMessages(prev => [...prev, { role: "user", content: userMsg, timestamp: new Date() }]);
     setSending(true);
 
+    // Account-wide totals alone made every answer generic ("sort by ACOS
+    // descending") even when asked about specific campaigns — cpData.data
+    // was already fetched above but never made it into the prompt. Mirrors
+    // the same bleeder/winner filters the local fallback below and the
+    // Overview page's "High ACOS Bleeder" cards already use, so the
+    // assistant's named campaigns line up with what the rest of the app shows.
+    const allCamps: any[] = cpData?.data || [];
+    const bleederCamps = allCamps
+      .filter((c: any) => c.spend > 100 && (c.spend / (c.sales || 1)) > 0.3)
+      .sort((a: any, b: any) => b.spend - a.spend)
+      .slice(0, 5);
+    const winnerCamps = allCamps
+      .filter((c: any) => c.sales > 0 && c.spend > 0 && c.sales / c.spend >= 4)
+      .sort((a: any, b: any) => b.sales - a.sales)
+      .slice(0, 5);
+    const campaignLine = (c: any) =>
+      `${c.campaignName || c.name || "Campaign"} — ACOS ${((c.spend / (c.sales || 1)) * 100).toFixed(1)}%, spend ${cur(c.spend, currency)}, sales ${cur(c.sales || 0, currency)}`;
+    const campaignContext = allCamps.length
+      ? `- Bleeding campaigns (high spend, weak ACOS): ${bleederCamps.length ? bleederCamps.map(campaignLine).join(" | ") : "none found"}
+- Winning campaigns (ROAS >= 4x): ${winnerCamps.length ? winnerCamps.map(campaignLine).join(" | ") : "none found"}`
+      : "- No campaign-level data loaded for this range yet.";
+
     const systemPrompt = `You are the Marketplace360 PPC Assistant. You have access to the user's live dashboard data:
 - Account: ${account?.name || "Barm Account"}
 - Currency: ${currency}
@@ -215,8 +237,9 @@ export default function AIPage() {
 - Inventory Units On-Hand: ${num(totalQty)} units
 - Total Inventory Value: ${cur(totalVal, currency)}
 - Date Range: ${startDate} to ${endDate}
+${campaignContext}
 
-Based on these metrics, provide a concise, expert, and direct answer. Avoid generic fluff. Use bold text and bullet points. Be specific with numbers from the data. User question: "${userMsg}"`;
+Based on these metrics, provide a concise, expert, and direct answer. Avoid generic fluff. When the question is about specific campaigns (bleeding, winning, top, worst, etc.), name the actual campaigns listed above with their real numbers — never answer with only account-wide totals or generic advice like "sort by ACOS" when specific campaigns are available above. Use bold text and bullet points. User question: "${userMsg}"`;
 
     try {
       const response = await fetch("/api/gemini-insights", {

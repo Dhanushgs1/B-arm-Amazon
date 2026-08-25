@@ -28,7 +28,7 @@ interface Row {
   units: number;
   orders: number;
   returnRatePct: number;
-  growthPct: number;
+  growthPct: number | null;
   isDemo: boolean;
   adSpend: number;
   adSales: number;
@@ -163,7 +163,10 @@ export default function ComparePage() {
       return invert ? 1 - n : n;
     };
     const sales = rows.map((r) => r.totalSales);
-    const growth = rows.map((r) => r.growthPct);
+    // Missing-data rows (null) score as neutral (0) for this component only —
+    // the health score still needs a number to rank against; the growth
+    // figure shown to the user stays "no data", never a fabricated 0%.
+    const growth = rows.map((r) => r.growthPct ?? 0);
     const returns = rows.map((r) => r.returnRatePct);
 
     return rows
@@ -171,7 +174,7 @@ export default function ComparePage() {
         ...r,
         score:
           norm(sales, r.totalSales) * 0.5 +
-          norm(growth, r.growthPct) * 0.3 +
+          norm(growth, r.growthPct ?? 0) * 0.3 +
           norm(returns, r.returnRatePct, true) * 0.2,
       }))
       .sort((a, b) => b.score - a.score);
@@ -386,10 +389,14 @@ export default function ComparePage() {
                   </div>
                   <div className="bg-slate-100 dark:bg-slate-900/60 rounded-xl p-2 text-center">
                     <p className="text-[8px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Growth</p>
-                    <p className={cn("text-xs font-black flex items-center justify-center gap-0.5", r.growthPct >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-500")}>
-                      {r.growthPct >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-                      {Math.abs(r.growthPct).toFixed(1)}%
-                    </p>
+                    {r.growthPct == null ? (
+                      <p className="text-xs font-black text-slate-400">— no data</p>
+                    ) : (
+                      <p className={cn("text-xs font-black flex items-center justify-center gap-0.5", r.growthPct >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-500")}>
+                        {r.growthPct >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                        {Math.abs(r.growthPct).toFixed(1)}%
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -480,7 +487,9 @@ export default function ComparePage() {
                 <div>
                   <p className="font-black text-sm text-slate-900 dark:text-white">{r.label}</p>
                   <p className="text-[10px] text-slate-500 dark:text-slate-400">Health Score: {Math.round((r.score || 0) * 100)}%</p>
-                  <p className="text-[10px] font-bold mt-0.5" style={{ color: r.color }}>Growth: {r.growthPct >= 0 ? '+' : ''}{(r.growthPct || 0).toFixed(1)}%</p>
+                  <p className="text-[10px] font-bold mt-0.5" style={{ color: r.color }}>
+                    Growth: {r.growthPct == null ? "no data" : `${r.growthPct >= 0 ? "+" : ""}${r.growthPct.toFixed(1)}%`}
+                  </p>
                 </div>
               </div>
             ))}

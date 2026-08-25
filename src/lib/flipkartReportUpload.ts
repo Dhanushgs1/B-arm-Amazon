@@ -1,6 +1,6 @@
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic, pruneOutsideRange } from "@/lib/amazonReportUpload";
 
 // Flipkart counterpart of src/lib/amazonReportUpload.ts — same shape (one card
 // per seller-downloaded export, parsed in the browser and written into a
@@ -80,6 +80,15 @@ export const FK_DATE_COLUMN: Partial<Record<FlipkartUploadReportType, string>> =
 // FULL_REPLACE_TYPES in amazonReportUpload.ts.
 const FULL_REPLACE_TYPES: Partial<Record<FlipkartUploadReportType, true>> = {
   listings: true,
+};
+
+// Same idea as PRUNE_TO_UPLOAD_RANGE in amazonReportUpload.ts: these two
+// tables should only ever hold the date range the seller's latest export
+// covers, so anything outside a fresh upload's min/max date is stale and gets
+// deleted rather than kept as accumulating history.
+const PRUNE_TO_UPLOAD_RANGE: Partial<Record<FlipkartUploadReportType, true>> = {
+  fsn_report: true,
+  order_report: true,
 };
 
 // ── value parsing ───────────────────────────────────────────────────────────
@@ -807,6 +816,10 @@ export async function uploadFlipkartReportFile(
     if (type === "earn_more") {
       mirrored = await mirrorEarnMoreToOverallSales(rows, parsed.minDate!, parsed.maxDate!);
     }
+  }
+
+  if (PRUNE_TO_UPLOAD_RANGE[type] && parsed.minDate && parsed.maxDate) {
+    await pruneOutsideRange(table, dateCol!, parsed.minDate, parsed.maxDate);
   }
 
   return {

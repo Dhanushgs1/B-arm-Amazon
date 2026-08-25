@@ -35,6 +35,11 @@ export function FlipkartOverview() {
 
   const accountLabel = loggedInUser === "Barm" ? "Barm" : "Lkn";
   const hasAnyData = overview.grossSales > 0 || overview.adSpend > 0;
+  // Ad data (FSN report) and retail sales (Earn More report) come from two
+  // separate uploads — it's common to have one without the other yet, which
+  // otherwise reads as "Gross/Net/Organic Sales are genuinely ₹0" instead of
+  // "that report just isn't uploaded".
+  const missingRetailSalesOnly = overview.adSpend > 0 && !overview.hasOverallSalesData;
 
   return (
     <div className="space-y-6 pb-12">
@@ -72,9 +77,21 @@ export function FlipkartOverview() {
         </div>
       )}
 
+      {missingRetailSalesOnly && (
+        <div className="rounded-2xl border border-amber-300/40 bg-amber-50 dark:bg-amber-950/20 px-4 py-3 text-xs font-semibold text-amber-700 dark:text-amber-300 flex items-center justify-between gap-3 flex-wrap">
+          <span>Ad data is in, but no "Earn more" report has been uploaded for this range yet — Gross Sales, Net Sales and Organic Sales below read ₹0 because that report is the only source with real settlement amounts (the order report alone carries no monetary columns).</span>
+          <button
+            onClick={() => router.push("/dashboard/flipkart/upload")}
+            className="flex items-center gap-1.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-700 dark:text-amber-300 px-3 py-1.5 rounded-full text-[11px] font-bold transition-all flex-shrink-0"
+          >
+            Go to Upload <ArrowRight className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+
       {/* Top Row: 5 Large KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-        <KPICard title="Gross Sales" value={cur(overview.grossSales)} subtitle={`${num(overview.units)} units sold`} trend={overview.growthPct} delay={0.02} accent="green" />
+        <KPICard title="Gross Sales" value={cur(overview.grossSales)} subtitle={`${num(overview.units)} units sold`} trend={overview.growthPct ?? undefined} delay={0.02} accent="green" />
         <KPICard title="Net Sales" value={cur(overview.netSales)} subtitle="After cancels & returns" delay={0.03} accent="cyan" />
         <KPICard title="Ad Spend" value={cur(overview.adSpend)} subtitle="Advertising spend" delay={0.04} accent="pink" />
         <KPICard title="Ad Sales" value={cur(overview.adSales)} subtitle="Ads-attributed" delay={0.06} accent="blue" />

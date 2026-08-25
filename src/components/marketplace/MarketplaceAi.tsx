@@ -91,7 +91,7 @@ export function MarketplaceAi({ marketplace }: MarketplaceAiProps) {
 - ROAS: ${realOverview.roas.toFixed(2)}x
 - ACOS: ${realOverview.acos.toFixed(1)}%
 - TACOS: ${realOverview.tacos.toFixed(1)}%
-- Growth vs prior period: ${realOverview.growthPct.toFixed(1)}%`;
+- Growth vs prior period: ${realOverview.growthPct == null ? "no comparable data (retail sales report not uploaded)" : `${realOverview.growthPct.toFixed(1)}%`}`;
       topCampaignsBlock = realOverview.topCampaigns.length
         ? realOverview.topCampaigns.map((c) => `${c.name}: spend ₹${Math.round(c.spend)}, sales ₹${Math.round(c.sales)}, ROAS ${c.roas.toFixed(2)}x`).join("\n")
         : "No campaign-level data uploaded for this range yet.";

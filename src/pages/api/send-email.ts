@@ -32,7 +32,7 @@ function channelBar(active = "amazon") {
   return `<p style="margin:10px 0 0;">${chips}</p>`;
 }
 
-function wrap(body: string, channel = "amazon") {
+function wrap(body: string, channel: string | null = "amazon") {
   const now = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   return `<!DOCTYPE html>
 <html lang="en">
@@ -49,7 +49,7 @@ function wrap(body: string, channel = "amazon") {
               <td>
                 <p style="margin:0;color:#ffffff;font-size:22px;font-weight:800;letter-spacing:-0.5px;">&#128640; Marketplace360 Dashboard</p>
                 <p style="margin:6px 0 0;color:rgba(255,255,255,0.75);font-size:13px;">${now} IST</p>
-                ${channelBar(channel)}
+                ${channel ? channelBar(channel) : ""}
               </td>
             </tr>
           </table>
@@ -311,16 +311,82 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
 
   if (type === "campaign") {
     const campaigns: any[] = data.campaigns || [];
-    const rows = campaigns.map((c: any) => `
+
+    // Ad-group breakdown (SP Advertised Product only — SB/SD exports carry
+    // no ad-group column) rendered as an indented sub-table directly under
+    // its campaign's row, so the reader sees exactly which ad group/SKU
+    // inside the flagged campaign is driving the spend. `bottomBorder`
+    // controls whether this is the last block for the campaign (no
+    // per-campaign suggestion followed it) or one is still coming after.
+    const adGroupBreakdown = (c: any, bottomBorder: boolean) => {
+      if (!c.adGroups?.length) return "";
+      const agRows = c.adGroups
+        .map(
+          (ag: any) => `
+            <tr>
+              <td style="padding:6px 8px;font-size:12px;color:#374151;">${ag.adGroupName}${ag.topSkus?.length ? ` <span style="color:#9ca3af;">(${ag.topSkus.join(", ")})</span>` : ""}</td>
+              <td align="center" style="padding:6px 8px;font-size:12px;font-weight:700;color:#991b1b;">${ag.acos}%</td>
+              <td align="right" style="padding:6px 8px;font-size:12px;color:#059669;">&#8377;${ag.sales}</td>
+              <td align="right" style="padding:6px 8px;font-size:12px;color:#dc2626;">&#8377;${ag.spend}</td>
+              <td align="center" style="padding:6px 8px;font-size:12px;color:#6b7280;">${ag.orders}</td>
+              <td align="center" style="padding:6px 8px;font-size:12px;color:#6b7280;">${ag.ctr}%</td>
+              <td align="right" style="padding:6px 8px;font-size:12px;color:#6b7280;">&#8377;${ag.cpc}</td>
+            </tr>`
+        )
+        .join("");
+      return `
+      <tr><td colspan="5" style="padding:0 10px 14px;${bottomBorder ? "border-bottom:1px solid #f0f0f0;" : ""}">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fafafa;border-radius:8px;">
+          <thead>
+            <tr>
+              <th align="left" style="padding:6px 8px;font-size:10px;font-weight:800;color:#9ca3af;text-transform:uppercase;">Ad Group (top SKU)</th>
+              <th style="padding:6px 8px;font-size:10px;font-weight:800;color:#9ca3af;text-transform:uppercase;">ACOS</th>
+              <th align="right" style="padding:6px 8px;font-size:10px;font-weight:800;color:#9ca3af;text-transform:uppercase;">Sales</th>
+              <th align="right" style="padding:6px 8px;font-size:10px;font-weight:800;color:#9ca3af;text-transform:uppercase;">Spend</th>
+              <th style="padding:6px 8px;font-size:10px;font-weight:800;color:#9ca3af;text-transform:uppercase;">Orders</th>
+              <th style="padding:6px 8px;font-size:10px;font-weight:800;color:#9ca3af;text-transform:uppercase;">CTR</th>
+              <th align="right" style="padding:6px 8px;font-size:10px;font-weight:800;color:#9ca3af;text-transform:uppercase;">CPC</th>
+            </tr>
+          </thead>
+          <tbody>${agRows}</tbody>
+        </table>
+      </td></tr>`;
+    };
+
+    // This campaign's own suggestion (not a shared paragraph across all
+    // flagged campaigns) — always the last block for the campaign, so it
+    // always carries the row-group's bottom border.
+    const campaignSuggestion = (text?: string) => {
+      if (!text) return "";
+      return `
+      <tr><td colspan="5" style="padding:0 10px 16px;border-bottom:1px solid #f0f0f0;">
+        <table width="100%" cellpadding="12" cellspacing="0" border="0" style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:10px;">
+          <tr><td>
+            <p style="margin:0 0 4px;color:#5b21b6;font-size:11px;font-weight:800;text-transform:uppercase;">&#10024; AI Suggestion for this campaign</p>
+            <p style="margin:0;font-size:13px;color:#374151;font-weight:500;line-height:1.5;">${text}</p>
+          </td></tr>
+        </table>
+      </td></tr>`;
+    };
+
+    const rows = campaigns
+      .map((c: any) => {
+        const suggestionHtml = campaignSuggestion(c.suggestion);
+        const adGroupHtml = adGroupBreakdown(c, !suggestionHtml);
+        const mainRowNeedsBorder = !adGroupHtml && !suggestionHtml;
+        const border = mainRowNeedsBorder ? "border-bottom:1px solid #f0f0f0;" : "";
+        return `
       <tr>
-        <td style="padding:12px 10px;border-bottom:1px solid #f0f0f0;font-size:13px;font-weight:700;color:#111;">${c.name}</td>
-        <td align="center" style="padding:12px 10px;border-bottom:1px solid #f0f0f0;">
+        <td style="padding:12px 10px;${border}font-size:13px;font-weight:700;color:#111;">${c.name}</td>
+        <td align="center" style="padding:12px 10px;${border}">
           <span style="background:#fee2e2;color:#991b1b;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:800;">${c.acos}%</span>
         </td>
-        <td style="padding:12px 10px;border-bottom:1px solid #f0f0f0;font-size:13px;font-weight:700;color:#059669;">&#8377;${c.sales}</td>
-        <td style="padding:12px 10px;border-bottom:1px solid #f0f0f0;font-size:13px;font-weight:700;color:#dc2626;">&#8377;${c.spend}</td>
-        <td style="padding:12px 10px;border-bottom:1px solid #f0f0f0;font-size:13px;font-weight:700;color:#6b7280;">${c.roas}x</td>
-      </tr>`).join("");
+        <td style="padding:12px 10px;${border}font-size:13px;font-weight:700;color:#059669;">&#8377;${c.sales}</td>
+        <td style="padding:12px 10px;${border}font-size:13px;font-weight:700;color:#dc2626;">&#8377;${c.spend}</td>
+        <td style="padding:12px 10px;${border}font-size:13px;font-weight:700;color:#6b7280;">${c.roas}x</td>
+      </tr>${adGroupHtml}${suggestionHtml}`;
+      })
+      .join("");
 
     return w(`
       <table width="100%" cellpadding="0" cellspacing="0" border="0">
@@ -733,6 +799,89 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
       </table>`);
   }
 
+  if (type === "adSpendDaily") {
+    // Mirrors the "Summary" sheet of the attached Ad Spend Report workbook —
+    // one card per platform (day/range spend + up to 3 top-spend products +
+    // overall sales), same numbers as the seller's own hand-written daily
+    // mail. Rendered as single-column cards rather than a wide multi-column
+    // table: the original table version (Platform / product / 3 day metrics /
+    // 3 range metrics / overall sales = 9 columns) was unreadable squeezed
+    // into the shared 600px email width, especially with long product titles.
+    // data: { dayLabel, rangeLabel, currency, platformSummaries: PlatformEmailSummary[],
+    //         productCount, lowSpendCampaignCount }
+    const currency = data.currency === "INR" ? "₹" : "$";
+    const money = (v: number) => currency + new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 }).format(v || 0);
+    const acosPct = (v: number) => `${Math.round((v || 0) * 100)}%`;
+    const clip = (s: string, len = 60) => ((s || "").length > len ? (s || "").slice(0, len) + "…" : s || "");
+    const platforms: any[] = data.platformSummaries || [];
+    const PLATFORM_COLOR: Record<string, string> = { Amazon: "#FF9900", Flipkart: "#2874F0", Meesho: "#9F2089" };
+
+    const platformCards = platforms.map((p) => {
+      const products = p.topProducts.length
+        ? p.topProducts
+        : [{ name: "(no ad spend in range)", price: 0, day: { spendTax: 0, orders: 0, acos: 0 }, range: { spendTax: 0, orders: 0, acos: 0 } }];
+      const productRows = products.map((prod: any) => `
+        <tr><td style="padding:10px 14px;border-top:1px solid #f5f5f5;">
+          <p style="margin:0 0 3px;font-size:12.5px;font-weight:700;color:#111;line-height:1.4;">
+            ${clip(prod.name)}${prod.price ? `<span style="color:#9ca3af;font-weight:600;"> &#183; ${money(prod.price)}</span>` : ""}
+          </p>
+          <p style="margin:0;font-size:11px;color:#6b7280;font-weight:600;line-height:1.5;">
+            ${data.dayLabel || "Day"}: ${money(prod.day.spendTax)} spend, ${prod.day.orders} orders, ${acosPct(prod.day.acos)} ACOS
+            &nbsp;&#183;&nbsp;
+            Range: ${money(prod.range.spendTax)} spend, ${prod.range.orders} orders, ${acosPct(prod.range.acos)} ACOS
+          </p>
+        </td></tr>`).join("");
+
+      return `
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #f0f0f0;border-radius:12px;overflow:hidden;margin-bottom:14px;">
+        <tr><td style="padding:12px 14px;background:#f9fafb;border-left:4px solid ${PLATFORM_COLOR[p.platform] || "#111"};">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+            <td style="font-size:13px;font-weight:800;color:#111;">${p.platform}</td>
+            <td align="right" style="font-size:11px;color:#6b7280;font-weight:700;white-space:nowrap;">${data.dayLabel || "Day"} ${money(p.daySpendTax)} &nbsp;&#183;&nbsp; Range ${money(p.rangeSpendTax)}</td>
+          </tr></table>
+        </td></tr>
+        ${productRows}
+        <tr><td style="padding:8px 14px;background:#fafafa;font-size:11px;color:#6b7280;font-weight:600;">
+          Overall sales in range: ${p.overallRangeUnits} units, ${money(p.overallRangeValue)}
+        </td></tr>
+      </table>`;
+    }).join("");
+
+    // No channelBar here: unlike the single-platform templates above (where
+    // "Amazon live / Flipkart · soon" is accurate today), this report already
+    // covers Amazon + Flipkart + Meesho together, so that badge would flatly
+    // contradict the Flipkart/Meesho numbers sitting right below it.
+    const incompleteDates: { platform: string; missingDates: string[] }[] = data.incompleteDates || [];
+    const incompleteBanner = incompleteDates.length
+      ? `<tr><td style="padding-bottom:16px;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;">
+            <tr><td style="padding:12px 14px;">
+              <p style="margin:0 0 4px;color:#92400e;font-size:12.5px;font-weight:800;">&#9888; Figures below are understated — some days haven't synced yet</p>
+              ${incompleteDates.map((d) => `<p style="margin:0;color:#92400e;font-size:11.5px;font-weight:600;">${d.platform}: no data for ${d.missingDates.join(", ")}</p>`).join("")}
+            </td></tr>
+          </table>
+        </td></tr>`
+      : "";
+    return wrap(`
+      <table width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr><td style="padding-bottom:16px;">
+          <h2 style="margin:0;color:#111;font-size:20px;font-weight:800;">&#128200; Daily Ad Spend Report</h2>
+          <p style="margin:4px 0 0;color:#6b7280;font-size:13px;font-weight:600;">${data.dayLabel || ""} &nbsp;&#183;&nbsp; trailing range ${data.rangeLabel || ""}</p>
+        </td></tr>
+        ${incompleteBanner}
+        <tr><td>${platformCards}</td></tr>
+        <tr><td>
+          <p style="margin:0;color:#9ca3af;font-size:11px;line-height:1.6;">
+            ${data.productCount || 0} advertised products across platforms${data.lowSpendCampaignCount ? ` &#183; ${data.lowSpendCampaignCount} low-spend campaigns flagged` : ""}.
+            Full per-product breakdown, Ad Status Report and Low Spend Campaigns are in the attached workbook.
+          </p>
+        </td></tr>
+        <tr><td align="center" style="padding-top:24px;">
+          <a href="${SITE_URL}/dashboard/reports" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Reports &#8594;</a>
+        </td></tr>
+      </table>`, null);
+  }
+
   // Daily / Weekly summary
   const metrics = data.metrics || {};
   return w(`
@@ -798,6 +947,7 @@ const SUBJECTS: Record<string, string> = {
   dailyDigest: "📊 Marketplace360 - Daily Digest",
   liveAlerts: "⚡ Marketplace360 - Needs Attention",
   weeklyReport: "📈 Marketplace360 - Weekly Performance Report",
+  adSpendDaily: "📈 Ad spend Report",
   stockout: "⚠️ Marketplace360 - Ad Spend on Out-of-Stock Products",
   inventory: "Marketplace360 - Low Inventory Alert",
   campaign: "Marketplace360 - High ACOS Campaign Alert",

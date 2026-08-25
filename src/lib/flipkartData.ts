@@ -176,10 +176,14 @@ export interface FlipkartOverview {
   adOrders: number;
   clicks: number;
   impressions: number;
-  growthPct: number; // gross sales vs previous period, same length
+  growthPct: number | null; // gross sales vs previous period, same length; null when neither period has overall_sales data to compare
   trend: { date: string; rawDate: string; overallSales: number; sales: number; spend: number; roas: number; acos: number }[];
   topProducts: FlipkartTopProduct[];
   topCampaigns: FlipkartTopCampaign[];
+  // True once at least one barm_flipkart_overall_sales row exists for this period — lets the UI
+  // distinguish "genuinely zero retail sales" from "no Earn More report uploaded yet" (order_report
+  // alone never populates this table, since Flipkart's order export carries no monetary columns).
+  hasOverallSalesData: boolean;
 }
 
 function dayLabel(ymd: string): string {
@@ -196,15 +200,16 @@ export async function fetchFlipkartOverview(
   const osTable = getFlipkartTableName("flipkart_overall_sales", loggedInUser);
   const prevPeriod = getPreviousPeriod(startDate, endDate);
 
-  const [cpCurrent, cpPrev, osCurrent] = await Promise.all([
+  const [cpCurrent, cpPrev, osCurrent, osPrev] = await Promise.all([
     fetchTableForRange(cpTable, "report_date", startDate, endDate),
     fetchTableForRange(cpTable, "report_date", prevPeriod.from, prevPeriod.to),
     fetchTableForRange(osTable, "order_date", startDate, endDate),
+    fetchTableForRange(osTable, "order_date", prevPeriod.from, prevPeriod.to),
   ]);
 
   const ad = aggregateAdRows(cpCurrent);
-  const adPrev = aggregateAdRows(cpPrev);
   const ov = aggregateOverallRows(osCurrent);
+  const ovPrev = aggregateOverallRows(osPrev);
 
   const avgPrice = ov.units > 0 ? ov.sales / ov.units : 0;
   const grossSales = ov.sales;
@@ -212,7 +217,14 @@ export async function fetchFlipkartOverview(
   const organicSales = Math.max(0, grossSales - ad.sales);
   const tacos = grossSales > 0 ? (ad.spend / grossSales) * 100 : 0;
   const cvr = ad.clicks > 0 ? (ad.orders / ad.clicks) * 100 : 0;
-  const growthPct = adPrev.sales > 0 ? ((grossSales - adPrev.sales) / adPrev.sales) * 100 : 0;
+  // Gross sales vs the SAME metric last period — was previously (and wrongly)
+  // comparing this period's retail sales against last period's AD sales,
+  // which is mathematically unrelated and always read ~-100% whenever
+  // overall_sales had no rows. null (not 0 or a fabricated %) when neither
+  // period has overall_sales data, so the UI can say "no data" instead of
+  // showing a number that looks measured but isn't.
+  const hasOverallSalesData = osCurrent.length > 0 || osPrev.length > 0;
+  const growthPct = ovPrev.sales > 0 ? ((grossSales - ovPrev.sales) / ovPrev.sales) * 100 : hasOverallSalesData ? 0 : null;
 
   // Daily trend: merge campaign_performance (ad sales/spend) with overall_sales (gross) by date
   const dailyMap: Record<string, { overallSales: number; sales: number; spend: number }> = {};
@@ -292,6 +304,7 @@ export async function fetchFlipkartOverview(
     trend,
     topProducts,
     topCampaigns,
+    hasOverallSalesData,
   };
 }
 

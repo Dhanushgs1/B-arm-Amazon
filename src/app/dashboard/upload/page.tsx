@@ -10,6 +10,9 @@ import {
   REPORT_LABEL,
   fetchAllReportDataInfo,
 } from "@/lib/amazonReportUpload";
+import { maybeAlertHighAcos, ACOS_ALERT_TYPES } from "@/lib/uploadAcosAlert";
+import { uploadCombinedWorkbook, fetchDailyTablesDataInfo, type SheetUploadOutcome } from "@/lib/combinedAdSpendUpload";
+import Link from "next/link";
 
 const AD_ORDER_REPORT_TYPES: UploadReportType[] = [
   "sp_advertised_product",
@@ -136,6 +139,112 @@ function UploadCard({
   );
 }
 
+interface CombinedState {
+  status: "idle" | "parsing" | "done" | "error";
+  fileName?: string;
+  results?: SheetUploadOutcome[];
+  error?: string;
+}
+
+const SHEET_STATUS_STYLE: Record<SheetUploadOutcome["status"], string> = {
+  ok: "text-green-600 dark:text-green-400",
+  empty: "text-amber-600 dark:text-amber-400",
+  missing: "text-muted-foreground",
+  error: "text-red-600 dark:text-red-400",
+};
+
+function CombinedAdSpendUploadCard({ onUploaded, dataInfo }: { onUploaded: () => void; dataInfo: ReportDataInfo | undefined }) {
+  const [state, setState] = useState<CombinedState>({ status: "idle" });
+  const [dragOver, setDragOver] = useState(false);
+
+  const handleFile = async (file: File) => {
+    setState({ status: "parsing", fileName: file.name });
+    try {
+      const results = await uploadCombinedWorkbook(file);
+      setState({ status: "done", fileName: file.name, results });
+      onUploaded();
+    } catch (err) {
+      setState({ status: "error", fileName: file.name, error: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  return (
+    <div className="glass rounded-2xl border-2 border-primary/30 p-6 shadow-sm">
+      <div className="flex items-center gap-3 mb-2">
+        <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary">
+          <FileSpreadsheet size={20} />
+        </div>
+        <div>
+          <h3 className="font-bold text-sm text-foreground">Ad Spend Report — one-file upload</h3>
+          <span className="text-[10px] text-muted-foreground uppercase font-black tracking-wider">XLSX</span>
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground mb-4">
+        Drop the client&apos;s combined &quot;Last 7 days&quot; workbook here — it reads the AM ads / AM ord / FK ads
+        / FK ord / MS BARM ads / MS BARM ord / MS MW ads / MS MW ord sheets and archives each one, raw, into its own
+        barm_daily_* table. It does not feed the report tables below — to generate the{" "}
+        <Link href="/dashboard/reports" className="underline hover:text-foreground">Ad Spend Report</Link>, still
+        upload each report with its own card below.
+      </p>
+
+      <label
+        htmlFor="combined-ad-spend-upload"
+        className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl py-8 cursor-pointer transition-colors ${
+          dragOver ? "border-primary" : "border-border hover:border-primary/50"
+        }`}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          const f = e.dataTransfer.files?.[0];
+          if (f) handleFile(f);
+        }}
+      >
+        <UploadCloud size={24} className="text-muted-foreground" />
+        <span className="text-xs text-muted-foreground px-2 text-center truncate max-w-full">
+          {state.fileName || "Click or drop the \"Last 7 days\" .xlsx here"}
+        </span>
+      </label>
+      <DataOnFileCaption info={dataInfo} />
+      <input
+        id="combined-ad-spend-upload"
+        type="file"
+        accept=".xlsx,.xls"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) handleFile(f);
+          e.target.value = "";
+        }}
+      />
+
+      <div className="mt-4 text-xs">
+        {state.status === "parsing" && (
+          <span className="flex items-center gap-1.5 text-muted-foreground">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Reading sheets &amp; saving to Supabase…
+          </span>
+        )}
+        {state.status === "error" && (
+          <span className="flex items-center gap-1.5 text-red-600 dark:text-red-400 font-semibold">
+            <XCircle size={14} /> {state.error}
+          </span>
+        )}
+        {state.status === "done" && state.results && (
+          <div className="space-y-1.5">
+            {state.results.map((r) => (
+              <div key={r.sheet} className={`flex items-start gap-1.5 ${SHEET_STATUS_STYLE[r.status]}`}>
+                {r.status === "ok" ? <CheckCircle2 size={14} className="mt-0.5 shrink-0" /> : <XCircle size={14} className="mt-0.5 shrink-0" />}
+                <span><span className="font-semibold">{r.label}:</span> {r.detail}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function UploadReportsPage() {
   const { account, keySlot } = useDashboard();
 
@@ -148,23 +257,47 @@ export default function UploadReportsPage() {
     setDataInfo(info);
   }, []);
 
+  const [combinedDataInfo, setCombinedDataInfo] = useState<ReportDataInfo | undefined>(undefined);
+  const refreshCombinedMeta = useCallback(async () => {
+    const info = await fetchDailyTablesDataInfo();
+    setCombinedDataInfo(info);
+  }, []);
+
   useEffect(() => {
     refreshMeta();
-  }, [refreshMeta]);
+    refreshCombinedMeta();
+  }, [refreshMeta, refreshCombinedMeta]);
 
   const handleFile = async (type: UploadReportType, file: File) => {
     setCardState((prev) => ({ ...prev, [type]: { status: "parsing", fileName: file.name } }));
     try {
       const res = await uploadReportFile(type, file);
+      const message = `${res.validRows} rows saved${res.skippedRows ? `, ${res.skippedRows} skipped` : ""} (of ${res.totalRows})`;
       setCardState((prev) => ({
         ...prev,
-        [type]: {
-          status: "done",
-          fileName: file.name,
-          message: `${res.validRows} rows saved${res.skippedRows ? `, ${res.skippedRows} skipped` : ""} (of ${res.totalRows})`,
-        },
+        [type]: { status: "done", fileName: file.name, message },
       }));
       refreshMeta();
+
+      // Weekly ads upload -> check the campaigns that just landed for high
+      // ACOS, and if any are over threshold, email an alert (with AI fix
+      // suggestions) to whoever's configured in Settings. Runs after the
+      // "done" state above so a slow Gemini/email round-trip never blocks
+      // the upload UI from showing success.
+      if (ACOS_ALERT_TYPES.includes(type) && res.rows?.length) {
+        maybeAlertHighAcos(type, res.rows, keySlot)
+          .then((alert) => {
+            if (alert.highAcosCount === 0) return;
+            const suffix = alert.emailed
+              ? ` · ⚠ ${alert.highAcosCount} high-ACOS campaign${alert.highAcosCount > 1 ? "s" : ""} emailed to ${alert.to}`
+              : ` · ⚠ ${alert.highAcosCount} high-ACOS campaign${alert.highAcosCount > 1 ? "s" : ""} found (${alert.error || "email not sent"})`;
+            setCardState((prev) => ({
+              ...prev,
+              [type]: { status: "done", fileName: file.name, message: `${message}${suffix}` },
+            }));
+          })
+          .catch(() => {});
+      }
     } catch (err) {
       setCardState((prev) => ({
         ...prev,
@@ -185,6 +318,8 @@ export default function UploadReportsPage() {
           per-ASIN. Re-uploading an overlapping date range just updates those rows, so nothing gets duplicated.
         </p>
       </div>
+
+      <CombinedAdSpendUploadCard onUploaded={refreshCombinedMeta} dataInfo={combinedDataInfo} />
 
       <div>
         <h2 className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-3">

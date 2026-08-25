@@ -144,11 +144,16 @@ export default function SettingsPage() {
 
   // Load configurations
   useEffect(() => {
-    setTheme(document.documentElement.classList.contains("dark") ? "dark" : "light");
     const saved = localStorage.getItem("ppcUserSettings");
     if (saved) {
       try {
         const p = JSON.parse(saved);
+        // Saved theme wins over whatever class happens to be on <html> right
+        // now — the root layout's inline script already applies it on load,
+        // this just keeps this page's toggle UI in sync with that choice.
+        const savedTheme: "light" | "dark" = p.theme === "dark" ? "dark" : "light";
+        setTheme(savedTheme);
+        document.documentElement.classList.toggle("dark", savedTheme === "dark");
         setEmailAlerts(p.emailAlerts ?? true);
         setNotifEmail(p.notifEmail ?? "");
         setCcEmail(p.ccEmail ?? "");
@@ -184,6 +189,8 @@ export default function SettingsPage() {
       } catch (e) {
         console.error("Failed to parse settings", e);
       }
+    } else {
+      setTheme(document.documentElement.classList.contains("dark") ? "dark" : "light");
     }
   }, []);
 
@@ -210,8 +217,14 @@ export default function SettingsPage() {
 
   const toggleTheme = (next: "light" | "dark") => {
     setTheme(next);
-    if (next === "dark") document.documentElement.classList.add("dark");
-    else document.documentElement.classList.remove("dark");
+    document.documentElement.classList.toggle("dark", next === "dark");
+    // Persist immediately (same merge-write pattern as the notifEmail auto-save
+    // effect below) so the choice survives a reload/navigation without the
+    // user having to separately click "Save Changes".
+    const saved = localStorage.getItem("ppcUserSettings");
+    const current = saved ? JSON.parse(saved) : {};
+    current.theme = next;
+    localStorage.setItem("ppcUserSettings", JSON.stringify(current));
   };
 
   const handleSave = async () => {
@@ -224,7 +237,7 @@ export default function SettingsPage() {
       timezone, defaultRange, pushAlerts, roasAlerts, inventoryAlerts,
       weeklySummary, dailySummary, liveAlerts, monthlySummary, aiEnabled, autoInsights, smartAlerts,
       forecastWindow, recMode, autoPause, autoNegatives, autoBudget,
-      roasTarget, compactMode,
+      roasTarget, compactMode, theme,
       flipkartApiKey, flipkartSellerId,
       // account context for the automated crons (which account to query)
       keySlot, amazonAccountId: account?.id, workspaceId: account?.workspace_id, currency: account?.currency,

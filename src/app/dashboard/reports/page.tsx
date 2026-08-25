@@ -2,11 +2,12 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useDashboard } from "@/lib/DashboardContext";
-import { BarChart3, FileSpreadsheet, Download, FileText, CheckCircle2, Loader2, RotateCcw } from "lucide-react";
+import { BarChart3, FileSpreadsheet, Download, FileText, CheckCircle2, Loader2, RotateCcw, Send } from "lucide-react";
 import { mcp, mcpAllPages, mcpAllInventory } from "@/lib/api";
 import { exportAmazonSalesReport, SalesReportGranularity } from "@/lib/amazonSalesExport";
 import { exportAnalysisReport } from "@/lib/analysisReportExport";
 import { exportHistoricalAnalysisReport } from "@/lib/historicalAnalysisReportExport";
+import { exportAdSpendReport } from "@/lib/adSpendReportExport";
 import { exportWeeklySalesReport } from "@/lib/weeklySalesExport";
 import { fetchUploadedDateRange } from "@/lib/amazonReportUpload";
 import { resolveProductName } from "@/lib/categoryMap";
@@ -21,6 +22,10 @@ export default function ReportsPage() {
   const [histMsg, setHistMsg] = useState<string | null>(null);
   const [weeklyGenerating, setWeeklyGenerating] = useState(false);
   const [weeklyMsg, setWeeklyMsg] = useState<string | null>(null);
+  const [adSpendGenerating, setAdSpendGenerating] = useState(false);
+  const [adSpendMsg, setAdSpendMsg] = useState<string | null>(null);
+  const [adSpendSending, setAdSpendSending] = useState(false);
+  const [adSpendSendMsg, setAdSpendSendMsg] = useState<string | null>(null);
 
   const refreshMeta = useCallback(async () => {
     const r = await fetchUploadedDateRange();
@@ -51,6 +56,36 @@ export default function ReportsPage() {
     } catch (err) {
       setHistMsg("Failed: " + (err instanceof Error ? err.message : String(err)));
     } finally { setHistGenerating(false); }
+  };
+
+  const handleGenerateAdSpend = async () => {
+    if (!endDate) { alert("Pick a date at the top of the dashboard first."); return; }
+    setAdSpendGenerating(true); setAdSpendMsg(null);
+    try {
+      const res = await exportAdSpendReport({ endDate, accountName: account?.name });
+      const parts = res.platformTotals.map((p) => `${p.platform} ₹${p.rangeSpendTax.toFixed(0)}`).join(", ");
+      setAdSpendMsg(`Downloaded ${res.filename} — ${res.productCount} products, range spend ${parts}${res.lowSpendCampaignCount ? `, ${res.lowSpendCampaignCount} low-spend campaigns flagged` : ""}${res.historyRowsSaved ? ` · ${res.historyRowsSaved} rows saved to history` : " · history not saved (run scripts/ad_spend_history_table.sql?)"}.`);
+    } catch (err) {
+      setAdSpendMsg("Failed: " + (err instanceof Error ? err.message : String(err)));
+    } finally { setAdSpendGenerating(false); }
+  };
+
+  const handleSendAdSpendEmail = async () => {
+    if (!endDate) { alert("Pick a date at the top of the dashboard first."); return; }
+    setAdSpendSending(true); setAdSpendSendMsg(null);
+    try {
+      const r = await fetch("/api/send-ad-spend-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ endDate, accountName: account?.name }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Send failed");
+      const ccCount = j.cc ? String(j.cc).split(",").filter(Boolean).length : 0;
+      setAdSpendSendMsg(`Emailed ${j.filename} to ${j.to}${ccCount ? ` (cc ${ccCount})` : ""}.`);
+    } catch (err) {
+      setAdSpendSendMsg("Failed: " + (err instanceof Error ? err.message : String(err)));
+    } finally { setAdSpendSending(false); }
   };
 
   const handleDownload = async (type: string) => {
@@ -370,7 +405,7 @@ export default function ReportsPage() {
       </div>
 
       <div className="glass rounded-2xl border border-border p-6 shadow-sm">
-        <h3 className="font-bold text-sm mb-1">Generate Historical Analysis Report</h3>
+        <h3 className="font-bold text-sm mb-1">Generate Historical 7/30 Days Analysis Report</h3>
         <p className="text-xs text-muted-foreground mb-4">
           Builds the same Analysis Report layout (Price, Spend+Tax, Units, Orders, Returns, CPC, ACOS, TACOS) from
           the data uploaded above — one row per SKU. The report compares a trailing 30-day window against a
@@ -398,6 +433,53 @@ export default function ReportsPage() {
           </p>
         )}
         {histMsg && <p className="text-xs mt-3 font-semibold">{histMsg}</p>}
+      </div>
+
+      <div className="glass rounded-2xl border border-border p-6 shadow-sm">
+        <h3 className="font-bold text-sm mb-1">Generate Daily Ad Spend Report</h3>
+        <p className="text-xs text-muted-foreground mb-4">
+          Amazon + Flipkart + Meesho ad spend, side by side: Spend, Spend+Tax, Orders, CPC and ACOS per product for
+          the single day selected above ({endDate || "yesterday"}) and its trailing 7 days, plus a cross-platform Ad
+          Status Report and a Low Spend Campaigns list. Built from the data uploaded on the Amazon, Flipkart, and{" "}
+          <a href="/dashboard/meesho/upload" className="underline hover:text-foreground">Meesho</a>{" "}
+          Upload pages (Meesho needs scripts/meesho_tables.sql run once in Supabase first). Google Ads and social-media spend
+          aren&apos;t included yet — no sample export has been seen for either.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={handleGenerateAdSpend}
+            disabled={adSpendGenerating || !endDate}
+            className="px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold rounded-lg transition-colors flex items-center gap-2 shadow-md disabled:opacity-50"
+          >
+            {adSpendGenerating ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Generating…
+              </>
+            ) : (
+              <>
+                <Download size={14} /> Generate &amp; Download
+              </>
+            )}
+          </button>
+          <button
+            onClick={handleSendAdSpendEmail}
+            disabled={adSpendSending || !endDate}
+            title="Emails the same workbook to kaviyapriyabarm@gmail.com (cc the usual list) instead of downloading it"
+            className="px-4 py-2 bg-white dark:bg-white/10 border border-border hover:border-primary/50 text-foreground text-xs font-bold rounded-lg transition-colors flex items-center gap-2 shadow-sm disabled:opacity-50"
+          >
+            {adSpendSending ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Sending…
+              </>
+            ) : (
+              <>
+                <Send size={14} /> Send
+              </>
+            )}
+          </button>
+        </div>
+        {adSpendMsg && <p className="text-xs mt-3 font-semibold">{adSpendMsg}</p>}
+        {adSpendSendMsg && <p className="text-xs mt-1 font-semibold">{adSpendSendMsg}</p>}
       </div>
 
       {/* Live API reports */}
