@@ -99,6 +99,13 @@ export function toDate(v: unknown): string | null {
       return `${year}-${mon}-${dMonY[1].padStart(2, "0")}`;
     }
   }
+  // "Aug 20, 2026" / "August 20 2026" — Flipkart's order-report "Ordered On"
+  // column, month name first instead of last.
+  const monDY = /^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})$/.exec(s);
+  if (monDY) {
+    const mon = MONTH_ABBR[monDY[1].slice(0, 3).toLowerCase()];
+    if (mon) return `${monDY[3]}-${mon}-${monDY[2].padStart(2, "0")}`;
+  }
   return null;
 }
 

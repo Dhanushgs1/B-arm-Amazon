@@ -336,7 +336,30 @@ interface ReportTableSpec {
   dateCol: string;
   strategy: "upsert" | "replaceRange";
   onConflict?: string;
+  /**
+   * Amazon's own SP export has one row per keyword/targeting expression, not
+   * one per SKU — so several rows can share the same (date, campaign, ad
+   * group, SKU), which is exactly the conflict key. Postgres's `ON CONFLICT
+   * DO UPDATE` errors ("cannot affect row a second time") if one upsert
+   * statement contains that key twice, so those rows must be merged first —
+   * summing `sumFields`, keeping the first row's value for everything else.
+   */
+  mergeSumFields?: string[];
   buildRow: (r: Record<string, unknown>) => Record<string, unknown> | null;
+}
+
+function mergeByConflictKey(rows: Record<string, unknown>[], keyCols: string[], sumFields: string[]): Record<string, unknown>[] {
+  const merged = new Map<string, Record<string, unknown>>();
+  for (const row of rows) {
+    const key = keyCols.map((c) => row[c]).join("");
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, { ...row });
+      continue;
+    }
+    for (const f of sumFields) existing[f] = (Number(existing[f]) || 0) + (Number(row[f]) || 0);
+  }
+  return [...merged.values()];
 }
 
 const REPORT_TARGETS: Record<string, ReportTableSpec> = {
@@ -345,6 +368,10 @@ const REPORT_TARGETS: Record<string, ReportTableSpec> = {
     dateCol: "report_date",
     strategy: "upsert",
     onConflict: "report_date,campaign_name,ad_group_name,advertised_sku",
+    mergeSumFields: [
+      "impressions", "clicks", "spend", "sales_7d", "orders_7d", "units_7d",
+      "advertised_sku_units_7d", "other_sku_units_7d", "advertised_sku_sales_7d", "other_sku_sales_7d",
+    ],
     buildRow: (r) => {
       const p = makePicker(r);
       const report_date = parseFlexibleDate(p("Start Date"));
@@ -548,8 +575,11 @@ async function replaceRangeRows(table: string, dateCol: string, rows: Record<str
 
 async function writeReportTable(ws: XLSX.WorkSheet, spec: ReportTableSpec): Promise<string> {
   const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" });
-  const mapped = raw.map(spec.buildRow).filter((r): r is Record<string, unknown> => r !== null);
+  let mapped = raw.map(spec.buildRow).filter((r): r is Record<string, unknown> => r !== null);
   if (!mapped.length) return `0/${raw.length} rows usable for the report`;
+  if (spec.strategy === "upsert" && spec.mergeSumFields) {
+    mapped = mergeByConflictKey(mapped, spec.onConflict!.split(","), spec.mergeSumFields);
+  }
   return spec.strategy === "upsert" ? upsertRows(spec.table, mapped, spec.onConflict!) : replaceRangeRows(spec.table, spec.dateCol, mapped);
 }
 
