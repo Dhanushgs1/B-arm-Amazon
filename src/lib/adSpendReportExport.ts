@@ -2,6 +2,7 @@ import * as XLSX from "xlsx-js-style";
 import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
 import { upsertInChunks } from "@/lib/amazonReportUpload";
 import { resolveProductName } from "@/lib/categoryMap";
+import { fetchProductMasterNameMap } from "@/lib/productMasterUpload";
 
 // ── Ad Spend Report ──────────────────────────────────────────────────────────
 // Cross-marketplace (Amazon + Flipkart + Meesho) ad-spend snapshot: which
@@ -699,11 +700,19 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const rangeDays = opts.rangeDays && opts.rangeDays > 0 ? opts.rangeDays : 7;
   const range = getDateWindow(endDate, rangeDays);
 
-  const [amz, fk, ms] = await Promise.all([
+  // Fetched once and shared across all three platforms — the seller's own
+  // approved SKU -> product name list, checked first before falling back to
+  // whatever name shows up on an order/price-listing row (see resolveName).
+  const [masterNames, amz, fk, ms] = await Promise.all([
+    fetchProductMasterNameMap(),
     fetchAmazonProducts(range, endDate),
     fetchFlipkartProducts(range, endDate),
     fetchMeeshoProducts(range, endDate),
   ]);
+  const resolveName = (sku: string, fallback: string): string => masterNames.get(sku) || fallback;
+  [amz.products, fk.products, ms.products].forEach((products) => {
+    products.forEach((p) => { p.name = resolveName(p.sku, p.name); });
+  });
 
   if (!amz.products.size && !fk.products.size && !ms.products.size) {
     throw new Error(

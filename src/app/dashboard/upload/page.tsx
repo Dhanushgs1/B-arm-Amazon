@@ -13,6 +13,7 @@ import {
 import { maybeAlertHighAcos, ACOS_ALERT_TYPES } from "@/lib/uploadAcosAlert";
 import { uploadCombinedWorkbook, fetchDailyTablesDataInfo, type SheetUploadOutcome } from "@/lib/combinedAdSpendUpload";
 import { staleness } from "@/lib/dataFreshness";
+import { uploadProductMaster, fetchProductMasterDataInfo } from "@/lib/productMasterUpload";
 import Link from "next/link";
 
 const AD_ORDER_REPORT_TYPES: UploadReportType[] = [
@@ -255,6 +256,106 @@ function CombinedAdSpendUploadCard({ onUploaded, dataInfo }: { onUploaded: () =>
   );
 }
 
+interface ProductMasterState {
+  status: "idle" | "parsing" | "done" | "error";
+  fileName?: string;
+  message?: string;
+}
+
+function ProductMasterUploadCard({ onUploaded, rowCount }: { onUploaded: () => void; rowCount: number | undefined }) {
+  const [state, setState] = useState<ProductMasterState>({ status: "idle" });
+  const [dragOver, setDragOver] = useState(false);
+
+  const handleFile = async (file: File) => {
+    setState({ status: "parsing", fileName: file.name });
+    try {
+      const res = await uploadProductMaster(file);
+      setState({
+        status: "done",
+        fileName: file.name,
+        message: `${res.savedRows.toLocaleString("en-IN")} SKUs saved${res.skippedRows ? `, ${res.skippedRows} skipped` : ""} (of ${res.totalRows.toLocaleString("en-IN")})`,
+      });
+      onUploaded();
+    } catch (err) {
+      setState({ status: "error", fileName: file.name, message: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  return (
+    <div className="glass rounded-2xl border-2 border-primary/30 p-6 shadow-sm">
+      <div className="flex items-center gap-3 mb-2">
+        <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary">
+          <FileSpreadsheet size={20} />
+        </div>
+        <div>
+          <h3 className="font-bold text-sm text-foreground">Product Master — SKU to name</h3>
+          <span className="text-[10px] text-muted-foreground uppercase font-black tracking-wider">XLSX</span>
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground mb-4">
+        Drop the &quot;Product Master&quot; workbook here (its own &quot;Product Master&quot; sheet — Master SKU ID,
+        Approved Product Name, Category). A full snapshot: each upload replaces the previous one. Every report — Amazon,
+        Flipkart, and Meesho — checks this first for a SKU&apos;s display name before falling back to whatever name
+        shows up on an order or price-listing row.
+      </p>
+
+      <label
+        htmlFor="product-master-upload"
+        className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl py-8 cursor-pointer transition-colors ${
+          dragOver ? "border-primary" : "border-border hover:border-primary/50"
+        }`}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          const f = e.dataTransfer.files?.[0];
+          if (f) handleFile(f);
+        }}
+      >
+        <UploadCloud size={24} className="text-muted-foreground" />
+        <span className="text-xs text-muted-foreground px-2 text-center truncate max-w-full">
+          {state.fileName || "Click or drop the Product Master .xlsx here"}
+        </span>
+      </label>
+      {rowCount !== undefined && (
+        <p className="text-[10px] text-muted-foreground mt-1">
+          {rowCount > 0 ? `${rowCount.toLocaleString("en-IN")} SKUs on file` : "No product master uploaded yet"}
+        </p>
+      )}
+      <input
+        id="product-master-upload"
+        type="file"
+        accept=".xlsx,.xls"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) handleFile(f);
+          e.target.value = "";
+        }}
+      />
+
+      <div className="mt-4 text-xs">
+        {state.status === "parsing" && (
+          <span className="flex items-center gap-1.5 text-muted-foreground">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Reading &amp; replacing…
+          </span>
+        )}
+        {state.status === "done" && (
+          <span className="flex items-center gap-1.5 text-green-600 dark:text-green-400 font-semibold">
+            <CheckCircle2 size={14} /> {state.message}
+          </span>
+        )}
+        {state.status === "error" && (
+          <span className="flex items-center gap-1.5 text-red-600 dark:text-red-400 font-semibold">
+            <XCircle size={14} /> {state.message}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function UploadReportsPage() {
   const { account, keySlot } = useDashboard();
 
@@ -273,10 +374,17 @@ export default function UploadReportsPage() {
     setCombinedDataInfo(info);
   }, []);
 
+  const [productMasterRowCount, setProductMasterRowCount] = useState<number | undefined>(undefined);
+  const refreshProductMasterMeta = useCallback(async () => {
+    const info = await fetchProductMasterDataInfo();
+    setProductMasterRowCount(info.rowCount);
+  }, []);
+
   useEffect(() => {
     refreshMeta();
     refreshCombinedMeta();
-  }, [refreshMeta, refreshCombinedMeta]);
+    refreshProductMasterMeta();
+  }, [refreshMeta, refreshCombinedMeta, refreshProductMasterMeta]);
 
   const handleFile = async (type: UploadReportType, file: File) => {
     setCardState((prev) => ({ ...prev, [type]: { status: "parsing", fileName: file.name } }));
@@ -330,6 +438,7 @@ export default function UploadReportsPage() {
       </div>
 
       <CombinedAdSpendUploadCard onUploaded={refreshCombinedMeta} dataInfo={combinedDataInfo} />
+      <ProductMasterUploadCard onUploaded={refreshProductMasterMeta} rowCount={productMasterRowCount} />
 
       <div>
         <h2 className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-3">
