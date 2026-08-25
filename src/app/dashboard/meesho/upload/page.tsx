@@ -11,6 +11,11 @@ import {
   type MeeshoUploadReportType,
   type MeeshoReportDataInfo,
 } from "@/lib/meeshoReportUpload";
+import { staleness } from "@/lib/dataFreshness";
+
+// Only "ads" feeds the Ad Spend Report's Meesho spend total — the combined
+// "Last 7 days" one-file upload does NOT (see combinedAdSpendUpload.ts).
+const AD_SPEND_REPORT_TYPE: MeeshoUploadReportType = "ads";
 
 // Mirrors /dashboard/flipkart/upload card-for-card, at Meesho's smaller scale —
 // just the two reports the Ad Spend Report needs (ads spend, orders). There's
@@ -25,17 +30,21 @@ interface CardState {
   message?: string;
 }
 
-function DataOnFileCaption({ info }: { info: MeeshoReportDataInfo | undefined }) {
+function DataOnFileCaption({ info, staleAfterDays }: { info: MeeshoReportDataInfo | undefined; staleAfterDays?: number }) {
   if (!info) return <p className="text-[10px] text-muted-foreground mt-1">Checking what&apos;s on file…</p>;
   if (info.error) {
     return <p className="text-[10px] text-red-600 dark:text-red-400 mt-1">Couldn&apos;t check — {info.error}</p>;
   }
   if (info.minDate) {
+    const stale = staleAfterDays !== undefined ? staleness(info.maxDate, staleAfterDays) : null;
     return (
-      <p className="text-[10px] text-muted-foreground mt-1">
-        Data: <b className="text-foreground">{info.minDate}</b> to <b className="text-foreground">{info.maxDate}</b> (
-        {info.rowCount.toLocaleString("en-IN")} rows)
-      </p>
+      <>
+        <p className="text-[10px] text-muted-foreground mt-1">
+          Data: <b className="text-foreground">{info.minDate}</b> to <b className="text-foreground">{info.maxDate}</b> (
+          {info.rowCount.toLocaleString("en-IN")} rows)
+        </p>
+        {stale && <p className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold mt-0.5">&#9888; {stale.text}</p>}
+      </>
     );
   }
   return <p className="text-[10px] text-muted-foreground mt-1">No data uploaded yet</p>;
@@ -89,7 +98,7 @@ function UploadCard({
           {state.fileName || "Click or drop CSV/XLSX here"}
         </span>
       </label>
-      <DataOnFileCaption info={info} />
+      <DataOnFileCaption info={info} staleAfterDays={type === AD_SPEND_REPORT_TYPE ? 1 : undefined} />
       <input
         id={inputId}
         type="file"

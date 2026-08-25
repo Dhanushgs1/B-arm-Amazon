@@ -298,6 +298,13 @@ export interface ParsedUpload {
   /** Date range the file covers, on that report's own date column. */
   minDate: string | null;
   maxDate: string | null;
+  /**
+   * Rows that carried real ad spend but were dropped before ever reaching
+   * `rows` — usually because their "Date" cell didn't parse (see `toDate`).
+   * Distinct from ordinary skipped rows (blank spacer rows, zero-spend rows
+   * with no campaign/SKU) which are expected and not worth surfacing.
+   */
+  droppedWithSpend?: { count: number; totalSpend: number };
 }
 
 /** Dispatches on file extension: the seller's native per-day CSV export, or a
@@ -347,31 +354,37 @@ async function parseFsnReportCsv(file: File): Promise<ParsedUpload> {
     transformHeader: (h: string) => h.trim(),
   }) as unknown as { data: Record<string, string>[] };
 
-  const rows = parsed.data
-    .map((r) => {
-      const p = makePicker(r);
-      return {
-        report_date: reportDate,
-        campaign_id: clean(p("Campaign ID")),
-        campaign_name: str(p("Campaign Name")),
-        adgroup_id: clean(p("AdGroup ID", "Ad Group ID")),
-        adgroup_name: str(p("AdGroup Name", "Ad Group Name")),
-        sku_id: clean(p("Sku Id", "SKU ID", "SKU Id")),
-        product_name: str(p("Product Name", "Product Title")),
-        views: num(p("Views", /^Impressions$/i)),
-        clicks: num(p("Clicks")),
-        direct_units_sold: num(p("Direct Units Sold")),
-        indirect_units_sold: num(p("Indirect Units Sold")),
-        total_revenue: num(p(/^Total Revenue/i)),
-        conversion_rate: num(p("Conversion Rate")),
-        roi: num(p("ROI")),
-        ad_spend: num(p("Ad Spend")),
-        raw: r,
-      };
-    })
-    .filter((r) => r.campaign_id || r.sku_id);
+  const parsedRows = parsed.data.map((r) => {
+    const p = makePicker(r);
+    return {
+      report_date: reportDate,
+      campaign_id: clean(p("Campaign ID")),
+      campaign_name: str(p("Campaign Name")),
+      adgroup_id: clean(p("AdGroup ID", "Ad Group ID")),
+      adgroup_name: str(p("AdGroup Name", "Ad Group Name")),
+      sku_id: clean(p("Sku Id", "SKU ID", "SKU Id")),
+      product_name: str(p("Product Name", "Product Title")),
+      views: num(p("Views", /^Impressions$/i)),
+      clicks: num(p("Clicks")),
+      direct_units_sold: num(p("Direct Units Sold")),
+      indirect_units_sold: num(p("Indirect Units Sold")),
+      total_revenue: num(p(/^Total Revenue/i)),
+      conversion_rate: num(p("Conversion Rate")),
+      roi: num(p("ROI")),
+      ad_spend: num(p("Ad Spend")),
+      raw: r,
+    };
+  });
+  const rows = parsedRows.filter((r) => r.campaign_id || r.sku_id);
+  const dropped = parsedRows.filter((r) => !(r.campaign_id || r.sku_id) && r.ad_spend > 0);
 
-  return { rows, totalRows: parsed.data.length, minDate: reportDate, maxDate: reportDate };
+  return {
+    rows,
+    totalRows: parsed.data.length,
+    minDate: reportDate,
+    maxDate: reportDate,
+    droppedWithSpend: dropped.length ? { count: dropped.length, totalSpend: dropped.reduce((s, r) => s + r.ad_spend, 0) } : undefined,
+  };
 }
 
 /**
@@ -388,31 +401,40 @@ async function parseFsnReportXlsx(file: File): Promise<ParsedUpload> {
   // The seller's combined workbook keeps the CSV's Start Time / End Time
   // preamble above the real header on this sheet — see findHeaderRow.
   const raw = readSheetRows(sheet, findHeaderRow(sheet, ["Date", "Campaign ID"]));
-  const rows = raw
-    .map((r) => {
-      const p = makePicker(r);
-      return {
-        report_date: toDate(p("Date")),
-        campaign_id: clean(p("Campaign ID")),
-        campaign_name: str(p("Campaign Name")),
-        adgroup_id: clean(p("AdGroup ID", "Ad Group ID")),
-        adgroup_name: str(p("AdGroup Name", "Ad Group Name")),
-        sku_id: clean(p("Sku Id", "SKU ID", "SKU Id")),
-        product_name: str(p("Product Name", "Product Title")),
-        views: num(p("Views", /^Impressions$/i)),
-        clicks: num(p("Clicks")),
-        direct_units_sold: num(p("Direct Units Sold")),
-        indirect_units_sold: num(p("Indirect Units Sold")),
-        total_revenue: num(p(/^Total Revenue/i)),
-        conversion_rate: num(p("Conversion Rate")),
-        roi: num(p("ROI")),
-        ad_spend: num(p("Ad Spend")),
-        raw: r,
-      };
-    })
-    .filter((r) => r.report_date && (r.campaign_id || r.sku_id));
+  const parsed = raw.map((r) => {
+    const p = makePicker(r);
+    return {
+      report_date: toDate(p("Date")),
+      campaign_id: clean(p("Campaign ID")),
+      campaign_name: str(p("Campaign Name")),
+      adgroup_id: clean(p("AdGroup ID", "Ad Group ID")),
+      adgroup_name: str(p("AdGroup Name", "Ad Group Name")),
+      sku_id: clean(p("Sku Id", "SKU ID", "SKU Id")),
+      product_name: str(p("Product Name", "Product Title")),
+      views: num(p("Views", /^Impressions$/i)),
+      clicks: num(p("Clicks")),
+      direct_units_sold: num(p("Direct Units Sold")),
+      indirect_units_sold: num(p("Indirect Units Sold")),
+      total_revenue: num(p(/^Total Revenue/i)),
+      conversion_rate: num(p("Conversion Rate")),
+      roi: num(p("ROI")),
+      ad_spend: num(p("Ad Spend")),
+      raw: r,
+    };
+  });
+  const rows = parsed.filter((r) => r.report_date && (r.campaign_id || r.sku_id));
 
-  return { rows, totalRows: raw.length, ...dateBounds(rows, "report_date") };
+  // A row with real ad spend that got dropped (almost always a "Date" cell
+  // toDate() couldn't parse) silently understates the total — unlike a blank
+  // spacer row or a zero-spend row missing both IDs, which are expected noise.
+  const dropped = parsed.filter((r) => !(r.report_date && (r.campaign_id || r.sku_id)) && r.ad_spend > 0);
+
+  return {
+    rows,
+    totalRows: raw.length,
+    ...dateBounds(rows, "report_date"),
+    droppedWithSpend: dropped.length ? { count: dropped.length, totalSpend: dropped.reduce((s, r) => s + r.ad_spend, 0) } : undefined,
+  };
 }
 
 /** Order report — the "Orders" sheet (XLSX/XLS) or a raw CSV export, one row
@@ -703,6 +725,8 @@ export interface FlipkartUploadResult {
   maxDate: string | null;
   /** Extra work done beyond the raw table, surfaced in the card's status line. */
   mirrored?: string;
+  /** Rows with real ad spend dropped before saving — see ParsedUpload. */
+  droppedWithSpend?: { count: number; totalSpend: number };
 }
 
 /**
@@ -801,7 +825,14 @@ export async function uploadFlipkartReportFile(
   const rows = type === "order_report" ? dedupeOrderReportRows(parsed.rows) : dedupeExactRows(parsed.rows);
 
   if (!rows.length) {
-    return { totalRows: parsed.totalRows, savedRows: 0, skippedRows: parsed.totalRows, minDate: null, maxDate: null };
+    return {
+      totalRows: parsed.totalRows,
+      savedRows: 0,
+      skippedRows: parsed.totalRows,
+      minDate: null,
+      maxDate: null,
+      droppedWithSpend: parsed.droppedWithSpend,
+    };
   }
 
   let mirrored: string | undefined;
@@ -829,6 +860,7 @@ export async function uploadFlipkartReportFile(
     minDate: parsed.minDate,
     maxDate: parsed.maxDate,
     mirrored,
+    droppedWithSpend: parsed.droppedWithSpend,
   };
 }
 

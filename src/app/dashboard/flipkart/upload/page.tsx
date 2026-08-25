@@ -11,6 +11,12 @@ import {
   type FlipkartUploadReportType,
   type FlipkartReportDataInfo,
 } from "@/lib/flipkartReportUpload";
+import { staleness } from "@/lib/dataFreshness";
+
+// Only fsn_report feeds the Ad Spend Report's Flipkart spend total — the
+// combined "Last 7 days" one-file upload does NOT (see combinedAdSpendUpload.ts),
+// so this is the one card that silently going stale actually breaks that report.
+const AD_SPEND_REPORT_TYPE: FlipkartUploadReportType = "fsn_report";
 
 // Mirrors /dashboard/upload (Amazon) card-for-card. The grouping differs only
 // because Flipkart's four exports split into "what the report is built from"
@@ -33,17 +39,21 @@ interface CardState {
 
 // Always renders something. A blank caption reads as "nothing uploaded", which
 // is a different fact from "still loading" and from "couldn't check".
-function DataOnFileCaption({ info }: { info: FlipkartReportDataInfo | undefined }) {
+function DataOnFileCaption({ info, staleAfterDays }: { info: FlipkartReportDataInfo | undefined; staleAfterDays?: number }) {
   if (!info) return <p className="text-[10px] text-muted-foreground mt-1">Checking what&apos;s on file…</p>;
   if (info.error) {
     return <p className="text-[10px] text-red-600 dark:text-red-400 mt-1">Couldn&apos;t check — {info.error}</p>;
   }
   if (info.minDate) {
+    const stale = staleAfterDays !== undefined ? staleness(info.maxDate, staleAfterDays) : null;
     return (
-      <p className="text-[10px] text-muted-foreground mt-1">
-        Data: <b className="text-foreground">{info.minDate}</b> to <b className="text-foreground">{info.maxDate}</b> (
-        {info.rowCount.toLocaleString("en-IN")} rows)
-      </p>
+      <>
+        <p className="text-[10px] text-muted-foreground mt-1">
+          Data: <b className="text-foreground">{info.minDate}</b> to <b className="text-foreground">{info.maxDate}</b> (
+          {info.rowCount.toLocaleString("en-IN")} rows)
+        </p>
+        {stale && <p className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold mt-0.5">&#9888; {stale.text}</p>}
+      </>
     );
   }
   if (info.rowCount > 0) {
@@ -85,6 +95,11 @@ function CoverageStrip({
                     {i.minDate} → {i.maxDate}
                   </p>
                   <p className="text-[10px] text-muted-foreground">{i.rowCount.toLocaleString("en-IN")} rows</p>
+                  {t === AD_SPEND_REPORT_TYPE &&
+                    (() => {
+                      const stale = staleness(i.maxDate, 1);
+                      return stale && <p className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold">&#9888; {stale.text}</p>;
+                    })()}
                 </>
               ) : i.rowCount > 0 ? (
                 <p className="text-xs font-bold text-foreground mt-0.5 tabular-nums">
@@ -154,7 +169,7 @@ function UploadCard({
           {state.fileName || `Click or drop ${accept.includes("csv") ? "CSV" : "XLSX"} here`}
         </span>
       </label>
-      <DataOnFileCaption info={info} />
+      <DataOnFileCaption info={info} staleAfterDays={type === AD_SPEND_REPORT_TYPE ? 1 : undefined} />
       <input
         id={inputId}
         type="file"
@@ -222,6 +237,9 @@ export default function FlipkartUploadReportsPage() {
     try {
       const res = await uploadFlipkartReportFile(type, file);
       const span = res.minDate ? ` · ${res.minDate}${res.maxDate !== res.minDate ? ` to ${res.maxDate}` : ""}` : "";
+      const droppedWarning = res.droppedWithSpend
+        ? ` ⚠ ${res.droppedWithSpend.count} row${res.droppedWithSpend.count === 1 ? "" : "s"} with ₹${res.droppedWithSpend.totalSpend.toFixed(2)} of spend couldn't be saved (bad/missing date or ID) —check the source file`
+        : "";
       setCardState((prev) => ({
         ...prev,
         [type]: {
@@ -231,7 +249,8 @@ export default function FlipkartUploadReportsPage() {
             `${res.savedRows.toLocaleString("en-IN")} rows saved` +
             (res.skippedRows ? `, ${res.skippedRows} skipped` : "") +
             ` (of ${res.totalRows.toLocaleString("en-IN")})${span}` +
-            (res.mirrored ? ` · ${res.mirrored}` : ""),
+            (res.mirrored ? ` · ${res.mirrored}` : "") +
+            droppedWarning,
         },
       }));
       refreshMeta();

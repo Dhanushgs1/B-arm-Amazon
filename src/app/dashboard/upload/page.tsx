@@ -12,6 +12,7 @@ import {
 } from "@/lib/amazonReportUpload";
 import { maybeAlertHighAcos, ACOS_ALERT_TYPES } from "@/lib/uploadAcosAlert";
 import { uploadCombinedWorkbook, fetchDailyTablesDataInfo, type SheetUploadOutcome } from "@/lib/combinedAdSpendUpload";
+import { staleness } from "@/lib/dataFreshness";
 import Link from "next/link";
 
 const AD_ORDER_REPORT_TYPES: UploadReportType[] = [
@@ -40,13 +41,17 @@ interface CardState {
   message?: string;
 }
 
-function DataOnFileCaption({ info }: { info: ReportDataInfo | undefined }) {
+function DataOnFileCaption({ info, staleAfterDays }: { info: ReportDataInfo | undefined; staleAfterDays?: number }) {
   if (!info) return null;
+  const stale = staleAfterDays !== undefined ? staleness(info.maxDate, staleAfterDays) : null;
   if (info.minDate) {
     return (
-      <p className="text-[10px] text-muted-foreground mt-1">
-        Data: {info.minDate} to {info.maxDate} ({info.rowCount} rows)
-      </p>
+      <>
+        <p className="text-[10px] text-muted-foreground mt-1">
+          Data: {info.minDate} to {info.maxDate} ({info.rowCount} rows)
+        </p>
+        {stale && <p className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold mt-0.5">&#9888; {stale.text}</p>}
+      </>
     );
   }
   if (info.rowCount > 0) {
@@ -54,6 +59,11 @@ function DataOnFileCaption({ info }: { info: ReportDataInfo | undefined }) {
   }
   return <p className="text-[10px] text-muted-foreground mt-1">No data</p>;
 }
+
+// Only sp_advertised_product feeds the Ad Spend Report's Amazon spend total —
+// the other Ad/order cards matter for the Historical Analysis Report instead,
+// so a staleness warning on those would be noise unrelated to what it's for.
+const AD_SPEND_REPORT_TYPE: UploadReportType = "sp_advertised_product";
 
 function UploadCard({
   type,
@@ -105,7 +115,7 @@ function UploadCard({
           {state.fileName || "Click or drop CSV here"}
         </span>
       </label>
-      <DataOnFileCaption info={info} />
+      <DataOnFileCaption info={info} staleAfterDays={type === AD_SPEND_REPORT_TYPE ? 1 : undefined} />
       <input
         id={inputId}
         type="file"
