@@ -16,7 +16,7 @@ import {
 import { maybeAlertHighAcos, ACOS_ALERT_TYPES } from "@/lib/uploadAcosAlert";
 import { uploadCombinedWorkbook, fetchDailyTablesDataInfo, type SheetUploadOutcome } from "@/lib/combinedAdSpendUpload";
 import { staleness } from "@/lib/dataFreshness";
-import { uploadProductMaster, fetchProductMasterDataInfo } from "@/lib/productMasterUpload";
+import { uploadProductMaster, fetchProductMasterDataInfo, fetchProductMasterNameMap } from "@/lib/productMasterUpload";
 import Link from "next/link";
 
 const AD_ORDER_REPORT_TYPES: UploadReportType[] = [
@@ -359,6 +359,43 @@ function ProductMasterUploadCard({ onUploaded, rowCount }: { onUploaded: () => v
   );
 }
 
+// Words too generic/common in Amazon campaign names or product titles to mean
+// anything on their own — excluded so a match needs actual product words in
+// common, not just "auto" or "pack" appearing on both sides.
+const CAMPAIGN_MATCH_STOPWORDS = new Set([
+  "the", "and", "for", "with", "pack", "of", "combo", "set", "campaign", "broad", "exact", "phrase", "auto",
+  "manual", "sb", "sd", "sponsored", "brand", "brands", "display", "ad", "ads", "targeting", "keyword", "product",
+  "new", "model", "kit", "b", "arm", "barm", "size",
+]);
+
+function campaignMatchTokens(s: string): string[] {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(" ")
+    .filter((w) => w.length > 2 && !CAMPAIGN_MATCH_STOPWORDS.has(w));
+}
+
+/** Best-guess SKU for an unmapped campaign, scored by how many meaningful
+ *  words its name shares with a master product name — a starting point to
+ *  confirm/edit, not an auto-applied mapping (nothing saves until Save is
+ *  clicked). Requires at least 2 overlapping words to avoid noise matches. */
+function suggestSkuForCampaign(
+  campaignTokens: Set<string>,
+  masterIndex: { sku: string; name: string; tokens: string[] }[]
+): { sku: string; name: string } | null {
+  if (!campaignTokens.size) return null;
+  let best: { sku: string; name: string; score: number } | null = null;
+  for (const entry of masterIndex) {
+    if (!entry.tokens.length) continue;
+    const overlap = entry.tokens.filter((t) => campaignTokens.has(t)).length;
+    if (overlap < 2) continue;
+    const score = overlap / Math.sqrt(entry.tokens.length);
+    if (!best || score > best.score) best = { sku: entry.sku, name: entry.name, score };
+  }
+  return best ? { sku: best.sku, name: best.name } : null;
+}
+
 // Sponsored Brands / Display campaigns carry no SKU column in Amazon's own
 // export, so their spend has to be routed to SKUs by hand — this is the only
 // place in the app that can actually do it (setCampaignSkus/fetchCampaignAllocations
@@ -370,6 +407,7 @@ function CampaignSkuMappingSection() {
   const [error, setError] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<Record<string, "saving" | "done" | "error">>({});
+  const [suggestions, setSuggestions] = useState<Record<string, { sku: string; name: string }>>({});
 
   const refresh = useCallback(() => {
     fetchCampaignAllocations()
@@ -390,6 +428,26 @@ function CampaignSkuMappingSection() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Suggestions are computed separately from `refresh` (a different data
+  // source — the product master, not the campaign allocations) so a
+  // Save-triggered refresh doesn't need to redo this every time.
+  useEffect(() => {
+    if (!allocations) return;
+    fetchProductMasterNameMap()
+      .then((masterNames) => {
+        const masterIndex = [...masterNames.entries()].map(([sku, name]) => ({ sku, name, tokens: campaignMatchTokens(name) }));
+        const next: Record<string, { sku: string; name: string }> = {};
+        allocations
+          .filter((a) => a.skus.length === 0)
+          .forEach((a) => {
+            const guess = suggestSkuForCampaign(new Set(campaignMatchTokens(a.campaignName)), masterIndex);
+            if (guess) next[a.campaignName] = guess;
+          });
+        setSuggestions(next);
+      })
+      .catch(() => setSuggestions({}));
+  }, [allocations]);
 
   const handleSave = async (campaignName: string) => {
     setSaving((p) => ({ ...p, [campaignName]: "saving" }));
@@ -455,6 +513,16 @@ function CampaignSkuMappingSection() {
                           placeholder="e.g. A015, B-CT-G-1, A006-2"
                           className="w-full min-w-[220px] bg-transparent border border-border rounded-lg px-2 py-1 text-xs"
                         />
+                        {a.skus.length === 0 && suggestions[a.campaignName] && !drafts[a.campaignName] && (
+                          <button
+                            type="button"
+                            onClick={() => setDrafts((p) => ({ ...p, [a.campaignName]: suggestions[a.campaignName].sku }))}
+                            className="mt-1 text-[10px] text-amber-700 dark:text-amber-400 hover:underline text-left block truncate max-w-[220px]"
+                            title={`Matched from product name: ${suggestions[a.campaignName].name}`}
+                          >
+                            💡 Suggested: {suggestions[a.campaignName].sku} — click to use
+                          </button>
+                        )}
                       </td>
                       <td className="p-3 whitespace-nowrap">
                         <button
