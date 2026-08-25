@@ -36,10 +36,11 @@ const GST_MULTIPLIER = 1.18;
 // Campaigns spending at or under this on the single reporting day are flagged
 // on the "Low Spend Campaigns" sheet as candidates for pausing/pruning.
 const LOW_SPEND_THRESHOLD = 50;
-// A product needs more than this much range spend to be eligible for "Best
-// ACOS product" — a separate, higher bar than LOW_SPEND_THRESHOLD above,
-// since a barely-cleared low-spend campaign can still show a misleading ACOS.
-const BEST_ACOS_MIN_SPEND = 100;
+// A product needs more than this much range spend to be eligible for either
+// ACOS shortlist (Summary's "Worst ACOS product" or the Worst ACOS Products
+// sheet) — a separate, higher bar than LOW_SPEND_THRESHOLD above, since a
+// barely-cleared low-spend campaign can still show a misleading ACOS.
+const ACOS_SHORTLIST_MIN_SPEND = 100;
 
 function getDateWindow(toDate: string, days: number): { start: string; end: string } {
   const end = new Date(`${toDate}T00:00:00Z`);
@@ -780,7 +781,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     Array(SUM_COLS).fill(""),
     ["Summary", ...Array(SUM_COLS - 1).fill("")],
     Array(SUM_COLS).fill(""),
-    ["Platform", "Ad spend (without tax)", "Ad spend (with tax)", "Best ACOS product", "", dayLabel, "", "", "", "", rangeLabel, "", "", "", "", "Overall sales", ""],
+    ["Platform", "Ad spend (without tax)", "Ad spend (with tax)", "Worst ACOS product", "", dayLabel, "", "", "", "", rangeLabel, "", "", "", "", "Overall sales", ""],
     ["", "", "", "Product", "price", ...METRIC_NAMES, ...METRIC_NAMES, "QTS", "Value"],
   ];
   const sumMerges: XLSX.Range[] = [
@@ -805,11 +806,11 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     // A product that's barely spent anything can show a misleadingly great
     // (or terrible) ACOS from sheer small-sample noise — one lucky/unlucky
     // sale swings the ratio wildly. Require real spend before a product is
-    // eligible for "best ACOS," so the shortlist highlights genuine winners,
-    // not noise.
+    // eligible for "worst ACOS," so the shortlist highlights genuine problem
+    // products, not noise.
     const shortlist = rows
-      .filter((p) => spendTax(p.range) > BEST_ACOS_MIN_SPEND)
-      .sort((a, b) => computeAcos(a.range, a.price) - computeAcos(b.range, b.price))
+      .filter((p) => spendTax(p.range) > ACOS_SHORTLIST_MIN_SPEND)
+      .sort((a, b) => computeAcos(b.range, b.price) - computeAcos(a.range, a.price))
       .slice(0, TOP_N);
     platformSummaries.push({
       platform,
@@ -857,9 +858,17 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   sumHeaderRowsStyled.forEach((row) => styleHeader(wsSummary, row, SUM_COLS, "312E81"));
   sumLabelCells.forEach(({ row, platform }) => styleLabel(wsSummary, XLSX.utils.encode_cell({ r: row, c: 0 }), PLATFORM_FILL[platform]));
   wsSummary["!cols"] = [
-    { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 42 }, { wch: 10 },
+    { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 60 }, { wch: 10 },
     ...Array.from({ length: 10 }, () => ({ wch: 13 })), { wch: 10 }, { wch: 14 },
   ];
+  // Long titles (a SKU with no product-master entry falls back to the raw
+  // marketing title) need to wrap within the column instead of overflowing
+  // or reading as clipped — same fix applied to the Ad spend report sheet's
+  // Product Name column below.
+  for (let r = 5; r < sumAoa.length; r++) {
+    const addr = XLSX.utils.encode_cell({ r, c: 3 });
+    if (wsSummary[addr]) wsSummary[addr].s = { alignment: { wrapText: true, vertical: "top" } };
+  }
   XLSX.utils.book_append_sheet(wb, wsSummary, "Summary");
 
   // ── Ad spend report sheet (every advertised product, per platform) ──
@@ -895,7 +904,13 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   wsDetail["!merges"] = detailMerges;
   detailLabelCells.forEach(({ addr, platform }) => styleLabel(wsDetail, addr, PLATFORM_FILL[platform]));
   detailHeaderRows.forEach((row) => { styleHeader(wsDetail, row, DETAIL_COLS, "312E81"); styleHeader(wsDetail, row + 1, DETAIL_COLS, "312E81"); });
-  wsDetail["!cols"] = [{ wch: 20 }, { wch: 46 }, { wch: 10 }, ...Array.from({ length: DETAIL_COLS - 3 }, () => ({ wch: 13 }))];
+  wsDetail["!cols"] = [{ wch: 20 }, { wch: 60 }, { wch: 10 }, ...Array.from({ length: DETAIL_COLS - 3 }, () => ({ wch: 13 }))];
+  // Long titles (a SKU with no product-master entry falls back to the raw
+  // marketing title) need to wrap within the column instead of overflowing.
+  for (let r = 0; r < detailAoa.length; r++) {
+    const addr = XLSX.utils.encode_cell({ r, c: 1 });
+    if (wsDetail[addr] && wsDetail[addr].v) wsDetail[addr].s = { ...wsDetail[addr].s, alignment: { wrapText: true, vertical: "top" } };
+  }
   XLSX.utils.book_append_sheet(wb, wsDetail, "Ad spend report");
 
   // ── Ad Status Report — product name x platform, best-effort name match ──
@@ -936,16 +951,15 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   wsLow["!views"] = [{ state: "frozen", ySplit: 1 }];
   XLSX.utils.book_append_sheet(wb, wsLow, "Low Spend Campaigns");
 
-  // ── Worst ACOS Products — the flip side of Summary's "Best ACOS product":
-  // real candidates to fix or pause, not the noisy tail of barely-spent SKUs,
-  // so it uses the same BEST_ACOS_MIN_SPEND floor. Top 5 per platform by
-  // worst (highest) range ACOS, rather than just 3, since this is meant as a
-  // working action list, not a showcase.
+  // ── Worst ACOS Products — a longer version of Summary's own "Worst ACOS
+  // product" (5 per platform instead of 3), for when the shortlist isn't
+  // enough to act on. Same ACOS_SHORTLIST_MIN_SPEND floor so it stays real
+  // candidates to fix or pause, not the noisy tail of barely-spent SKUs.
   const WORST_ACOS_N = 5;
   const worstAoa: (string | number)[][] = [["Platform", "SKU", "Product", "Price", "Spend (range)", "Spend+Tax (range)", "Orders (range)", "CPC (range)", "ACOS (range)"]];
   platforms.forEach(({ platform, products }) => {
     const worst = [...products.values()]
-      .filter((p) => spendTax(p.range) > BEST_ACOS_MIN_SPEND)
+      .filter((p) => spendTax(p.range) > ACOS_SHORTLIST_MIN_SPEND)
       .sort((a, b) => computeAcos(b.range, b.price) - computeAcos(a.range, a.price))
       .slice(0, WORST_ACOS_N);
     worst.forEach((p) => {
@@ -955,7 +969,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       ]);
     });
   });
-  if (worstAoa.length === 1) worstAoa.push(["(no product cleared the ₹" + BEST_ACOS_MIN_SPEND + " spend floor)", "", "", "", "", "", "", "", ""]);
+  if (worstAoa.length === 1) worstAoa.push(["(no product cleared the ₹" + ACOS_SHORTLIST_MIN_SPEND + " spend floor)", "", "", "", "", "", "", "", ""]);
   const wsWorst = XLSX.utils.aoa_to_sheet(worstAoa);
   styleHeader(wsWorst, 0, 9, "9B2C2C");
   wsWorst["!cols"] = [{ wch: 12 }, { wch: 20 }, { wch: 55 }, { wch: 9 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 11 }, { wch: 11 }];
