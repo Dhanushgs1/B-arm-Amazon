@@ -36,6 +36,10 @@ const GST_MULTIPLIER = 1.18;
 // Campaigns spending at or under this on the single reporting day are flagged
 // on the "Low Spend Campaigns" sheet as candidates for pausing/pruning.
 const LOW_SPEND_THRESHOLD = 50;
+// A product needs more than this much range spend to be eligible for "Best
+// ACOS product" — a separate, higher bar than LOW_SPEND_THRESHOLD above,
+// since a barely-cleared low-spend campaign can still show a misleading ACOS.
+const BEST_ACOS_MIN_SPEND = 100;
 
 function getDateWindow(toDate: string, days: number): { start: string; end: string } {
   const end = new Date(`${toDate}T00:00:00Z`);
@@ -800,11 +804,11 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
 
     // A product that's barely spent anything can show a misleadingly great
     // (or terrible) ACOS from sheer small-sample noise — one lucky/unlucky
-    // sale swings the ratio wildly. Require the same real-spend bar as Low
-    // Spend Campaigns before a product is eligible for "best ACOS," so the
-    // shortlist highlights genuine winners, not noise.
+    // sale swings the ratio wildly. Require real spend before a product is
+    // eligible for "best ACOS," so the shortlist highlights genuine winners,
+    // not noise.
     const shortlist = rows
-      .filter((p) => spendTax(p.range) > LOW_SPEND_THRESHOLD)
+      .filter((p) => spendTax(p.range) > BEST_ACOS_MIN_SPEND)
       .sort((a, b) => computeAcos(a.range, a.price) - computeAcos(b.range, b.price))
       .slice(0, TOP_N);
     platformSummaries.push({
