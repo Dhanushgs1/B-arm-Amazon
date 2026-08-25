@@ -791,14 +791,22 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const platformSummaries: PlatformEmailSummary[] = [];
   const TOP_N = 3; // shortlist length — best (lowest) range ACOS first, not highest spend
   platforms.forEach(({ platform, products, overallRange }) => {
-    const rows = [...products.values()]
-      .filter((p) => spendTax(p.range) > 0)
-      .sort((a, b) => computeAcos(a.range, a.price) - computeAcos(b.range, b.price));
+    // All products with any spend at all — totals must include every rupee,
+    // not just the ones that clear the shortlist bar below.
+    const rows = [...products.values()].filter((p) => spendTax(p.range) > 0);
     const rangeSpendRaw = rows.reduce((s, p) => s + p.range.spend, 0);
     const daySpendRaw = rows.reduce((s, p) => s + p.day.spend, 0);
     platformTotals.push({ platform, daySpendTax: daySpendRaw * GST_MULTIPLIER, rangeSpendTax: rangeSpendRaw * GST_MULTIPLIER });
 
-    const shortlist = rows.slice(0, TOP_N);
+    // A product that's barely spent anything can show a misleadingly great
+    // (or terrible) ACOS from sheer small-sample noise — one lucky/unlucky
+    // sale swings the ratio wildly. Require the same real-spend bar as Low
+    // Spend Campaigns before a product is eligible for "best ACOS," so the
+    // shortlist highlights genuine winners, not noise.
+    const shortlist = rows
+      .filter((p) => spendTax(p.range) > LOW_SPEND_THRESHOLD)
+      .sort((a, b) => computeAcos(a.range, a.price) - computeAcos(b.range, b.price))
+      .slice(0, TOP_N);
     platformSummaries.push({
       platform,
       daySpend: round2(daySpendRaw),
