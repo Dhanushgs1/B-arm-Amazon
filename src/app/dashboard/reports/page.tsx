@@ -436,7 +436,7 @@ export default function ReportsPage() {
       </div>
 
       <div className="glass rounded-2xl border border-border p-6 shadow-sm">
-        <h3 className="font-bold text-sm mb-1">Generate Daily Ad Spend Report</h3>
+        <h3 className="font-bold text-sm mb-1">Generate Daily Ad Spend Report (SKU-wise)</h3>
         <p className="text-xs text-muted-foreground mb-4">
           Amazon + Flipkart + Meesho ad spend, side by side: Spend, Spend+Tax, Orders, CPC and ACOS per product for
           the single day selected above ({endDate || "yesterday"}) and its trailing 7 days, plus a cross-platform Ad
