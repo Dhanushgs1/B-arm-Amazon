@@ -9,6 +9,9 @@ import {
   type ReportDataInfo,
   REPORT_LABEL,
   fetchAllReportDataInfo,
+  fetchCampaignAllocations,
+  setCampaignSkus,
+  type CampaignAllocation,
 } from "@/lib/amazonReportUpload";
 import { maybeAlertHighAcos, ACOS_ALERT_TYPES } from "@/lib/uploadAcosAlert";
 import { uploadCombinedWorkbook, fetchDailyTablesDataInfo, type SheetUploadOutcome } from "@/lib/combinedAdSpendUpload";
@@ -356,6 +359,125 @@ function ProductMasterUploadCard({ onUploaded, rowCount }: { onUploaded: () => v
   );
 }
 
+// Sponsored Brands / Display campaigns carry no SKU column in Amazon's own
+// export, so their spend has to be routed to SKUs by hand — this is the only
+// place in the app that can actually do it (setCampaignSkus/fetchCampaignAllocations
+// in amazonReportUpload.ts existed already, just with no UI calling them).
+// Typing N SKUs with no custom weight splits that campaign's spend equally
+// across all N (see the division-by-total-weight logic in adSpendReportExport.ts).
+function CampaignSkuMappingSection() {
+  const [allocations, setAllocations] = useState<CampaignAllocation[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState<Record<string, "saving" | "done" | "error">>({});
+
+  const refresh = useCallback(() => {
+    fetchCampaignAllocations()
+      .then((rows) => {
+        setAllocations(rows);
+        setError(null);
+        setDrafts((prev) => {
+          const next = { ...prev };
+          rows.forEach((r) => {
+            if (next[r.campaignName] === undefined) next[r.campaignName] = r.skus.map((s) => s.sku).join(", ");
+          });
+          return next;
+        });
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const handleSave = async (campaignName: string) => {
+    setSaving((p) => ({ ...p, [campaignName]: "saving" }));
+    try {
+      const skus = (drafts[campaignName] || "").split(",").map((s) => s.trim()).filter(Boolean);
+      await setCampaignSkus(campaignName, skus.map((sku) => ({ sku, weight: 1 })));
+      setSaving((p) => ({ ...p, [campaignName]: "done" }));
+      refresh();
+    } catch {
+      setSaving((p) => ({ ...p, [campaignName]: "error" }));
+    }
+  };
+
+  const money = (v: number) => `₹${v.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
+  const unmapped = (allocations || []).filter((a) => a.skus.length === 0);
+
+  return (
+    <div>
+      <h2 className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-3">
+        Amazon Campaign → SKU Mapping (Sponsored Brands / Display)
+      </h2>
+      <p className="text-xs text-muted-foreground mb-3 -mt-2">
+        These campaigns carry no SKU column in Amazon&apos;s own export, so their spend has to be routed to SKUs by
+        hand — list the SKU(s) that campaign advertises, comma-separated. Spend splits equally across however many
+        SKUs you list (5 SKUs on ₹100 spend → ₹20 each). Until mapped, a campaign&apos;s spend is excluded from every
+        product total and shown as &quot;unmapped&quot; in the Ad Spend Report&apos;s Notes sheet instead.
+      </p>
+      {error && <p className="text-xs text-red-600 dark:text-red-400 mb-3">Couldn&apos;t load campaigns — {error}</p>}
+      {!allocations && !error && <p className="text-xs text-muted-foreground">Loading campaigns…</p>}
+      {allocations && (
+        <>
+          {unmapped.length > 0 && (
+            <p className="text-xs text-amber-600 dark:text-amber-400 font-semibold mb-3">
+              {money(unmapped.reduce((s, a) => s + a.spend, 0))} of spend across {unmapped.length} campaign
+              {unmapped.length === 1 ? "" : "s"} is currently unmapped.
+            </p>
+          )}
+          {!allocations.length ? (
+            <p className="text-xs text-muted-foreground">No Sponsored Brands/Display campaigns uploaded yet.</p>
+          ) : (
+            <div className="glass rounded-2xl border border-border overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-muted-foreground border-b border-border">
+                    <th className="p-3 font-bold">Campaign</th>
+                    <th className="p-3 font-bold">Source</th>
+                    <th className="p-3 font-bold text-right">Spend</th>
+                    <th className="p-3 font-bold">SKUs (comma-separated)</th>
+                    <th className="p-3 font-bold"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {allocations.map((a) => (
+                    <tr key={a.campaignName} className={`border-b border-border/50 ${a.skus.length === 0 ? "bg-amber-500/5" : ""}`}>
+                      <td className="p-3 max-w-[240px] truncate" title={a.campaignName}>{a.campaignName}</td>
+                      <td className="p-3">{a.source}</td>
+                      <td className="p-3 text-right tabular-nums whitespace-nowrap">{money(a.spend)}</td>
+                      <td className="p-3">
+                        <input
+                          type="text"
+                          value={drafts[a.campaignName] ?? ""}
+                          onChange={(e) => setDrafts((p) => ({ ...p, [a.campaignName]: e.target.value }))}
+                          placeholder="e.g. A015, B-CT-G-1, A006-2"
+                          className="w-full min-w-[220px] bg-transparent border border-border rounded-lg px-2 py-1 text-xs"
+                        />
+                      </td>
+                      <td className="p-3 whitespace-nowrap">
+                        <button
+                          onClick={() => handleSave(a.campaignName)}
+                          disabled={saving[a.campaignName] === "saving"}
+                          className="text-xs font-bold text-primary hover:underline disabled:opacity-50"
+                        >
+                          {saving[a.campaignName] === "saving" ? "Saving…" : saving[a.campaignName] === "done" ? "Saved ✓" : "Save"}
+                        </button>
+                        {saving[a.campaignName] === "error" && <span className="text-red-600 text-[10px] block">Failed</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function UploadReportsPage() {
   const { account, keySlot } = useDashboard();
 
@@ -480,6 +602,8 @@ export default function UploadReportsPage() {
           ))}
         </div>
       </div>
+
+      <CampaignSkuMappingSection />
     </div>
   );
 }
