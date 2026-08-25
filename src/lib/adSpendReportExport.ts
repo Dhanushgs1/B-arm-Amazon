@@ -951,31 +951,6 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   wsLow["!views"] = [{ state: "frozen", ySplit: 1 }];
   XLSX.utils.book_append_sheet(wb, wsLow, "Low Spend Campaigns");
 
-  // ── Worst ACOS Products — a longer version of Summary's own "Worst ACOS
-  // product" (5 per platform instead of 3), for when the shortlist isn't
-  // enough to act on. Same ACOS_SHORTLIST_MIN_SPEND floor so it stays real
-  // candidates to fix or pause, not the noisy tail of barely-spent SKUs.
-  const WORST_ACOS_N = 5;
-  const worstAoa: (string | number)[][] = [["Platform", "SKU", "Product", "Price", "Spend (range)", "Spend+Tax (range)", "Orders (range)", "CPC (range)", "ACOS (range)"]];
-  platforms.forEach(({ platform, products }) => {
-    const worst = [...products.values()]
-      .filter((p) => spendTax(p.range) > ACOS_SHORTLIST_MIN_SPEND)
-      .sort((a, b) => computeAcos(b.range, b.price) - computeAcos(a.range, a.price))
-      .slice(0, WORST_ACOS_N);
-    worst.forEach((p) => {
-      worstAoa.push([
-        platform, p.sku, p.name, p.price,
-        round2(p.range.spend), round2(spendTax(p.range)), p.range.units, round2(computeCpc(p.range)), pct(computeAcos(p.range, p.price)),
-      ]);
-    });
-  });
-  if (worstAoa.length === 1) worstAoa.push(["(no product cleared the ₹" + ACOS_SHORTLIST_MIN_SPEND + " spend floor)", "", "", "", "", "", "", "", ""]);
-  const wsWorst = XLSX.utils.aoa_to_sheet(worstAoa);
-  styleHeader(wsWorst, 0, 9, "9B2C2C");
-  wsWorst["!cols"] = [{ wch: 12 }, { wch: 20 }, { wch: 55 }, { wch: 9 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 11 }, { wch: 11 }];
-  wsWorst["!views"] = [{ state: "frozen", ySplit: 1 }];
-  XLSX.utils.book_append_sheet(wb, wsWorst, "Worst ACOS Products");
-
   // ── Raw per-platform sheets — mirrors the hand-built workbook's own
   // Amazon Spend / Amazon orders / Flipkart Spend / Flipkart Orders /
   // Meesho (B Arm) Spend / Meesho (B Arm) orders tabs, so anyone reconciling
