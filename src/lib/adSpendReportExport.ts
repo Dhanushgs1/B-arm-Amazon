@@ -709,7 +709,22 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     fetchFlipkartProducts(range, endDate),
     fetchMeeshoProducts(range, endDate),
   ]);
-  const resolveName = (sku: string, fallback: string): string => masterNames.get(sku) || fallback;
+  // The master lists one SKU spelling per product (e.g. "B-BULB-...-PK5(FK)"),
+  // but ad/order data carries whatever variant spelling that platform export
+  // used (e.g. "B-BULB-...-PK5-1") — a real, different string, not a typo. An
+  // exact match misses these, so fall back to matching on the SKU's base:
+  // strip a trailing platform tag like "(FK)"/"(AM)"/"(MS)" or a trailing
+  // "-<digits>" variant suffix, then compare. This only changes which NAME
+  // gets displayed — every spend/order figure stays keyed on the exact SKU.
+  const skuBase = (sku: string): string =>
+    sku.trim().toUpperCase().replace(/\((AM|FK|MS)\)$/i, "").replace(/-\d+$/, "").replace(/[\s_]+/g, "");
+  const masterNamesByBase = new Map<string, string>();
+  masterNames.forEach((name, sku) => {
+    const base = skuBase(sku);
+    if (!masterNamesByBase.has(base)) masterNamesByBase.set(base, name);
+  });
+  const resolveName = (sku: string, fallback: string): string =>
+    masterNames.get(sku) || masterNamesByBase.get(skuBase(sku)) || fallback;
   [amz.products, fk.products, ms.products].forEach((products) => {
     products.forEach((p) => { p.name = resolveName(p.sku, p.name); });
   });
@@ -761,7 +776,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     Array(SUM_COLS).fill(""),
     ["Summary", ...Array(SUM_COLS - 1).fill("")],
     Array(SUM_COLS).fill(""),
-    ["Platform", "Ad spend (without tax)", "Ad spend (with tax)", "High spending product", "", dayLabel, "", "", "", "", rangeLabel, "", "", "", "", "Overall sales", ""],
+    ["Platform", "Ad spend (without tax)", "Ad spend (with tax)", "Best ACOS product", "", dayLabel, "", "", "", "", rangeLabel, "", "", "", "", "Overall sales", ""],
     ["", "", "", "Product", "price", ...METRIC_NAMES, ...METRIC_NAMES, "QTS", "Value"],
   ];
   const sumMerges: XLSX.Range[] = [
@@ -774,9 +789,11 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const sumLabelCells: { row: number; platform: Platform }[] = [];
   const platformTotals: AdSpendReportResult["platformTotals"] = [];
   const platformSummaries: PlatformEmailSummary[] = [];
-  const TOP_N = 3; // matches the hand-built workbook's "High spending product" shortlist length
+  const TOP_N = 3; // shortlist length — best (lowest) range ACOS first, not highest spend
   platforms.forEach(({ platform, products, overallRange }) => {
-    const rows = [...products.values()].filter((p) => spendTax(p.range) > 0).sort((a, b) => spendTax(b.range) - spendTax(a.range));
+    const rows = [...products.values()]
+      .filter((p) => spendTax(p.range) > 0)
+      .sort((a, b) => computeAcos(a.range, a.price) - computeAcos(b.range, b.price));
     const rangeSpendRaw = rows.reduce((s, p) => s + p.range.spend, 0);
     const daySpendRaw = rows.reduce((s, p) => s + p.day.spend, 0);
     platformTotals.push({ platform, daySpendTax: daySpendRaw * GST_MULTIPLIER, rangeSpendTax: rangeSpendRaw * GST_MULTIPLIER });
