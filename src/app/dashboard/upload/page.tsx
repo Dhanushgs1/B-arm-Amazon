@@ -194,11 +194,13 @@ function CombinedAdSpendUploadCard({ onUploaded, dataInfo }: { onUploaded: () =>
         </div>
       </div>
       <p className="text-xs text-muted-foreground mb-4">
-        Drop the client&apos;s combined &quot;Last 7 days&quot; workbook here — it reads the AM ads / AM ord / FK ads
-        / FK ord / MS BARM ads / MS BARM ord / MS MW ads / MS MW ord sheets and archives each one, raw, into its own
-        barm_daily_* table. It does not feed the report tables below — to generate the{" "}
-        <Link href="/dashboard/reports" className="underline hover:text-foreground">Ad Spend Report</Link>, still
-        upload each report with its own card below.
+        Drop the client&apos;s combined &quot;Last 7 days&quot; workbook here — this now feeds the{" "}
+        <Link href="/dashboard/reports" className="underline hover:text-foreground">Ad Spend Report</Link> directly:
+        AM ads / AM ord / FK ads / FK ord / MS BARM ads / MS BARM ord write straight into the real report tables (as
+        well as an archived raw copy of every sheet). <b>Sponsored Brands and Sponsored Display are the one thing this
+        file never contains</b> — Amazon doesn&apos;t offer those two combined with Sponsored Products, so they still
+        need their own upload with the cards below. MS MW ads/ord (Millwright) only get archived, not reported —
+        that store isn&apos;t wired into the Ad Spend Report yet.
       </p>
 
       <label
