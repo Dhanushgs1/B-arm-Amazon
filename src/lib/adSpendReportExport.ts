@@ -109,7 +109,18 @@ export interface AdSpendReportOpts {
 async function fetchAmazonProducts(
   range: { start: string; end: string },
   endDate: string
-): Promise<{ products: Map<string, ProductRow>; overallDay: SalesAgg; overallRange: SalesAgg; campaigns: CampaignSpendRow[]; unmappedSpend: number; reportDates: Set<string> }> {
+): Promise<{
+  products: Map<string, ProductRow>;
+  overallDay: SalesAgg;
+  overallRange: SalesAgg;
+  campaigns: CampaignSpendRow[];
+  unmappedSpend: number;
+  reportDates: Set<string>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  spRows: any[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  orderRows: any[];
+}> {
   const rangeIst = istDayWindowUtc(range.start, endDate);
 
   const [spRows, sbRows, sdRows, mapRows, orderRows, priceRows] = await Promise.all([
@@ -266,14 +277,24 @@ async function fetchAmazonProducts(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [...spRows, ...sbRows, ...sdRows].forEach((r: any) => { if (r.report_date) reportDates.add(r.report_date); });
 
-  return { products, overallDay, overallRange, campaigns, unmappedSpend, reportDates };
+  return { products, overallDay, overallRange, campaigns, unmappedSpend, reportDates, spRows, orderRows };
 }
 
 // ── Flipkart ─────────────────────────────────────────────────────────────────
 async function fetchFlipkartProducts(
   range: { start: string; end: string },
   endDate: string
-): Promise<{ products: Map<string, ProductRow>; overallDay: SalesAgg; overallRange: SalesAgg; campaigns: CampaignSpendRow[]; reportDates: Set<string> }> {
+): Promise<{
+  products: Map<string, ProductRow>;
+  overallDay: SalesAgg;
+  overallRange: SalesAgg;
+  campaigns: CampaignSpendRow[];
+  reportDates: Set<string>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  fsnRows: any[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  orderRows: any[];
+}> {
   const [fsnRows, orderRowsRaw, earnRows, listingRows] = await Promise.all([
     fetchAllRows("barm_flipkart_fsn_report", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
     fetchAllRows("barm_flipkart_order_report", (q) => q.gte("order_date", range.start).lte("order_date", endDate)),
@@ -389,7 +410,7 @@ async function fetchFlipkartProducts(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   fsnRows.forEach((r: any) => { if (r.report_date) reportDates.add(r.report_date); });
 
-  return { products, overallDay, overallRange, campaigns, reportDates };
+  return { products, overallDay, overallRange, campaigns, reportDates, fsnRows, orderRows };
 }
 
 // ── Meesho ───────────────────────────────────────────────────────────────────
@@ -402,7 +423,17 @@ async function fetchFlipkartProducts(
 async function fetchMeeshoProducts(
   range: { start: string; end: string },
   endDate: string
-): Promise<{ products: Map<string, ProductRow>; overallDay: SalesAgg; overallRange: SalesAgg; campaigns: CampaignSpendRow[]; reportDates: Set<string> }> {
+): Promise<{
+  products: Map<string, ProductRow>;
+  overallDay: SalesAgg;
+  overallRange: SalesAgg;
+  campaigns: CampaignSpendRow[];
+  reportDates: Set<string>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  adsRows: any[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  orderRows: any[];
+}> {
   const [adsRows, orderRows] = await Promise.all([
     fetchAllRows("barm_meesho_ads", (q) => q.gte("report_date", range.start).lte("report_date", endDate)).catch(() => []),
     fetchAllRows("barm_meesho_orders", (q) => q.gte("order_date", range.start).lte("order_date", endDate)).catch(() => []),
@@ -497,7 +528,7 @@ async function fetchMeeshoProducts(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   adsRows.forEach((r: any) => { if (r.report_date) reportDates.add(r.report_date); });
 
-  return { products, overallDay, overallRange, campaigns, reportDates };
+  return { products, overallDay, overallRange, campaigns, reportDates, adsRows, orderRows };
 }
 
 // ── workbook ─────────────────────────────────────────────────────────────────
@@ -516,6 +547,44 @@ function styleHeader(ws: XLSX.WorkSheet, row: number, cols: number, fill: string
 function styleLabel(ws: XLSX.WorkSheet, addr: string, fill: string): void {
   if (!ws[addr]) ws[addr] = { t: "s", v: "" };
   ws[addr].s = { font: { bold: true, color: { rgb: "FFFFFF" }, sz: 11 }, fill: { fgColor: { rgb: fill } } };
+}
+
+// Every uploaded row keeps its original file's columns verbatim in a `raw`
+// JSONB field (see *ReportUpload.ts) — dumping that, rather than the parsed
+// snake_case fields, gives the seller back exactly the sheet shape they
+// uploaded (their own headers, their own column order), matching the raw
+// "Amazon Spend" / "Flipkart Orders" / etc. sheets in their hand-built
+// workbook instead of inventing a different layout.
+function rawRowsToSheet(
+  wb: XLSX.WorkBook,
+  sheetName: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  rows: any[]
+): void {
+  const rawRows: Record<string, unknown>[] = rows.map((r) => r?.raw).filter((r): r is Record<string, unknown> => !!r);
+  if (!rawRows.length) {
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["(no data in range)"]]), sheetName);
+    return;
+  }
+  const cols: string[] = [];
+  const seen = new Set<string>();
+  rawRows.forEach((r) => Object.keys(r).forEach((k) => { if (!seen.has(k)) { seen.add(k); cols.push(k); } }));
+
+  const aoa: (string | number)[][] = [cols];
+  rawRows.forEach((r) => {
+    aoa.push(
+      cols.map((c) => {
+        const v = r[c];
+        if (v === null || v === undefined) return "";
+        return typeof v === "number" || typeof v === "string" ? v : String(v);
+      })
+    );
+  });
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  styleHeader(ws, 0, cols.length, "6B7280");
+  ws["!views"] = [{ state: "frozen", ySplit: 1 }];
+  ws["!cols"] = cols.map(() => ({ wch: 16 }));
+  XLSX.utils.book_append_sheet(wb, ws, sheetName);
 }
 
 const PLATFORM_FILL: Record<Platform, string> = { Amazon: "FF9900", Flipkart: "2874F0", Meesho: "9F2089" };
@@ -828,6 +897,35 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   wsLow["!cols"] = [{ wch: 12 }, { wch: 50 }, { wch: 16 }];
   wsLow["!views"] = [{ state: "frozen", ySplit: 1 }];
   XLSX.utils.book_append_sheet(wb, wsLow, "Low Spend Campaigns");
+
+  // ── Raw per-platform sheets — mirrors the hand-built workbook's own
+  // Amazon Spend / Amazon orders / Flipkart Spend / Flipkart Orders /
+  // Meesho (B Arm) Spend / Meesho (B Arm) orders tabs, so anyone reconciling
+  // this report against the raw upload doesn't have to go find the original
+  // file — it's sitting right here, unmodified. ──
+  rawRowsToSheet(wb, "Amazon Spend", amz.spRows);
+  rawRowsToSheet(wb, "Amazon orders", amz.orderRows);
+  rawRowsToSheet(wb, "Flipkart Spend", fk.fsnRows);
+  rawRowsToSheet(wb, "Flipkart Orders", fk.orderRows);
+  rawRowsToSheet(wb, "Meesho (B Arm) Spend", ms.adsRows);
+  rawRowsToSheet(wb, "Meesho (B Arm) orders", ms.orderRows);
+
+  // ── B Arm orders — cross-platform Product/Quantity/Price/Sales leaderboard,
+  // matching the hand-built workbook's own (empty, in every sample seen)
+  // "B Arm orders" tab, but actually populated here from the range window's
+  // order data already computed above rather than left blank.
+  const bArmAoa: (string | number)[][] = [["Product", "Quantity", "Price", "Sales"]];
+  platforms.forEach(({ products }) => {
+    [...products.values()]
+      .filter((p) => p.range.units > 0)
+      .sort((a, b) => b.range.units * b.price - a.range.units * a.price)
+      .forEach((p) => bArmAoa.push([p.name, p.range.units, p.price, round2(p.price * p.range.units)]));
+  });
+  const wsBArm = XLSX.utils.aoa_to_sheet(bArmAoa);
+  styleHeader(wsBArm, 0, 4, "6B7280");
+  wsBArm["!cols"] = [{ wch: 60 }, { wch: 10 }, { wch: 10 }, { wch: 14 }];
+  wsBArm["!views"] = [{ state: "frozen", ySplit: 1 }];
+  XLSX.utils.book_append_sheet(wb, wsBArm, "B Arm orders");
 
   // ── Notes ──
   const wsNotes = XLSX.utils.aoa_to_sheet([
