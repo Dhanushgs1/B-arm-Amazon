@@ -122,6 +122,10 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
   if (isMonday && s.weeklySummary) {
     results.weekly = await callReportEndpoint(req, "/api/weekly-report", acct, `[${slot}] Weekly report`);
   }
+  // Historical 7/30 Day Analysis Report and Daily Ad Spend Report (SKU-wise) are
+  // handled OUTSIDE this per-slot loop, in handler() below — unlike everything else
+  // here, both are single fixed-distribution-list sends (not scoped to one Amazon
+  // account/Settings row), so running them once per slot here would double-send them.
   if (isFirstOfMonth && s.monthlySummary) {
     try {
       await sendMonthlyPlaceholder(s.notifEmail, s.ccEmail);
@@ -169,5 +173,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
   }
 
-  return res.status(200).json({ ranAt: now.toISOString(), isMonday, isFirstOfMonth, dryRun, bySlot });
+  // Historical 7/30 Day Analysis Report (every Monday) and Daily Ad Spend Report
+  // SKU-wise (every day) — both single fixed-distribution-list sends, so they run
+  // ONCE here rather than once per KEY_SLOT (there's no free Vercel Cron slot to give
+  // either its own schedule — vercel.json already uses both of this project's cron
+  // entries — so both piggyback on this route's existing daily 9:00 AM IST trigger).
+  let adSpendDaily: any = { skipped: dryRun ? "dryRun" : undefined };
+  let historical: any = { skipped: !isMonday ? "not Monday" : dryRun ? "dryRun" : undefined };
+  if (!dryRun) {
+    adSpendDaily = await callReportEndpoint(req, "/api/send-ad-spend-email", {}, "Daily ad spend report");
+    if (isMonday) {
+      historical = await callReportEndpoint(req, "/api/send-historical-email", {}, "Historical report");
+    }
+  }
+
+  return res.status(200).json({ ranAt: now.toISOString(), isMonday, isFirstOfMonth, dryRun, bySlot, adSpendDaily, historical });
 }

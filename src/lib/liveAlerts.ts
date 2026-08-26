@@ -255,6 +255,12 @@ export async function findBuyBoxLosses(
     if ((p.totalSales || 0) < minSales) return;
 
     const lost = Math.max(0, (p.totalSales || 0) - (r.totalSales || 0));
+    // A dropped buy-box percentage that hasn't actually cost any revenue yet (demand held or grew
+    // despite losing the box — another seller may be matching price, or this ASIN just isn't
+    // price-sensitive) isn't something to act on today. Without this, roughly half of a typical
+    // day's buyBoxLoss alerts were "impact ₹0" noise sitting between the genuinely urgent ones,
+    // burying the products where the lost box actually cost real sales.
+    if (lost <= 0) return;
     const label = displayName(r.productName, (skuByAsin.get(r.asin) || [])[0], r.asin);
     out.push({
       type: "buyBoxLoss",

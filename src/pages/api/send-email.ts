@@ -588,6 +588,16 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
     const clip = (s: string, len = 40) => ((s || "").length > len ? (s || "").slice(0, len) + "…" : s || "");
     const m = data.metrics || {};
     const inv = data.inventory || {};
+    const dl = data.deltas || {};
+    // A bare "Total Sales ₹1,70,815" doesn't say whether that's a good day — the trend arrow
+    // against yesterday does. Omitted (not "0%") when the prior day has no comparable data.
+    const trend = (v: number | undefined) => {
+      if (v == null || !isFinite(v)) return "";
+      const up = v >= 0;
+      const arrow = up ? "&#9650;" : "&#9660;";
+      const color = Math.abs(v) < 0.01 ? "#6b7280" : up ? "#059669" : "#dc2626";
+      return ` <span style="color:${color};font-size:11px;font-weight:800;">${arrow}${Math.abs(v * 100).toFixed(0)}%</span>`;
+    };
 
     const stockoutItems: any[] = data.stockoutItems || [];
     const bleedingItems: any[] = data.bleedingItems || [];
@@ -697,15 +707,15 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
         <tr><td style="padding-top:16px;">
           <table width="100%" cellpadding="0" cellspacing="0" border="0">
             <tr>
-              ${kpi("Total Sales", money(m.totalSales), "#f0fdf4", "#059669")}
-              ${kpi("Ad Spend", money(m.adSpend), "#fef2f2", "#dc2626")}
+              ${kpi("Total Sales", money(m.totalSales) + trend(dl.totalSales), "#f0fdf4", "#059669")}
+              ${kpi("Ad Spend", money(m.adSpend) + trend(dl.adSpend), "#fef2f2", "#dc2626")}
               ${kpi("Ad Sales", money(m.adSales), "#eff6ff", "#2563eb")}
             </tr>
             <tr><td colspan="3" style="height:8px;"></td></tr>
             <tr>
               ${kpi("ROAS", (m.roas || 0).toFixed(2) + "x", "#f5f3ff", "#6D5EF8")}
               ${kpi("ACOS", (m.acos || 0).toFixed(1) + "%", "#fffbeb", "#d97706")}
-              ${kpi("Orders", n(m.orders), "#f0f9ff", "#0891b2")}
+              ${kpi("Orders / Units", `${n(m.orders)} / ${n(m.units)}`, "#f0f9ff", "#0891b2")}
             </tr>
           </table>
         </td></tr>
@@ -799,6 +809,57 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
       </table>`);
   }
 
+  if (type === "historicalReport") {
+    // Kept deliberately simple (unlike weeklyReport/adSpendDaily's rendered tables) — the
+    // attached workbook already carries the full per-campaign/SKU breakdown across both
+    // windows, this just confirms the send landed and gives the headline counts.
+    // data: { endDate, win30Start, win7Start, skuCount, pairCount, unmappedCampaignSpend, currency }
+    const currency = data.currency === "INR" ? "₹" : "$";
+    const money = (v: number) => currency + new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(v || 0));
+    return wrap(`
+      <table width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr><td style="padding-bottom:16px;">
+          <h2 style="margin:0;color:#111;font-size:20px;font-weight:800;">&#128202; Historical 7/30 Day Analysis Report</h2>
+          <p style="margin:4px 0 0;color:#6b7280;font-size:13px;font-weight:600;">
+            30-day window from ${data.win30Start || "—"} &nbsp;&#183;&nbsp; 7-day window from ${data.win7Start || "—"} &nbsp;&#183;&nbsp; ending ${data.endDate || ""}
+          </p>
+        </td></tr>
+        <tr><td>
+          <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+              <td width="48%" style="padding:4px;">
+                <table width="100%" cellpadding="16" cellspacing="0" border="0" style="background:#f5f3ff;border-radius:12px;">
+                  <tr><td><p style="margin:0;color:#6b7280;font-size:11px;font-weight:800;text-transform:uppercase;">SKUs Covered</p><p style="margin:6px 0 0;color:#6D5EF8;font-size:24px;font-weight:900;">${data.skuCount || 0}</p></td></tr>
+                </table>
+              </td>
+              <td width="4%"></td>
+              <td width="48%" style="padding:4px;">
+                <table width="100%" cellpadding="16" cellspacing="0" border="0" style="background:#f0f9ff;border-radius:12px;">
+                  <tr><td><p style="margin:0;color:#6b7280;font-size:11px;font-weight:800;text-transform:uppercase;">Campaign &#215; SKU Rows</p><p style="margin:6px 0 0;color:#0891b2;font-size:24px;font-weight:900;">${data.pairCount || 0}</p></td></tr>
+                </table>
+              </td>
+            </tr>
+          </table>
+        </td></tr>
+        ${data.unmappedCampaignSpend ? `
+        <tr><td style="padding-top:16px;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;">
+            <tr><td style="padding:12px 14px;">
+              <p style="margin:0;color:#92400e;font-size:12.5px;font-weight:700;">&#9888; ${money(data.unmappedCampaignSpend)} of ad spend couldn't be mapped to a campaign — see the Notes sheet.</p>
+            </td></tr>
+          </table>
+        </td></tr>` : ""}
+        <tr><td>
+          <p style="margin:16px 0 0;color:#9ca3af;font-size:11px;line-height:1.6;">
+            Full per-campaign/SKU breakdown, FBA availability and order/returns/ad-spend detail are in the attached workbook.
+          </p>
+        </td></tr>
+        <tr><td align="center" style="padding-top:24px;">
+          <a href="${SITE_URL}/dashboard/reports" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Reports &#8594;</a>
+        </td></tr>
+      </table>`, null);
+  }
+
   if (type === "adSpendDaily") {
     // Mirrors the "Summary" sheet of the attached Ad Spend Report workbook —
     // one card per platform (day/range spend + up to 3 top-spend products +
@@ -812,9 +873,19 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
     const currency = data.currency === "INR" ? "₹" : "$";
     const money = (v: number) => currency + new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 }).format(v || 0);
     const acosPct = (v: number) => `${Math.round((v || 0) * 100)}%`;
+    // Same thresholds as the Daily Digest's ACOS badge — a bare "99% ACOS" in grey text didn't
+    // separate "fine" from "the worst ACOS product on the platform" (which is exactly what these
+    // three per-platform products are, since the workbook shortlists worst-ACOS-first). Colouring
+    // it makes severity scannable without reading every number.
+    const acosColor = (v: number) => ((v || 0) > 0.5 ? "#dc2626" : (v || 0) > 0.25 ? "#d97706" : "#059669");
+    const acosSpan = (v: number) => `<strong style="color:${acosColor(v)};">${acosPct(v)} ACOS</strong>`;
     const clip = (s: string, len = 60) => ((s || "").length > len ? (s || "").slice(0, len) + "…" : s || "");
     const platforms: any[] = data.platformSummaries || [];
     const PLATFORM_COLOR: Record<string, string> = { Amazon: "#FF9900", Flipkart: "#2874F0", Meesho: "#9F2089" };
+    // Grand total across all platforms — the per-platform cards below answer "which platform",
+    // but the first thing a reader wants is "how much did we spend today, total" before drilling in.
+    const totalDaySpend = platforms.reduce((a, p) => a + (p.daySpendTax || 0), 0);
+    const totalRangeSpend = platforms.reduce((a, p) => a + (p.rangeSpendTax || 0), 0);
 
     const platformCards = platforms.map((p) => {
       const products = p.topProducts.length
@@ -826,9 +897,9 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
             ${clip(prod.name)}${prod.price ? `<span style="color:#9ca3af;font-weight:600;"> &#183; ${money(prod.price)}</span>` : ""}
           </p>
           <p style="margin:0;font-size:11px;color:#6b7280;font-weight:600;line-height:1.5;">
-            ${data.dayLabel || "Day"}: ${money(prod.day.spendTax)} spend, ${prod.day.orders} orders, ${acosPct(prod.day.acos)} ACOS
+            ${data.dayLabel || "Day"}: ${money(prod.day.spendTax)} spend, ${prod.day.orders} orders, ${acosSpan(prod.day.acos)}
             &nbsp;&#183;&nbsp;
-            Range: ${money(prod.range.spendTax)} spend, ${prod.range.orders} orders, ${acosPct(prod.range.acos)} ACOS
+            Range: ${money(prod.range.spendTax)} spend, ${prod.range.orders} orders, ${acosSpan(prod.range.acos)}
           </p>
         </td></tr>`).join("");
 
@@ -842,7 +913,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
         </td></tr>
         ${productRows}
         <tr><td style="padding:8px 14px;background:#fafafa;font-size:11px;color:#6b7280;font-weight:600;">
-          Overall sales in range: ${p.overallRangeUnits} units, ${money(p.overallRangeValue)}
+          Overall sales (${data.dayLabel || "Day"}): ${p.overallDayUnits} units, ${money(p.overallDayValue)}
         </td></tr>
       </table>`;
     }).join("");
@@ -867,9 +938,41 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
         <tr><td style="padding-bottom:16px;">
           <h2 style="margin:0;color:#111;font-size:20px;font-weight:800;">&#128200; Daily Ad Spend Report</h2>
           <p style="margin:4px 0 0;color:#6b7280;font-size:13px;font-weight:600;">${data.dayLabel || ""} &nbsp;&#183;&nbsp; trailing range ${data.rangeLabel || ""}</p>
+          <p style="margin:8px 0 0;font-size:13px;font-weight:700;color:#111;">
+            Total ad spend today: <strong style="color:#dc2626;">${money(totalDaySpend)}</strong>
+            <span style="color:#9ca3af;font-weight:600;"> &#183; ${money(totalRangeSpend)} over the trailing range</span>
+            <span style="color:#9ca3af;font-weight:600;"> &#183; ${platforms.length} platform${platforms.length === 1 ? "" : "s"}</span>
+          </p>
+        </td></tr>
+        <tr><td style="padding-top:14px;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #f0f0f0;border-radius:10px;overflow:hidden;">
+            <thead><tr style="background:#f9fafb;">
+              <th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">Platform</th>
+              <th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">Spend (1d)</th>
+              <th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">Sales (1d)</th>
+              <th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">Spend (7d)</th>
+              <th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">Sales (7d)</th>
+            </tr></thead>
+            <tbody>
+              ${platforms.map((p) => `<tr>
+                <td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12px;font-weight:800;color:#111;border-left:3px solid ${PLATFORM_COLOR[p.platform] || "#111"};">${p.platform}</td>
+                <td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12px;font-weight:700;color:#dc2626;text-align:right;">${money(p.daySpendTax)}</td>
+                <td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12px;font-weight:700;color:#059669;text-align:right;">${money(p.overallDayValue)}</td>
+                <td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12px;font-weight:700;color:#dc2626;text-align:right;">${money(p.rangeSpendTax)}</td>
+                <td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12px;font-weight:700;color:#059669;text-align:right;">${money(p.overallRangeValue)}</td>
+              </tr>`).join("")}
+              <tr style="background:#fafafa;">
+                <td style="padding:9px 10px;border-top:1px solid #e5e7eb;font-size:12px;font-weight:800;color:#111;">Total</td>
+                <td style="padding:9px 10px;border-top:1px solid #e5e7eb;font-size:12px;font-weight:800;color:#dc2626;text-align:right;">${money(totalDaySpend)}</td>
+                <td style="padding:9px 10px;border-top:1px solid #e5e7eb;font-size:12px;font-weight:800;color:#059669;text-align:right;">${money(platforms.reduce((a, p) => a + (p.overallDayValue || 0), 0))}</td>
+                <td style="padding:9px 10px;border-top:1px solid #e5e7eb;font-size:12px;font-weight:800;color:#dc2626;text-align:right;">${money(totalRangeSpend)}</td>
+                <td style="padding:9px 10px;border-top:1px solid #e5e7eb;font-size:12px;font-weight:800;color:#059669;text-align:right;">${money(platforms.reduce((a, p) => a + (p.overallRangeValue || 0), 0))}</td>
+              </tr>
+            </tbody>
+          </table>
         </td></tr>
         ${incompleteBanner}
-        <tr><td>${platformCards}</td></tr>
+        <tr><td style="padding-top:16px;">${platformCards}</td></tr>
         <tr><td>
           <p style="margin:0;color:#9ca3af;font-size:11px;line-height:1.6;">
             ${data.productCount || 0} advertised products across platforms${data.lowSpendCampaignCount ? ` &#183; ${data.lowSpendCampaignCount} low-spend campaigns flagged` : ""}.
@@ -948,11 +1051,27 @@ const SUBJECTS: Record<string, string> = {
   liveAlerts: "⚡ Marketplace360 - Needs Attention",
   weeklyReport: "📈 Marketplace360 - Weekly Performance Report",
   adSpendDaily: "📈 Ad spend Report",
+  historicalReport: "📊 Marketplace360 - Historical 7/30 Day Analysis Report",
   stockout: "⚠️ Marketplace360 - Ad Spend on Out-of-Stock Products",
   inventory: "Marketplace360 - Low Inventory Alert",
   campaign: "Marketplace360 - High ACOS Campaign Alert",
   summary: "Marketplace360 - Performance Summary",
   campaignPause: "⏸️ Marketplace360 - Campaign Paused",
+};
+
+// Next.js Pages API routes default to a 1mb body limit — comfortably under a
+// base64-encoded Ad Spend / Historical Analysis Report workbook (the raw .xlsx
+// alone runs 2-3MB+ once the account has a few weeks of uploaded data, and
+// base64 inflates that by another ~33%). Without raising this, every send with
+// an attachment above ~750KB failed with a 413 before this route's own handler
+// ever ran — including the Reports page's manual "Send" button, not just the
+// new automated crons.
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: "20mb",
+    },
+  },
 };
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {

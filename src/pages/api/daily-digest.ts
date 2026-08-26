@@ -31,14 +31,43 @@ import * as XLSX from "xlsx-js-style";
 const SELLERMATE_BASE_URL = "https://api.sellermate.ai/public/v1/tools";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function callTool(tool: string, args: Record<string, any>, apiKey: string) {
+async function callTool(tool: string, args: Record<string, any>, apiKey: string, attempt = 0): Promise<any> {
   const r = await fetch(`${SELLERMATE_BASE_URL}/${tool}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
     body: JSON.stringify(args),
   });
+  // SellerMate's rate limit is on requests IN FLIGHT at once, not per-minute — this file fires 8
+  // calls in one Promise.all below (several of which fan out into more of their own), which
+  // routinely trips it. Every call site catches its own failure down to an empty/zero default (by
+  // design — one flaky call must not kill the whole digest), but that meant a 429 here read
+  // exactly like "genuinely nothing to report": Inventory Health showed Out of Stock/Low Stock/
+  // Value all as 0 on a day SellerMate was simply rejecting this call, not because the account
+  // had zero inventory issues. Retry with backoff before letting it fall through to that default.
+  if (r.status === 429 && attempt < 3) {
+    await new Promise((res) => setTimeout(res, 600 * (attempt + 1)));
+    return callTool(tool, args, apiKey, attempt + 1);
+  }
   if (!r.ok) throw new Error(`${tool}: ${await r.text()}`);
   return r.json();
+}
+
+// get_inventory paginates at 200/page — a single call (this file's old behaviour) silently
+// truncated any account with more than 200 SKUs, undercounting Out of Stock/Low Stock/Value
+// against whatever fell on later pages. Same page-until-exhausted pattern as the stockout
+// forecast detector in liveAlerts.ts, capped at 10 pages (2000 items) as a runaway backstop.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function fetchAllInventory(amazon_account_id: string, workspace_id: string, apiKey: string): Promise<any[]> {
+  const items: any[] = [];
+  let offset = 0;
+  for (let i = 0; i < 10; i++) {
+    const page = await callTool("get_inventory", { amazon_account_id, workspace_id, limit: 200, offset }, apiKey);
+    const pageItems: any[] = page.items || [];
+    items.push(...pageItems);
+    if (pageItems.length === 0 || offset + pageItems.length >= (page.total || 0)) break;
+    offset += pageItems.length;
+  }
+  return items;
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -71,6 +100,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
   const base = { amazon_account_id, workspace_id, start_date: day, end_date: day };
   const dateLabel = new Date(day + "T00:00:00").toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+  // The single day before `day` — purely for the KPI block's day-over-day trend arrows. A bare
+  // "Total Sales ₹1,70,815" doesn't say whether that's a good day or a bad one; comparing against
+  // the prior day does. Kept to just Sales/Spend/Orders/Units (retail + campaign summaries) rather
+  // than re-running every detector for a second day, which isn't worth the extra SellerMate calls.
+  const prevDay = (() => { const d = new Date(day + "T00:00:00"); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })();
+  const prevBase = { amazon_account_id, workspace_id, start_date: prevDay, end_date: prevDay };
 
   try {
     // Every call here must degrade to an empty/zero default on failure, never throw — a single
@@ -80,21 +115,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // "quiet day vs. broken cron" ambiguity this digest exists to avoid — see the file comment
     // above. The KPI block reports the single day; the three detectors below it look back
     // `lookbackDays`.
-    const [cp, st, prod, retail, inv, stockoutItems, bleedingItems, wasted] = await Promise.all([
+    const [cp, st, prod, retail, inv, stockoutItems, bleedingItems, wasted, prevCp, prevRetail] = await Promise.all([
       callTool("get_campaign_performance", { ...base, page_size: 500 }, apiKey).catch(() => ({ data: [], summary: {} })),
       callTool("get_search_term_performance", { ...base, page_size: 100, sort_field: "attributedSales14d", sort_direction: "desc" }, apiKey).catch(() => ({ data: [] })),
       callTool("get_advertised_product_performance", { ...base, page_size: 100, sort_field: "attributedSales14d", sort_direction: "desc" }, apiKey).catch(() => ({ data: [] })),
       callTool("get_retail_product_performance", { ...base, page_size: 500 }, apiKey).catch(() => ({ summary: {} })),
-      callTool("get_inventory", { amazon_account_id, workspace_id, limit: 200, offset: 0 }, apiKey).catch(() => ({ items: [] })),
+      fetchAllInventory(amazon_account_id, workspace_id, apiKey).catch(() => []),
       findStockoutAdSpend({ apiKey, amazon_account_id, workspace_id, lowStockThreshold, lookbackDays }).catch(() => []),
       findBleedingCampaigns({ apiKey, amazon_account_id, workspace_id, acosThreshold, minSpend, lookbackDays }).catch(() => []),
       findWastedSearchTerms({ apiKey, amazon_account_id, workspace_id, minSpend: 100, lookbackDays }).catch(() => ({ terms: [], totalWasted: 0 })),
+      callTool("get_campaign_performance", { ...prevBase, page_size: 500 }, apiKey).catch(() => ({ summary: {} })),
+      callTool("get_retail_product_performance", { ...prevBase, page_size: 500 }, apiKey).catch(() => ({ summary: {} })),
     ]);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cpRows: any[] = cp.data || [];
     const cs = cp.summary || {};
     const rs = retail.summary || {};
+    const prevCs = prevCp.summary || {};
+    const prevRs = prevRetail.summary || {};
+    // Undefined (not 0) when the prior day genuinely has no comparable data, so the email can
+    // omit the trend arrow instead of rendering a misleading "-100%" against a blank baseline.
+    const pct = (nowV: number, prevV: number): number | undefined => (prevV > 0 ? (nowV - prevV) / prevV : undefined);
+    const previousMetrics = {
+      totalSales: prevRs.totalSales || prevCs.totalSales || 0,
+      adSpend: prevCs.totalSpend || 0,
+      orders: prevCs.totalOrders || 0,
+      units: prevRs.totalUnitsOrdered || 0,
+    };
 
     const metrics = {
       totalSales: rs.totalSales || cs.totalSales || 0,
@@ -104,6 +152,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       acos: cs.overallAcos || 0,
       orders: cs.totalOrders || 0,
       units: rs.totalUnitsOrdered || 0,
+    };
+    const deltas = {
+      totalSales: pct(metrics.totalSales, previousMetrics.totalSales),
+      adSpend: pct(metrics.adSpend, previousMetrics.adSpend),
+      orders: pct(metrics.orders, previousMetrics.orders),
+      units: pct(metrics.units, previousMetrics.units),
     };
 
     const topCampaigns = [...cpRows]
@@ -125,7 +179,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const invItems: any[] = inv.items || [];
+    const invItems: any[] = inv || [];
     let outOfStock = 0, low = 0, totalValue = 0;
     for (const it of invItems) {
       const q = (it.fbm?.quantity || 0) + (it.fba?.endingWarehouseBalance || 0);
@@ -135,7 +189,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const wastedTerms = wasted.terms || [];
     const emailData = {
-      dateLabel, accountName, currency, metrics,
+      dateLabel, accountName, currency, metrics, deltas,
       stockoutItems, bleedingItems, wastedTerms,
       topCampaigns, topProducts, topTerms,
       inventory: { outOfStock, low, totalValue },

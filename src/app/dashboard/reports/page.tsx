@@ -380,7 +380,12 @@ export default function ReportsPage() {
       </div>
 
       <div className="glass rounded-2xl border border-border p-6 shadow-sm">
-        <h3 className="font-bold text-sm mb-1">Amazon Weekly Sales Report (SKU-wise)</h3>
+        <h3 className="font-bold text-sm mb-1 flex items-center gap-2">
+          Amazon Weekly Sales Report (SKU-wise)
+          <span className="text-[10px] font-black uppercase tracking-wide text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 rounded-full px-2 py-0.5">
+            Every Monday
+          </span>
+        </h3>
         <p className="text-xs text-muted-foreground mb-4">
           Week-by-week Orders, Returns, Price, Total Sales, and Growth % per SKU, comparing last week vs this week —
           the same report the Weekly Summary email attaches, sourced from the data uploaded above. Uses the date
@@ -405,7 +410,12 @@ export default function ReportsPage() {
       </div>
 
       <div className="glass rounded-2xl border border-border p-6 shadow-sm">
-        <h3 className="font-bold text-sm mb-1">Generate Historical 7/30 Days Analysis Report</h3>
+        <h3 className="font-bold text-sm mb-1 flex items-center gap-2">
+          Generate Historical 7/30 Days Analysis Report
+          <span className="text-[10px] font-black uppercase tracking-wide text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 rounded-full px-2 py-0.5">
+            Every Monday
+          </span>
+        </h3>
         <p className="text-xs text-muted-foreground mb-4">
           Builds the same Analysis Report layout (Price, Spend+Tax, Units, Orders, Returns, CPC, ACOS, TACOS) from
           the data uploaded above — one row per SKU. The report compares a trailing 30-day window against a
@@ -436,7 +446,12 @@ export default function ReportsPage() {
       </div>
 
       <div className="glass rounded-2xl border border-border p-6 shadow-sm">
-        <h3 className="font-bold text-sm mb-1">Generate Daily Ad Spend Report (SKU-wise)</h3>
+        <h3 className="font-bold text-sm mb-1 flex items-center gap-2">
+          Generate Daily Ad Spend Report (SKU-wise)
+          <span className="text-[10px] font-black uppercase tracking-wide text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-full px-2 py-0.5">
+            Every day
+          </span>
+        </h3>
         <p className="text-xs text-muted-foreground mb-4">
           Amazon + Flipkart + Meesho ad spend, side by side: Spend, Spend+Tax, Orders, CPC and ACOS per product for
           the single day selected above ({endDate || "yesterday"}) and its trailing 7 days, plus a cross-platform Ad

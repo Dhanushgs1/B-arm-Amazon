@@ -34,8 +34,15 @@ function dmy(iso: string): string {
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const { endDate, rangeDays, accountName, to, cc } = req.body || {};
-  if (!endDate) return res.status(400).json({ error: "endDate is required" });
+  const { endDate: endDateBody, rangeDays, accountName, to, cc } = req.body || {};
+  // Defaults to yesterday so the daily cron (instrumentation.ts / scheduled-reports.ts)
+  // doesn't need to compute a date itself — matches weekly-report.ts's own default.
+  let endDate = endDateBody as string | undefined;
+  if (!endDate) {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    endDate = d.toISOString().slice(0, 10);
+  }
   // `to`/`cc` explicitly present (even as "") means "use exactly this, don't
   // fall back to the real distribution list" — a `|| DEFAULT` here would
   // silently restore the CEO/team cc on every test send that passes cc: "".

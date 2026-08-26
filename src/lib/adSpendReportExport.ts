@@ -237,7 +237,13 @@ async function fetchAmazonProducts(
   orderRows.forEach((r: any) => {
     if (!r.sku || isCancelledOrder(r) || !isStandardOrderId(r.amazon_order_id)) return;
     const qty = num(r.quantity);
-    const value = num(r.item_price) * qty;
+    // item_price in Amazon's Orders export is the LINE TOTAL (already quantity-multiplied) — a
+    // qty-2 line of a ₹399 product carries item_price 798, not 399. Multiplying by qty again
+    // inflated every multi-unit order (same issue documented/fixed in weeklySalesExport.ts).
+    // Falls back to qty x listing price for the rare row whose item_price came through as 0
+    // despite real units, so Overall sales Value isn't silently dropped for that order.
+    const linePrice = num(r.item_price);
+    const value = linePrice > 0 ? linePrice : qty * (priceBySku.get(r.sku) || 0);
     ensureUnits(r.sku).units += qty;
     overallRange.units += qty;
     overallRange.value += value;
@@ -259,7 +265,7 @@ async function fetchAmazonProducts(
     products.set(sku, {
       platform: "Amazon",
       sku,
-      name: nameBySku.get(sku) || resolveProductName(undefined, sku) || sku,
+      name: resolveProductName(nameBySku.get(sku), sku) || nameBySku.get(sku) || sku,
       price: priceBySku.get(sku) || 0,
       day: { spend: daySpend, units: 0 },
       range: { spend: rangeSpend, units: rangeUnits },
@@ -382,6 +388,25 @@ async function fetchFlipkartProducts(
     overallRange.value += amount;
     if (r.order_date === endDate) overallDay.value += amount;
   });
+  // "Earn More" (earnRows) isn't always uploaded for every window — when it's missing (or
+  // doesn't cover this range), overallRange/Day.value above silently stayed 0 while units
+  // (sourced from the separate Order report) kept accumulating normally, so the Summary
+  // sheet's "Overall sales" showed a real QTS against a ₹0.00 Value. Fall back to units x an
+  // effective per-SKU price (listing price, else the window's own realised ASP from earnRows)
+  // so Value tracks QTS instead of silently reading 0.
+  if (overallRange.value === 0 && overallRange.units > 0) {
+    orderRows.forEach((r) => {
+      if (!r.sku) return;
+      const status = String(r.order_item_status || "").toUpperCase();
+      if (status.startsWith("CANCEL")) return;
+      const qty = num(r.quantity);
+      const asp = aspAcc.get(r.sku);
+      const price = priceBySku.get(r.sku) || (asp && asp.units > 0 ? asp.amount / asp.units : 0);
+      const value = qty * price;
+      overallRange.value += value;
+      if (r.order_date === endDate) overallDay.value += value;
+    });
+  }
 
   const skus = new Set<string>([...spendBySku.keys(), ...unitsBySku.keys(), ...priceBySku.keys()].filter(Boolean));
   const products = new Map<string, ProductRow>();
@@ -394,7 +419,7 @@ async function fetchFlipkartProducts(
     products.set(sku, {
       platform: "Flipkart",
       sku,
-      name: nameBySku.get(sku) || resolveProductName(undefined, sku) || sku,
+      name: resolveProductName(nameBySku.get(sku), sku) || nameBySku.get(sku) || sku,
       price,
       day: { spend: spendBySkuDay.get(sku) || 0, units: 0 },
       range: { spend: spendBySku.get(sku)?.spend || 0, units: unitsBySku.get(sku)?.units || 0 },
@@ -513,7 +538,7 @@ async function fetchMeeshoProducts(
     products.set(sku, {
       platform: "Meesho",
       sku,
-      name: nameBySku.get(sku) || resolveProductName(undefined, sku) || sku,
+      name: resolveProductName(nameBySku.get(sku), sku) || nameBySku.get(sku) || sku,
       price: priceBySku.get(sku) || 0,
       day: { spend: spendBySkuDay.get(sku) || 0, units: 0 },
       range: { spend: spendBySku.get(sku)?.spend || 0, units: unitsBySku.get(sku)?.units || 0 },
@@ -641,6 +666,8 @@ export interface PlatformEmailSummary {
   daySpendTax: number;
   rangeSpend: number;
   rangeSpendTax: number;
+  overallDayUnits: number;
+  overallDayValue: number;
   overallRangeUnits: number;
   overallRangeValue: number;
   topProducts: { name: string; price: number; day: ProductMetricBlock; range: ProductMetricBlock }[];
@@ -810,8 +837,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const sumLabelCells: { row: number; platform: Platform }[] = [];
   const platformTotals: AdSpendReportResult["platformTotals"] = [];
   const platformSummaries: PlatformEmailSummary[] = [];
-  const TOP_N = 3; // shortlist length — best (lowest) range ACOS first, not highest spend
-  platforms.forEach(({ platform, products, overallRange }) => {
+  const TOP_N = 3; // shortlist length — worst (highest) DAY ACOS first, matching the visible ACOS column, not range ACOS or spend
+  platforms.forEach(({ platform, products, overallDay, overallRange }) => {
     // All products with any spend at all — totals must include every rupee,
     // not just the ones that clear the shortlist bar below.
     const rows = [...products.values()].filter((p) => spendTax(p.range) > 0);
@@ -826,7 +853,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     // products, not noise.
     const shortlist = rows
       .filter((p) => spendTax(p.range) > ACOS_SHORTLIST_MIN_SPEND)
-      .sort((a, b) => computeAcos(b.range, b.price) - computeAcos(a.range, a.price))
+      .sort((a, b) => computeAcos(b.day, b.price) - computeAcos(a.day, a.price))
       .slice(0, TOP_N);
     platformSummaries.push({
       platform,
@@ -834,6 +861,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       daySpendTax: round2(daySpendRaw * GST_MULTIPLIER),
       rangeSpend: round2(rangeSpendRaw),
       rangeSpendTax: round2(rangeSpendRaw * GST_MULTIPLIER),
+      overallDayUnits: overallDay.units,
+      overallDayValue: round2(overallDay.value),
       overallRangeUnits: overallRange.units,
       overallRangeValue: round2(overallRange.value),
       topProducts: shortlist.map((p) => ({
@@ -857,11 +886,11 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           // post-generate toast on the Download page.
           i === 0 ? platform : "", i === 0 ? round2(daySpendRaw) : "", i === 0 ? round2(daySpendRaw * GST_MULTIPLIER) : "",
           ...productAoaRow(p),
-          i === 0 ? overallRange.units : "", i === 0 ? round2(overallRange.value) : "",
+          i === 0 ? overallDay.units : "", i === 0 ? round2(overallDay.value) : "",
         ]);
       });
     } else {
-      sumAoa.push([platform, 0, 0, "(no ad spend in range)", "", "", "", "", "", "", "", "", "", "", "", overallRange.units, round2(overallRange.value)]);
+      sumAoa.push([platform, 0, 0, "(no ad spend in range)", "", "", "", "", "", "", "", "", "", "", "", overallDay.units, round2(overallDay.value)]);
     }
     if (blockRows > 1) {
       [0, 1, 2, 15, 16].forEach((c) => sumMerges.push({ s: { r: blockStart, c }, e: { r: blockStart + blockRows - 1, c } }));
@@ -902,7 +931,12 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const detailLabelCells: { addr: string; platform: Platform }[] = [];
   const detailMerges: XLSX.Range[] = [];
   platforms.forEach(({ platform, products }) => {
-    const rows = [...products.values()].filter((p) => spendTax(p.range) > 0 || p.range.units > 0).sort((a, b) => spendTax(b.range) - spendTax(a.range));
+    // Sorted by day ACOS descending (worst first) — same metric/direction as the Summary
+    // sheet's "Worst ACOS product" shortlist, so a reader doesn't have to reconcile two
+    // different orderings for the same numbers across sheets.
+    const rows = [...products.values()]
+      .filter((p) => spendTax(p.range) > 0 || p.range.units > 0)
+      .sort((a, b) => computeAcos(b.day, b.price) - computeAcos(a.day, a.price));
     detailLabelCells.push({ addr: XLSX.utils.encode_cell({ r: detailAoa.length, c: 0 }), platform });
     detailAoa.push([platform, ...Array(DETAIL_COLS - 1).fill("")]);
     detailAoa.push(Array(DETAIL_COLS).fill(""));
@@ -954,9 +988,16 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     });
   });
   const statusAoa: (string | number)[][] = [["Product", "Amazon", "Flipkart", "Meesho"]];
-  [...statusNames.entries()].sort((a, b) => a[1].localeCompare(b[1])).forEach(([key, name]) => {
-    statusAoa.push([name, statusHasSpend.Amazon.has(key) ? 1 : 0, statusHasSpend.Flipkart.has(key) ? 1 : 0, statusHasSpend.Meesho.has(key) ? 1 : 0]);
-  });
+  // Live-everywhere products first (3 platforms → 2 → 1 → 0), alphabetical within each
+  // count so a reader scans down to find where a product with fewer live platforms sits,
+  // rather than hunting alphabetically through all 273 rows for the ones running nowhere.
+  const liveCount = (key: string) =>
+    (statusHasSpend.Amazon.has(key) ? 1 : 0) + (statusHasSpend.Flipkart.has(key) ? 1 : 0) + (statusHasSpend.Meesho.has(key) ? 1 : 0);
+  [...statusNames.entries()]
+    .sort((a, b) => liveCount(b[0]) - liveCount(a[0]) || a[1].localeCompare(b[1]))
+    .forEach(([key, name]) => {
+      statusAoa.push([name, statusHasSpend.Amazon.has(key) ? 1 : 0, statusHasSpend.Flipkart.has(key) ? 1 : 0, statusHasSpend.Meesho.has(key) ? 1 : 0]);
+    });
   const wsStatus = XLSX.utils.aoa_to_sheet(statusAoa);
   styleHeader(wsStatus, 0, 4, "312E81");
   wsStatus["!cols"] = [{ wch: 60 }, { wch: 10 }, { wch: 10 }, { wch: 10 }];

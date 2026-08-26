@@ -206,6 +206,20 @@ export async function register() {
       }
     }, { timezone: "UTC" });
 
+    // ── Historical 7/30 Day Analysis Report — every Monday at 9:30 AM IST. Mailed
+    //    straight to the fixed distribution list (send-historical-email.ts), not
+    //    per-account Settings — same always-on design as the Daily Ad Spend Report
+    //    below, since this report isn't scoped to one Amazon/Flipkart account.
+    //    Production (src/pages/api/cron/scheduled-reports.ts) has no separate 9:30
+    //    slot to give this — Vercel Cron only has the two entries vercel.json
+    //    already uses — so there it piggybacks on the 9:00 AM route instead; this
+    //    separate local timer only exists so `next dev` testing doesn't have to
+    //    wait for/trigger the whole Monday bundle to see this fire on its own. ──
+    cron.schedule("0 4 * * 1", async () => {
+      console.log("[Marketplace360] Sending Historical 7/30 Day Analysis Report...");
+      await runAlertEndpoint("/api/send-historical-email", {}, "Historical report"); // endDate omitted → yesterday
+    }, { timezone: "UTC" });
+
     // ── Monthly Report — 1st of every month at 9:00 AM IST ──
     cron.schedule("30 3 1 * *", async () => {
       for (const slot of KEY_SLOTS) {
@@ -215,6 +229,16 @@ export async function register() {
           await sendReport("Monthly", s.notifEmail, s.ccEmail);
         }
       }
+    }, { timezone: "UTC" });
+
+    // ── Daily Ad Spend Report (SKU-wise) — every day at 9:00 AM IST. Mailed straight
+    //    to the fixed distribution list (send-ad-spend-email.ts), not per-account
+    //    Settings, for the same reason as the Historical report above. Production
+    //    piggybacks this on scheduled-reports.ts's own 9:00 AM route too — see that
+    //    file's handler() — this separate local timer is dev-testing-only. ──
+    cron.schedule("30 3 * * *", async () => {
+      console.log("[Marketplace360] Sending Daily Ad Spend Report (SKU-wise)...");
+      await runAlertEndpoint("/api/send-ad-spend-email", {}, "Daily ad spend report"); // endDate omitted → yesterday
     }, { timezone: "UTC" });
 
     // ── Campaign pause monitor — every 30 minutes, independent of the daily
@@ -235,6 +259,6 @@ export async function register() {
       }
     }, { timezone: "UTC" });
 
-    console.log("[Marketplace360] ✅ Email scheduler started — Daily 10AM / Weekly Monday / Monthly 1st / Campaign monitor every 30min");
+    console.log("[Marketplace360] ✅ Email scheduler started — Daily 10AM / Weekly Monday / Monthly 1st / Ad Spend Daily 8:30AM / Historical Report Monday 9:30AM / Campaign monitor every 30min");
   }
 }
