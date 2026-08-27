@@ -987,8 +987,15 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     // Grouped by resolved product name first — a product's 4-5 SKU variants
     // (per the product-master table) merge into one row with summed spend/
     // orders, instead of printing once per SKU with the name repeated.
+    // Scoped to products with actual ad spend in the range — same bar the
+    // Summary sheet's per-platform totals already use. A product that only
+    // ever sold organically (₹0 spend, real order units) previously still
+    // printed here with Spend/CPC/ACOS all reading 0, which isn't an "ad"
+    // row at all: against a hand-built reference report, these purely-organic
+    // rows were the single biggest source of mismatch — they inflated this
+    // sheet's Orders total ~40-60% above what an ad-spend-only view shows.
     const rows = groupProductsByName([...products.values()])
-      .filter((p) => spendTax(p.range) > 0 || p.range.units > 0)
+      .filter((p) => spendTax(p.range) > 0)
       .sort((a, b) => computeAcos(b.day, b.price) - computeAcos(a.day, a.price));
     detailLabelCells.push({ addr: XLSX.utils.encode_cell({ r: detailAoa.length, c: 0 }), platform });
     detailAoa.push([platform, ...Array(DETAIL_COLS - 1).fill("")]);
