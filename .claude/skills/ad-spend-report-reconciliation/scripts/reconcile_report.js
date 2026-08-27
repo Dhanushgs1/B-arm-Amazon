@@ -318,6 +318,13 @@ for (const platform of PLATFORMS) {
 }
 
 // ── 4. Overall sales (QTS/Value) verification ────────────────────────────────
+// Compared against the raw order sheet's SINGLE reporting-day total (not the
+// 7-day range) — the report's own "Overall sales (<dayLabel>)" header on the
+// Summary sheet, and the seller's own manual workbook, both track this figure
+// daily. Fixed 2026-08-27: this used to compare against raw.qtyRange /
+// raw.valueRange (the week-long total) because the report itself briefly
+// wrote the range total into these cells — see adSpendReportExport.ts's
+// day-vs-range note at the Overall sales write site.
 for (const platform of PLATFORMS) {
   const raw = rawAgg[platform];
   if (!raw.ordSheets.length) continue;
@@ -333,16 +340,16 @@ for (const platform of PLATFORMS) {
   }
   if (qts === null) { warn(`[${platform}] Overall sales QTS/Value located on Summary sheet`, "couldn't find the platform's label row or its QTS/Value cells"); continue; }
 
-  const qtsGapPct = raw.qtyRange > 0 ? Math.abs(qts - raw.qtyRange) / raw.qtyRange * 100 : 0;
-  const valueGapPct = raw.valueRange > 0 ? Math.abs(value - raw.valueRange) / raw.valueRange * 100 : 0;
+  const qtsGapPct = raw.qtyDay > 0 ? Math.abs(qts - raw.qtyDay) / raw.qtyDay * 100 : 0;
+  const valueGapPct = raw.valueDay > 0 ? Math.abs(value - raw.valueDay) / raw.valueDay * 100 : 0;
 
-  if (near(qts, raw.qtyRange, 0.01)) pass(`[${platform}] Overall sales QTS`, `raw SUM(qty) ${raw.qtyRange} = report ${qts}`);
-  else if (qtsGapPct <= 3) warn(`[${platform}] Overall sales QTS`, `raw ${raw.qtyRange} vs report ${qts} (${qtsGapPct.toFixed(1)}%) — within normal order-status drift between when the raw file was pulled and when the report was generated (new orders / cancellations / returns land between pulls). Not a formula error unless it doesn't shrink when you re-pull both at the same moment.`);
-  else fail(`[${platform}] Overall sales QTS`, `raw SUM(qty) ${raw.qtyRange} vs report ${qts} — gap ${(qts - raw.qtyRange)} (${qtsGapPct.toFixed(1)}%), too large for normal drift. Check for a status filter still applied on the Overall sales accumulation (it should sum every order status, unfiltered) or a date-window boundary mismatch.`);
+  if (near(qts, raw.qtyDay, 0.01)) pass(`[${platform}] Overall sales QTS`, `raw SUM(qty) on ${reportDay} = ${raw.qtyDay} = report ${qts}`);
+  else if (qtsGapPct <= 3) warn(`[${platform}] Overall sales QTS`, `raw ${raw.qtyDay} vs report ${qts} (${qtsGapPct.toFixed(1)}%) — within normal order-status drift between when the raw file was pulled and when the report was generated (new orders / cancellations / returns land between pulls). Not a formula error unless it doesn't shrink when you re-pull both at the same moment.`);
+  else fail(`[${platform}] Overall sales QTS`, `raw SUM(qty) on ${reportDay} = ${raw.qtyDay} vs report ${qts} — gap ${(qts - raw.qtyDay)} (${qtsGapPct.toFixed(1)}%), too large for normal drift. Check the Overall sales accumulation is still scoped to the single reporting day (not the 7-day range) and unfiltered by order status.`);
 
-  if (near(value, raw.valueRange, 0.01)) pass(`[${platform}] Overall sales Value`, `raw SUM(value) ${money(raw.valueRange)} = report ${money(value)}`);
-  else if (valueGapPct <= 3) warn(`[${platform}] Overall sales Value`, `raw ${money(raw.valueRange)} vs report ${money(value)} (${valueGapPct.toFixed(1)}%) — within normal order-status drift, same reasoning as QTS above.`);
-  else fail(`[${platform}] Overall sales Value`, `raw SUM(value) ${money(raw.valueRange)} vs report ${money(value)} — gap ${money(value - raw.valueRange)} (${valueGapPct.toFixed(1)}%). Confirm Value is summed straight from the order sheet's own price column (${COLS[platform].ordValue[0]}) for this platform, not from a different report (e.g. Flipkart's separate Earn More export) or with a status filter still applied.`);
+  if (near(value, raw.valueDay, 0.01)) pass(`[${platform}] Overall sales Value`, `raw SUM(value) on ${reportDay} = ${money(raw.valueDay)} = report ${money(value)}`);
+  else if (valueGapPct <= 3) warn(`[${platform}] Overall sales Value`, `raw ${money(raw.valueDay)} vs report ${money(value)} (${valueGapPct.toFixed(1)}%) — within normal order-status drift, same reasoning as QTS above.`);
+  else fail(`[${platform}] Overall sales Value`, `raw SUM(value) on ${reportDay} = ${money(raw.valueDay)} vs report ${money(value)} — gap ${money(value - raw.valueDay)} (${valueGapPct.toFixed(1)}%). Confirm Value is summed straight from the order sheet's own price column (${COLS[platform].ordValue[0]}) for this platform's single reporting day, not the 7-day range or a different report (e.g. Flipkart's separate Earn More export).`);
 }
 
 // ── report ──────────────────────────────────────────────────────────────────

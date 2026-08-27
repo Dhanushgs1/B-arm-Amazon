@@ -3,6 +3,7 @@ import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } fr
 import { upsertInChunks } from "@/lib/amazonReportUpload";
 import { resolveProductName } from "@/lib/categoryMap";
 import { fetchProductMasterNameMap } from "@/lib/productMasterUpload";
+import { SITE_URL } from "@/lib/siteUrl";
 
 // ── Ad Spend Report ──────────────────────────────────────────────────────────
 // Cross-marketplace (Amazon + Flipkart + Meesho) ad-spend snapshot: which
@@ -42,7 +43,7 @@ const LOW_SPEND_THRESHOLD = 50;
 // barely-cleared low-spend campaign can still show a misleading ACOS.
 const ACOS_SHORTLIST_MIN_SPEND = 100;
 
-function getDateWindow(toDate: string, days: number): { start: string; end: string } {
+export function getDateWindow(toDate: string, days: number): { start: string; end: string } {
   const end = new Date(`${toDate}T00:00:00Z`);
   const start = new Date(end.getTime());
   start.setUTCDate(start.getUTCDate() - (days - 1));
@@ -75,11 +76,11 @@ function num(v: unknown): number {
 }
 
 // ── per-product aggregate (raw spend, pre-tax) ──────────────────────────────
-interface WindowAgg { spend: number; units: number; }
+export interface WindowAgg { spend: number; units: number; }
 const emptyAgg = (): WindowAgg => ({ spend: 0, units: 0 });
-const spendTax = (a: WindowAgg): number => a.spend * GST_MULTIPLIER;
-const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) / a.units : spendTax(a));
-const computeAcos = (a: WindowAgg, price: number): number => (price > 0 ? computeCpc(a) / price : 0);
+export const spendTax = (a: WindowAgg): number => a.spend * GST_MULTIPLIER;
+export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) / a.units : spendTax(a));
+export const computeAcos = (a: WindowAgg, price: number): number => (price > 0 ? computeCpc(a) / price : 0);
 
 // Platform-wide "Overall sales" figures (units sold + realised sale value) —
 // unrelated to ad spend, so kept as its own shape rather than overloading
@@ -87,7 +88,7 @@ const computeAcos = (a: WindowAgg, price: number): number => (price > 0 ? comput
 interface SalesAgg { units: number; value: number; }
 const emptySales = (): SalesAgg => ({ units: 0, value: 0 });
 
-interface ProductRow {
+export interface ProductRow {
   platform: Platform;
   sku: string;
   name: string;
@@ -112,7 +113,7 @@ interface CampaignSpendRow {
 // variant of one product into a single row, summing its spend/units. The
 // merged row keeps every contributing SKU (comma-joined) so it can still be
 // traced back to the exact SKUs behind the numbers.
-function groupProductsByName(products: ProductRow[]): ProductRow[] {
+export function groupProductsByName(products: ProductRow[]): ProductRow[] {
   const byName = new Map<string, ProductRow & { skuSet: Set<string> }>();
   products.forEach((p) => {
     const key = p.name.trim().toLowerCase();
@@ -141,7 +142,7 @@ export interface AdSpendReportOpts {
 }
 
 // ── Amazon ───────────────────────────────────────────────────────────────────
-async function fetchAmazonProducts(
+export async function fetchAmazonProducts(
   range: { start: string; end: string },
   endDate: string
 ): Promise<{
@@ -339,7 +340,7 @@ async function fetchAmazonProducts(
 }
 
 // ── Flipkart ─────────────────────────────────────────────────────────────────
-async function fetchFlipkartProducts(
+export async function fetchFlipkartProducts(
   range: { start: string; end: string },
   endDate: string
 ): Promise<{
@@ -488,7 +489,7 @@ async function fetchFlipkartProducts(
 // fetches are wrapped in .catch(() => []) because the two Meesho tables may
 // not exist yet (scripts/meesho_tables.sql not run) — that must degrade to
 // "no Meesho data" rather than take down the whole report.
-async function fetchMeeshoProducts(
+export async function fetchMeeshoProducts(
   range: { start: string; end: string },
   endDate: string
 ): Promise<{
@@ -862,14 +863,16 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // ── Summary sheet ──
   // 17 columns: A Platform, B/C Ad spend without/with tax (range total), D/E
   // Product/price, F-J day metrics, K-O range metrics, P/Q Overall sales
-  // QTS/Value — A,B,C,P,Q merge down across however many product rows that
+  // QTS/Value (single reporting day, matching the dayLabel header — NOT the
+  // 7-day range, see the day-vs-range note where these cells are written
+  // below) — A,B,C,P,Q merge down across however many product rows that
   // platform gets.
   const SUM_COLS = 17;
   const sumAoa: (string | number)[][] = [
     Array(SUM_COLS).fill(""),
     ["Summary", ...Array(SUM_COLS - 1).fill("")],
     Array(SUM_COLS).fill(""),
-    ["Platform", "Ad spend (without tax)", "Ad spend (with tax)", "Worst ACOS product", "", dayLabel, "", "", "", "", rangeLabel, "", "", "", "", `Overall sales (${rangeLabel})`, ""],
+    ["Platform", "Ad spend (without tax)", "Ad spend (with tax)", "Worst ACOS product", "", dayLabel, "", "", "", "", rangeLabel, "", "", "", "", `Overall sales (${dayLabel})`, ""],
     ["", "", "", "Product", "price", ...METRIC_NAMES, ...METRIC_NAMES, "QTS", "Value"],
   ];
   const sumMerges: XLSX.Range[] = [
@@ -933,15 +936,16 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           // post-generate toast on the Download page.
           i === 0 ? platform : "", i === 0 ? round2(daySpendRaw) : "", i === 0 ? round2(daySpendRaw * GST_MULTIPLIER) : "",
           ...productAoaRow(p),
-          // Overall sales QTS/Value here is the trailing 7-day RANGE total (matches
-          // the rangeLabel header above and the range-window ad metrics to its left),
-          // not the single reporting day — units/price previously came from overallDay,
-          // understating quantity and value against a week's worth of orders.
-          i === 0 ? overallRange.units : "", i === 0 ? round2(overallRange.value) : "",
+          // Overall sales QTS/Value is the SINGLE reporting day's total (matches
+          // the dayLabel header above), not the 7-day range — the seller's own
+          // manual workbook tracks this figure daily, not as a weekly rollup.
+          // The range total is still available per-platform in platformTotals /
+          // platformSummaries.overallRangeUnits/-Value for the emailed summary.
+          i === 0 ? overallDay.units : "", i === 0 ? round2(overallDay.value) : "",
         ]);
       });
     } else {
-      sumAoa.push([platform, 0, 0, "(no ad spend in range)", "", "", "", "", "", "", "", "", "", "", "", overallRange.units, round2(overallRange.value)]);
+      sumAoa.push([platform, 0, 0, "(no ad spend in range)", "", "", "", "", "", "", "", "", "", "", "", overallDay.units, round2(overallDay.value)]);
     }
     if (blockRows > 1) {
       [0, 1, 2, 15, 16].forEach((c) => sumMerges.push({ s: { r: blockStart, c }, e: { r: blockStart + blockRows - 1, c } }));
@@ -953,6 +957,16 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   if (wsSummary["A2"]) wsSummary["A2"].s = { font: { bold: true, sz: 13 } };
   sumHeaderRowsStyled.forEach((row) => styleHeader(wsSummary, row, SUM_COLS, "312E81"));
   sumLabelCells.forEach(({ row, platform }) => styleLabel(wsSummary, XLSX.utils.encode_cell({ r: row, c: 0 }), PLATFORM_FILL[platform]));
+  // Clicking the "Amazon"/"Flipkart"/"Meesho" platform cell opens the live
+  // Daily Ad Spend dashboard page (same cross-platform data this report is
+  // built from) — a hyperlink, not just a styled label, so the seller can
+  // jump from the static Excel snapshot straight to the always-current view.
+  sumLabelCells.forEach(({ row, platform }) => {
+    const addr = XLSX.utils.encode_cell({ r: row, c: 0 });
+    const cell = wsSummary[addr];
+    if (!cell) return;
+    cell.l = { Target: `${SITE_URL}/dashboard/daily-ad-spend`, Tooltip: `Open ${platform} in the Daily Ad Spend dashboard` };
+  });
   wsSummary["!cols"] = [
     { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 60 }, { wch: 10 },
     ...Array.from({ length: 10 }, () => ({ wch: 13 })), { wch: 10 }, { wch: 14 },

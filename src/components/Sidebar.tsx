@@ -29,6 +29,7 @@ import {
   Store,
   UploadCloud,
   Star,
+  Sparkles,
   type LucideIcon
 } from "lucide-react";
 import { MARKETPLACE_META, getMarketplaceTab } from "@/lib/marketplace";
@@ -78,6 +79,7 @@ const NAV_SECTIONS: SidebarNavSection[] = [
     label: "Intelligence",
     items: [
       { id: "ratings-reviews", label: "⭐ Ratings & Reviews Intelligence", icon: Star },
+      { id: "daily-ad-spend", label: "Daily Ad Spend", icon: Sparkles, path: "/dashboard/daily-ad-spend" },
       { id: "ai", label: "AI Assistant", icon: Bot },
       { id: "settings", label: "Settings", icon: Settings },
     ],
@@ -122,6 +124,9 @@ function marketplaceNavSections(marketplace: "flipkart"): SidebarNavSection[] {
       label: "Intelligence & Workspace",
       items: [
         { id: "ratings-reviews", label: "⭐ Ratings & Reviews Intelligence", icon: Star, path: `/dashboard/${marketplace}/ratings-reviews` },
+        // Cross-platform (Amazon+Flipkart+Meesho together) — same shared page
+        // as the Amazon-view sidebar, not a per-marketplace route.
+        { id: "daily-ad-spend", label: "Daily Ad Spend", icon: Sparkles, path: "/dashboard/daily-ad-spend" },
         { id: "ai", label: "AI Assistant", icon: Bot, path: `/dashboard/${marketplace}/ai` },
         { id: "compare", label: "Combined Overall View", icon: GitCompare, path: "/dashboard/compare" },
         { id: "settings", label: "Settings", icon: Settings, path: "/dashboard/settings" },
@@ -147,6 +152,7 @@ const COMPARE_NAV_SECTIONS: SidebarNavSection[] = [
   {
     label: "Intelligence & Settings",
     items: [
+      { id: "daily-ad-spend", label: "Daily Ad Spend", icon: Sparkles, path: "/dashboard/daily-ad-spend" },
       { id: "ai", label: "✨ AI Assistant", icon: Bot, path: "/dashboard/ai" },
       { id: "optimization", label: "Amazon Rules Engine", icon: Wand2, path: "/dashboard/optimization" },
       { id: "settings", label: "Settings", icon: Settings, path: "/dashboard/settings" },

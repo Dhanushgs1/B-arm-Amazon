@@ -66,9 +66,11 @@ rows are being silently dropped (a status filter, or unmapped SB/SD campaign spe
 any SKU — see the Notes sheet's own "unmapped spend" line).
 
 **4. Overall sales (QTS / Value).** This is a plain `SUM()` off each platform's own **order
-report** sheet — nothing to do with ad spend, and **no order-status filter** (every status
-counts, including cancelled/pending; those net out on their own once the order settles, exactly
-like the seller's own manual workbook does):
+report** sheet, scoped to the **single reporting day** (the Summary sheet's own `Overall sales
+(<dayLabel>)` header — NOT the 7-day range printed just to its left) — nothing to do with ad
+spend, and **no order-status filter** (every status counts, including cancelled/pending; those
+net out on their own once the order settles, exactly like the seller's own manual workbook does,
+which also tracks this figure daily rather than as a weekly rollup):
 
 | Platform | QTS column | Value column |
 |---|---|---|
@@ -88,6 +90,20 @@ for the person, keep the same shape (see the worked example this skill was built
 `references/session-example.md`, for the tone/format to match).
 
 ## Known defects this catches
+
+**Overall sales written as the 7-day range instead of the single reporting day.** Fixed
+2026-08-27 in `adSpendReportExport.ts`'s Summary-sheet write site (search "Overall sales QTS/Value
+is the SINGLE reporting day's total"): the Summary sheet's `Overall sales (<dayLabel>)` header and
+its P/Q cells were briefly writing `overallRange.units`/`overallRange.value` (the 7-day total)
+instead of `overallDay.units`/`overallDay.value` — inflating QTS/Value roughly in proportion to
+how many of the 7 days had real orders (a full week of steady volume reads ~4-7x too high).
+Symptom: Overall sales QTS/Value several times larger than the seller's own daily-tracked
+reference number, while every other check (structure, ad-spend totals) still passes — because the
+bug was isolated to this one write site, not the underlying `overallDay`/`overallRange`
+aggregation (both were already computed correctly; only the wrong one was being written to the
+cell). If a workbook still shows Overall sales roughly a week's multiple of the expected daily
+figure, and the Summary header reads `Overall sales (<dd-mm-yyyy to dd-mm-yyyy>)` instead of a
+single date, it was generated before this fix; regenerate rather than patching the file.
 
 **Overall sales still filtering by order status, or Flipkart's Value sourced from the wrong
 report.** Fixed 2026-08-27 in `adSpendReportExport.ts`'s `fetchAmazonProducts` /
