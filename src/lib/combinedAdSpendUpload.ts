@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import { supabasePublic, type ReportDataInfo } from "@/lib/amazonReportUpload";
+import { supabasePublic, dedupeExactRows, type ReportDataInfo } from "@/lib/amazonReportUpload";
 import { toDate as parseFlexibleDate } from "@/lib/meeshoReportUpload";
 
 // Ingests the seller's own hand-assembled "Last 7 days - DD-MM-YYYY.xlsx"
@@ -560,17 +560,27 @@ async function upsertRows(table: string, rows: Record<string, unknown>[], onConf
 }
 
 async function replaceRangeRows(table: string, dateCol: string, rows: Record<string, unknown>[]): Promise<string> {
-  const dates = rows.map((r) => r[dateCol] as string | null).filter((d): d is string => !!d).sort();
+  // Amazon's and Flipkart's own orders exports occasionally contain a literal
+  // duplicate line (every column identical) — the standalone per-report
+  // upload page (amazonReportUpload.ts's uploadReportFile) already guards
+  // against this for am_orders via dedupeExactRows, but this combined-workbook
+  // path was inserting every row as-is. Left unfixed, those duplicate lines
+  // double-count units sold in the Ad Spend Report (Orders/QTS inflated) while
+  // ad-spend figures — sourced from a separate table entirely — stayed
+  // correct, which is exactly the mismatch pattern seen against a hand-built
+  // reference report: Spend within a few %, Orders 40-57% too high.
+  const deduped = dedupeExactRows(rows);
+  const dates = deduped.map((r) => r[dateCol] as string | null).filter((d): d is string => !!d).sort();
   if (dates.length) {
     const { error: delErr } = await supabasePublic.from(table).delete().gte(dateCol, dates[0]).lte(dateCol, dates[dates.length - 1]);
     if (delErr) throw new Error(`Clearing ${table} failed: ${delErr.message}`);
   }
   const chunkSize = 300;
-  for (let i = 0; i < rows.length; i += chunkSize) {
-    const { error } = await supabasePublic.from(table).insert(rows.slice(i, i + chunkSize));
+  for (let i = 0; i < deduped.length; i += chunkSize) {
+    const { error } = await supabasePublic.from(table).insert(deduped.slice(i, i + chunkSize));
     if (error) throw new Error(`Insert into ${table} failed: ${error.message}`);
   }
-  return `${rows.length} rows -> ${table}`;
+  return `${deduped.length} rows -> ${table}`;
 }
 
 async function writeReportTable(ws: XLSX.WorkSheet, spec: ReportTableSpec): Promise<string> {

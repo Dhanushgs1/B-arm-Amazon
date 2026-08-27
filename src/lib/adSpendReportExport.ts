@@ -102,6 +102,35 @@ interface CampaignSpendRow {
   spend: number;
 }
 
+// Multiple SKU codes for the same physical product are normal — a product can
+// carry several SKU variants (different pack sizes, a re-listing, a spelling
+// change) that the product-master table (see resolveName below) already maps
+// to one approved product name. Without this, each SKU variant printed as its
+// own report row with that same name repeated 4-5x instead of one combined
+// row. `p.name` has already been resolved against the master table by the
+// time this runs, so grouping on it (rather than on raw SKU) merges every SKU
+// variant of one product into a single row, summing its spend/units. The
+// merged row keeps every contributing SKU (comma-joined) so it can still be
+// traced back to the exact SKUs behind the numbers.
+function groupProductsByName(products: ProductRow[]): ProductRow[] {
+  const byName = new Map<string, ProductRow & { skuSet: Set<string> }>();
+  products.forEach((p) => {
+    const key = p.name.trim().toLowerCase();
+    const existing = byName.get(key);
+    if (!existing) {
+      byName.set(key, { ...p, day: { ...p.day }, range: { ...p.range }, skuSet: new Set([p.sku]) });
+      return;
+    }
+    existing.day.spend += p.day.spend;
+    existing.day.units += p.day.units;
+    existing.range.spend += p.range.spend;
+    existing.range.units += p.range.units;
+    if (!existing.price && p.price) existing.price = p.price;
+    existing.skuSet.add(p.sku);
+  });
+  return [...byName.values()].map(({ skuSet, ...p }) => ({ ...p, sku: [...skuSet].join(", ") }));
+}
+
 export interface AdSpendReportOpts {
   /** 'YYYY-MM-DD' — the single reporting day. */
   endDate: string;
@@ -129,7 +158,7 @@ async function fetchAmazonProducts(
 }> {
   const rangeIst = istDayWindowUtc(range.start, endDate);
 
-  const [spRows, sbRows, sdRows, mapRows, orderRows, priceRows] = await Promise.all([
+  const [spRows, sbRows, sdRows, mapRows, orderRowsRaw, priceRows] = await Promise.all([
     fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
     fetchAllRows("barm_amazon_sb_campaign", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
     fetchAllRows("barm_amazon_sd_campaign", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
@@ -139,6 +168,21 @@ async function fetchAmazonProducts(
     fetchAllRows("barm_amazon_am_orders", (q) => q.gte("purchase_datetime", rangeIst.gte).lt("purchase_datetime", rangeIst.lt)),
     fetchAllRows("barm_amazon_price_listing", (q) => q),
   ]);
+  // Amazon's own orders export can carry a literal duplicate line (every
+  // column identical), and a duplicate could already be sitting in Supabase
+  // from an upload made before combinedAdSpendUpload.ts's replaceRangeRows
+  // started deduping exact-duplicate rows on insert — filtered here
+  // defensively (same natural key Flipkart's fetchFlipkartProducts already
+  // uses below) so a leftover duplicate doesn't double-count units sold until
+  // the next full re-upload flushes it out of the table.
+  const seenOrderRow = new Set<string>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const orderRows = (orderRowsRaw as any[]).filter((r) => {
+    const key = `${r.order_item_id}|${r.item_status}|${r.quantity}`;
+    if (seenOrderRow.has(key)) return false;
+    seenOrderRow.add(key);
+    return true;
+  });
 
   // Sponsored Brands / Display carry no SKU column — split each campaign's
   // spend across the SKUs mapped to it on the Upload page, same as the
@@ -824,7 +868,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     Array(SUM_COLS).fill(""),
     ["Summary", ...Array(SUM_COLS - 1).fill("")],
     Array(SUM_COLS).fill(""),
-    ["Platform", "Ad spend (without tax)", "Ad spend (with tax)", "Worst ACOS product", "", dayLabel, "", "", "", "", rangeLabel, "", "", "", "", "Overall sales", ""],
+    ["Platform", "Ad spend (without tax)", "Ad spend (with tax)", "Worst ACOS product", "", dayLabel, "", "", "", "", rangeLabel, "", "", "", "", `Overall sales (${rangeLabel})`, ""],
     ["", "", "", "Product", "price", ...METRIC_NAMES, ...METRIC_NAMES, "QTS", "Value"],
   ];
   const sumMerges: XLSX.Range[] = [
@@ -840,8 +884,10 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const TOP_N = 3; // shortlist length — worst (highest) DAY ACOS first, matching the visible ACOS column, not range ACOS or spend
   platforms.forEach(({ platform, products, overallDay, overallRange }) => {
     // All products with any spend at all — totals must include every rupee,
-    // not just the ones that clear the shortlist bar below.
-    const rows = [...products.values()].filter((p) => spendTax(p.range) > 0);
+    // not just the ones that clear the shortlist bar below. Grouped by
+    // resolved product name first, so a product's 4-5 SKU variants sum into
+    // one row instead of showing up as separate near-duplicate rows.
+    const rows = groupProductsByName([...products.values()]).filter((p) => spendTax(p.range) > 0);
     const rangeSpendRaw = rows.reduce((s, p) => s + p.range.spend, 0);
     const daySpendRaw = rows.reduce((s, p) => s + p.day.spend, 0);
     platformTotals.push({ platform, daySpendTax: daySpendRaw * GST_MULTIPLIER, rangeSpendTax: rangeSpendRaw * GST_MULTIPLIER });
@@ -886,11 +932,15 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           // post-generate toast on the Download page.
           i === 0 ? platform : "", i === 0 ? round2(daySpendRaw) : "", i === 0 ? round2(daySpendRaw * GST_MULTIPLIER) : "",
           ...productAoaRow(p),
-          i === 0 ? overallDay.units : "", i === 0 ? round2(overallDay.value) : "",
+          // Overall sales QTS/Value here is the trailing 7-day RANGE total (matches
+          // the rangeLabel header above and the range-window ad metrics to its left),
+          // not the single reporting day — units/price previously came from overallDay,
+          // understating quantity and value against a week's worth of orders.
+          i === 0 ? overallRange.units : "", i === 0 ? round2(overallRange.value) : "",
         ]);
       });
     } else {
-      sumAoa.push([platform, 0, 0, "(no ad spend in range)", "", "", "", "", "", "", "", "", "", "", "", overallDay.units, round2(overallDay.value)]);
+      sumAoa.push([platform, 0, 0, "(no ad spend in range)", "", "", "", "", "", "", "", "", "", "", "", overallRange.units, round2(overallRange.value)]);
     }
     if (blockRows > 1) {
       [0, 1, 2, 15, 16].forEach((c) => sumMerges.push({ s: { r: blockStart, c }, e: { r: blockStart + blockRows - 1, c } }));
@@ -934,7 +984,10 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     // Sorted by day ACOS descending (worst first) — same metric/direction as the Summary
     // sheet's "Worst ACOS product" shortlist, so a reader doesn't have to reconcile two
     // different orderings for the same numbers across sheets.
-    const rows = [...products.values()]
+    // Grouped by resolved product name first — a product's 4-5 SKU variants
+    // (per the product-master table) merge into one row with summed spend/
+    // orders, instead of printing once per SKU with the name repeated.
+    const rows = groupProductsByName([...products.values()])
       .filter((p) => spendTax(p.range) > 0 || p.range.units > 0)
       .sort((a, b) => computeAcos(b.day, b.price) - computeAcos(a.day, a.price));
     detailLabelCells.push({ addr: XLSX.utils.encode_cell({ r: detailAoa.length, c: 0 }), platform });
@@ -942,7 +995,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     detailAoa.push(Array(DETAIL_COLS).fill(""));
     const groupRow = detailAoa.length;
     detailHeaderRows.push(groupRow);
-    detailAoa.push(["SKU", "Product Name", "Price", dayLabel, "", "", "", "", rangeLabel, "", "", "", ""]);
+    detailAoa.push(["SKU(s)", "Product Name", "Price", dayLabel, "", "", "", "", rangeLabel, "", "", "", ""]);
     detailAoa.push(["", "", "", ...METRIC_NAMES, ...METRIC_NAMES]);
     detailMerges.push(
       { s: { r: groupRow, c: 0 }, e: { r: groupRow + 1, c: 0 } },
@@ -959,16 +1012,20 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   wsDetail["!merges"] = detailMerges;
   detailLabelCells.forEach(({ addr, platform }) => styleLabel(wsDetail, addr, PLATFORM_FILL[platform]));
   detailHeaderRows.forEach((row) => { styleHeader(wsDetail, row, DETAIL_COLS, "312E81"); styleHeader(wsDetail, row + 1, DETAIL_COLS, "312E81"); });
-  wsDetail["!cols"] = [{ wch: 20 }, { wch: 60 }, { wch: 10 }, ...Array.from({ length: DETAIL_COLS - 3 }, () => ({ wch: 13 }))];
+  wsDetail["!cols"] = [{ wch: 30 }, { wch: 60 }, { wch: 10 }, ...Array.from({ length: DETAIL_COLS - 3 }, () => ({ wch: 13 }))];
   applyNumberFormats(wsDetail, 0, detailAoa.length, {
     2: CURRENCY_FMT, 3: CURRENCY_FMT, 4: CURRENCY_FMT, 6: CURRENCY_FMT, 7: PERCENT_FMT,
     8: CURRENCY_FMT, 9: CURRENCY_FMT, 11: CURRENCY_FMT, 12: PERCENT_FMT,
   });
   // Long titles (a SKU with no product-master entry falls back to the raw
-  // marketing title) need to wrap within the column instead of overflowing.
+  // marketing title) need to wrap within the column instead of overflowing —
+  // same for the SKU(s) column now that a merged product row can list several
+  // comma-joined SKU variants.
   for (let r = 0; r < detailAoa.length; r++) {
-    const addr = XLSX.utils.encode_cell({ r, c: 1 });
-    if (wsDetail[addr] && wsDetail[addr].v) wsDetail[addr].s = { ...wsDetail[addr].s, alignment: { wrapText: true, vertical: "top" } };
+    [0, 1].forEach((c) => {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      if (wsDetail[addr] && wsDetail[addr].v) wsDetail[addr].s = { ...wsDetail[addr].s, alignment: { wrapText: true, vertical: "top" } };
+    });
   }
   XLSX.utils.book_append_sheet(wb, wsDetail, "Ad spend report");
 
@@ -1036,7 +1093,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // order data already computed above rather than left blank.
   const bArmAoa: (string | number)[][] = [["Product", "Quantity", "Price", "Sales"]];
   platforms.forEach(({ products }) => {
-    [...products.values()]
+    groupProductsByName([...products.values()])
       .filter((p) => p.range.units > 0)
       .sort((a, b) => b.range.units * b.price - a.range.units * a.price)
       .forEach((p) => bArmAoa.push([p.name, p.range.units, p.price, round2(p.price * p.range.units)]));

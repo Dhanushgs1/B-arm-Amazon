@@ -654,7 +654,7 @@ export interface UploadResult {
 // just order+SKU always differs in at least one other field (quantity,
 // order-item-id, ...) and is left untouched.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function dedupeExactRows(rows: any[]): any[] {
+export function dedupeExactRows(rows: any[]): any[] {
   const seen = new Set<string>();
   const out: typeof rows = [];
   for (const r of rows) {
