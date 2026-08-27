@@ -279,23 +279,25 @@ async function fetchAmazonProducts(
   const overallRange = emptySales();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows.forEach((r: any) => {
-    if (!r.sku || isCancelledOrder(r) || !isStandardOrderId(r.amazon_order_id)) return;
     const qty = num(r.quantity);
-    // item_price in Amazon's Orders export is the LINE TOTAL (already quantity-multiplied) — a
-    // qty-2 line of a ₹399 product carries item_price 798, not 399. Multiplying by qty again
-    // inflated every multi-unit order (same issue documented/fixed in weeklySalesExport.ts).
-    // Falls back to qty x listing price for the rare row whose item_price came through as 0
-    // despite real units, so Overall sales Value isn't silently dropped for that order.
-    const linePrice = num(r.item_price);
-    const value = linePrice > 0 ? linePrice : qty * (priceBySku.get(r.sku) || 0);
-    ensureUnits(r.sku).units += qty;
+    // Overall sales QTS/Value: a straight SUM of the Order report's own
+    // Quantity/item-price columns for the window — unrelated to ad data, and
+    // with no status filter (matches the seller's own manual workbook, which
+    // SUMs every order status as-is rather than excluding cancelled/pending
+    // ones — those net out on their own once the order settles).
     overallRange.units += qty;
-    overallRange.value += value;
+    overallRange.value += num(r.item_price);
     const ts = Date.parse(String(r.purchase_datetime || ""));
     if (Number.isFinite(ts) && ts >= dayGte && ts < dayLt) {
       overallDay.units += qty;
-      overallDay.value += value;
+      overallDay.value += num(r.item_price);
     }
+
+    // Per-SKU Orders (feeds the Ad spend report's per-product Orders/CPC/ACOS
+    // columns) stays scoped to real, non-cancelled sales — ad-attribution
+    // math, a different question from the Overall sales total above.
+    if (!r.sku || isCancelledOrder(r) || !isStandardOrderId(r.amazon_order_id)) return;
+    ensureUnits(r.sku).units += qty;
   });
 
   const skus = new Set<string>([...spendBySku.keys(), ...unitsBySku.keys(), ...priceBySku.keys()].filter(Boolean));
@@ -417,40 +419,31 @@ async function fetchFlipkartProducts(
   const overallDay = emptySales();
   const overallRange = emptySales();
   orderRows.forEach((r) => {
+    const qty = num(r.quantity);
+    // Overall sales QTS/Value: a straight SUM of the Order report's own
+    // Quantity/Invoice Amount columns for the window — unrelated to ad data
+    // or the separate Earn More report, and with no status filter (matches
+    // the seller's own manual workbook, which SUMs every order status as-is).
+    // Invoice Amount isn't a structured column on barm_flipkart_order_report
+    // (see FlipkartOrderRow in flipkartReportUpload.ts) — every original
+    // column from the upload survives in this row's own `raw` JSONB, so it's
+    // read from there instead.
+    const invoiceAmount = num((r as { raw?: Record<string, unknown> }).raw?.["Invoice Amount"]);
+    overallRange.units += qty;
+    overallRange.value += invoiceAmount;
+    if (r.order_date === endDate) {
+      overallDay.units += qty;
+      overallDay.value += invoiceAmount;
+    }
+
+    // Per-SKU Orders (feeds the Ad spend report's per-product Orders/CPC/ACOS
+    // columns) stays scoped to real, non-cancelled sales — a different
+    // question from the Overall sales total above.
     if (!r.sku) return;
     const status = String(r.order_item_status || "").toUpperCase();
     if (status.startsWith("CANCEL")) return;
-    const qty = num(r.quantity);
     ensureUnits(r.sku).units += qty;
-    overallRange.units += qty;
-    if (r.order_date === endDate) overallDay.units += qty;
   });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  earnRows.forEach((r: any) => {
-    if (!r.sku_id) return;
-    const amount = num(r.final_sale_amount);
-    overallRange.value += amount;
-    if (r.order_date === endDate) overallDay.value += amount;
-  });
-  // "Earn More" (earnRows) isn't always uploaded for every window — when it's missing (or
-  // doesn't cover this range), overallRange/Day.value above silently stayed 0 while units
-  // (sourced from the separate Order report) kept accumulating normally, so the Summary
-  // sheet's "Overall sales" showed a real QTS against a ₹0.00 Value. Fall back to units x an
-  // effective per-SKU price (listing price, else the window's own realised ASP from earnRows)
-  // so Value tracks QTS instead of silently reading 0.
-  if (overallRange.value === 0 && overallRange.units > 0) {
-    orderRows.forEach((r) => {
-      if (!r.sku) return;
-      const status = String(r.order_item_status || "").toUpperCase();
-      if (status.startsWith("CANCEL")) return;
-      const qty = num(r.quantity);
-      const asp = aspAcc.get(r.sku);
-      const price = priceBySku.get(r.sku) || (asp && asp.units > 0 ? asp.amount / asp.units : 0);
-      const value = qty * price;
-      overallRange.value += value;
-      if (r.order_date === endDate) overallDay.value += value;
-    });
-  }
 
   const skus = new Set<string>([...spendBySku.keys(), ...unitsBySku.keys(), ...priceBySku.keys()].filter(Boolean));
   const products = new Map<string, ProductRow>();
@@ -564,16 +557,24 @@ async function fetchMeeshoProducts(
   const overallRange = emptySales();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows.forEach((r: any) => {
-    if (!r.sku || isCancelled(r.order_status)) return;
     const qty = num(r.quantity);
     const value = priceOf(r) * qty;
-    ensureUnits(r.sku).units += qty;
+    // Overall sales QTS/Value: a straight SUM of the Order report's own
+    // Quantity x price for the window — unrelated to ad data, and with no
+    // status filter (matches the seller's own manual workbook — see the
+    // identical Amazon/Flipkart comment above).
     overallRange.units += qty;
     overallRange.value += value;
     if (r.order_date === endDate) {
       overallDay.units += qty;
       overallDay.value += value;
     }
+
+    // Per-SKU Orders (feeds the Ad spend report's per-product columns) stays
+    // scoped to real, non-cancelled sales — a different question from the
+    // Overall sales total above.
+    if (!r.sku || isCancelled(r.order_status)) return;
+    ensureUnits(r.sku).units += qty;
   });
 
   const skus = new Set<string>([...spendBySku.keys(), ...unitsBySku.keys(), ...priceBySku.keys()].filter(Boolean));
