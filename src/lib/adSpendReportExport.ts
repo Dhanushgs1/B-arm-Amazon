@@ -70,6 +70,16 @@ function dotDate(iso: string): string {
   const [y, m, d] = iso.split("-");
   return `${d}-${m}-${y}`;
 }
+// This report's "single reporting day" (endDate) is always yesterday's data — Amazon's own
+// exports lag a day, same as every other daily report in this codebase. But the FILE is
+// generated and filed today, so naming it after endDate mislabels a file someone opens
+// tomorrow expecting "today's daily file" (e.g. a report run on the 26th about the 25th's
+// spend needs to be named 2026-08-26, not 2026-08-25 — the data day and the filing day are
+// deliberately different). IST, not the browser/server's local zone, since B-ARM's ad-spend
+// day boundary is IST throughout this file (see istDayWindowUtc).
+function todayIstDateStr(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+}
 function num(v: unknown): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
@@ -1163,7 +1173,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   if (wsNotes["A1"]) wsNotes["A1"].s = { font: { bold: true, sz: 13 } };
   XLSX.utils.book_append_sheet(wb, wsNotes, "Notes");
 
-  const filename = `Ad_Spend_Report_${endDate}.xlsx`;
+  const filename = `Ad_Spend_Report_${todayIstDateStr()}.xlsx`;
   return {
     wb,
     filename,
