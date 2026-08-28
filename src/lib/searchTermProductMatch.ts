@@ -154,12 +154,13 @@ export interface SearchTermClassification {
   mismatchedProduct: CatalogEntry | null;
 }
 
-// The one rule: a term is negative when it has zero orders AND its words point at a different
-// product (different ASIN) than the one this campaign actually advertises. A term for the
-// campaign's own product with no orders yet is fine — it just hasn't converted; only a
-// genuinely wrong-product click, unpaid for by a sale, is worth negating. Replaces both the
-// old "10+ clicks, no orders" rule and the "spend ≥ 3x price" rule — a term for the right
-// product is never negative here no matter how much it spent or how many orders it's missing.
+// The rule: a term is negative whenever it has zero orders — full stop, regardless of spend,
+// clicks, or whether it's for the campaign's own product. When it's ALSO for a different
+// product (different ASIN) than what this campaign advertises, that's called out as a second,
+// more specific reason alongside "No orders" — worth knowing even though it isn't what decides
+// negative on its own. Replaces the old "10+ clicks, no orders", "spend >= 3x price", and
+// "orders===0 AND mismatch" rules, all of which left plenty of zero-order/zero-sale rows sitting
+// as Positive — confirmed wrong against a real export (211 zero-order rows still Positive).
 export function classifySearchTerm(
   term: { searchTerm: string; orders?: number },
   campaignProductNames: string[],
@@ -168,18 +169,21 @@ export function classifySearchTerm(
 ): SearchTermClassification {
   const reasons: string[] = [];
   const orders = term.orders || 0;
+  const negative = orders === 0;
 
-  const mismatchedProduct = orders === 0
-    ? findMismatchedProduct(term.searchTerm, campaignProductNames, liveIndex, currentCampaignName)
-    : null;
-  if (mismatchedProduct) {
-    const asinPart = mismatchedProduct.asin ? `, ASIN ${mismatchedProduct.asin}` : "";
-    reasons.push(
-      mismatchedProduct.campaignName
-        ? `Different product — matches campaign "${mismatchedProduct.campaignName}"${asinPart}`
-        : `Different product — looks like "${mismatchedProduct.name}"${asinPart}`
-    );
+  let mismatchedProduct: CatalogEntry | null = null;
+  if (negative) {
+    reasons.push("No orders");
+    mismatchedProduct = findMismatchedProduct(term.searchTerm, campaignProductNames, liveIndex, currentCampaignName);
+    if (mismatchedProduct) {
+      const asinPart = mismatchedProduct.asin ? `, ASIN ${mismatchedProduct.asin}` : "";
+      reasons.push(
+        mismatchedProduct.campaignName
+          ? `Different product — matches campaign "${mismatchedProduct.campaignName}"${asinPart}`
+          : `Different product — looks like "${mismatchedProduct.name}"${asinPart}`
+      );
+    }
   }
 
-  return { negative: reasons.length > 0, reasons, mismatchedProduct };
+  return { negative, reasons, mismatchedProduct };
 }
