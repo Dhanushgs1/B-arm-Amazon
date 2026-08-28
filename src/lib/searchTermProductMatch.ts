@@ -148,32 +148,53 @@ export function findMismatchedProduct(
   return bestMatch(termTokens, STATIC_INDEX, undefined, 1);
 }
 
+// Standard modern Amazon ASIN shape: 10 characters, starting "B0". Customers sometimes search
+// by pasting/typing an exact ASIN rather than words — when that ASIN isn't one of this
+// campaign's own products, it's unambiguous proof the customer was looking for a specific
+// DIFFERENT product, not a fuzzy word-overlap guess. Real example caught in testing: "b07jnym68y"
+// and "b0f9nyrv4b" each converted (orders > 0) under someone else's product search, and were
+// staying Positive under the orders-only rule since they technically sold — but the search
+// itself was never for this campaign's product, so the click was still a mismatch, sale or not.
+const ASIN_PATTERN = /^b0[a-z0-9]{8}$/i;
+
 export interface SearchTermClassification {
   negative: boolean;
   reasons: string[];
   mismatchedProduct: CatalogEntry | null;
 }
 
-// The rule: a term is negative whenever it has zero orders — full stop, regardless of spend,
-// clicks, or whether it's for the campaign's own product. When it's ALSO for a different
-// product (different ASIN) than what this campaign advertises, that's called out as a second,
-// more specific reason alongside "No orders" — worth knowing even though it isn't what decides
-// negative on its own. Replaces the old "10+ clicks, no orders", "spend >= 3x price", and
-// "orders===0 AND mismatch" rules, all of which left plenty of zero-order/zero-sale rows sitting
-// as Positive — confirmed wrong against a real export (211 zero-order rows still Positive).
+// The rule: a term is negative whenever it has zero orders — full stop, regardless of spend or
+// clicks — OR when the term itself is a literal ASIN belonging to a different product than this
+// campaign's own (see ASIN_PATTERN above; that one overrides even a real order, since the exact
+// wrong-product search means the click was never relevant to begin with). When a term is
+// negative and its words point at a different product too, that's called out as a second, more
+// specific reason alongside "No orders" — worth knowing even where it isn't what decided
+// negative. Replaces the old "10+ clicks, no orders", "spend >= 3x price", and "orders===0 AND
+// mismatch" rules, all of which left plenty of zero-order/zero-sale rows sitting as Positive —
+// confirmed wrong against a real export (211 zero-order rows still Positive).
 export function classifySearchTerm(
   term: { searchTerm: string; orders?: number },
   campaignProductNames: string[],
   liveIndex?: Map<string, CatalogEntry[]> | null,
-  currentCampaignName?: string
+  currentCampaignName?: string,
+  // This campaign's own ASIN(s) — a literal-ASIN search term is only a mismatch when it's NOT
+  // one of these (e.g. a customer legitimately searching the exact ASIN they already want).
+  campaignAsins?: string[]
 ): SearchTermClassification {
   const reasons: string[] = [];
   const orders = term.orders || 0;
-  const negative = orders === 0;
+  const rawTerm = term.searchTerm.trim();
+
+  const isOwnAsin = (campaignAsins || []).some((a) => a.toLowerCase() === rawTerm.toLowerCase());
+  const isDifferentAsinSearch = ASIN_PATTERN.test(rawTerm) && !isOwnAsin;
+
+  const negative = orders === 0 || isDifferentAsinSearch;
 
   let mismatchedProduct: CatalogEntry | null = null;
   if (negative) {
-    reasons.push("No orders");
+    if (orders === 0) reasons.push("No orders");
+    if (isDifferentAsinSearch) reasons.push(`Search term is a different product's ASIN (${rawTerm.toUpperCase()})`);
+
     mismatchedProduct = findMismatchedProduct(term.searchTerm, campaignProductNames, liveIndex, currentCampaignName);
     if (mismatchedProduct) {
       const asinPart = mismatchedProduct.asin ? `, ASIN ${mismatchedProduct.asin}` : "";

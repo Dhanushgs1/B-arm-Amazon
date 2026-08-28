@@ -144,6 +144,9 @@ export function CampaignDetailDrawer() {
   const campaignProductNames = Array.from(
     new Set(filteredProducts.map((p: any) => p.adProductName).filter(Boolean))
   ) as string[];
+  const campaignAsins = Array.from(
+    new Set(filteredProducts.map((p: any) => p.adAsin).filter(Boolean))
+  ) as string[];
 
   // Account-wide advertised products (every campaign, not just this one) — lets the Search
   // Terms tab tell a search term apart as "belongs to campaign X" instead of a generic "looks
@@ -666,7 +669,7 @@ Provide analysis in 4 clear sections using bullet points:
               {activeTab === "searchterms" && (() => {
                 const classifiedTerms = getSortedData(filteredSearchTerms).map((s: any) => ({
                   ...s,
-                  _classification: classifySearchTerm(s, campaignProductNames, liveProductIndex, selectedCampaignName || undefined),
+                  _classification: classifySearchTerm(s, campaignProductNames, liveProductIndex, selectedCampaignName || undefined, campaignAsins),
                 }));
                 const negativeCount = classifiedTerms.filter((s: any) => s._classification.negative).length;
 
