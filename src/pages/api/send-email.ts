@@ -810,12 +810,27 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
   }
 
   if (type === "historicalReport") {
-    // Kept deliberately simple (unlike weeklyReport/adSpendDaily's rendered tables) — the
-    // attached workbook already carries the full per-campaign/SKU breakdown across both
-    // windows, this just confirms the send landed and gives the headline counts.
-    // data: { endDate, win30Start, win7Start, skuCount, pairCount, unmappedCampaignSpend, currency }
+    // The attached workbook still carries the full per-campaign/SKU breakdown across both
+    // windows — this body adds just enough to be worth opening before the attachment: total
+    // spend at both grains, and the worst-ACOS SKUs (the one thing worth reading immediately).
+    // data: { endDate, win30Start, win7Start, skuCount, pairCount, unmappedCampaignSpend,
+    //         totalSpend30, totalSpend7, topWorstAcos: [{sku,name,spendTax,acos}], currency }
     const currency = data.currency === "INR" ? "₹" : "$";
     const money = (v: number) => currency + new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(v || 0));
+    const acosColor = (v: number) => ((v || 0) > 0.5 ? "#dc2626" : (v || 0) > 0.25 ? "#d97706" : "#059669");
+    const clip = (s: string, len = 55) => ((s || "").length > len ? (s || "").slice(0, len) + "…" : s || "");
+    const topWorstAcos: any[] = data.topWorstAcos || [];
+    const acosRows = topWorstAcos.map((r, i) => `
+      <tr>
+        <td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12px;font-weight:700;color:#111;">
+          <span style="color:#9ca3af;font-weight:800;font-size:11px;">${i + 1}.</span> ${clip(r.name)}<br>
+          <span style="font-weight:600;color:#9ca3af;font-size:10px;">${r.sku || ""}</span>
+        </td>
+        <td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12px;font-weight:700;color:#dc2626;text-align:right;">${money(r.spendTax)}</td>
+        <td style="padding:9px 10px;border-top:1px solid #f5f5f5;text-align:right;">
+          <strong style="color:${acosColor(r.acos)};">${Math.round((r.acos || 0) * 100)}%</strong>
+        </td>
+      </tr>`).join("");
     return wrap(`
       <table width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr><td style="padding-bottom:16px;">
@@ -826,6 +841,20 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
         </td></tr>
         <tr><td>
           <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+              <td width="48%" style="padding:4px;">
+                <table width="100%" cellpadding="16" cellspacing="0" border="0" style="background:#fef2f2;border-radius:12px;">
+                  <tr><td><p style="margin:0;color:#6b7280;font-size:11px;font-weight:800;text-transform:uppercase;">Ad Spend (30d)</p><p style="margin:6px 0 0;color:#dc2626;font-size:24px;font-weight:900;">${money(data.totalSpend30)}</p></td></tr>
+                </table>
+              </td>
+              <td width="4%"></td>
+              <td width="48%" style="padding:4px;">
+                <table width="100%" cellpadding="16" cellspacing="0" border="0" style="background:#fef2f2;border-radius:12px;">
+                  <tr><td><p style="margin:0;color:#6b7280;font-size:11px;font-weight:800;text-transform:uppercase;">Ad Spend (7d)</p><p style="margin:6px 0 0;color:#dc2626;font-size:24px;font-weight:900;">${money(data.totalSpend7)}</p></td></tr>
+                </table>
+              </td>
+            </tr>
+            <tr><td colspan="3" style="height:8px;"></td></tr>
             <tr>
               <td width="48%" style="padding:4px;">
                 <table width="100%" cellpadding="16" cellspacing="0" border="0" style="background:#f5f3ff;border-radius:12px;">
@@ -847,6 +876,18 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
             <tr><td style="padding:12px 14px;">
               <p style="margin:0;color:#92400e;font-size:12.5px;font-weight:700;">&#9888; ${money(data.unmappedCampaignSpend)} of ad spend couldn't be mapped to a campaign — see the Notes sheet.</p>
             </td></tr>
+          </table>
+        </td></tr>` : ""}
+        ${acosRows ? `
+        <tr><td style="padding-top:22px;">
+          <h3 style="margin:0 0 8px;font-size:14px;font-weight:800;color:#111;">&#128201; Top 5 Worst ACOS (30-day)</h3>
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #f0f0f0;border-radius:10px;overflow:hidden;">
+            <thead><tr style="background:#f9fafb;">
+              <th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">Product</th>
+              <th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">Spend (30d)</th>
+              <th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">ACOS</th>
+            </tr></thead>
+            <tbody>${acosRows}</tbody>
           </table>
         </td></tr>` : ""}
         <tr><td>
@@ -1059,17 +1100,18 @@ const SUBJECTS: Record<string, string> = {
   campaignPause: "⏸️ Marketplace360 - Campaign Paused",
 };
 
-// Next.js Pages API routes default to a 1mb body limit — comfortably under a
-// base64-encoded Ad Spend / Historical Analysis Report workbook (the raw .xlsx
-// alone runs 2-3MB+ once the account has a few weeks of uploaded data, and
-// base64 inflates that by another ~33%). Without raising this, every send with
-// an attachment above ~750KB failed with a 413 before this route's own handler
-// ever ran — including the Reports page's manual "Send" button, not just the
-// new automated crons.
+// Next.js Pages API routes default to a 1mb body limit — nowhere near enough for
+// a base64-encoded workbook attachment. The Historical Analysis Report alone runs
+// ~20MB raw / ~28MB base64 once the account has 30+ days of uploaded order/return/
+// ad-spend history (Ad Spend Report is smaller but still multi-MB); base64 inflates
+// the raw file by ~33% on top of that. Without raising this, every send with an
+// attachment above the limit failed with a silent 413 before this route's own
+// handler ever ran — including the Reports page's manual "Send" button, not just
+// the automated crons. 50mb leaves headroom as the uploaded history keeps growing.
 export const config = {
   api: {
     bodyParser: {
-      sizeLimit: "20mb",
+      sizeLimit: "50mb",
     },
   },
 };

@@ -11,7 +11,7 @@ import { buildWeeklySalesWorkbookFromHistorical } from "@/lib/weeklySalesExport"
 import { fetchAllRows } from "@/lib/historicalAnalysisReportExport";
 import { istDayWindowUtc, isStandardOrderId } from "@/lib/amazonReportShared";
 import { categorizeTitle, resolveProductName } from "@/lib/categoryMap";
-import { internalFetch } from "@/lib/internalFetch";
+import { internalFetch, internalOrigin } from "@/lib/internalFetch";
 import * as XLSX from "xlsx-js-style";
 
 const SELLERMATE_BASE_URL = "https://api.sellermate.ai/public/v1/tools";
@@ -109,11 +109,34 @@ async function returnsCount(apiKey: string, base: any, start: string, end: strin
   } catch { return 0; }
 }
 
+// Same fixed distribution list as send-ad-spend-email.ts / send-historical-email.ts — used only
+// when the caller doesn't pass `to` (the Reports page's own manual "Send" button, which — like
+// those two — has no per-account Settings row to read a recipient from). The cron and the Settings
+// page's "Send Weekly Report Now" button always pass an explicit `to`/`cc` (Settings' notifEmail/
+// ccEmail), so this fallback never overrides either of those.
+const DEFAULT_TO = "kaviyapriyabarm@gmail.com";
+const DEFAULT_CC = [
+  "jayaprakashbarm@gmail.com",
+  "dangibbs@b-arm.com",
+  "nivetha@b-arm.com",
+  "prinesh@b-arm.com",
+  "akshaya.v@b-arm.com",
+  "ceo@barmenterprises.com",
+  "sriram@b-arm.com",
+].join(",");
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const { slot = "B", amazon_account_id, workspace_id, to, cc, currency = "INR", endDate, send = true, accountName = "B-ARM" } = req.body || {};
+  const { slot = "B", amazon_account_id, workspace_id, to: toBody, cc: ccBody, currency = "INR", endDate, send = true, accountName = "B-ARM" } = req.body || {};
   if (!amazon_account_id || !workspace_id) return res.status(400).json({ error: "amazon_account_id and workspace_id are required" });
+  // Fallback applies only when the caller omits `to` entirely (the Reports page's manual "Send",
+  // the only caller with no per-account recipient to pass). The Settings page and the cron always
+  // pass an explicit `to` (Settings' notifEmail) but send `cc: ccEmail || undefined` when the
+  // account has no CC configured — gating the whole fallback on `to` (not `cc` individually) keeps
+  // that intentional "no CC" from being overwritten with DEFAULT_CC.
+  const to = toBody !== undefined ? toBody : DEFAULT_TO;
+  const cc = toBody !== undefined ? ccBody : (ccBody !== undefined ? ccBody : DEFAULT_CC);
   const apiKey = resolveSellerMateKey(slot === "B" ? "B" : "A");
   if (!apiKey) return res.status(500).json({ error: `Missing SellerMate API key for slot ${slot}` });
 
@@ -222,9 +245,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     let emailResult: any = null;
     if (send && to) {
-      const proto = (req.headers["x-forwarded-proto"] as string) || "http";
-      const host = req.headers.host;
-      const r = await internalFetch(`${proto}://${host}/api/send-email`, {
+      const r = await internalFetch(`${internalOrigin(req)}/api/send-email`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: "weeklyReport", to, cc, data: emailData, attachments }),
       });

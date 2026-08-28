@@ -654,6 +654,19 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   }));
   skuRows.sort((a, b) => (b.wA.spendTax - a.wA.spendTax) || (b.wA.orderUnits - a.wA.orderUnits));
 
+  // Worst-ACOS-first preview for the email body (the workbook itself carries the full detail) —
+  // same reasoning as adSpendReportExport.ts's shortlist: a SKU that's barely spent anything can
+  // show a wildly misleading ACOS from sheer small-sample noise, so a real-spend floor comes first.
+  const ACOS_HIGHLIGHT_MIN_SPEND = 500;
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+  const topWorstAcos = [...skuRows]
+    .filter((r) => r.wA.spendTax > ACOS_HIGHLIGHT_MIN_SPEND)
+    .map((r) => ({ sku: r.sku, name: r.meta.name, spendTax: r2(r.wA.spendTax), acos: computeAcos(r.wA, r.meta.price) }))
+    .sort((a, b) => b.acos - a.acos)
+    .slice(0, 5);
+  const totalSpend30 = r2(skuRows.reduce((a, r) => a + r.wA.spendTax, 0));
+  const totalSpend7 = r2(skuRows.reduce((a, r) => a + r.wB.spendTax, 0));
+
   // Final is deliberately left unclamped (see buildWinCells below) because
   // that is what the seller's own workbook does — a return is dated by
   // request, not by its original order date, so it can legitimately belong to
@@ -1747,6 +1760,9 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     skuCount: skuRows.length,
     pairCount: rows.length,
     unmappedCampaignSpend: unmappedSpend30,
+    totalSpend30,
+    totalSpend7,
+    topWorstAcos,
   };
 }
 

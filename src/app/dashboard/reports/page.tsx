@@ -20,8 +20,12 @@ export default function ReportsPage() {
   const [uploadedRange, setUploadedRange] = useState<{ min: string | null; max: string | null }>({ min: null, max: null });
   const [histGenerating, setHistGenerating] = useState(false);
   const [histMsg, setHistMsg] = useState<string | null>(null);
+  const [histSending, setHistSending] = useState(false);
+  const [histSendMsg, setHistSendMsg] = useState<string | null>(null);
   const [weeklyGenerating, setWeeklyGenerating] = useState(false);
   const [weeklyMsg, setWeeklyMsg] = useState<string | null>(null);
+  const [weeklySending, setWeeklySending] = useState(false);
+  const [weeklySendMsg, setWeeklySendMsg] = useState<string | null>(null);
   const [adSpendGenerating, setAdSpendGenerating] = useState(false);
   const [adSpendMsg, setAdSpendMsg] = useState<string | null>(null);
   const [adSpendSending, setAdSpendSending] = useState(false);
@@ -56,6 +60,45 @@ export default function ReportsPage() {
     } catch (err) {
       setHistMsg("Failed: " + (err instanceof Error ? err.message : String(err)));
     } finally { setHistGenerating(false); }
+  };
+
+  const handleSendWeeklyEmail = async () => {
+    if (!account?.id || !account?.workspace_id) { alert("Account not loaded yet — try again in a moment."); return; }
+    setWeeklySending(true); setWeeklySendMsg(null);
+    try {
+      const r = await fetch("/api/weekly-report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          slot: keySlot, amazon_account_id: account.id, workspace_id: account.workspace_id,
+          endDate: endDate || undefined, accountName: account?.name, currency: account?.currency || "INR",
+        }),
+      });
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || "Send failed");
+      const ccCount = j.cc ? String(j.cc).split(",").filter(Boolean).length : 0;
+      setWeeklySendMsg(`Emailed weekly report to ${j.to || "the usual list"}${ccCount ? ` (cc ${ccCount})` : ""}.`);
+    } catch (err) {
+      setWeeklySendMsg("Failed: " + (err instanceof Error ? err.message : String(err)));
+    } finally { setWeeklySending(false); }
+  };
+
+  const handleSendHistoricalEmail = async () => {
+    if (!endDate) { alert("Pick a date at the top of the dashboard first."); return; }
+    setHistSending(true); setHistSendMsg(null);
+    try {
+      const r = await fetch("/api/send-historical-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ endDate, accountName: account?.name }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Send failed");
+      const ccCount = j.cc ? String(j.cc).split(",").filter(Boolean).length : 0;
+      setHistSendMsg(`Emailed ${j.filename} to ${j.to}${ccCount ? ` (cc ${ccCount})` : ""}.`);
+    } catch (err) {
+      setHistSendMsg("Failed: " + (err instanceof Error ? err.message : String(err)));
+    } finally { setHistSending(false); }
   };
 
   const handleGenerateAdSpend = async () => {
@@ -391,22 +434,41 @@ export default function ReportsPage() {
           the same report the Weekly Summary email attaches, sourced from the data uploaded above. Uses the date
           selected at the top of the dashboard ({endDate || "yesterday"}) as the end of &quot;this week&quot;.
         </p>
-        <button
-          onClick={handleWeeklyDownload}
-          disabled={weeklyGenerating}
-          className="px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold rounded-lg transition-colors flex items-center gap-2 shadow-md disabled:opacity-50"
-        >
-          {weeklyGenerating ? (
-            <>
-              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Generating…
-            </>
-          ) : (
-            <>
-              <Download size={14} /> Download Weekly Report
-            </>
-          )}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={handleWeeklyDownload}
+            disabled={weeklyGenerating}
+            className="px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold rounded-lg transition-colors flex items-center gap-2 shadow-md disabled:opacity-50"
+          >
+            {weeklyGenerating ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Generating…
+              </>
+            ) : (
+              <>
+                <Download size={14} /> Download Weekly Report
+              </>
+            )}
+          </button>
+          <button
+            onClick={handleSendWeeklyEmail}
+            disabled={weeklySending}
+            title="Emails the same workbook to the usual distribution list instead of downloading it"
+            className="px-4 py-2 bg-white dark:bg-white/10 border border-border hover:border-primary/50 text-foreground text-xs font-bold rounded-lg transition-colors flex items-center gap-2 shadow-sm disabled:opacity-50"
+          >
+            {weeklySending ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Sending…
+              </>
+            ) : (
+              <>
+                <Send size={14} /> Send
+              </>
+            )}
+          </button>
+        </div>
         {weeklyMsg && <p className="text-xs mt-3 font-semibold">{weeklyMsg}</p>}
+        {weeklySendMsg && <p className="text-xs mt-1 font-semibold">{weeklySendMsg}</p>}
       </div>
 
       <div className="glass rounded-2xl border border-border p-6 shadow-sm">
@@ -422,27 +484,46 @@ export default function ReportsPage() {
           trailing 7-day one, both ending on the date selected at the top of the dashboard (
           {endDate || "yesterday"}).
         </p>
-        <button
-          onClick={handleGenerateHistorical}
-          disabled={histGenerating || !endDate}
-          className="px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold rounded-lg transition-colors flex items-center gap-2 shadow-md disabled:opacity-50"
-        >
-          {histGenerating ? (
-            <>
-              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Generating…
-            </>
-          ) : (
-            <>
-              <Download size={14} /> Generate &amp; Download
-            </>
-          )}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={handleGenerateHistorical}
+            disabled={histGenerating || !endDate}
+            className="px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold rounded-lg transition-colors flex items-center gap-2 shadow-md disabled:opacity-50"
+          >
+            {histGenerating ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Generating…
+              </>
+            ) : (
+              <>
+                <Download size={14} /> Generate &amp; Download
+              </>
+            )}
+          </button>
+          <button
+            onClick={handleSendHistoricalEmail}
+            disabled={histSending || !endDate}
+            title="Emails the same workbook to the usual distribution list instead of downloading it"
+            className="px-4 py-2 bg-white dark:bg-white/10 border border-border hover:border-primary/50 text-foreground text-xs font-bold rounded-lg transition-colors flex items-center gap-2 shadow-sm disabled:opacity-50"
+          >
+            {histSending ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Sending…
+              </>
+            ) : (
+              <>
+                <Send size={14} /> Send
+              </>
+            )}
+          </button>
+        </div>
         {uploadedRange.min && uploadedRange.max && (
           <p className="text-[10px] text-muted-foreground mt-3">
             Uploaded data currently covers {uploadedRange.min} to {uploadedRange.max}.
           </p>
         )}
         {histMsg && <p className="text-xs mt-3 font-semibold">{histMsg}</p>}
+        {histSendMsg && <p className="text-xs mt-1 font-semibold">{histSendMsg}</p>}
       </div>
 
       <div className="glass rounded-2xl border border-border p-6 shadow-sm">

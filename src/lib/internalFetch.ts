@@ -10,6 +10,20 @@
 // in Project Settings -> Deployment Protection and exposed to all environments (including
 // production) as VERCEL_AUTOMATION_BYPASS_SECRET. Sending it as this header lets the request
 // through without disabling protection for real visitors.
+// `x-forwarded-proto` is absent on some inbound requests to these Pages API routes (seen in
+// practice for the cron-triggered and route-to-route calls that matter most here), so every
+// caller that used `req.headers["x-forwarded-proto"] || "http"` was silently building an
+// http:// URL against an https-only Vercel deployment. Vercel 308-redirects http -> https, and
+// that redirect drops the POST body in production, turning every internal report/email call
+// into a same-error-looking failure with no indication of why. There is no legitimate case
+// where a Vercel production deployment serves plain http, so infer the protocol from the host
+// instead of trusting the header: https everywhere except localhost dev.
+export function internalOrigin(req: { headers: { host?: string } }): string {
+  const host = req.headers.host || "";
+  const proto = /^(localhost|127\.0\.0\.1)(:|$)/.test(host) ? "http" : "https";
+  return `${proto}://${host}`;
+}
+
 export async function internalFetch(url: string, init: RequestInit = {}): Promise<Response> {
   const bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
   const headers = {

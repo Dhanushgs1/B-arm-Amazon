@@ -11,7 +11,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import * as XLSX from "xlsx-js-style";
 import { buildHistoricalAnalysisReportWorkbook } from "@/lib/historicalAnalysisReportExport";
-import { internalFetch } from "@/lib/internalFetch";
+import { internalFetch, internalOrigin } from "@/lib/internalFetch";
 
 const DEFAULT_TO = "kaviyapriyabarm@gmail.com";
 const DEFAULT_CC = [
@@ -60,9 +60,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const result = await buildHistoricalAnalysisReportWorkbook({ endDate, accountName });
     const buf = XLSX.write(result.wb, { type: "buffer", bookType: "xlsx" });
 
-    const proto = (req.headers["x-forwarded-proto"] as string) || "http";
-    const host = req.headers.host;
-    const emailRes = await internalFetch(`${proto}://${host}/api/send-email`, {
+    const emailRes = await internalFetch(`${internalOrigin(req)}/api/send-email`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -77,6 +75,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           skuCount: result.skuCount,
           pairCount: result.pairCount,
           unmappedCampaignSpend: result.unmappedCampaignSpend,
+          totalSpend30: result.totalSpend30,
+          totalSpend7: result.totalSpend7,
+          topWorstAcos: result.topWorstAcos,
         },
         attachments: [{ filename: result.filename, content: buf.toString("base64"), encoding: "base64" }],
       }),

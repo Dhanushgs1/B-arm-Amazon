@@ -15,7 +15,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { resolveSellerMateKey } from "@/lib/adAlerts";
 import { checkCampaignStateChanges } from "@/lib/campaignStateTracker";
-import { internalFetch } from "@/lib/internalFetch";
+import { internalFetch, internalOrigin } from "@/lib/internalFetch";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
@@ -33,9 +33,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let emailResult: any = null;
     if (result.transitions.length > 0 && to) {
-      const proto = (req.headers["x-forwarded-proto"] as string) || "http";
-      const host = req.headers.host;
-      const r = await internalFetch(`${proto}://${host}/api/send-email`, {
+      const r = await internalFetch(`${internalOrigin(req)}/api/send-email`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: "campaignPause", to, cc, data: { transitions: result.transitions } }),

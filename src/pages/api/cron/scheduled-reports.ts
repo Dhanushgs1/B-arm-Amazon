@@ -15,19 +15,13 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import nodemailer from "nodemailer";
 import { readEmailSettings } from "@/lib/emailSettingsStore";
-import { internalFetch } from "@/lib/internalFetch";
+import { internalFetch, internalOrigin } from "@/lib/internalFetch";
 
 const KEY_SLOTS = ["A", "B"] as const;
 
-function baseUrl(req: NextApiRequest) {
-  const proto = (req.headers["x-forwarded-proto"] as string) || "http";
-  const host = req.headers.host;
-  return `${proto}://${host}`;
-}
-
 async function callReportEndpoint(req: NextApiRequest, pathname: string, body: Record<string, any>, label: string) {
   try {
-    const r = await internalFetch(`${baseUrl(req)}${pathname}`, {
+    const r = await internalFetch(`${internalOrigin(req)}${pathname}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

@@ -13,7 +13,7 @@ import { KPICard } from "@/components/KPICard";
 import { PageHero } from "@/components/PageHero";
 import { QueryErrorState } from "@/components/QueryErrorState";
 import { AcosBadge, ACOS_LIMIT, acosRowClass } from "@/components/AcosBadge";
-import { Loader2, Megaphone, Bot, Rocket, AlertTriangle, TrendingDown, Trophy, Zap, Plus, X } from "lucide-react";
+import { Loader2, Megaphone, Bot, Rocket, AlertTriangle, TrendingDown, Trophy, Zap, Plus, X, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const cur = (val: number, currency?: string) => {
@@ -60,6 +60,110 @@ export default function CampaignsPage() {
   };
 
   const [aiBreakdown, setAiBreakdown] = useState<any>(null);
+
+  // Paused-campaign "why paused + reactivation estimate" AI insight. Lazily
+  // pulls a 90-day performance snapshot (the paused campaign's own current-period
+  // metrics are 0, so there's nothing to reason from without looking back further)
+  // the first time any paused row is asked for an insight, then reuses it for
+  // every other paused row clicked afterward instead of re-fetching per row.
+  const [pausedAiModal, setPausedAiModal] = useState<{ title: string; suggestions: string[] } | null>(null);
+  const [pausedInsightLoading, setPausedInsightLoading] = useState<string | null>(null);
+  const [history90, setHistory90] = useState<any[] | null>(null);
+
+  const fetchHistory90 = async (): Promise<any[]> => {
+    if (history90) return history90;
+    const end = endDate || new Date().toISOString().slice(0, 10);
+    const start = new Date(end);
+    start.setDate(start.getDate() - 90);
+    const res = await mcp("get_campaign_performance", {
+      amazon_account_id: account?.id,
+      workspace_id: account?.workspace_id,
+      start_date: start.toISOString().slice(0, 10),
+      end_date: end,
+      page_size: 2000,
+    }, keySlot);
+    const data = res.data || [];
+    setHistory90(data);
+    return data;
+  };
+
+  const handlePausedAiInsight = async (row: any) => {
+    setPausedInsightLoading(row.campaignId);
+    const sym = currency === "INR" ? "₹" : "$";
+    try {
+      const hist = await fetchHistory90();
+      const h = hist.find((p: any) => p.campaignId === row.campaignId);
+      const histSpend = Math.round(h?.spend || 0);
+      const histSales = Math.round(h?.sales || 0);
+      const histAcos = Math.round(h?.acos || 0);
+      const histRoas = h?.roas || 0;
+      const histOrders = h?.orders || 0;
+      const histClicks = h?.clicks || 0;
+
+      if (!histSpend) {
+        setPausedAiModal({
+          title: `${row.campaignName} — Paused`,
+          suggestions: [
+            "No spend recorded for this campaign in the last 90 days either — it's likely been paused a long time or never ran meaningfully. Reactivating it would be starting fresh, with no recent performance to estimate from.",
+          ],
+        });
+        return;
+      }
+
+      const weeks = 90 / 7;
+      const weeklySpend = Math.round(histSpend / weeks);
+      const weeklySales = Math.round(histSales / weeks);
+
+      let reason = "";
+      let estimate = "";
+      try {
+        const prompt =
+          `You are an Amazon Ads PPC analyst. A seller is deciding whether to reactivate a PAUSED campaign. ` +
+          `Here is its last known performance from the trailing 90 days before today, while it was still running:\n` +
+          `Campaign "${row.campaignName}": spend ${sym}${histSpend}, sales ${sym}${histSales}, ACOS ${histAcos}%, ROAS ${histRoas.toFixed(2)}x, ${histOrders} orders, ${histClicks} clicks over ~90 days (~${sym}${weeklySpend}/week spend, ~${sym}${weeklySales}/week sales run-rate).\n\n` +
+          `Return ONLY a JSON object, no markdown fences, of this exact shape:\n` +
+          `{"reason":"<1-2 sentences on the most likely reason this campaign was paused, inferred from the numbers above. Say 'likely' since the real reason isn't recorded anywhere.>",` +
+          `"estimate":"<1-2 sentences estimating weekly spend/sales if reactivated at the same level, based on the historical run-rate above. Hedge it as an estimate, not a guarantee.>"}`;
+        const r = await fetch("/api/gemini-insights", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt }),
+        });
+        if (r.ok) {
+          const j = await r.json();
+          if (j.text) {
+            const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(j.text as string);
+            const parsed = JSON.parse(fenced ? fenced[1] : j.text);
+            reason = parsed?.reason || "";
+            estimate = parsed?.estimate || "";
+          }
+        }
+      } catch {
+        // fall through to the rule-based lines below
+      }
+
+      if (!reason) {
+        reason =
+          histOrders === 0 && histSpend > 100
+            ? `Likely paused for wasted spend — ${sym}${histSpend} spent over ~90 days with zero orders.`
+            : histAcos >= 60
+            ? `Likely paused for high ACOS — ${histAcos}% is well above a healthy range and was eating into margin.`
+            : `Paused for a reason not recorded in the data — its last known numbers (${histAcos}% ACOS, ${histOrders} orders) don't show an obvious red flag.`;
+      }
+      if (!estimate) {
+        estimate = `Based on its ~90-day run-rate, reactivating at the same spend could bring back roughly ${sym}${weeklySpend}/week in spend and ${sym}${weeklySales}/week in sales — a rough estimate, not a guarantee, since conditions may have changed since it ran.`;
+      }
+
+      setPausedAiModal({ title: `${row.campaignName} — Reactivation Insight`, suggestions: [reason, estimate] });
+    } catch (err) {
+      setPausedAiModal({
+        title: `${row.campaignName} — Reactivation Insight`,
+        suggestions: [`Couldn't generate an insight: ${err instanceof Error ? err.message : String(err)}`],
+      });
+    } finally {
+      setPausedInsightLoading(null);
+    }
+  };
 
   const handleOpenBreakdown = (row: any) => {
     const name = row.campaignName;
@@ -251,19 +355,38 @@ export default function CampaignsPage() {
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className={cn("w-1.5 h-1.5 rounded-full flex-shrink-0", row.state?.toUpperCase() === "ENABLED" ? "bg-emerald-500" : "bg-amber-500")} />
                 <span className="text-[10px] font-bold text-muted-foreground uppercase">{row.state?.toLowerCase()}</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleOpenBreakdown(row);
-                  }}
-                  className={cn(
-                    "text-[10px] font-extrabold px-1.5 py-px rounded-full text-white flex-shrink-0 transition-all active:scale-95 hover:brightness-110 focus:outline-none cursor-pointer",
-                    healthColor(score)
-                  )}
-                  title="Click to view AI score breakdown"
-                >
-                  AI {score}
-                </button>
+                {row.state?.toUpperCase() === "PAUSED" ? (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handlePausedAiInsight(row);
+                    }}
+                    disabled={pausedInsightLoading === row.campaignId}
+                    className="text-[10px] font-extrabold pl-1.5 pr-2 py-px rounded-full text-white flex-shrink-0 transition-all active:scale-95 hover:brightness-110 focus:outline-none cursor-pointer bg-indigo-500 flex items-center gap-1 disabled:opacity-60"
+                    title="AI: why this was likely paused + reactivation estimate"
+                  >
+                    {pausedInsightLoading === row.campaignId ? (
+                      <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                    ) : (
+                      <Sparkles className="w-2.5 h-2.5" />
+                    )}
+                    AI Insight
+                  </button>
+                ) : (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleOpenBreakdown(row);
+                    }}
+                    className={cn(
+                      "text-[10px] font-extrabold px-1.5 py-px rounded-full text-white flex-shrink-0 transition-all active:scale-95 hover:brightness-110 focus:outline-none cursor-pointer",
+                      healthColor(score)
+                    )}
+                    title="Click to view AI score breakdown"
+                  >
+                    AI {score}
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -392,6 +515,13 @@ export default function CampaignsPage() {
               `There is ${cur(wastedSpend, currency)} in wasted spend. Consider adding negative exact matches for non-converting search terms.`,
               `Your AI Optimization Score is ${avgAiScore}/100. Lowering bids on bleeding ad groups will improve this instantly.`
             ]}
+          />
+
+          <AiSuggestionModal
+            isOpen={!!pausedAiModal}
+            onClose={() => setPausedAiModal(null)}
+            title={pausedAiModal?.title || ""}
+            suggestions={pausedAiModal?.suggestions || []}
           />
 
           {/* AI Campaign Intelligence */}
