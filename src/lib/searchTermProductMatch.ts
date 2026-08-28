@@ -119,6 +119,17 @@ function bestMatch(
   return best?.entry ?? null;
 }
 
+// A term that shares a distinctive word with the campaign's OWN advertised product(s) is a
+// relevant, on-target search — e.g. "smart watch" under a campaign that sells a Smart Watch —
+// regardless of what else it might also overlap with elsewhere in the catalogue.
+export function matchesOwnProduct(searchTerm: string, campaignProductNames: string[]): boolean {
+  const termTokens = tokenize(searchTerm);
+  if (termTokens.length === 0) return false;
+  const ownTokens = new Set<string>();
+  for (const p of campaignProductNames) for (const t of tokenize(p)) ownTokens.add(t);
+  return termTokens.some((t) => ownTokens.has(t));
+}
+
 // Returns the product (and, when known live, the campaign that actually advertises it) a search
 // term's words most strongly point at, when that product is clearly NOT one the campaign itself
 // advertises. Null when the term shares no distinctive words with anything, or when it does
@@ -134,12 +145,9 @@ export function findMismatchedProduct(
   const termTokens = Array.from(new Set(tokenize(searchTerm)));
   if (termTokens.length === 0) return null;
 
-  const ownTokens = new Set<string>();
-  for (const p of campaignProductNames) for (const t of tokenize(p)) ownTokens.add(t);
-
   // The term itself uses one of the campaign's own product words — not a mismatch, regardless
   // of what else it might overlap with elsewhere.
-  if (termTokens.some((t) => ownTokens.has(t))) return null;
+  if (matchesOwnProduct(searchTerm, campaignProductNames)) return null;
 
   if (liveIndex) {
     const liveHit = bestMatch(termTokens, liveIndex, currentCampaignName, 2);
@@ -163,15 +171,21 @@ export interface SearchTermClassification {
   mismatchedProduct: CatalogEntry | null;
 }
 
-// The rule: a term is negative whenever it has zero orders — full stop, regardless of spend or
-// clicks — OR when the term itself is a literal ASIN belonging to a different product than this
-// campaign's own (see ASIN_PATTERN above; that one overrides even a real order, since the exact
-// wrong-product search means the click was never relevant to begin with). When a term is
-// negative and its words point at a different product too, that's called out as a second, more
-// specific reason alongside "No orders" — worth knowing even where it isn't what decided
-// negative. Replaces the old "10+ clicks, no orders", "spend >= 3x price", and "orders===0 AND
-// mismatch" rules, all of which left plenty of zero-order/zero-sale rows sitting as Positive —
-// confirmed wrong against a real export (211 zero-order rows still Positive).
+// The rule: a term is negative whenever it has zero orders — regardless of spend or clicks —
+// UNLESS its own words point at the campaign's own advertised product (matchesOwnProduct above):
+// a search for "smart watch" under a campaign selling a Smart Watch is relevant traffic that
+// simply hasn't converted yet, not a wrong-product click, no matter how many zero-order times it
+// shows up. A literal ASIN belonging to a DIFFERENT product than this campaign's own is negative
+// regardless of that exemption (see ASIN_PATTERN above; overrides even a real order, since the
+// exact wrong-product search means the click was never relevant to begin with — e.g. "ball"
+// pulling in some unrelated listing's ASIN). When a term is negative and its words point at a
+// different product too, that's called out as a second, more specific reason alongside "No
+// orders" — worth knowing even where it isn't what decided negative. Replaces the old "10+
+// clicks, no orders", "spend >= 3x price", and "orders===0 AND mismatch" rules, all of which left
+// plenty of zero-order/zero-sale rows sitting as Positive — confirmed wrong against a real export
+// (211 zero-order rows still Positive). The own-product exemption here is narrower than that old
+// mismatch-gate: it only requires positive evidence the term IS about the right product, not that
+// mismatch detection could prove it's about a wrong one — so it doesn't reintroduce the same gap.
 export function classifySearchTerm(
   term: { searchTerm: string; orders?: number },
   campaignProductNames: string[],
@@ -187,8 +201,9 @@ export function classifySearchTerm(
 
   const isOwnAsin = (campaignAsins || []).some((a) => a.toLowerCase() === rawTerm.toLowerCase());
   const isDifferentAsinSearch = ASIN_PATTERN.test(rawTerm) && !isOwnAsin;
+  const relevantToOwnProduct = matchesOwnProduct(rawTerm, campaignProductNames);
 
-  const negative = orders === 0 || isDifferentAsinSearch;
+  const negative = (orders === 0 && !relevantToOwnProduct) || isDifferentAsinSearch;
 
   let mismatchedProduct: CatalogEntry | null = null;
   if (negative) {
