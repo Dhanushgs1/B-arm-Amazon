@@ -172,11 +172,12 @@ export interface SearchTermClassification {
 }
 
 // The rule: a term is negative whenever it has zero orders — regardless of spend or clicks —
-// UNLESS its own words point at the campaign's own advertised product (matchesOwnProduct above):
-// a search for "smart watch" under a campaign selling a Smart Watch is relevant traffic that
-// simply hasn't converted yet, not a wrong-product click, no matter how many zero-order times it
-// shows up. A literal ASIN belonging to a DIFFERENT product than this campaign's own is negative
-// regardless of that exemption (see ASIN_PATTERN above; overrides even a real order, since the
+// UNLESS it's relevant to the campaign's own advertised product, either by name
+// (matchesOwnProduct above: a search for "smart watch" under a campaign selling a Smart Watch)
+// or by being a literal search for this campaign's own ASIN (isOwnAsin) — either way that's
+// relevant traffic that simply hasn't converted yet, not a wrong-product click, no matter how
+// many zero-order times it shows up. A literal ASIN belonging to a DIFFERENT product than this
+// campaign's own is negative regardless of that exemption (see ASIN_PATTERN above; overrides even a real order, since the
 // exact wrong-product search means the click was never relevant to begin with — e.g. "ball"
 // pulling in some unrelated listing's ASIN). When a term is negative and its words point at a
 // different product too, that's called out as a second, more specific reason alongside "No
@@ -206,7 +207,11 @@ export function classifySearchTerm(
 
   const isOwnAsin = (campaignAsins || []).some((a) => a.toLowerCase() === rawTerm.toLowerCase());
   const isDifferentAsinSearch = ASIN_PATTERN.test(rawTerm) && !isOwnAsin;
-  const relevantToOwnProduct = matchesOwnProduct(rawTerm, campaignProductNames);
+  // Own-ASIN search terms have no words to trip matchesOwnProduct's name-based check (an ASIN
+  // string shares no tokens with a product title) — check the ASIN directly too, so a customer
+  // pasting/typing this campaign's own exact ASIN with zero orders is relevant traffic that
+  // hasn't converted yet, same as searching the product by name.
+  const relevantToOwnProduct = matchesOwnProduct(rawTerm, campaignProductNames) || isOwnAsin;
 
   const negative = (orders === 0 && !relevantToOwnProduct) || isDifferentAsinSearch;
 
