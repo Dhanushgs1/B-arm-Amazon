@@ -70,18 +70,6 @@ function dotDate(iso: string): string {
   const [y, m, d] = iso.split("-");
   return `${d}-${m}-${y}`;
 }
-// This report's "single reporting day" (endDate) is always yesterday's data — Amazon's own
-// exports lag a day, same as every other daily report in this codebase. The FILE is meant to
-// be filed under the day AFTER endDate (e.g. endDate 2026-08-25's report is named
-// 2026-08-26.xlsx) — that's the day this data is "as of" for whoever's filing it, regardless
-// of which real calendar day someone happens to click the button on. Deliberately computed
-// from endDate itself, not from the actual current date — re-generating this same report
-// later must still produce the same filename.
-function dayAfter(dateStr: string): string {
-  const d = new Date(`${dateStr}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + 1);
-  return d.toISOString().slice(0, 10);
-}
 function num(v: unknown): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
@@ -1175,7 +1163,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   if (wsNotes["A1"]) wsNotes["A1"].s = { font: { bold: true, sz: 13 } };
   XLSX.utils.book_append_sheet(wb, wsNotes, "Notes");
 
-  const filename = `Ad_Spend_Report_${dayAfter(endDate)}.xlsx`;
+  const filename = `Ad_Spend_Report_${endDate}.xlsx`;
   return {
     wb,
     filename,
