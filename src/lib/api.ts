@@ -40,13 +40,33 @@ export async function mcp(tool: string, args: any = {}, slot: string = "A") {
 }
 
 // Fetch every page of a performance tool that uses page/page_size + pagination.hasMore.
+//
+// Page 0 first (to learn pagination.totalPages), then every remaining page fetched
+// CONCURRENTLY in batches — same fix mcpAllTargets already applies to list_targets, for the
+// same reason: an unfiltered, account-wide pull (e.g. every search term across every
+// campaign) can be 15-20+ pages, and awaiting them one at a time turned the Search Terms page
+// into an effectively-infinite spinner (confirmed live: 9,417 rows / 19 pages on one account,
+// each page a full external API round trip). Same final rows, same call signature — just not
+// serialized.
 export async function mcpAllPages(tool: string, args: any, slot: string, maxPages: number = 24) {
-  const all: any[] = [];
-  for (let page = 0; page < maxPages; page++) {
-    const res = await mcp(tool, { ...args, page, page_size: 500 }, slot);
-    const rows = res.data || [];
-    all.push(...rows);
-    if (!res.pagination?.hasMore || rows.length === 0) break;
+  const PAGE_SIZE = 500;
+  const first = await mcp(tool, { ...args, page: 0, page_size: PAGE_SIZE }, slot);
+  const all: any[] = [...(first.data || [])];
+  const totalPages = Math.min(first.pagination?.totalPages || 1, maxPages);
+  if (totalPages <= 1 || !first.pagination?.hasMore) return all;
+
+  const pages = Array.from({ length: totalPages - 1 }, (_, i) => i + 1);
+  const BATCH = 10;
+  for (let i = 0; i < pages.length; i += BATCH) {
+    const batch = pages.slice(i, i + BATCH);
+    const results = await Promise.all(
+      batch.map((page) =>
+        mcp(tool, { ...args, page, page_size: PAGE_SIZE }, slot)
+          .then((res) => res.data || [])
+          .catch(() => [])
+      )
+    );
+    for (const rows of results) all.push(...rows);
   }
   return all;
 }
