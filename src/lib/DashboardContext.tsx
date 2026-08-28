@@ -86,14 +86,20 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     // automatically reset to Last 30 Days so the dashboard opens with useful data.
     const staleSingleDay = savedLabel === 'Yesterday' || savedLabel === 'Today';
 
+    // Default the window to end yesterday, not today — today's marketplace
+    // data is normally still incomplete when the dashboard is first opened,
+    // same reasoning applyPreset uses (lastDataDate over "now") for presets.
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const defaultStart = new Date(yesterday);
+    defaultStart.setDate(defaultStart.getDate() - 29);
+
     if (savedStart && !staleSingleDay) {
       setStartDate(savedStart);
     } else {
-      const d = new Date();
-      d.setDate(d.getDate() - 29);
-      setStartDate(getLocalDateStr(d));
+      setStartDate(getLocalDateStr(defaultStart));
     }
-    setEndDate((!staleSingleDay && savedEnd) ? savedEnd : getLocalDateStr());
+    setEndDate((!staleSingleDay && savedEnd) ? savedEnd : getLocalDateStr(yesterday));
     setDateLabel((!staleSingleDay && savedLabel) ? savedLabel : 'Last 30 Days');
 
     // Clear the stale single-day entry so the next reload is clean
