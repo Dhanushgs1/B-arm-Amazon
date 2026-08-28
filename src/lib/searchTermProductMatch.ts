@@ -34,6 +34,20 @@ const STOPWORDS = new Set([
   "quality", "premium", "portable", "your", "moms", "mom", "safe", "soft", "comfort", "gift",
 ]);
 
+// Short (<4 char) tokens that are still distinctive enough to trust, unlike most short words.
+// "ivi" is literally part of this account's own insemination-kit branding (e.g. "B-Arm Self
+// Insemination Kit for Women-17cm| IVI Kit with...") — without allowing it through, a search term
+// short enough to use only that acronym ("nora ivi kit") shares no word with the product name at
+// all (its only other words are "kit" and generic filler, both stopworded) and falls through to
+// the zero-orders negative rule despite being exactly on-topic. Caught in a real export: "nora ivi
+// kit" and "nory ivi kit" were flagged Negative while "iui kit- home insemination kit" (same
+// campaign, same intent) stayed Positive purely for also spelling out "insemination". "iui" is
+// the standard medical synonym (Intrauterine Insemination) for the same product category — kept
+// here too so it starts matching as soon as it appears in some product's own title, though it
+// won't help a term like "best iui kit for home" until then, since this account's own listings
+// currently only spell out "IVI", not "IUI".
+const SHORT_TOKEN_ALLOWLIST = new Set(["iui", "ivi"]);
+
 // Crude stem: truncate to a 6-char prefix so "nebulizer"/"nebulization"/"nebuliser" (and other
 // plural/-ing/-tion spelling variants) collide onto the same key. Caught a real false positive
 // in testing — "ot section for nebulization" was flagged as a mismatch against a totally
@@ -48,7 +62,7 @@ function tokenize(text: string): string[] {
     .toLowerCase()
     .replace(/[()\-–/]/g, " ")
     .split(/[^a-z0-9]+/)
-    .filter((t) => t.length >= 4 && !STOPWORDS.has(t) && !/^\d+$/.test(t))
+    .filter((t) => (t.length >= 4 || SHORT_TOKEN_ALLOWLIST.has(t)) && !STOPWORDS.has(t) && !/^\d+$/.test(t))
     .map(stem);
 }
 
