@@ -677,9 +677,16 @@ Provide analysis in 4 clear sections using bullet points:
                   // Grouped, not interleaved — every Positive row first (in the on-screen sort
                   // order), then every Negative row after, so the two are visually separated in
                   // the sheet instead of scattered wherever spend/clicks happened to sort them.
+                  // Within the Negative block: rows with a specific "Different product" reason
+                  // (something to actually act on) come before plain "No orders"-only rows
+                  // (nothing to add beyond the obvious), which sit last.
+                  const negativeTerms = classifiedTerms.filter((s: any) => s._classification.negative);
+                  const negativeWithProductReason = negativeTerms.filter((s: any) => s._classification.reasons.length > 1);
+                  const negativeNoOrdersOnly = negativeTerms.filter((s: any) => s._classification.reasons.length <= 1);
                   const groupedForExport = [
                     ...classifiedTerms.filter((s: any) => !s._classification.negative),
-                    ...classifiedTerms.filter((s: any) => s._classification.negative),
+                    ...negativeWithProductReason,
+                    ...negativeNoOrdersOnly,
                   ];
                   exportToExcel(
                     groupedForExport,
