@@ -193,7 +193,12 @@ export function classifySearchTerm(
   currentCampaignName?: string,
   // This campaign's own ASIN(s) — a literal-ASIN search term is only a mismatch when it's NOT
   // one of these (e.g. a customer legitimately searching the exact ASIN they already want).
-  campaignAsins?: string[]
+  campaignAsins?: string[],
+  // ASIN (lowercased) -> the product it actually is, account-wide. A literal-ASIN search term
+  // has no words to word-match against a product name (findMismatchedProduct can't resolve it),
+  // so without this lookup the reason names the ASIN but never says whose product it is —
+  // exactly the case that makes the reason useless for deciding what to do about it.
+  asinIndex?: Map<string, CatalogEntry> | null
 ): SearchTermClassification {
   const reasons: string[] = [];
   const orders = term.orders || 0;
@@ -208,16 +213,28 @@ export function classifySearchTerm(
   let mismatchedProduct: CatalogEntry | null = null;
   if (negative) {
     if (orders === 0) reasons.push("No orders");
-    if (isDifferentAsinSearch) reasons.push(`Search term is a different product's ASIN (${rawTerm.toUpperCase()})`);
 
-    mismatchedProduct = findMismatchedProduct(term.searchTerm, campaignProductNames, liveIndex, currentCampaignName);
-    if (mismatchedProduct) {
-      const asinPart = mismatchedProduct.asin ? `, ASIN ${mismatchedProduct.asin}` : "";
-      reasons.push(
-        mismatchedProduct.campaignName
-          ? `Different product — matches campaign "${mismatchedProduct.campaignName}"${asinPart}`
-          : `Different product — looks like "${mismatchedProduct.name}"${asinPart}`
-      );
+    if (isDifferentAsinSearch) {
+      const asinEntry = asinIndex?.get(rawTerm.toLowerCase()) || null;
+      if (asinEntry) mismatchedProduct = asinEntry;
+      const productPart = asinEntry
+        ? asinEntry.campaignName
+          ? ` — matches campaign "${asinEntry.campaignName}" ("${asinEntry.name}")`
+          : ` — "${asinEntry.name}"`
+        : "";
+      reasons.push(`Search term is a different product's ASIN (${rawTerm.toUpperCase()})${productPart}`);
+    }
+
+    if (!mismatchedProduct) {
+      mismatchedProduct = findMismatchedProduct(term.searchTerm, campaignProductNames, liveIndex, currentCampaignName);
+      if (mismatchedProduct) {
+        const asinPart = mismatchedProduct.asin ? `, ASIN ${mismatchedProduct.asin}` : "";
+        reasons.push(
+          mismatchedProduct.campaignName
+            ? `Different product — matches campaign "${mismatchedProduct.campaignName}"${asinPart}`
+            : `Different product — looks like "${mismatchedProduct.name}"${asinPart}`
+        );
+      }
     }
   }
 

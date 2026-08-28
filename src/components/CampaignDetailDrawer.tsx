@@ -187,6 +187,21 @@ export function CampaignDetailDrawer() {
     );
   }, [allProductNamesData, allProductCampaignsData]);
 
+  // ASIN (lowercased) -> the product it actually is, so a search term that's a literal
+  // different-product ASIN can be reported as "belongs to X" instead of just the bare ASIN.
+  const liveAsinIndex = useMemo(() => {
+    const nameRows: any[] = allProductNamesData?.data || [];
+    const campaignRows: any[] = allProductCampaignsData?.data || [];
+    if (!nameRows.length) return null;
+    const nameByAsin = new Map<string, string>();
+    for (const r of nameRows) if (r.adAsin && r.adProductName) nameByAsin.set(r.adAsin, r.adProductName);
+    const campaignByAsin = new Map<string, string>();
+    for (const r of campaignRows) if (r.adAsin && r.campaignName && !campaignByAsin.has(r.adAsin)) campaignByAsin.set(r.adAsin, r.campaignName);
+    const idx = new Map<string, { name: string; campaignName?: string; asin?: string }>();
+    for (const [asin, name] of nameByAsin) idx.set(asin.toLowerCase(), { name, campaignName: campaignByAsin.get(asin), asin });
+    return idx;
+  }, [allProductNamesData, allProductCampaignsData]);
+
   // 4. Keywords
   const { data: keywordsData, isLoading: keywordsLoading } = useQuery({
     queryKey: ["campaign_detail_keywords", keySlot, account?.id, campaignMeta?.campaignId, startDate, endDate],
@@ -669,7 +684,7 @@ Provide analysis in 4 clear sections using bullet points:
               {activeTab === "searchterms" && (() => {
                 const classifiedTerms = getSortedData(filteredSearchTerms).map((s: any) => ({
                   ...s,
-                  _classification: classifySearchTerm(s, campaignProductNames, liveProductIndex, selectedCampaignName || undefined, campaignAsins),
+                  _classification: classifySearchTerm(s, campaignProductNames, liveProductIndex, selectedCampaignName || undefined, campaignAsins, liveAsinIndex),
                 }));
                 const negativeCount = classifiedTerms.filter((s: any) => s._classification.negative).length;
 
