@@ -149,14 +149,21 @@ export interface SearchTermClassification {
 }
 
 export function classifySearchTerm(
-  term: { searchTerm: string; orders?: number; clicks?: number },
+  term: { searchTerm: string; orders?: number; spend?: number },
   campaignProductNames: string[],
   liveIndex?: Map<string, CatalogEntry[]> | null,
-  currentCampaignName?: string
+  currentCampaignName?: string,
+  // Spend past which it's time to stop bidding on a non-converting term — 3x the campaign's
+  // own product price, e.g. a ₹500 product: once a term has burned ₹1500 with zero orders,
+  // that's a stop-loss point, not just an unlucky click. Replaces the old flat "10+ clicks, no
+  // orders" rule, which fired the same way regardless of what the product actually costs.
+  // undefined/0 when the product's price couldn't be resolved — the rule is skipped rather
+  // than guessing, so a missing price doesn't silently produce a wrong threshold.
+  stopSpendThreshold?: number
 ): SearchTermClassification {
   const reasons: string[] = [];
   const orders = term.orders || 0;
-  const clicks = term.clicks || 0;
+  const spend = term.spend || 0;
 
   const mismatchedProduct = findMismatchedProduct(term.searchTerm, campaignProductNames, liveIndex, currentCampaignName);
   if (mismatchedProduct) {
@@ -166,7 +173,9 @@ export function classifySearchTerm(
         : `Different product — looks like "${mismatchedProduct.name}"`
     );
   }
-  if (orders === 0 && clicks > 10) reasons.push("10+ clicks, no orders");
+  if (orders === 0 && stopSpendThreshold && spend >= stopSpendThreshold) {
+    reasons.push(`Spend ₹${Math.round(spend)} ≥ 3× product price with no orders`);
+  }
 
   return { negative: reasons.length > 0, reasons, mismatchedProduct };
 }
