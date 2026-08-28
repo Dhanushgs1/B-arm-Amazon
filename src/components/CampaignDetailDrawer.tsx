@@ -184,29 +184,6 @@ export function CampaignDetailDrawer() {
     );
   }, [allProductNamesData, allProductCampaignsData]);
 
-  // Real selling price per ASIN (account-wide — get_retail_product_performance has no
-  // campaign_ids filter) — used to turn "no orders" into a spend-vs-price stop-loss rule: once
-  // a term has burned 3x this campaign's own product price with zero orders, that's the point
-  // to stop bidding on it, not an arbitrary click count.
-  const { data: retailPriceData } = useQuery({
-    queryKey: ["retail_price_by_asin", keySlot, account?.id, startDate, endDate],
-    queryFn: () => mcp("get_retail_product_performance", { ...baseArgs, page_size: 2000 }, keySlot),
-    enabled: !!account && activeTab === "searchterms",
-    staleTime: 5 * 60 * 1000,
-  });
-  const stopSpendThreshold = useMemo(() => {
-    const rows: any[] = retailPriceData?.data || [];
-    if (!rows.length || !filteredProducts.length) return undefined;
-    const priceByAsin = new Map<string, number>();
-    for (const r of rows) if (r.asin && r.averageSellingPrice) priceByAsin.set(r.asin, r.averageSellingPrice);
-    const prices = filteredProducts
-      .map((p: any) => priceByAsin.get(p.adAsin))
-      .filter((v: number | undefined): v is number => !!v && v > 0);
-    if (!prices.length) return undefined;
-    const avgPrice = prices.reduce((a: number, b: number) => a + b, 0) / prices.length;
-    return avgPrice * 3;
-  }, [retailPriceData, filteredProducts]);
-
   // 4. Keywords
   const { data: keywordsData, isLoading: keywordsLoading } = useQuery({
     queryKey: ["campaign_detail_keywords", keySlot, account?.id, campaignMeta?.campaignId, startDate, endDate],
@@ -689,7 +666,7 @@ Provide analysis in 4 clear sections using bullet points:
               {activeTab === "searchterms" && (() => {
                 const classifiedTerms = getSortedData(filteredSearchTerms).map((s: any) => ({
                   ...s,
-                  _classification: classifySearchTerm(s, campaignProductNames, liveProductIndex, selectedCampaignName || undefined, stopSpendThreshold),
+                  _classification: classifySearchTerm(s, campaignProductNames, liveProductIndex, selectedCampaignName || undefined),
                 }));
                 const negativeCount = classifiedTerms.filter((s: any) => s._classification.negative).length;
 
@@ -728,14 +705,7 @@ Provide analysis in 4 clear sections using bullet points:
                 return (
                   <div className="glass rounded-xl border border-border overflow-hidden">
                     <div className="p-4 border-b border-border bg-card/20 flex justify-between items-center gap-3">
-                      <div>
-                        <h3 className="font-bold text-sm">Customer Search Terms</h3>
-                        {stopSpendThreshold ? (
-                          <p className="text-[10px] text-muted-foreground font-semibold mt-0.5">
-                            Stop-loss: spend ≥ ₹{Math.round(stopSpendThreshold)} (3× avg product price) with no orders
-                          </p>
-                        ) : null}
-                      </div>
+                      <h3 className="font-bold text-sm">Customer Search Terms</h3>
                       <div className="flex items-center gap-3">
                         <span className="text-xs text-muted-foreground font-bold">{filteredSearchTerms.length} terms</span>
                         {negativeCount > 0 && (

@@ -154,24 +154,24 @@ export interface SearchTermClassification {
   mismatchedProduct: CatalogEntry | null;
 }
 
+// The one rule: a term is negative when it has zero orders AND its words point at a different
+// product (different ASIN) than the one this campaign actually advertises. A term for the
+// campaign's own product with no orders yet is fine — it just hasn't converted; only a
+// genuinely wrong-product click, unpaid for by a sale, is worth negating. Replaces both the
+// old "10+ clicks, no orders" rule and the "spend ≥ 3x price" rule — a term for the right
+// product is never negative here no matter how much it spent or how many orders it's missing.
 export function classifySearchTerm(
-  term: { searchTerm: string; orders?: number; spend?: number },
+  term: { searchTerm: string; orders?: number },
   campaignProductNames: string[],
   liveIndex?: Map<string, CatalogEntry[]> | null,
-  currentCampaignName?: string,
-  // Spend past which it's time to stop bidding on a non-converting term — 3x the campaign's
-  // own product price, e.g. a ₹500 product: once a term has burned ₹1500 with zero orders,
-  // that's a stop-loss point, not just an unlucky click. Replaces the old flat "10+ clicks, no
-  // orders" rule, which fired the same way regardless of what the product actually costs.
-  // undefined/0 when the product's price couldn't be resolved — the rule is skipped rather
-  // than guessing, so a missing price doesn't silently produce a wrong threshold.
-  stopSpendThreshold?: number
+  currentCampaignName?: string
 ): SearchTermClassification {
   const reasons: string[] = [];
   const orders = term.orders || 0;
-  const spend = term.spend || 0;
 
-  const mismatchedProduct = findMismatchedProduct(term.searchTerm, campaignProductNames, liveIndex, currentCampaignName);
+  const mismatchedProduct = orders === 0
+    ? findMismatchedProduct(term.searchTerm, campaignProductNames, liveIndex, currentCampaignName)
+    : null;
   if (mismatchedProduct) {
     const asinPart = mismatchedProduct.asin ? `, ASIN ${mismatchedProduct.asin}` : "";
     reasons.push(
@@ -179,9 +179,6 @@ export function classifySearchTerm(
         ? `Different product — matches campaign "${mismatchedProduct.campaignName}"${asinPart}`
         : `Different product — looks like "${mismatchedProduct.name}"${asinPart}`
     );
-  }
-  if (orders === 0 && stopSpendThreshold && spend >= stopSpendThreshold) {
-    reasons.push(`Spend ₹${Math.round(spend)} ≥ 3× product price with no orders`);
   }
 
   return { negative: reasons.length > 0, reasons, mismatchedProduct };
