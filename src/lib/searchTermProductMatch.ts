@@ -57,6 +57,12 @@ export interface CatalogEntry {
   // Which live campaign currently advertises this product — undefined for a static catalogue
   // entry with no live campaign attached (e.g. discontinued, or not currently advertised).
   campaignName?: string;
+  // The product's actual Amazon ASIN — undefined for a static catalogue entry (categoryMap.ts
+  // has no ASINs, only names). SellerMate's search-term data has no per-term ASIN of its own
+  // (confirmed: adAsin/asin are silently dropped from every group_by combination tried), so
+  // this can't confirm which ASIN a given click landed on — only surface which ASIN the
+  // matched product actually is, so a name-based match can be verified against the real listing.
+  asin?: string;
 }
 
 export function buildProductIndex(entries: CatalogEntry[]): Map<string, CatalogEntry[]> {
@@ -167,10 +173,11 @@ export function classifySearchTerm(
 
   const mismatchedProduct = findMismatchedProduct(term.searchTerm, campaignProductNames, liveIndex, currentCampaignName);
   if (mismatchedProduct) {
+    const asinPart = mismatchedProduct.asin ? `, ASIN ${mismatchedProduct.asin}` : "";
     reasons.push(
       mismatchedProduct.campaignName
-        ? `Different product — matches campaign "${mismatchedProduct.campaignName}"`
-        : `Different product — looks like "${mismatchedProduct.name}"`
+        ? `Different product — matches campaign "${mismatchedProduct.campaignName}"${asinPart}`
+        : `Different product — looks like "${mismatchedProduct.name}"${asinPart}`
     );
   }
   if (orders === 0 && stopSpendThreshold && spend >= stopSpendThreshold) {

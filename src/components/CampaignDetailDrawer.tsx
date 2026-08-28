@@ -180,7 +180,7 @@ export function CampaignDetailDrawer() {
     return buildProductIndex(
       campaignRows
         .filter((r) => r.adAsin && r.campaignName && nameByAsin.has(r.adAsin))
-        .map((r) => ({ name: nameByAsin.get(r.adAsin)!, campaignName: r.campaignName }))
+        .map((r) => ({ name: nameByAsin.get(r.adAsin)!, campaignName: r.campaignName, asin: r.adAsin }))
     );
   }, [allProductNamesData, allProductCampaignsData]);
 
