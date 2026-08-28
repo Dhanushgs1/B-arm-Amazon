@@ -4,9 +4,9 @@ import { useQuery } from "@tanstack/react-query";
 import { useDashboard } from "@/lib/DashboardContext";
 import { mcp, fetchSkuMap } from "@/lib/api";
 import { X, Loader2, Target, KeyRound, Search, Package, TrendingUp, Sparkles, HelpCircle, ArrowUpDown, ArrowUp, ArrowDown, RefreshCw, AlertTriangle, Download } from "lucide-react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { cn } from "@/lib/utils";
-import { classifySearchTerm } from "@/lib/searchTermProductMatch";
+import { classifySearchTerm, buildProductIndex } from "@/lib/searchTermProductMatch";
 import { exportToExcel } from "@/lib/excelExport";
 
 const cur = (val: number, currency?: string) => {
@@ -144,6 +144,45 @@ export function CampaignDetailDrawer() {
   const campaignProductNames = Array.from(
     new Set(filteredProducts.map((p: any) => p.adProductName).filter(Boolean))
   ) as string[];
+
+  // Account-wide advertised products (every campaign, not just this one) — lets the Search
+  // Terms tab tell a search term apart as "belongs to campaign X" instead of a generic "looks
+  // like some product", by checking every OTHER live campaign's own advertised product names.
+  // Only fetched for the Search Terms tab, same lazy pattern as the rest of this drawer.
+  //
+  // Needs TWO calls, not one: SellerMate only returns the real listing title in adProductName
+  // when adProductName ISN'T one of the group_by fields — ask it to group by adProductName
+  // (needed to get one row per product) and adProductName silently becomes the raw ASIN
+  // instead (confirmed by testing both shapes directly). So: one ungrouped call for
+  // ASIN -> real title, one grouped-by-ASIN+campaign call for ASIN -> campaign, joined by ASIN.
+  const { data: allProductNamesData } = useQuery({
+    queryKey: ["all_product_names", keySlot, account?.id, startDate, endDate],
+    queryFn: () => mcp("get_advertised_product_performance", { ...baseArgs, page_size: 2000 }, keySlot),
+    enabled: !!account && activeTab === "searchterms",
+    staleTime: 5 * 60 * 1000,
+  });
+  const { data: allProductCampaignsData } = useQuery({
+    queryKey: ["all_product_campaigns", keySlot, account?.id, startDate, endDate],
+    queryFn: () => mcp("get_advertised_product_performance", {
+      ...baseArgs,
+      group_by: ["adAsin", "campaignName"],
+      page_size: 2000,
+    }, keySlot),
+    enabled: !!account && activeTab === "searchterms",
+    staleTime: 5 * 60 * 1000,
+  });
+  const liveProductIndex = useMemo(() => {
+    const nameRows: any[] = allProductNamesData?.data || [];
+    const campaignRows: any[] = allProductCampaignsData?.data || [];
+    if (!nameRows.length || !campaignRows.length) return null;
+    const nameByAsin = new Map<string, string>();
+    for (const r of nameRows) if (r.adAsin && r.adProductName) nameByAsin.set(r.adAsin, r.adProductName);
+    return buildProductIndex(
+      campaignRows
+        .filter((r) => r.adAsin && r.campaignName && nameByAsin.has(r.adAsin))
+        .map((r) => ({ name: nameByAsin.get(r.adAsin)!, campaignName: r.campaignName }))
+    );
+  }, [allProductNamesData, allProductCampaignsData]);
 
   // 4. Keywords
   const { data: keywordsData, isLoading: keywordsLoading } = useQuery({
@@ -627,7 +666,7 @@ Provide analysis in 4 clear sections using bullet points:
               {activeTab === "searchterms" && (() => {
                 const classifiedTerms = getSortedData(filteredSearchTerms).map((s: any) => ({
                   ...s,
-                  _classification: classifySearchTerm(s, campaignProductNames),
+                  _classification: classifySearchTerm(s, campaignProductNames, liveProductIndex, selectedCampaignName || undefined),
                 }));
                 const negativeCount = classifiedTerms.filter((s: any) => s._classification.negative).length;
 
