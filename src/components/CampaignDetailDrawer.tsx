@@ -3,9 +3,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { useDashboard } from "@/lib/DashboardContext";
 import { mcp, fetchSkuMap } from "@/lib/api";
-import { X, Loader2, Target, KeyRound, Search, Package, TrendingUp, Sparkles, HelpCircle, ArrowUpDown, ArrowUp, ArrowDown, RefreshCw, AlertTriangle } from "lucide-react";
+import { X, Loader2, Target, KeyRound, Search, Package, TrendingUp, Sparkles, HelpCircle, ArrowUpDown, ArrowUp, ArrowDown, RefreshCw, AlertTriangle, Download } from "lucide-react";
 import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
+import { classifySearchTerm } from "@/lib/searchTermProductMatch";
+import { exportToExcel } from "@/lib/excelExport";
 
 const cur = (val: number, currency?: string) => {
   const sym = currency === "INR" ? "₹" : "$";
@@ -134,9 +136,14 @@ export function CampaignDetailDrawer() {
       campaign_ids: campaignMeta?.campaignId ? [campaignMeta.campaignId] : undefined,
       page_size: 500
     }, keySlot),
-    enabled: !!account && !!selectedCampaignName && !!campaignMeta?.campaignId && activeTab === "products",
+    // Also fetched for the Search Terms tab — its rows need the campaign's own advertised
+    // product name(s) to tell a genuinely mismatched search term apart from a normal one.
+    enabled: !!account && !!selectedCampaignName && !!campaignMeta?.campaignId && (activeTab === "products" || activeTab === "searchterms"),
   });
   const filteredProducts = productsData?.data || [];
+  const campaignProductNames = Array.from(
+    new Set(filteredProducts.map((p: any) => p.adProductName).filter(Boolean))
+  ) as string[];
 
   // 4. Keywords
   const { data: keywordsData, isLoading: keywordsLoading } = useQuery({
@@ -617,48 +624,108 @@ Provide analysis in 4 clear sections using bullet points:
                 </div>
               )}
 
-              {activeTab === "searchterms" && (
-                <div className="glass rounded-xl border border-border overflow-hidden">
-                  <div className="p-4 border-b border-border bg-card/20 flex justify-between items-center">
-                    <h3 className="font-bold text-sm">Customer Search Terms</h3>
-                    <span className="text-xs text-muted-foreground font-bold">{filteredSearchTerms.length} terms</span>
-                  </div>
-                  {searchTermsLoading ? (
-                    <div className="p-8 text-center text-muted-foreground flex items-center justify-center gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin text-primary" /> Loading search term performance...
+              {activeTab === "searchterms" && (() => {
+                const classifiedTerms = getSortedData(filteredSearchTerms).map((s: any) => ({
+                  ...s,
+                  _classification: classifySearchTerm(s, campaignProductNames),
+                }));
+                const negativeCount = classifiedTerms.filter((s: any) => s._classification.negative).length;
+
+                const handleExport = () => {
+                  exportToExcel(
+                    classifiedTerms,
+                    [
+                      { key: "searchTerm", label: "Search Term" },
+                      { key: "spend", label: "Spend" },
+                      { key: "sales", label: "Sales" },
+                      { key: "acos", label: "ACOS" },
+                      { key: "clicks", label: "Clicks" },
+                      { key: "orders", label: "Orders" },
+                      {
+                        key: "_classification",
+                        label: "Classification",
+                        exportValue: (val: any) => (val.negative ? "Negative" : "Positive"),
+                      },
+                      {
+                        key: "_classification",
+                        label: "Reason",
+                        exportValue: (val: any) => (val.reasons.length ? val.reasons.join("; ") : "—"),
+                      },
+                    ],
+                    `${(selectedCampaignName || "campaign").replace(/[^a-z0-9]+/gi, "-")}-search-terms`
+                  );
+                };
+
+                return (
+                  <div className="glass rounded-xl border border-border overflow-hidden">
+                    <div className="p-4 border-b border-border bg-card/20 flex justify-between items-center gap-3">
+                      <h3 className="font-bold text-sm">Customer Search Terms</h3>
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs text-muted-foreground font-bold">{filteredSearchTerms.length} terms</span>
+                        {negativeCount > 0 && (
+                          <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-red-100 dark:bg-red-500/15 text-red-700 dark:text-red-400">
+                            {negativeCount} negative
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={handleExport}
+                          disabled={classifiedTerms.length === 0}
+                          className="flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1.5 rounded-lg border border-border bg-card hover:bg-muted/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <Download className="w-3 h-3" /> Download
+                        </button>
+                      </div>
                     </div>
-                  ) : filteredSearchTerms.length === 0 ? (
-                    <div className="p-8 text-center text-muted-foreground text-xs font-semibold">No search term telemetry in date range.</div>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left text-xs divide-y divide-border">
-                        <thead className="bg-muted/50 text-[10px] uppercase font-bold text-muted-foreground">
-                          <tr>
-                            <SortableHeader field="searchTerm" label="Search Term" />
-                            <SortableHeader field="spend" label="Spend" />
-                            <SortableHeader field="sales" label="Sales" />
-                            <SortableHeader field="acos" label="ACOS" />
-                            <SortableHeader field="clicks" label="Clicks" />
-                            <SortableHeader field="orders" label="Orders" />
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-border">
-                          {getSortedData(filteredSearchTerms).map((s: any, i: number) => (
-                            <tr key={i} className="hover:bg-muted/10 transition-colors">
-                              <td className="px-4 py-3 font-bold whitespace-nowrap">{s.searchTerm || "—"}</td>
-                              <td className="px-4 py-3 whitespace-nowrap">{cur(s.spend, currency)}</td>
-                              <td className="px-4 py-3 text-green-600 dark:text-green-400 font-bold whitespace-nowrap">{cur(s.sales, currency)}</td>
-                              <td className="px-4 py-3 font-bold whitespace-nowrap">{s.acos ? pct(s.acos) : "—"}</td>
-                              <td className="px-4 py-3 whitespace-nowrap">{num(s.clicks)}</td>
-                              <td className="px-4 py-3 whitespace-nowrap">{num(s.orders)}</td>
+                    {searchTermsLoading ? (
+                      <div className="p-8 text-center text-muted-foreground flex items-center justify-center gap-2">
+                        <Loader2 className="w-4 h-4 animate-spin text-primary" /> Loading search term performance...
+                      </div>
+                    ) : filteredSearchTerms.length === 0 ? (
+                      <div className="p-8 text-center text-muted-foreground text-xs font-semibold">No search term telemetry in date range.</div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs divide-y divide-border">
+                          <thead className="bg-muted/50 text-[10px] uppercase font-bold text-muted-foreground">
+                            <tr>
+                              <SortableHeader field="searchTerm" label="Search Term" />
+                              <SortableHeader field="spend" label="Spend" />
+                              <SortableHeader field="sales" label="Sales" />
+                              <SortableHeader field="acos" label="ACOS" />
+                              <SortableHeader field="clicks" label="Clicks" />
+                              <SortableHeader field="orders" label="Orders" />
+                              <th className="px-4 py-2.5">Classification</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              )}
+                          </thead>
+                          <tbody className="divide-y divide-border">
+                            {classifiedTerms.map((s: any, i: number) => (
+                              <tr key={i} className="hover:bg-muted/10 transition-colors">
+                                <td className="px-4 py-3 font-bold whitespace-nowrap">{s.searchTerm || "—"}</td>
+                                <td className="px-4 py-3 whitespace-nowrap">{cur(s.spend, currency)}</td>
+                                <td className="px-4 py-3 text-green-600 dark:text-green-400 font-bold whitespace-nowrap">{cur(s.sales, currency)}</td>
+                                <td className="px-4 py-3 font-bold whitespace-nowrap">{s.acos ? pct(s.acos) : "—"}</td>
+                                <td className="px-4 py-3 whitespace-nowrap">{num(s.clicks)}</td>
+                                <td className="px-4 py-3 whitespace-nowrap">{num(s.orders)}</td>
+                                <td className="px-4 py-3 whitespace-nowrap" title={s._classification.reasons.join("; ")}>
+                                  {s._classification.negative ? (
+                                    <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-red-100 dark:bg-red-500/15 text-red-700 dark:text-red-400">
+                                      Negative
+                                    </span>
+                                  ) : (
+                                    <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
+                                      Positive
+                                    </span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {activeTab === "insights" && (
                 <div className="space-y-4">
