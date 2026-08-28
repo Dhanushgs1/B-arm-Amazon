@@ -671,8 +671,15 @@ Provide analysis in 4 clear sections using bullet points:
                 const negativeCount = classifiedTerms.filter((s: any) => s._classification.negative).length;
 
                 const handleExport = () => {
+                  // Grouped, not interleaved — every Positive row first (in the on-screen sort
+                  // order), then every Negative row after, so the two are visually separated in
+                  // the sheet instead of scattered wherever spend/clicks happened to sort them.
+                  const groupedForExport = [
+                    ...classifiedTerms.filter((s: any) => !s._classification.negative),
+                    ...classifiedTerms.filter((s: any) => s._classification.negative),
+                  ];
                   exportToExcel(
-                    classifiedTerms,
+                    groupedForExport,
                     [
                       { key: "searchTerm", label: "Search Term" },
                       { key: "spend", label: "Spend" },
