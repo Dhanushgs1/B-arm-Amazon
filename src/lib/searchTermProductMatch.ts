@@ -165,6 +165,23 @@ export function findMismatchedProduct(
 // itself was never for this campaign's product, so the click was still a mismatch, sale or not.
 const ASIN_PATTERN = /^b0[a-z0-9]{8}$/i;
 
+// Manually-confirmed ASINs (lowercased) that belong to a DIFFERENT seller/listing but are still
+// genuinely relevant to B-ARM's own catalogue — competitor or complementary products in the same
+// category (fertility/conception, in the cases confirmed so far). Amazon's own auto-targeting
+// only ever surfaces a product this closely related as a search term to begin with, so a click
+// here is real category interest, not a wrong-product mistake — negating it risks cutting off
+// exactly the customers most likely to eventually buy. There's no product-lookup API in this
+// codebase to verify an arbitrary foreign ASIN automatically, so this list is curated by hand as
+// specific ASINs get checked (e.g. via a manual Amazon lookup) and confirmed relevant — add to it
+// as more are found, rather than trying to auto-classify every unknown ASIN.
+const KNOWN_RELEVANT_ASINS = new Map<string, { name: string; note?: string }>([
+  ["b0dh4xd1j5", { name: "NeoDocs I-Conceive IVI Insemination Kit", note: "competitor insemination kit" }],
+  ["b0f8nw1py5", { name: "Easy@Home Ovulation Test Kit (25-pack)", note: "fertility-adjacent" }],
+  ["b0dpx67g5t", { name: "Easy@Home Ovulation Test Kit (10-pack)", note: "fertility-adjacent" }],
+  ["b0dcbsxjmx", { name: "Premom Urine Cups for Ovulation & Pregnancy Tests", note: "fertility-adjacent" }],
+  ["b004rbl5zm", { name: "Pre-Seed Fertility Lubricant", note: "fertility-adjacent" }],
+]);
+
 export interface SearchTermClassification {
   negative: boolean;
   reasons: string[];
@@ -173,11 +190,12 @@ export interface SearchTermClassification {
 
 // The rule: a term is negative whenever it has zero orders — regardless of spend or clicks —
 // UNLESS it's relevant to the campaign's own advertised product, either by name
-// (matchesOwnProduct above: a search for "smart watch" under a campaign selling a Smart Watch)
-// or by being a literal search for this campaign's own ASIN (isOwnAsin) — either way that's
+// (matchesOwnProduct above: a search for "smart watch" under a campaign selling a Smart Watch),
+// by being a literal search for this campaign's own ASIN (isOwnAsin), or by being a manually
+// confirmed relevant competitor/category ASIN (KNOWN_RELEVANT_ASINS above) — all three are
 // relevant traffic that simply hasn't converted yet, not a wrong-product click, no matter how
-// many zero-order times it shows up. A literal ASIN belonging to a DIFFERENT product than this
-// campaign's own is negative regardless of that exemption (see ASIN_PATTERN above; overrides even a real order, since the
+// many zero-order times it shows up. A literal ASIN belonging to a DIFFERENT, unconfirmed product
+// than this campaign's own is negative regardless of that exemption (see ASIN_PATTERN above; overrides even a real order, since the
 // exact wrong-product search means the click was never relevant to begin with — e.g. "ball"
 // pulling in some unrelated listing's ASIN). When a term is negative and its words point at a
 // different product too, that's called out as a second, more specific reason alongside "No
@@ -206,16 +224,21 @@ export function classifySearchTerm(
   const rawTerm = term.searchTerm.trim();
 
   const isOwnAsin = (campaignAsins || []).some((a) => a.toLowerCase() === rawTerm.toLowerCase());
-  const isDifferentAsinSearch = ASIN_PATTERN.test(rawTerm) && !isOwnAsin;
+  const knownRelevant = KNOWN_RELEVANT_ASINS.get(rawTerm.toLowerCase()) || null;
+  const isDifferentAsinSearch = ASIN_PATTERN.test(rawTerm) && !isOwnAsin && !knownRelevant;
   // Own-ASIN search terms have no words to trip matchesOwnProduct's name-based check (an ASIN
   // string shares no tokens with a product title) — check the ASIN directly too, so a customer
   // pasting/typing this campaign's own exact ASIN with zero orders is relevant traffic that
-  // hasn't converted yet, same as searching the product by name.
-  const relevantToOwnProduct = matchesOwnProduct(rawTerm, campaignProductNames) || isOwnAsin;
+  // hasn't converted yet, same as searching the product by name. A manually-confirmed relevant
+  // competitor/category ASIN (knownRelevant) gets the same treatment.
+  const relevantToOwnProduct = matchesOwnProduct(rawTerm, campaignProductNames) || isOwnAsin || !!knownRelevant;
 
   const negative = (orders === 0 && !relevantToOwnProduct) || isDifferentAsinSearch;
 
   let mismatchedProduct: CatalogEntry | null = null;
+  if (knownRelevant) {
+    reasons.push(`Related product (not a mismatch) — ${knownRelevant.name}${knownRelevant.note ? ` — ${knownRelevant.note}` : ""}`);
+  }
   if (negative) {
     if (orders === 0) reasons.push("No orders");
 
