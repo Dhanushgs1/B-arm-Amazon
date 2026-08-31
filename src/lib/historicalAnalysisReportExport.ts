@@ -1,6 +1,7 @@
 import * as XLSX from "xlsx-js-style";
 import { fcToState } from "@/lib/analysisReportExport";
 import { fetchAllRows, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
+import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns } from "@/lib/misAdapters";
 
 // Re-exported for existing importers (weeklySalesExport.ts) — the actual
 // definitions live in amazonReportShared.ts so analysisReportExport.ts can use
@@ -199,9 +200,9 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", win30.start).lte("report_date", endDate)),
     fetchAllRows("barm_amazon_sb_campaign", (q) => q.gte("report_date", win30.start).lte("report_date", endDate)),
     fetchAllRows("barm_amazon_sd_campaign", (q) => q.gte("report_date", win30.start).lte("report_date", endDate)),
-    fetchAllRows("barm_amazon_am_orders", (q) => q.gte("purchase_datetime", win30Ist.gte).lt("purchase_datetime", win30Ist.lt)),
-    fetchAllRows("barm_amazon_am_returns", (q) => q.gte("return_request_date", win30.start).lte("return_request_date", endDate)),
-    fetchAllRows("barm_amazon_fba_returns", (q) => q.gte("return_date", win30Ist.gte).lt("return_date", win30Ist.lt)),
+    fetchMisAmazonOrders((q) => q.gte("purchase_datetime", win30Ist.gte).lt("purchase_datetime", win30Ist.lt)),
+    fetchMisAmazonReturns((q) => q.gte("return_request_date", win30.start).lte("return_request_date", endDate)),
+    fetchMisFbaReturns((q) => q.gte("return_date", win30Ist.gte).lt("return_date", win30Ist.lt)),
     // No "id" column on this table (it's a plain campaign->SKU weight map,
     // upserted rather than appended) — fetchAllRows defaults to ordering by
     // "id" for stable pagination, which errors here. Order by its natural
@@ -223,7 +224,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     // sheet rendered as header-only. Narrowed to the chosen snapshot (ledgerAsOf,
     // computed below from the SELLABLE fetch) right before it's written to the sheet.
     fetchAllRows("barm_amazon_inventory_ledger", (q) => q),
-    fetchAllRows("barm_amazon_sf_return", (q) => q.gte("pickup_date", win30.start).lte("pickup_date", endDate)),
+    fetchMisSellerFlexReturns((q) => q.gte("pickup_date", win30.start).lte("pickup_date", endDate)),
   ]);
 
   // Campaign -> weighted SKU allocation. Sponsored Brands / Display exports have

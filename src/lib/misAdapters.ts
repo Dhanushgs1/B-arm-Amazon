@@ -1,0 +1,393 @@
+import { fetchAllRows } from "@/lib/amazonReportShared";
+
+// Adapters for the 6 report tables the client moved from this app's own
+// upload-populated barm_* tables to the pre-existing MIS (management
+// information system) database — a live Amazon/Flipkart order+return feed
+// synced by an external pipeline this app doesn't control:
+//
+//   barm_amazon_am_orders     -> amazon_orders
+//   barm_amazon_am_returns    -> amazon_returns
+//   barm_amazon_fba_returns   -> amazon_fba_returns
+//   barm_amazon_sf_return     -> amazon_seller_flex_return
+//   barm_flipkart_order_report -> fk_orders
+//   barm_flipkart_returns     -> fk_returns
+//
+// The MIS tables have a completely different column shape (hyphenated/spaced
+// JSON-style keys, numbers-as-strings, different date formats) than the
+// barm_* tables the rest of the app's report logic (amazonReportShared.ts,
+// each *ReportExport.ts file) was written against. Rather than touch that
+// hard-won business logic, each function below queries the MIS table and maps
+// every row into the EXACT SAME field-name shape mapOrderRow/mapAmReturnRow/
+// mapFbaReturnRow/mapSfReturnRow (src/lib/amazonReportUpload.ts) and
+// parseOrderReport/parseReturnsReport (src/lib/flipkartReportUpload.ts)
+// already produce — so every existing consumer keeps working unchanged, only
+// the data source moves.
+//
+// Do NOT import these adapters from any upload/write path
+// (amazonReportUpload.ts, flipkartReportUpload.ts, combinedAdSpendUpload.ts) —
+// CSV uploads keep writing to the barm_* tables exactly as before. These are
+// READ-only replacements for report-generation call sites.
+
+// ── generic value parsing (small local copies of amazonReportUpload.ts's /
+// flipkartReportUpload.ts's private helpers — not imported from there so this
+// file never has to touch, or even import from the module namespace of, those
+// upload/write-path files) ──────────────────────────────────────────────────
+
+function str(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  return String(v).trim();
+}
+
+function toNum(v: unknown): number {
+  const s = str(v);
+  if (!s) return 0;
+  const cleaned = s.replace(/[^0-9.-]/g, "");
+  const n = parseFloat(cleaned);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function toInt(v: unknown): number {
+  return Math.round(toNum(v));
+}
+
+// Flipkart (fk_orders) wraps a handful of id-like columns with a type tag
+// ("OI:", "OD:", "R:", "DTr:", "SKU:", "FSN:") — same artefact
+// flipkartReportUpload.ts's own `clean()` strips for the barm_flipkart_*
+// upload path. Reproduced here (not imported) so this read-only adapter file
+// never touches that write-path module.
+function cleanTag(v: unknown): string {
+  let s = str(v);
+  const tag = /^(SKU|OI|OD|R|DTr|FSN):/i.exec(s);
+  if (tag) s = s.slice(tag[0].length).trim();
+  return s;
+}
+
+const MONTHS: Record<string, string> = {
+  jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
+  jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12",
+};
+
+// "08-May-26" -> "2026-05-08" — same DD-Mon-YY format amazonReportUpload.ts's
+// parseDDMonYY handles for AM returns/SF returns, and flipkartReportUpload.ts's
+// toDate() handles for the Returns report; the MIS tables carry the identical
+// format on amazon_returns, amazon_seller_flex_return and fk_returns.
+function parseDDMonYY(v: unknown): string | null {
+  const m = /^(\d{1,2})-([A-Za-z]{3})-(\d{2})$/.exec(str(v));
+  if (!m) return null;
+  const mm = MONTHS[m[2].toLowerCase()];
+  if (!mm) return null;
+  const year = 2000 + Number(m[3]);
+  return `${year}-${mm}-${m[1].padStart(2, "0")}`;
+}
+
+// Takes the "YYYY-MM-DD" prefix off an ISO-ish value ("2026-05-11" or
+// "2026-05-11 10:15:22"), same as flipkartReportUpload.ts's toDate() does for
+// its own already-ISO inputs. Returns null for blank/unparseable values.
+function dateOnly(v: unknown): string | null {
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(str(v));
+  return m ? m[1] : null;
+}
+
+// amazon_orders' "purchase-date" arrives as "YYYY-MM-DD HH:mm:ss" with NO
+// timezone offset. Verified directly against this table's own
+// "last-updated-date" (which DOES carry an explicit "+00:00" UTC offset and,
+// per Amazon's own order lifecycle, is always at or after purchase time):
+// treating "purchase-date" as a UTC instant put last-updated-date BEFORE
+// purchase-date on 31 of 50 sampled rows (impossible); treating it as IST
+// (UTC+5:30) instead gave zero such inversions across the same 50 rows, with
+// a plausible few-minutes-to-few-hours gap every time. So "purchase-date" is
+// IST wall-clock time, not UTC — this converts it to the genuine UTC instant
+// (explicit "+05:30" offset, so the result doesn't depend on the server
+// process's own timezone).
+function istWallClockToUtcIso(v: unknown): string | null {
+  const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/.exec(str(v));
+  if (!m) return null;
+  const d = new Date(`${m[1]}T${m[2]}+05:30`);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+// ── in-memory filter shim ───────────────────────────────────────────────────
+//
+// Every existing report file filters fetchAllRows() with an
+// `apply: (q) => q.gte(field, value).lt(field, value)` callback written
+// against the OLD normalized field names (purchase_datetime, return_date,
+// pickup_date, ...) — which don't exist as columns on the MIS tables (whose
+// raw columns are hyphenated/spaced, e.g. "purchase-date"), and whose date
+// VALUES are in a different format besides (see istWallClockToUtcIso above).
+// Forwarding those callbacks straight into a Supabase query against the MIS
+// table would either 500 ("column ... does not exist") or silently filter on
+// the wrong instant.
+//
+// Instead, each fetchMis*() below pulls the whole MIS table (paginated via
+// fetchAllRows, unfiltered) and maps every row into the OLD field shape
+// FIRST, then replays the exact same `apply` callback here — as a stand-in
+// query-builder that only records .gte/.lte/.lt/.gt/.eq calls — against the
+// mapped, already-correctly-shaped rows in memory. This lets every call site
+// keep its existing `(q) => q.gte("purchase_datetime", ...)`-style filter
+// completely unchanged.
+type FilterOp = "gte" | "lte" | "lt" | "gt" | "eq";
+interface FilterCall {
+  field: string;
+  op: FilterOp;
+  value: unknown;
+}
+
+class MemoryFilterBuilder {
+  filters: FilterCall[] = [];
+  private add(field: string, op: FilterOp, value: unknown): this {
+    this.filters.push({ field, op, value });
+    return this;
+  }
+  gte(field: string, value: unknown): this { return this.add(field, "gte", value); }
+  lte(field: string, value: unknown): this { return this.add(field, "lte", value); }
+  lt(field: string, value: unknown): this { return this.add(field, "lt", value); }
+  gt(field: string, value: unknown): this { return this.add(field, "gt", value); }
+  eq(field: string, value: unknown): this { return this.add(field, "eq", value); }
+  // fetchAllRows-style callers sometimes chain .order(...) too (it's a no-op
+  // here — ordering doesn't affect which rows are kept).
+  order(): this { return this; }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function applyMemoryFilter<T extends Record<string, any>>(rows: T[], apply: (q: any) => any): T[] {
+  const builder: MemoryFilterBuilder = apply(new MemoryFilterBuilder());
+  const filters = builder.filters;
+  if (!filters.length) return rows;
+  return rows.filter((row) =>
+    filters.every(({ field, op, value }) => {
+      const v = row[field];
+      if (v === undefined || v === null || v === "") return false;
+      // Filter values are always the date strings / numeric bounds these
+      // report files pass to fetchAllRows's own .gte/.lt/.lte callbacks.
+      const cmp = value as string | number;
+      switch (op) {
+        case "gte": return v >= cmp;
+        case "lte": return v <= cmp;
+        case "lt": return v < cmp;
+        case "gt": return v > cmp;
+        case "eq": return v === cmp;
+        default: return true;
+      }
+    })
+  );
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ApplyFn = (q: any) => any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type RawRow = Record<string, any>;
+
+// ── per-table row mappers (-> old barm_* field shape) ───────────────────────
+
+// -> mapOrderRow's shape in amazonReportUpload.ts.
+function mapMisAmazonOrderRow(row: RawRow) {
+  const purchaseUtcIso = istWallClockToUtcIso(row["purchase-date"]);
+  // Patch the raw payload's own "purchase-date" key (Amazon's own CSV export
+  // uses this exact key name) to hold the corrected genuine-UTC instant
+  // instead of the MIS pipeline's IST wall-clock string. Downstream consumers
+  // that read dates straight off `.raw` — e.g.
+  // historicalAnalysisReportExport.ts's "IST with Time"/"Date " raw-sheet
+  // columns, computed via istSerial(get("purchase-date")) — expect
+  // raw["purchase-date"] to already BE a UTC instant exactly like it was for
+  // the old CSV-sourced barm_amazon_am_orders table; leaving the MIS value
+  // as-is there would double-apply the +5:30 IST shift.
+  const raw: RawRow = { ...row, "purchase-date": purchaseUtcIso ?? row["purchase-date"] };
+  return {
+    amazon_order_id: str(row["amazon-order-id"]),
+    // amazon_orders has no per-line-item id column — a multi-SKU order shares
+    // one "amazon-order-id" across its rows (verified: 25 of 1000 sampled
+    // order ids repeat). The row's own unique uuid `id` stands in: it's
+    // always unique, so it's safe for the dedup keys some report files build
+    // as `${order_item_id}|${item_status}|${quantity}` (e.g.
+    // adSpendReportExport.ts) — never accidentally collapsing two genuinely
+    // distinct line items that happen to share status+quantity.
+    order_item_id: str(row.id),
+    purchase_date: purchaseUtcIso ? purchaseUtcIso.slice(0, 10) : null,
+    purchase_datetime: purchaseUtcIso,
+    order_status: str(row["order-status"]),
+    fulfillment_channel: str(row["fulfillment-channel"]),
+    sales_channel: str(row["sales-channel"]),
+    product_name: str(row["product-name"]),
+    sku: str(row.sku),
+    asin: str(row.asin),
+    item_status: str(row["item-status"]),
+    quantity: toInt(row.quantity),
+    currency: str(row.currency),
+    item_price: toNum(row["item-price"]),
+    item_tax: toNum(row["item-tax"]),
+    shipping_price: toNum(row["shipping-price"]),
+    item_promotion_discount: toNum(row["item-promotion-discount"]),
+    ship_city: str(row["ship-city"]),
+    ship_state: str(row["ship-state"]),
+    ship_postal_code: str(row["ship-postal-code"]),
+    raw,
+  };
+}
+
+// -> mapAmReturnRow's shape.
+function mapMisAmReturnRow(row: RawRow) {
+  return {
+    order_id: str(row["Order ID"]),
+    order_item_id: str(row["Order Item ID"]),
+    order_date: parseDDMonYY(row["Order date"]),
+    return_request_date: parseDDMonYY(row["Return request date"]),
+    return_request_status: str(row["Return request status"]),
+    asin: str(row.ASIN),
+    merchant_sku: str(row["Merchant SKU"]),
+    item_name: str(row["Item Name"]),
+    return_quantity: toInt(row["Return quantity"]),
+    return_reason: str(row["Return reason"]),
+    in_policy: str(row["In policy"]),
+    return_type: str(row["Return type"]),
+    resolution: str(row.Resolution),
+    order_amount: toNum(row["Order Amount"]),
+    order_quantity: toInt(row["Order quantity"]),
+    category: str(row.Category),
+    raw: row,
+  };
+}
+
+// -> mapFbaReturnRow's shape. "return-date" already carries an explicit UTC
+// offset ("2026-05-14T12:06:09+00:00"), so — unlike amazon_orders'
+// "purchase-date" — it's passed through unchanged.
+function mapMisFbaReturnRow(row: RawRow) {
+  return {
+    return_date: str(row["return-date"]) || null,
+    order_id: str(row["order-id"]),
+    sku: str(row.sku),
+    asin: str(row.asin),
+    fnsku: str(row.fnsku),
+    product_name: str(row["product-name"]),
+    quantity: toInt(row.quantity),
+    fulfillment_center_id: str(row["fulfillment-center-id"]),
+    detailed_disposition: str(row["detailed-disposition"]),
+    reason: str(row.reason),
+    license_plate_number: str(row["license-plate-number"]),
+    customer_comments: str(row["customer-comments"]),
+    raw: row,
+  };
+}
+
+// -> mapSfReturnRow's shape (that mapper has no "reason"-equivalent field
+// either — amazon_seller_flex_return's own "Return Reason" column is still
+// available to any consumer that reads `.raw` directly).
+function mapMisSfReturnRow(row: RawRow) {
+  return {
+    return_type: str(row["Return Type"]),
+    customer_order_id: str(row["Customer Order ID"]),
+    shipment_id: str(row["Shipment ID"]),
+    sku: str(row.SKU),
+    msku: str(row.mSKU),
+    asin: str(row.ASIN),
+    external_id_1: str(row["External ID1"]),
+    external_id_2: str(row["External ID2"]),
+    external_id_3: str(row["External ID3"]),
+    units: toInt(row.Units),
+    forward_leg_tracking_id: str(row["Forward Leg Tracking ID"]),
+    reverse_leg_tracking_id: str(row["Reverse Leg Tracking ID"]),
+    rma_id: str(row["RMA ID"]),
+    return_status: str(row["Return Status"]),
+    carrier: str(row.Carrier),
+    // Column name has a stray space in the MIS table itself: "Pick -up date".
+    pickup_date: parseDDMonYY(row["Pick -up date"]),
+    last_updated_on: parseDDMonYY(row["Last Updated On"]),
+    returned_with_otp: str(row["Returned with OTP"]),
+    days_in_transit: toInt(row["Days In-transit"]),
+    days_since_return_complete: toInt(row["Days Since Return Complete"]),
+    raw: row,
+  };
+}
+
+// -> parseOrderReport's shape in flipkartReportUpload.ts. fk_orders already
+// uses the same snake_case column convention (not hyphenated), so this is
+// mostly a straight field copy plus id-tag stripping and numeric coercion.
+function mapMisFkOrderRow(row: RawRow) {
+  const orderDateRaw = str(row.order_date);
+  return {
+    order_item_id: cleanTag(row.order_item_id),
+    order_id: cleanTag(row.order_id),
+    fulfilment_source: str(row.fulfilment_source),
+    fulfilment_type: str(row.fulfilment_type),
+    order_date: dateOnly(orderDateRaw),
+    order_datetime: orderDateRaw || null,
+    order_approval_date: str(row.order_approval_date) || null,
+    order_item_status: str(row.order_item_status),
+    sku: cleanTag(row.sku),
+    fsn: cleanTag(row.fsn),
+    product_title: cleanTag(row.product_title),
+    quantity: toInt(row.quantity),
+    delivery_logistics_partner: str(row.delivery_logistics_partner),
+    pickup_logistics_partner: str(row.pickup_logistics_partner),
+    delivery_tracking_id: cleanTag(row.delivery_tracking_id),
+    order_cancellation_date: dateOnly(row.order_cancellation_date),
+    cancellation_reason: str(row.cancellation_reason),
+    cancellation_sub_reason: str(row.cancellation_sub_reason),
+    order_return_approval_date: dateOnly(row.order_return_approval_date),
+    return_id: cleanTag(row.return_id),
+    return_reason: str(row.return_reason),
+    return_sub_reason: str(row.return_sub_reason),
+    dispatched_date: dateOnly(row.dispatched_date),
+    order_delivery_date: dateOnly(row.order_delivery_date),
+    dispatch_sla_breached: str(row.dispatch_sla_breached),
+    delivery_sla_breached: str(row.delivery_sla_breached),
+    raw: row,
+  };
+}
+
+// -> parseReturnsReport's shape.
+function mapMisFkReturnRow(row: RawRow) {
+  return {
+    order_id: str(row["Order ID"]),
+    order_item_id: str(row["Order Item ID"]),
+    return_id: str(row["Return ID"]),
+    sku: str(row.SKU),
+    fsn: str(row.FSN),
+    product_title: str(row.Product),
+    total_price: toNum(row["Total Price"]),
+    quantity: toInt(row.Quantity),
+    ff_type: str(row["FF Type"]),
+    return_requested_date: parseDDMonYY(row["Return Requested Date"]),
+    return_approval_date: parseDDMonYY(row["Return Approval Date"]),
+    completed_date: parseDDMonYY(row["Completed Date"]),
+    return_status: str(row["Return Status"]),
+    completion_status: str(row["Completion Status"]),
+    return_type: str(row["Return Type"]),
+    return_reason: str(row["Return Reason"]),
+    return_sub_reason: str(row["Return Sub-reason"]),
+    location_name: str(row["Location Name"]),
+    raw: row,
+  };
+}
+
+// ── public fetchers — one per table pair, mirroring fetchAllRows's
+// (apply) => filtered-rows signature ────────────────────────────────────────
+
+export async function fetchMisAmazonOrders(apply: ApplyFn): Promise<ReturnType<typeof mapMisAmazonOrderRow>[]> {
+  const rows = await fetchAllRows("amazon_orders", (q) => q);
+  return applyMemoryFilter(rows.map(mapMisAmazonOrderRow), apply);
+}
+
+export async function fetchMisAmazonReturns(apply: ApplyFn): Promise<ReturnType<typeof mapMisAmReturnRow>[]> {
+  const rows = await fetchAllRows("amazon_returns", (q) => q);
+  return applyMemoryFilter(rows.map(mapMisAmReturnRow), apply);
+}
+
+export async function fetchMisFbaReturns(apply: ApplyFn): Promise<ReturnType<typeof mapMisFbaReturnRow>[]> {
+  const rows = await fetchAllRows("amazon_fba_returns", (q) => q);
+  return applyMemoryFilter(rows.map(mapMisFbaReturnRow), apply);
+}
+
+export async function fetchMisSellerFlexReturns(apply: ApplyFn): Promise<ReturnType<typeof mapMisSfReturnRow>[]> {
+  const rows = await fetchAllRows("amazon_seller_flex_return", (q) => q);
+  return applyMemoryFilter(rows.map(mapMisSfReturnRow), apply);
+}
+
+export async function fetchMisFkOrders(apply: ApplyFn): Promise<ReturnType<typeof mapMisFkOrderRow>[]> {
+  const rows = await fetchAllRows("fk_orders", (q) => q);
+  return applyMemoryFilter(rows.map(mapMisFkOrderRow), apply);
+}
+
+export async function fetchMisFkReturns(apply: ApplyFn): Promise<ReturnType<typeof mapMisFkReturnRow>[]> {
+  const rows = await fetchAllRows("fk_returns", (q) => q);
+  return applyMemoryFilter(rows.map(mapMisFkReturnRow), apply);
+}

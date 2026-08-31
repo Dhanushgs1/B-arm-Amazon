@@ -10,6 +10,7 @@ import { resolveSellerMateKey } from "@/lib/adAlerts";
 import { buildWeeklySalesWorkbookFromHistorical } from "@/lib/weeklySalesExport";
 import { fetchAllRows } from "@/lib/historicalAnalysisReportExport";
 import { istDayWindowUtc, isStandardOrderId } from "@/lib/amazonReportShared";
+import { fetchMisAmazonOrders } from "@/lib/misAdapters";
 import { categorizeTitle, resolveProductName } from "@/lib/categoryMap";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
 import * as XLSX from "xlsx-js-style";
@@ -62,7 +63,7 @@ async function retailMapBySku(start: string, end: string) {
   // Report XLSX by exactly the boundary orders.
   const window = istDayWindowUtc(start, end);
   const [rows, priceRows] = await Promise.all([
-    fetchAllRows("barm_amazon_am_orders", (q) => q.gte("purchase_datetime", window.gte).lt("purchase_datetime", window.lt)),
+    fetchMisAmazonOrders((q) => q.gte("purchase_datetime", window.gte).lt("purchase_datetime", window.lt)),
     fetchAllRows("barm_amazon_price_listing", (q) => q),
   ]);
   const listingPriceBySku = new Map<string, number>();

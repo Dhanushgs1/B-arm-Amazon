@@ -2,6 +2,7 @@ import * as XLSX from "xlsx-js-style";
 import { mcp } from "@/lib/api";
 import { resolveProductName } from "@/lib/categoryMap";
 import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
+import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns } from "@/lib/misAdapters";
 
 // ── Analysis Report (Ad Performance) ────────────────────────────────────────
 // Recreates the per-product "Analysis report" sheet from the seller's manual
@@ -380,10 +381,10 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
     spRows30, orderRows30, amReturnRows30, fbaReturnRows30, sfReturnRows30, inventory, catalog,
   ] = await Promise.all([
     fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", start30).lte("report_date", end)),
-    fetchAllRows("barm_amazon_am_orders", (q) => q.gte("purchase_datetime", win30Ist.gte).lt("purchase_datetime", win30Ist.lt)),
-    fetchAllRows("barm_amazon_am_returns", (q) => q.gte("return_request_date", start30).lte("return_request_date", end)),
-    fetchAllRows("barm_amazon_fba_returns", (q) => q.gte("return_date", win30Ist.gte).lt("return_date", win30Ist.lt)),
-    fetchAllRows("barm_amazon_sf_return", (q) => q.gte("pickup_date", start30).lte("pickup_date", end)),
+    fetchMisAmazonOrders((q) => q.gte("purchase_datetime", win30Ist.gte).lt("purchase_datetime", win30Ist.lt)),
+    fetchMisAmazonReturns((q) => q.gte("return_request_date", start30).lte("return_request_date", end)),
+    fetchMisFbaReturns((q) => q.gte("return_date", win30Ist.gte).lt("return_date", win30Ist.lt)),
+    fetchMisSellerFlexReturns((q) => q.gte("pickup_date", start30).lte("pickup_date", end)),
     fetchInventoryByLocation(call, baseArgs).catch(() => []),
     fetchFullCatalog(call, baseArgs).catch(() => []),
   ]);

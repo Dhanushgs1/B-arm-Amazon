@@ -1,6 +1,7 @@
 import * as XLSX from "xlsx-js-style";
 import { fetchAllRows, isGenuineAmReturn, isGenuineFbaReturn } from "@/lib/historicalAnalysisReportExport";
 import { istDayWindowUtc, istDateOnly, isStandardOrderId } from "@/lib/amazonReportShared";
+import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns } from "@/lib/misAdapters";
 import { categorizeTitle, resolveProductName, CATEGORY_COLORS } from "@/lib/categoryMap";
 
 // SKU-wise sibling of amazonSalesExport.ts's buildAmazonSalesWorkbook, built for the Weekly
@@ -76,9 +77,9 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
   // Fetch every relevant row once across the combined 2-week span, split by date in memory below —
   // same "fetch once, filter twice" approach historicalAnalysisReportExport.ts uses for its 30/7-day windows.
   const [orderRows, amReturnRows, fbaReturnRows, priceListingRows, ledgerRows, adRows] = await Promise.all([
-    fetchAllRows("barm_amazon_am_orders", (q) => q.gte("purchase_datetime", ordersWindow.gte).lt("purchase_datetime", ordersWindow.lt)),
-    fetchAllRows("barm_amazon_am_returns", (q) => q.gte("return_request_date", lastWeek.start).lte("return_request_date", thisWeek.end)),
-    fetchAllRows("barm_amazon_fba_returns", (q) =>
+    fetchMisAmazonOrders((q) => q.gte("purchase_datetime", ordersWindow.gte).lt("purchase_datetime", ordersWindow.lt)),
+    fetchMisAmazonReturns((q) => q.gte("return_request_date", lastWeek.start).lte("return_request_date", thisWeek.end)),
+    fetchMisFbaReturns((q) =>
       q.gte("return_date", fbaReturnsWindow.gte).lt("return_date", fbaReturnsWindow.lt)
     ),
     fetchAllRows("barm_amazon_price_listing", (q) => q),

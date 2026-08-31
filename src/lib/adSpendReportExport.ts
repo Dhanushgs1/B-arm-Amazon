@@ -1,5 +1,6 @@
 import * as XLSX from "xlsx-js-style";
 import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
+import { fetchMisAmazonOrders, fetchMisFkOrders } from "@/lib/misAdapters";
 import { upsertInChunks } from "@/lib/amazonReportUpload";
 import { resolveProductName } from "@/lib/categoryMap";
 import { fetchProductMasterNameMap } from "@/lib/productMasterUpload";
@@ -166,7 +167,7 @@ export async function fetchAmazonProducts(
     // No "id" column on this hand-maintained mapping table — order by its
     // natural key instead (fetchAllRows would otherwise error on "id").
     fetchAllRows("barm_amazon_campaign_sku_map", (q) => q, ["campaign_name", "sku"]),
-    fetchAllRows("barm_amazon_am_orders", (q) => q.gte("purchase_datetime", rangeIst.gte).lt("purchase_datetime", rangeIst.lt)),
+    fetchMisAmazonOrders((q) => q.gte("purchase_datetime", rangeIst.gte).lt("purchase_datetime", rangeIst.lt)),
     fetchAllRows("barm_amazon_price_listing", (q) => q),
   ]);
   // Amazon's own orders export can carry a literal duplicate line (every
@@ -356,7 +357,7 @@ export async function fetchFlipkartProducts(
 }> {
   const [fsnRows, orderRowsRaw, earnRows, listingRows] = await Promise.all([
     fetchAllRows("barm_flipkart_fsn_report", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
-    fetchAllRows("barm_flipkart_order_report", (q) => q.gte("order_date", range.start).lte("order_date", endDate)),
+    fetchMisFkOrders((q) => q.gte("order_date", range.start).lte("order_date", endDate)),
     fetchAllRows("barm_flipkart_earn_more", (q) => q.gte("order_date", range.start).lte("order_date", endDate)).catch(() => []),
     fetchAllRows("barm_flipkart_listings", (q) => q).catch(() => []),
   ]);

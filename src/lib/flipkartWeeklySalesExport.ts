@@ -1,5 +1,6 @@
 import * as XLSX from "xlsx-js-style";
 import { fetchAllRows } from "@/lib/amazonReportShared";
+import { fetchMisFkOrders, fetchMisFkReturns } from "@/lib/misAdapters";
 import { categorizeTitle, resolveProductName, CATEGORY_COLORS } from "@/lib/categoryMap";
 
 // Flipkart's SKU-wise weekly report: last week vs this week, one row per SKU.
@@ -76,8 +77,8 @@ export async function buildFlipkartWeeklySalesWorkbook(opts: {
   // One fetch across the combined 2-week span; each period is a filter over it.
   // Listings is a current snapshot with no date column, so it is fetched whole.
   const [orderRows, returnRows, listingRows, fsnRows] = await Promise.all([
-    fetchAllRows("barm_flipkart_order_report", (q) => q.gte("order_date", lastWeek.start).lte("order_date", thisWeek.end)),
-    fetchAllRows("barm_flipkart_returns", (q) =>
+    fetchMisFkOrders((q) => q.gte("order_date", lastWeek.start).lte("order_date", thisWeek.end)),
+    fetchMisFkReturns((q) =>
       q.gte("return_requested_date", lastWeek.start).lte("return_requested_date", thisWeek.end)
     ).catch(() => []),
     fetchAllRows("barm_flipkart_listings", (q) => q).catch(() => []),
