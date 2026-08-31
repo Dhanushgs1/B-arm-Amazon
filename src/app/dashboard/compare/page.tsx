@@ -10,7 +10,7 @@ import { motion } from "framer-motion";
 import { ScoreRing } from "@/components/ScoreRing";
 import { QueryErrorState } from "@/components/QueryErrorState";
 import { useDashboard } from "@/lib/DashboardContext";
-import { mcp, fetchUnifiedDailyTrend, type UnifiedTrendPoint } from "@/lib/api";
+import { mcp, mcpAllPages, fetchUnifiedDailyTrend, type UnifiedTrendPoint } from "@/lib/api";
 import { generateMarketplaceOverview, generateMarketplaceRules, MARKETPLACE_META, computeGrowthPct, type MarketplaceId } from "@/lib/marketplace";
 import { fetchFlipkartOverview } from "@/lib/flipkartData";
 import { Loader2, Trophy, TrendingUp, TrendingDown, ArrowRight, FlaskConical, ShieldCheck, Wand2, ShoppingBag, DollarSign, Package, CheckCircle2, Sliders, Sparkles, Brain, Zap, Bot, GitCompare } from "lucide-react";
@@ -50,9 +50,13 @@ export default function ComparePage() {
   const currencySymbol = account?.currency === "USD" ? "$" : "₹";
   const cur = curWith(currencySymbol);
 
-  const { data: retailData, isLoading: retailLoading, isError: retailError, refetch: refetchRetail } = useQuery({
+  // Every page of retail rows, not just the first 200 — and the Amazon-side totals below are
+  // SUMMED from each row's own totalSales/adSales/adSpend, never trusted from this endpoint's
+  // `summary` object, which was found to disagree badly with the true total for at least one
+  // account/date-range (same bug fixed in the main Overview dashboard).
+  const { data: retailRows, isLoading: retailLoading, isError: retailError, refetch: refetchRetail } = useQuery({
     queryKey: ["compare_retail", keySlot, account?.id, startDate, endDate],
-    queryFn: () => mcp("get_retail_product_performance", { ...baseArgs, page_size: 200 }, keySlot),
+    queryFn: () => mcpAllPages("get_retail_product_performance", baseArgs, keySlot),
     enabled: !!account,
   });
 
@@ -86,19 +90,21 @@ export default function ComparePage() {
   const rows: Row[] = useMemo(() => {
     if (!startDate || !endDate) return [];
 
-    const rs = retailData?.summary || {};
-    const amazonUnits = rs.totalUnitsOrdered || 0;
-    const amazonSales = rs.totalSales || 0;
-    const amazonOrders = rs.totalOrders || Math.round(amazonUnits / 1.3);
+    let amazonSales = 0, amazonAdSales = 0, amazonAdSpend = 0, amazonUnits = 0;
+    for (const r of retailRows || []) {
+      amazonSales += r.totalSales || 0;
+      amazonAdSales += r.adSales || 0;
+      amazonAdSpend += r.adSpend || 0;
+      amazonUnits += r.unitsOrdered || 0;
+    }
+    const amazonOrders = Math.round(amazonUnits / 1.3);
     const amazonReturns = (returnsData || []).length;
     const amazonReturnRate = amazonUnits > 0 ? (amazonReturns / amazonUnits) * 100 : 0;
     const amazonGrowth = computeGrowthPct((dailyTrend || []).map((d) => d.overallSales || 0));
 
-    const amazonAdSpend = rs.totalAdSpend || 0;
-    const amazonAdSales = rs.totalAdSales || 0;
-    const amazonAcos = rs.overallAcos || 0;
-    const amazonRoas = rs.overallRoas || 0;
-    const amazonTacos = rs.overallTacos || 0;
+    const amazonAcos = amazonAdSales > 0 ? (amazonAdSpend / amazonAdSales) * 100 : 0;
+    const amazonRoas = amazonAdSpend > 0 ? amazonAdSales / amazonAdSpend : 0;
+    const amazonTacos = amazonSales > 0 ? (amazonAdSpend / amazonSales) * 100 : 0;
 
     const flipkartDemo = generateMarketplaceOverview("flipkart", startDate, endDate);
     const hasRealFlipkart = flipkartReal && (flipkartReal.grossSales > 0 || flipkartReal.adSpend > 0);
@@ -150,7 +156,7 @@ export default function ComparePage() {
         tacos: flipkartTacos
       },
     ];
-  }, [retailData, dailyTrend, returnsData, flipkartReal, startDate, endDate]);
+  }, [retailRows, dailyTrend, returnsData, flipkartReal, startDate, endDate]);
 
 
   const scored = useMemo(() => {

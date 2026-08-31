@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { useRouter } from "next/navigation";
 import { useDashboard } from "@/lib/DashboardContext";
-import { mcp, mcpAllInventory, fetchUnifiedDailyTrend, aggregateTrend } from "@/lib/api";
+import { mcp, mcpAllPages, mcpAllInventory, fetchUnifiedDailyTrend, aggregateTrend } from "@/lib/api";
 import { fetchMissingCampaignHistory, injectMissingCampaignsAsPaused } from "@/lib/campaignPersistence";
 import { KPICard } from "@/components/KPICard";
 import { QueryErrorState } from "@/components/QueryErrorState";
@@ -97,9 +97,16 @@ export default function DashboardOverview() {
     enabled: !!account,
   });
 
-  const { data: retailData } = useQuery({
+  // Every page of retail rows, not just the first 200 — and the KPI totals below are SUMMED
+  // from each row's own totalSales/adSales/adSpend, never trusted from this endpoint's
+  // `summary` object. For at least one account/date-range, get_retail_product_performance's
+  // summary.totalSales disagreed badly with the true total (confirmed against the exported
+  // weekly report, which already sums per-ASIN rows the same way) — it read as "Total Sales =
+  // Organic + Ads double-counted" on the KPI cards even though that's just how organicSales is
+  // defined; the real bug was trusting an inflated summary.totalSales in the first place.
+  const { data: retailRows } = useQuery({
     queryKey: ["retail", keySlot, account?.id, startDate, endDate],
-    queryFn: () => mcp("get_retail_product_performance", { ...baseArgs, page_size: 200 }, keySlot),
+    queryFn: () => mcpAllPages("get_retail_product_performance", baseArgs, keySlot),
     enabled: !!account,
   });
 
@@ -152,7 +159,17 @@ export default function DashboardOverview() {
   });
 
   const s = cpData?.summary || {};
-  const rs = retailData?.summary || {};
+  const rs = useMemo(() => {
+    let totalSales = 0, totalAdSales = 0, totalAdSpend = 0, totalUnitsOrdered = 0;
+    for (const r of retailRows || []) {
+      totalSales += r.totalSales || 0;
+      totalAdSales += r.adSales || 0;
+      totalAdSpend += r.adSpend || 0;
+      totalUnitsOrdered += r.unitsOrdered || 0;
+    }
+    const overallTacos = totalSales > 0 ? (totalAdSpend / totalSales) * 100 : 0;
+    return { totalSales, totalAdSales, totalAdSpend, totalUnitsOrdered, overallTacos };
+  }, [retailRows]);
   const ctr = s.totalImpressions ? (s.totalClicks / s.totalImpressions) * 100 : 0;
   const cpc = s.totalClicks ? s.totalSpend / s.totalClicks : 0;
   const cvr = s.totalClicks ? (s.totalOrders / s.totalClicks) * 100 : 0;
@@ -738,7 +755,7 @@ Write 6 tagged insight lines now:`;
 
       {/*  Category Performance  */}
       <div>
-        <CategoryPerformance retailRows={retailData?.data || []} currency={currency} totalAdSpend={rs.totalAdSpend} />
+        <CategoryPerformance retailRows={retailRows || []} currency={currency} totalAdSpend={rs.totalAdSpend} />
 
         <div className="mt-4 flex justify-end">
           <button 
