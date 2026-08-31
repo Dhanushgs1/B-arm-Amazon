@@ -32,6 +32,14 @@ const STOPWORDS = new Set([
   // that product's title happens to mention a "Hot & Cold Therapy Belt".
   "hot", "cold", "must", "have", "haves", "home", "best", "easy", "great", "perfect", "ideal",
   "quality", "premium", "portable", "your", "moms", "mom", "safe", "soft", "comfort", "gift",
+  // Audience/gender and generic component words — same problem as kid/kids/baby/adult above,
+  // just missed the first pass. Caught in a real export: "std test kit for women" and "tampons
+  // with applicator" both stayed Positive with zero orders purely because this account's own
+  // listing titles are keyword-stuffed with "...for women..." and "...long range applicator..."
+  // — neither word says anything about THIS product specifically, so on their own they can't be
+  // trusted as an own-product relevance signal (same reasoning STOPWORDS already applies to
+  // "device"/"combo"/"set" for generic components, and "kid"/"baby"/"adult" for demographics).
+  "women", "woman", "men", "man", "applicator", "applicators",
 ]);
 
 // Short (<4 char) tokens that are still distinctive enough to trust, unlike most short words.
