@@ -40,6 +40,18 @@ const STOPWORDS = new Set([
   // trusted as an own-product relevance signal (same reasoning STOPWORDS already applies to
   // "device"/"combo"/"set" for generic components, and "kid"/"baby"/"adult" for demographics).
   "women", "woman", "men", "man", "applicator", "applicators",
+  // Same fanout test applied account-wide: fetched every one of B-ARM's 105 advertised product
+  // titles and counted how many DISTINCT, unrelated products each word appears in — a word that
+  // shows up across a nebulizer, a suture kit, AND an insemination kit is marketing filler, not a
+  // real product signal, exactly the reasoning above but confirmed with real catalogue data
+  // instead of guessing one product at a time. Anatomical/mechanism words that only recur within
+  // one genuine product family (e.g. "breast"/"nipple"/"lactation", "suture"/"needle"/"thread",
+  // "autism"/"speech"/"sensory", "asthma"/"copd"/"respiratory", "insemination"/"ivi") are
+  // deliberately NOT included here — those ARE a real relevance signal within their own family.
+  "support", "includ", "design", "modes", "digita", "metric", "rechar", "electr", "reusab",
+  "durabl", "natura", "free", "each", "instan", "upgrad", "integr", "accura", "improv",
+  "holder", "stand", "body", "heat", "coolin", "foam", "mesh", "nylon", "plasti", "tool",
+  "cleani", "displa", "medica", "delive", "levels", "relief", "mother",
 ]);
 
 // Short (<4 char) tokens that are still distinctive enough to trust, unlike most short words.
