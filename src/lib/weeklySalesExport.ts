@@ -4,6 +4,7 @@ import { istDayWindowUtc, istDateOnly, isStandardOrderId } from "@/lib/amazonRep
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns } from "@/lib/misAdapters";
 import { categorizeTitle, resolveProductName, CATEGORY_COLORS } from "@/lib/categoryMap";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
+import { fetchMasterSkuidMap, buildMasterSkuidResolver } from "@/lib/masterProductSkuid";
 
 // SKU-wise sibling of amazonSalesExport.ts's buildAmazonSalesWorkbook, built for the Weekly
 // Report email attachment only. Fixed to exactly two periods (last week / this week — the same
@@ -77,7 +78,7 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
 
   // Fetch every relevant row once across the combined 2-week span, split by date in memory below —
   // same "fetch once, filter twice" approach historicalAnalysisReportExport.ts uses for its 30/7-day windows.
-  const [orderRows, amReturnRows, fbaReturnRows, priceListingRows, ledgerRows, adRows, productMaster] = await Promise.all([
+  const [orderRows, amReturnRows, fbaReturnRows, priceListingRows, ledgerRows, adRows, productMaster, masterSkuid] = await Promise.all([
     fetchMisAmazonOrders((q) => q.gte("purchase_datetime", ordersWindow.gte).lt("purchase_datetime", ordersWindow.lt)),
     fetchMisAmazonReturns((q) => q.gte("return_request_date", lastWeek.start).lte("return_request_date", thisWeek.end)),
     fetchMisFbaReturns((q) =>
@@ -97,8 +98,14 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
       q.gte("report_date", lastWeek.start).lte("report_date", thisWeek.end)
     ).catch(() => []),
     fetchProductMasterMap(),
+    fetchMasterSkuidMap(),
   ]);
-  const { resolveName: resolveMasterName, resolveCategory: resolveMasterCategory } = buildProductMasterResolver(productMaster);
+  const { resolveName: resolveBarmName, resolveCategory: resolveBarmCategory } = buildProductMasterResolver(productMaster);
+  const { resolveName: resolveSkuidName, resolveCategory: resolveSkuidCategory } = buildMasterSkuidResolver(masterSkuid);
+  // master_product_skuid is the seller's fullest, most current source — checked first; both
+  // barm_product_master and categoryMap.ts's hardcoded maps only fill in a SKU it doesn't have.
+  const resolveMasterName = (sku: string, fallback: string) => resolveSkuidName(sku, resolveBarmName(sku, fallback));
+  const resolveMasterCategory = (sku: string, fallback: string) => resolveSkuidCategory(sku, resolveBarmCategory(sku, fallback));
 
   // How far the uploaded/MIS-synced orders actually reach. If they stop
   // before the end of "this week", the current week is measured over fewer

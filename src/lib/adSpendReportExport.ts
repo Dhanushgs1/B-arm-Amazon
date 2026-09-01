@@ -4,6 +4,7 @@ import { fetchMisAmazonOrders, fetchMisFkOrders } from "@/lib/misAdapters";
 import { upsertInChunks } from "@/lib/amazonReportUpload";
 import { resolveProductName } from "@/lib/categoryMap";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
+import { fetchMasterSkuidMap, buildMasterSkuidResolver } from "@/lib/masterProductSkuid";
 import { SITE_URL } from "@/lib/siteUrl";
 
 // ── Ad Spend Report ──────────────────────────────────────────────────────────
@@ -798,8 +799,9 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // Fetched once and shared across all three platforms — the seller's own
   // approved SKU -> product name list, checked first before falling back to
   // whatever name shows up on an order/price-listing row (see resolveName).
-  const [master, amz, fk, ms] = await Promise.all([
+  const [master, masterSkuid, amz, fk, ms] = await Promise.all([
     fetchProductMasterMap(),
+    fetchMasterSkuidMap(),
     fetchAmazonProducts(range, endDate),
     fetchFlipkartProducts(range, endDate),
     fetchMeeshoProducts(range, endDate),
@@ -810,7 +812,11 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // buildProductMasterResolver falls back to matching on the SKU's base (see
   // skuBase in productMasterUpload.ts) for these. This only changes which
   // NAME gets displayed — every spend/order figure stays keyed on the exact SKU.
-  const { resolveName } = buildProductMasterResolver(master);
+  // master_product_skuid is the seller's fullest, most current source — checked first;
+  // barm_product_master only fills in a SKU it doesn't have.
+  const { resolveName: resolveBarmName } = buildProductMasterResolver(master);
+  const { resolveName: resolveSkuidName } = buildMasterSkuidResolver(masterSkuid);
+  const resolveName = (sku: string, fallback: string) => resolveSkuidName(sku, resolveBarmName(sku, fallback));
   [amz.products, fk.products, ms.products].forEach((products) => {
     products.forEach((p) => { p.name = resolveName(p.sku, p.name); });
   });
