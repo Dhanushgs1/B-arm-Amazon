@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "audit:amazon-report": "node .claude/skills/amazon-ad-report-audit/scripts/audit_report.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.8",

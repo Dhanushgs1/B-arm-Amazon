@@ -42,7 +42,7 @@ export default function FlipkartReportsPage() {
             ? ""
             : " ⚠ No Listings snapshot uploaded, so Price is 0 and the sales/growth columns are empty — upload the Flipkart listings export and regenerate.") +
           (res.staleDays > 0 && res.dataThrough
-            ? ` ⚠ Orders only go up to ${res.dataThrough}, so "this week" covers just ${7 - res.staleDays} of 7 days and every Growth % reads far more negative than reality. Set the end date to ${res.dataThrough}, or upload newer orders.`
+            ? ` ⚠ Orders only go up to ${res.dataThrough}, so "this week" covers just ${Math.max(0, 7 - res.staleDays)} of 7 days and every Growth % reads far more negative than reality. Set the end date to ${res.dataThrough}, or upload newer orders.`
             : "")
       );
     } catch (err) {

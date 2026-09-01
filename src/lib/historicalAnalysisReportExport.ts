@@ -690,6 +690,22 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   const negativeFinalNote30 = negativeFinalNote((r) => r.wA, "Last 30 days");
   const negativeFinalNote7 = negativeFinalNote((r) => r.wB, "Last 7 days");
 
+  // How far the MIS-synced Orders actually reach. If they stop before the
+  // end of the "Last 7 days" window, that whole block is measured over fewer
+  // real days than 7 — every 7-day Final/CPC/ACOS/TACOS then reads as "no
+  // sales" for a reason that has nothing to do with demand. Same check as
+  // weeklySalesExport.ts's staleDays, applied to this report's own window.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const orderDates = (orderRows as any[]).map((r) => r.purchase_date).filter((d): d is string => !!d).sort();
+  const dataThrough = orderDates.length ? orderDates[orderDates.length - 1] : null;
+  const staleDays = dataThrough
+    ? Math.max(0, Math.round((Date.parse(`${win7.end}T00:00:00Z`) - Date.parse(`${dataThrough}T00:00:00Z`)) / 86_400_000))
+    : 0;
+  const staleDataNote =
+    staleDays > 0 && dataThrough
+      ? `⚠ READ THIS FIRST — the uploaded/synced Orders data only reaches ${dotDate(dataThrough)}, but "Last 7 days" runs to ${dotDate(win7.end)}. So the 7-day block above is measured over ${Math.max(0, 7 - staleDays)} day(s) of real order data, not 7 — any SKU showing 0 Orders/Returns/Final there most likely just has no synced data for those missing days, not zero sales. The 30-day block and Spend+Tax/Advertised Units figures are unaffected (ad spend and the 30-day window aren't gated by this). Either sync/upload newer orders, or set the dashboard end date to ${dotDate(dataThrough)} and regenerate.`
+      : null;
+
   const buildAvailCells = (m: SkuMeta): (string | number)[] => {
     if (!m.isFba && m.fbaTotal <= 0) return ["0", "", "", "", ""];
     const withStock = [...m.stateBalances.entries()].filter(([, v]) => v > 0).map(([st]) => st).sort();
@@ -1531,6 +1547,27 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   // (ship_state on the 30-day Orders export) so each state gets an actual
   // verdict — stockout risk / overstock / healthy — not just a number.
   // ═══════════════════════════════════════════════════════════════════════
+  // ship_state arrives as whatever the buyer's address form produced —
+  // abbreviations (TN, WB, DL, UP, MP, BR, AR, TG), missing spaces
+  // (TAMILNADU, WESTBENGAL) and outright misspellings (HARAYANA, TELENGANA,
+  // CHATTISGARH) all appear alongside the canonical full name. Left
+  // unnormalised, each variant got its own StateAgg row — splitting one
+  // state's real demand into slivers that then read as separate stockouts
+  // instead of being netted against that state's actual FBA stock.
+  const STATE_ALIASES: Record<string, string> = {
+    TN: "TAMIL NADU", TAMILNADU: "TAMIL NADU",
+    WB: "WEST BENGAL", WESTBENGAL: "WEST BENGAL",
+    DL: "DELHI",
+    UP: "UTTAR PRADESH", "U.P.": "UTTAR PRADESH",
+    MP: "MADHYA PRADESH",
+    BR: "BIHAR",
+    AR: "ARUNACHAL PRADESH",
+    TG: "TELANGANA", TELENGANA: "TELANGANA",
+    HARAYANA: "HARYANA",
+    CHATTISGARH: "CHHATTISGARH",
+  };
+  const normalizeShipState = (raw: string): string => STATE_ALIASES[raw] || raw;
+
   interface StateAgg { stockUnits: number; stockValue: number; skuCount: number; orderUnits: number; orderCount: number; }
   const stateAgg = new Map<string, StateAgg>();
   const ensureState = (st: string): StateAgg => {
@@ -1552,8 +1589,9 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows.forEach((r: any) => {
-    const st = String(r.ship_state || "").trim().toUpperCase();
-    if (!st) return;
+    const raw = String(r.ship_state || "").trim().toUpperCase();
+    if (!raw) return;
+    const st = normalizeShipState(raw);
     const a = ensureState(st);
     a.orderUnits += r.quantity || 0;
     a.orderCount += 1;
@@ -1689,6 +1727,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     [`Last 7 days: ${dotDate(win7.start)} to ${dotDate(win7.end)}`],
     [`Data pulled at: ${dataPulledAt} (compare this against the Weekly Sales Report's own "Data pulled at" — the two files disagree on a SKU whenever they were generated far enough apart to see different uploads, not because either one is wrong).`],
     [""],
+    ...(staleDataNote ? [[staleDataNote]] : []),
     ["Every figure here comes from the manually uploaded reports (Upload Reports page). The live SellerMate API is NOT called at all — not for spend, orders, returns, price, channel or FBA stock. That is what lets both trailing windows be recomputed from a fixed historical upload instead of only 'as of today', and it means a missing upload shows up as missing data (flagged below) rather than being filled in with today's snapshot."],
     ["Analysis report / TACOS sheets: both windows always end on the same date and are recomputed from the SAME 30-day fetch — the 7-day block is simply the last 7 days of that data, not a separate query."],
     ["GRAIN — the Analysis report has ONE ROW PER CAMPAIGN x SKU. Only Spend+Tax and Advertised SKU Units are per-campaign. Total Units, Orders and Returns belong to the SKU (Amazon reports them per SKU, never per campaign), so a SKU advertised by two campaigns — most commonly one campaign per fulfillment channel, e.g. an FBA campaign and an MFN campaign for the same SKU — shows the SAME Orders/Returns on BOTH of its rows. Summing this sheet's Orders column therefore double-counts every such SKU (looks like ~2x for a dual-channel SKU with exactly one campaign per channel). For a genuine per-SKU total, either read the GRAND TOTAL row (which deliberately sums Orders/Returns/Total Units over distinct SKUs, not over rows, and so will not equal a plain SUM() of the column above it) or the TACOS sheet, which is already one row per SKU."],

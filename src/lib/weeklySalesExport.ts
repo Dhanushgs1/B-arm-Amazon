@@ -97,6 +97,17 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
     ).catch(() => []),
   ]);
 
+  // How far the uploaded/MIS-synced orders actually reach. If they stop
+  // before the end of "this week", the current week is measured over fewer
+  // days than the one it's compared against, and every Growth % reads
+  // catastrophically negative for no reason other than missing data — see
+  // the identical check in flipkartWeeklySalesExport.ts, which this mirrors.
+  const orderDates = orderRows.map((r) => r.purchase_date).filter((d): d is string => !!d).sort();
+  const dataThrough = orderDates.length ? orderDates[orderDates.length - 1] : null;
+  const staleDays = dataThrough
+    ? Math.max(0, Math.round((Date.parse(`${thisWeek.end}T00:00:00Z`) - Date.parse(`${dataThrough}T00:00:00Z`)) / 86_400_000))
+    : 0;
+
   // Uploaded Price/Listing snapshot, keyed by SKU. Two uses: filling in a shelf price for a period
   // where a SKU had zero orders, and standing in for an order row whose own price came through as 0.
   const catalogPriceBySku = new Map<string, number>();
@@ -1950,6 +1961,9 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
       [`Last week: ${lastLabel}    This week: ${thisLabel}`],
       [`Data pulled at: ${dataPulledAt} (compare against the Historical Analysis Report's own "Data pulled at" — a per-SKU difference between the two files is expected, not a bug, when they were generated far enough apart to see different uploads).`],
       [""],
+      ...(staleDays > 0
+        ? [[`⚠ READ THIS FIRST — the uploaded/synced Orders data only reaches ${fmtDot(dataThrough!)}, but "this week" runs to ${fmtDot(thisWeek.end)}. So this week is measured over ${Math.max(0, 7 - staleDays)} day(s) of data against a full 7 for last week, and EVERY Growth % below is therefore far more negative than reality. This is missing data, not falling demand. Either sync/upload newer orders, or set the dashboard end date to ${fmtDot(dataThrough!)} and regenerate.`]]
+        : []),
       ["Orders/returns are bucketed by IST calendar day (purchase_datetime / return_date shifted +5:30), matching the Historical Analysis Report's convention, not by the raw UTC date — an order or return from the last ~5.5 hours of the UTC day would otherwise land on the wrong day in one report but not the other."],
       ["Total Orders = Orders − All Returns, left UNCLAMPED — it can go negative for a SKU that had a return recorded this period with no matching order in it (the order belongs to an earlier period). Matches the Historical Analysis Report's 'Final' column, which is unclamped for the same reason."],
     ]);
@@ -1959,7 +1973,7 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
   }
 
   const filename = `Amazon_Weekly_Sales_Report_${lastWeek.start}_to_${thisWeek.end}.xlsx`;
-  return { wb, filename };
+  return { wb, filename, dataThrough, staleDays };
 }
 
 // Browser entry point (Upload Reports page) — same "this week vs last week" windows the email
@@ -1986,7 +2000,7 @@ export async function exportWeeklySalesReport(opts?: { endDate?: string }) {
   const thisWeek = { start: isoLocal(thisStart), end };
   const lastWeek = { start: isoLocal(lastStart), end: isoLocal(lastEnd) };
 
-  const { wb, filename } = await buildWeeklySalesWorkbookFromHistorical({ thisWeek, lastWeek });
+  const { wb, filename, dataThrough, staleDays } = await buildWeeklySalesWorkbookFromHistorical({ thisWeek, lastWeek });
   XLSX.writeFile(wb, filename);
-  return { filename, thisWeek, lastWeek };
+  return { filename, thisWeek, lastWeek, dataThrough, staleDays };
 }

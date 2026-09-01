@@ -44,7 +44,12 @@ export default function ReportsPage() {
     setWeeklyGenerating(true); setWeeklyMsg(null);
     try {
       const res = await exportWeeklySalesReport({ endDate: endDate || undefined });
-      setWeeklyMsg(`Downloaded ${res.filename} (${res.lastWeek.start} to ${res.thisWeek.end}).`);
+      setWeeklyMsg(
+        `Downloaded ${res.filename} (${res.lastWeek.start} to ${res.thisWeek.end}).` +
+          (res.staleDays > 0 && res.dataThrough
+            ? ` ⚠ Orders only go up to ${res.dataThrough}, so "this week" covers just ${Math.max(0, 7 - res.staleDays)} of 7 days and every Growth % reads far more negative than reality. Set the end date to ${res.dataThrough}, or sync/upload newer orders.`
+            : "")
+      );
     } catch (err) {
       setWeeklyMsg("Failed: " + (err instanceof Error ? err.message : String(err)));
     } finally { setWeeklyGenerating(false); }

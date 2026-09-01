@@ -317,33 +317,54 @@ async function parseFsnReport(file: File): Promise<ParsedUpload> {
     : parseFsnReportCsv(file);
 }
 
+/** Parses one CSV line into its cells, quote-aware (a plain split(",") would
+ *  break on a quoted header cell containing a comma). */
+function csvHeaderCells(line: string): string[] {
+  // Cast: same Papa overload-resolution quirk noted below on the full-file
+  // parse — a plain string input still resolves to the async signature.
+  const result = Papa.parse<string[]>(line) as unknown as { data: string[][] };
+  return (result.data[0] || []).map((c) => normalizeHeaderKey(c));
+}
+
 /**
- * FSN (ad performance) CSV. Layout:
+ * FSN (ad performance) CSV — two layouts seen from the seller:
  *
+ * Single-day (Flipkart's own per-day download):
  *   Start Time, 2026-07-30 00:00:00
  *   End Time, 2026-07-30 23:59:59
  *   Campaign ID,Campaign Name,AdGroup ID,...
- *   <data>
+ *   <data, no per-row date>
+ * The whole file is one calendar day, taken from the Start Time line.
  *
- * The whole file is one calendar day, taken from the Start Time line — the data
- * rows themselves carry no date, so a file uploaded without that preamble is
- * rejected rather than silently dated today.
+ * Multi-day (a backfill export covering a date range, same shape as the
+ * "Spend" sheet parseFsnReportXlsx reads — see there):
+ *   Date,Campaign ID,Campaign Name,AdGroup ID,...
+ *   <data, dated per row by its own "Date" cell>
+ * Distinguished by the header row itself carrying a "Date" column — if it
+ * doesn't, this is the single-day layout and the "Start Time" preamble is the
+ * only place a date exists, so a file uploaded without it is rejected rather
+ * than silently dated today.
  */
 async function parseFsnReportCsv(file: File): Promise<ParsedUpload> {
   const text = await file.text();
   const lines = text.split(/\r?\n/);
-  const headerIdx = lines.findIndex((l) => /^\s*"?Campaign ID"?\s*,/i.test(l));
+  const headerIdx = lines.findIndex((l) => csvHeaderCells(l).includes("campaign id"));
   if (headerIdx < 0) {
     throw new Error("Not an FSN report — no 'Campaign ID' header row found.");
   }
-  const preamble = lines.slice(0, headerIdx).join("\n");
-  const startMatch = /start\s*time\s*,\s*"?(\d{4}-\d{2}-\d{2})/i.exec(preamble);
-  if (!startMatch) {
-    throw new Error(
-      "FSN report has no 'Start Time' line — that line is the only place the report date exists, so the file can't be dated."
-    );
+  const hasDateColumn = csvHeaderCells(lines[headerIdx]).includes("date");
+
+  let singleDayDate: string | null = null;
+  if (!hasDateColumn) {
+    const preamble = lines.slice(0, headerIdx).join("\n");
+    const startMatch = /start\s*time\s*,\s*"?(\d{4}-\d{2}-\d{2})/i.exec(preamble);
+    if (!startMatch) {
+      throw new Error(
+        "FSN report has no 'Start Time' line — that line is the only place the report date exists, so the file can't be dated."
+      );
+    }
+    singleDayDate = startMatch[1];
   }
-  const reportDate = startMatch[1];
 
   // Cast: Papa's overloads resolve a config carrying `transformHeader` to the
   // async LocalFile signature (which returns void), even though the input here
@@ -357,7 +378,7 @@ async function parseFsnReportCsv(file: File): Promise<ParsedUpload> {
   const parsedRows = parsed.data.map((r) => {
     const p = makePicker(r);
     return {
-      report_date: reportDate,
+      report_date: singleDayDate ?? toDate(p("Date")),
       campaign_id: clean(p("Campaign ID")),
       campaign_name: str(p("Campaign Name")),
       adgroup_id: clean(p("AdGroup ID", "Ad Group ID")),
@@ -375,14 +396,13 @@ async function parseFsnReportCsv(file: File): Promise<ParsedUpload> {
       raw: r,
     };
   });
-  const rows = parsedRows.filter((r) => r.campaign_id || r.sku_id);
-  const dropped = parsedRows.filter((r) => !(r.campaign_id || r.sku_id) && r.ad_spend > 0);
+  const rows = parsedRows.filter((r) => r.report_date && (r.campaign_id || r.sku_id));
+  const dropped = parsedRows.filter((r) => !(r.report_date && (r.campaign_id || r.sku_id)) && r.ad_spend > 0);
 
   return {
     rows,
     totalRows: parsed.data.length,
-    minDate: reportDate,
-    maxDate: reportDate,
+    ...(singleDayDate ? { minDate: singleDayDate, maxDate: singleDayDate } : dateBounds(rows, "report_date")),
     droppedWithSpend: dropped.length ? { count: dropped.length, totalSpend: dropped.reduce((s, r) => s + r.ad_spend, 0) } : undefined,
   };
 }

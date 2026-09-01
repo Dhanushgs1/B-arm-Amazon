@@ -12,6 +12,7 @@ import {
   type FlipkartReportDataInfo,
 } from "@/lib/flipkartReportUpload";
 import { staleness } from "@/lib/dataFreshness";
+import { fetchAllMisFlipkartReportDataInfo } from "@/lib/misAdapters";
 
 // Only fsn_report feeds the Ad Spend Report's Flipkart spend total — the
 // combined "Last 7 days" one-file upload does NOT (see combinedAdSpendUpload.ts),
@@ -27,6 +28,12 @@ const AD_SPEND_REPORT_TYPE: FlipkartUploadReportType = "fsn_report";
 // untouched) — this only removes the path to upload new files through this UI.
 const CORE_REPORT_TYPES: FlipkartUploadReportType[] = ["fsn_report"];
 const DETAIL_REPORT_TYPES: FlipkartUploadReportType[] = ["order_report", "returns"];
+// These 2 report types' report-generation call sites (adSpendReportExport.ts,
+// flipkartWeeklySalesExport.ts) already read from the MIS feed (fk_orders /
+// fk_returns), not the barm_flipkart_order_report / barm_flipkart_returns
+// CSV-upload tables — so once the MIS lookup succeeds, refreshMeta below
+// overwrites just these two cards' info with the MIS numbers.
+const MIS_BACKED_TYPES: FlipkartUploadReportType[] = ["order_report", "returns"];
 // Current-moment snapshot (no date column) — mirrors Amazon's "Price & Inventory" group.
 const SNAPSHOT_REPORT_TYPES: FlipkartUploadReportType[] = ["listings"];
 const REPORT_TYPES: FlipkartUploadReportType[] = [...CORE_REPORT_TYPES, ...DETAIL_REPORT_TYPES, ...SNAPSHOT_REPORT_TYPES];
@@ -120,16 +127,19 @@ function UploadCard({
   type,
   state,
   info,
+  misAvailable,
   onFile,
 }: {
   type: FlipkartUploadReportType;
   state: CardState;
   info: FlipkartReportDataInfo | undefined;
+  misAvailable?: boolean;
   onFile: (file: File) => void;
 }) {
   const inputId = `fk-upload-${type}`;
   const [dragOver, setDragOver] = useState(false);
   const accept = FK_REPORT_ACCEPT[type];
+  const misBacked = misAvailable && MIS_BACKED_TYPES.includes(type);
 
   return (
     <div
@@ -170,6 +180,9 @@ function UploadCard({
         </span>
       </label>
       <DataOnFileCaption info={info} staleAfterDays={type === AD_SPEND_REPORT_TYPE ? 1 : undefined} />
+      {misBacked && (
+        <p className="text-[10px] text-primary/70 mt-0.5">Synced live from MIS — reports use this, not the upload above.</p>
+      )}
       <input
         id={inputId}
         type="file"
@@ -209,6 +222,10 @@ export default function FlipkartUploadReportsPage() {
   );
   const [dataInfo, setDataInfo] = useState<Partial<Record<FlipkartUploadReportType, FlipkartReportDataInfo>>>({});
   const [metaError, setMetaError] = useState<string | null>(null);
+  // Only true once the MIS lookup itself succeeds — gates the "synced live
+  // from MIS" note so it's never shown next to numbers that are actually
+  // still the barm_* CSV-upload fallback (MIS table unreachable, etc.).
+  const [misAvailable, setMisAvailable] = useState(false);
 
   // A failure here must not blank the page — the upload cards still work. But it
   // must not be silent either: without it, an unreachable Supabase looks exactly
@@ -217,12 +234,20 @@ export default function FlipkartUploadReportsPage() {
   const refreshMeta = useCallback(async () => {
     try {
       const info = await fetchAllFlipkartReportDataInfo();
-      setDataInfo(info);
       // Per-table failures come back on each entry rather than as a rejection;
       // surface one banner if every table failed the same way (Supabase down or
       // misconfigured) so it isn't repeated four times.
       const errors = Object.values(info).map((i) => i?.error).filter(Boolean);
       setMetaError(errors.length === Object.keys(info).length ? errors[0]! : null);
+
+      try {
+        const misInfo = await fetchAllMisFlipkartReportDataInfo();
+        setDataInfo({ ...info, order_report: { ...misInfo.order_report }, returns: { ...misInfo.returns } });
+        setMisAvailable(true);
+      } catch {
+        setDataInfo(info);
+        setMisAvailable(false);
+      }
     } catch (err) {
       setMetaError(err instanceof Error ? err.message : String(err));
     }
@@ -308,7 +333,14 @@ export default function FlipkartUploadReportsPage() {
         </p>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {DETAIL_REPORT_TYPES.map((type) => (
-            <UploadCard key={type} type={type} state={cardState[type]} info={dataInfo[type]} onFile={(f) => handleFile(type, f)} />
+            <UploadCard
+              key={type}
+              type={type}
+              state={cardState[type]}
+              info={dataInfo[type]}
+              misAvailable={misAvailable}
+              onFile={(f) => handleFile(type, f)}
+            />
           ))}
         </div>
       </div>

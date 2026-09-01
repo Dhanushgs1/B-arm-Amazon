@@ -1,4 +1,5 @@
 import { fetchAllRows } from "@/lib/amazonReportShared";
+import type { UploadReportType } from "@/lib/amazonReportUpload";
 
 // Adapters for the 6 report tables the client moved from this app's own
 // upload-populated barm_* tables to the pre-existing MIS (management
@@ -390,4 +391,72 @@ export async function fetchMisFkOrders(apply: ApplyFn): Promise<ReturnType<typeo
 export async function fetchMisFkReturns(apply: ApplyFn): Promise<ReturnType<typeof mapMisFkReturnRow>[]> {
   const rows = await fetchAllRows("fk_returns", (q) => q);
   return applyMemoryFilter(rows.map(mapMisFkReturnRow), apply);
+}
+
+// ── "data on file" summaries for the Upload page ────────────────────────────
+//
+// am_orders/am_returns/fba_returns/sf_return's report-generation call sites
+// (above) already read from the MIS tables, not the barm_* CSV-upload
+// tables — so the Upload page's "data on file" caption for those 4 cards
+// needs the same source, or it shows the barm_* table's count (0 once a
+// seller stops uploading CSVs the report no longer reads) instead of what
+// the report actually uses.
+export interface MisReportDataInfo {
+  rowCount: number;
+  minDate: string | null;
+  maxDate: string | null;
+}
+
+function summarizeDates<T extends Record<string, unknown>>(rows: T[], dateField: keyof T): MisReportDataInfo {
+  // fba_returns' return_date is a full timestamptz ("...+00:00"); sorting the
+  // raw strings still gives the right min/max instant, but the card should
+  // display just the date part like every other card's caption does.
+  const dates = rows.map((r) => r[dateField] as string | null).filter((d): d is string => !!d).sort();
+  const toDateOnly = (d: string | undefined) => (d ? d.slice(0, 10) : null);
+  return { rowCount: rows.length, minDate: toDateOnly(dates[0]), maxDate: toDateOnly(dates[dates.length - 1]) };
+}
+
+export async function fetchMisAmazonOrdersInfo(): Promise<MisReportDataInfo> {
+  return summarizeDates(await fetchMisAmazonOrders((q) => q), "purchase_date");
+}
+
+export async function fetchMisAmazonReturnsInfo(): Promise<MisReportDataInfo> {
+  return summarizeDates(await fetchMisAmazonReturns((q) => q), "return_request_date");
+}
+
+export async function fetchMisFbaReturnsInfo(): Promise<MisReportDataInfo> {
+  return summarizeDates(await fetchMisFbaReturns((q) => q), "return_date");
+}
+
+export async function fetchMisSellerFlexReturnsInfo(): Promise<MisReportDataInfo> {
+  return summarizeDates(await fetchMisSellerFlexReturns((q) => q), "pickup_date");
+}
+
+/** The Upload cards whose "data on file" caption should reflect the MIS feed. */
+export const MIS_BACKED_UPLOAD_TYPES: UploadReportType[] = ["am_orders", "am_returns", "fba_returns", "sf_return"];
+
+export async function fetchAllMisReportDataInfo(): Promise<Partial<Record<UploadReportType, MisReportDataInfo>>> {
+  const [am_orders, am_returns, fba_returns, sf_return] = await Promise.all([
+    fetchMisAmazonOrdersInfo(),
+    fetchMisAmazonReturnsInfo(),
+    fetchMisFbaReturnsInfo(),
+    fetchMisSellerFlexReturnsInfo(),
+  ]);
+  return { am_orders, am_returns, fba_returns, sf_return };
+}
+
+// Same idea, for the 2 Flipkart Upload cards backed by the MIS feed:
+//   barm_flipkart_order_report -> fk_orders
+//   barm_flipkart_returns      -> fk_returns
+export async function fetchMisFkOrdersInfo(): Promise<MisReportDataInfo> {
+  return summarizeDates(await fetchMisFkOrders((q) => q), "order_date");
+}
+
+export async function fetchMisFkReturnsInfo(): Promise<MisReportDataInfo> {
+  return summarizeDates(await fetchMisFkReturns((q) => q), "return_requested_date");
+}
+
+export async function fetchAllMisFlipkartReportDataInfo(): Promise<{ order_report: MisReportDataInfo; returns: MisReportDataInfo }> {
+  const [order_report, returns] = await Promise.all([fetchMisFkOrdersInfo(), fetchMisFkReturnsInfo()]);
+  return { order_report, returns };
 }

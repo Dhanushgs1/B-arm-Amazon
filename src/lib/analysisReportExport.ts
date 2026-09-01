@@ -44,21 +44,37 @@ const GST_MULTIPLIER = 1.18;
 // (Available / Number of FBA Not Available / All FBA) from get_inventory's
 // per-location breakdown. Unknown codes fall back to the raw code so nothing is
 // silently dropped.
+// FIX (Key Insights FC/state mismatch): this map is joined against order
+// ship_state, which carries real STATE names — but BLR4/BLR7/BLR8, HYD3/
+// HYD8/HYD2, LKO1 and JPX1/JPX2 used to map to their FC's CITY name
+// (BANGALORE/HYDERABAD/LUCKNOW/JAIPUR) instead. Stock under those FCs then
+// never joined any real ship_state, so Key Insights read "stock here, 0
+// orders" for the FC's city label while the SAME region's real state label
+// read "orders here, 0 stock" — a mirror-image false stockout/overstock
+// verdict. Every other entry here was already a real state name (WEST
+// BENGAL, TAMIL NADU, DELHI, HARYANA, ASSAM, PUNJAB, ODISHA, GUJARAT, BIHAR)
+// — only these four FC groups were wrong.
 const FC_STATE_MAP: Record<string, string> = {
-  BLR4: "BANGALORE", BLR7: "BANGALORE", BLR8: "BANGALORE",
+  BLR4: "KARNATAKA", BLR7: "KARNATAKA", BLR8: "KARNATAKA",
   BOM5: "MAHARASHTRA", BOM7: "MAHARASHTRA", ISK3: "MAHARASHTRA", NAX1: "MAHARASHTRA", PNQ3: "MAHARASHTRA", PNQ2: "MAHARASHTRA",
   CCX1: "WEST BENGAL", CCX2: "WEST BENGAL",
   CJB1: "TAMIL NADU", MAA4: "TAMIL NADU", MAA1: "TAMIL NADU",
   DED3: "DELHI", DED4: "DELHI", DED5: "DELHI", DEL2: "DELHI", DEL8: "DELHI",
   DEL4: "HARYANA", DEL5: "HARYANA",
-  HYD3: "HYDERABAD", HYD8: "HYDERABAD", HYD2: "HYDERABAD",
-  LKO1: "LUCKNOW",
-  JPX1: "JAIPUR", JPX2: "JAIPUR",
+  HYD3: "TELANGANA", HYD8: "TELANGANA", HYD2: "TELANGANA",
+  LKO1: "UTTAR PRADESH",
+  JPX1: "RAJASTHAN", JPX2: "RAJASTHAN",
   GAX1: "ASSAM",
   ATX1: "PUNJAB", LDX1: "PUNJAB",
   BBX1: "ODISHA",
   AMD2: "GUJARAT", AMD3: "GUJARAT", SAMD: "GUJARAT",
   PAX1: "BIHAR",
+  // Not a real geography — the seller's own uploaded Inventory Ledger names
+  // this FC's Location/Area literally "VSNC" with no city/state anywhere in
+  // that row, and their own hand-built pivot uses "VSNC" as its own bucket
+  // label too (see FC_AREA_MAP_MANUAL below). So this can never join a real
+  // ship_state — that's a genuine data gap, not a mapping bug, and inventing
+  // a state here would misattribute this stock to somewhere it isn't.
   VSNC: "VSNC",
 };
 

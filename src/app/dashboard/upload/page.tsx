@@ -16,6 +16,7 @@ import {
 import { maybeAlertHighAcos, ACOS_ALERT_TYPES } from "@/lib/uploadAcosAlert";
 import { uploadCombinedWorkbook, fetchDailyTablesDataInfo, type SheetUploadOutcome } from "@/lib/combinedAdSpendUpload";
 import { staleness } from "@/lib/dataFreshness";
+import { fetchAllMisReportDataInfo, type MisReportDataInfo } from "@/lib/misAdapters";
 import { fetchProductMasterNameMap } from "@/lib/productMasterUpload";
 import Link from "next/link";
 
@@ -45,7 +46,35 @@ interface CardState {
   message?: string;
 }
 
-function DataOnFileCaption({ info, staleAfterDays }: { info: ReportDataInfo | undefined; staleAfterDays?: number }) {
+function DataOnFileCaption({
+  info,
+  misInfo,
+  staleAfterDays,
+}: {
+  info: ReportDataInfo | undefined;
+  misInfo?: MisReportDataInfo;
+  staleAfterDays?: number;
+}) {
+  // These 4 cards' reports read live from the MIS feed, not this card's own
+  // CSV-upload table — show the MIS numbers (what the report actually uses)
+  // instead of the upload table's, and say so, so a stale/absent CSV upload
+  // doesn't read as "no data" when the report is in fact fine.
+  if (misInfo) {
+    const stale = staleAfterDays !== undefined ? staleness(misInfo.maxDate, staleAfterDays) : null;
+    return (
+      <>
+        {misInfo.minDate ? (
+          <p className="text-[10px] text-muted-foreground mt-1">
+            Data: {misInfo.minDate} to {misInfo.maxDate} ({misInfo.rowCount} rows)
+          </p>
+        ) : (
+          <p className="text-[10px] text-muted-foreground mt-1">No data</p>
+        )}
+        {stale && <p className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold mt-0.5">&#9888; {stale.text}</p>}
+        <p className="text-[10px] text-primary/70 mt-0.5">Synced live from MIS — reports use this, not the CSV upload below.</p>
+      </>
+    );
+  }
   if (!info) return null;
   const stale = staleAfterDays !== undefined ? staleness(info.maxDate, staleAfterDays) : null;
   if (info.minDate) {
@@ -73,11 +102,13 @@ function UploadCard({
   type,
   state,
   info,
+  misInfo,
   onFile,
 }: {
   type: UploadReportType;
   state: CardState;
   info: ReportDataInfo | undefined;
+  misInfo?: MisReportDataInfo;
   onFile: (file: File) => void;
 }) {
   const inputId = `upload-${type}`;
@@ -119,7 +150,7 @@ function UploadCard({
           {state.fileName || "Click or drop CSV here"}
         </span>
       </label>
-      <DataOnFileCaption info={info} staleAfterDays={type === AD_SPEND_REPORT_TYPE ? 1 : undefined} />
+      <DataOnFileCaption info={info} misInfo={misInfo} staleAfterDays={type === AD_SPEND_REPORT_TYPE ? 1 : undefined} />
       <input
         id={inputId}
         type="file"
@@ -460,6 +491,12 @@ export default function UploadReportsPage() {
     setDataInfo(info);
   }, []);
 
+  const [misDataInfo, setMisDataInfo] = useState<Partial<Record<UploadReportType, MisReportDataInfo>>>({});
+  const refreshMisMeta = useCallback(async () => {
+    const info = await fetchAllMisReportDataInfo();
+    setMisDataInfo(info);
+  }, []);
+
   const [combinedDataInfo, setCombinedDataInfo] = useState<ReportDataInfo | undefined>(undefined);
   const refreshCombinedMeta = useCallback(async () => {
     const info = await fetchDailyTablesDataInfo();
@@ -469,7 +506,8 @@ export default function UploadReportsPage() {
   useEffect(() => {
     refreshMeta();
     refreshCombinedMeta();
-  }, [refreshMeta, refreshCombinedMeta]);
+    refreshMisMeta();
+  }, [refreshMeta, refreshCombinedMeta, refreshMisMeta]);
 
   const handleFile = async (type: UploadReportType, file: File) => {
     setCardState((prev) => ({ ...prev, [type]: { status: "parsing", fileName: file.name } }));
@@ -530,7 +568,7 @@ export default function UploadReportsPage() {
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {AD_ORDER_REPORT_TYPES.map((type) => (
-            <UploadCard key={type} type={type} state={cardState[type]} info={dataInfo[type]} onFile={(f) => handleFile(type, f)} />
+            <UploadCard key={type} type={type} state={cardState[type]} info={dataInfo[type]} misInfo={misDataInfo[type]} onFile={(f) => handleFile(type, f)} />
           ))}
         </div>
       </div>
@@ -560,7 +598,7 @@ export default function UploadReportsPage() {
         </p>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {RETURNS_EXTRA_REPORT_TYPES.map((type) => (
-            <UploadCard key={type} type={type} state={cardState[type]} info={dataInfo[type]} onFile={(f) => handleFile(type, f)} />
+            <UploadCard key={type} type={type} state={cardState[type]} info={dataInfo[type]} misInfo={misDataInfo[type]} onFile={(f) => handleFile(type, f)} />
           ))}
         </div>
       </div>
