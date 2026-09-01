@@ -2,6 +2,7 @@ import * as XLSX from "xlsx-js-style";
 import { fcToState } from "@/lib/analysisReportExport";
 import { fetchAllRows, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns } from "@/lib/misAdapters";
+import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
 
 // Re-exported for existing importers (weeklySalesExport.ts) — the actual
 // definitions live in amazonReportShared.ts so analysisReportExport.ts can use
@@ -196,6 +197,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   const [
     spRows, sbRows, sdRows, orderRows, amReturnRows, fbaReturnRows, mapRows,
     priceListingRows, fbaInventoryRows, ledgerRows, ledgerRawRows, sfReturnRows,
+    productMaster,
   ] = await Promise.all([
     fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", win30.start).lte("report_date", endDate)),
     fetchAllRows("barm_amazon_sb_campaign", (q) => q.gte("report_date", win30.start).lte("report_date", endDate)),
@@ -225,6 +227,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     // computed below from the SELLABLE fetch) right before it's written to the sheet.
     fetchAllRows("barm_amazon_inventory_ledger", (q) => q),
     fetchMisSellerFlexReturns((q) => q.gte("pickup_date", win30.start).lte("pickup_date", endDate)),
+    fetchProductMasterMap(),
   ]);
 
   // Campaign -> weighted SKU allocation. Sponsored Brands / Display exports have
@@ -394,6 +397,16 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     if (!r.sku) return;
     const m = ensureMeta(r.sku);
     if (r.product_name && m.name === m.sku) m.name = r.product_name;
+  });
+
+  // The seller's own approved Product Master name wins over both the order-report name just
+  // applied above and the raw SKU fallback in emptyMeta — same seller-curated priority as the
+  // Amazon Sales report. A SKU the master doesn't have (not yet uploaded, or a campaign-only
+  // SKU with no product row) keeps whatever name was already resolved above.
+  const { resolveName: resolveMasterName } = buildProductMasterResolver(productMaster);
+  metaMap.forEach((m, sku) => {
+    if (sku === UNMAPPED) return;
+    m.name = resolveMasterName(sku, m.name);
   });
 
   // Price / FBA-MFN channel — from the uploaded Price (All Listings) report.

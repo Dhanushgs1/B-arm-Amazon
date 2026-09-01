@@ -3,6 +3,7 @@ import { fetchAllRows, isGenuineAmReturn, isGenuineFbaReturn } from "@/lib/histo
 import { istDayWindowUtc, istDateOnly, isStandardOrderId } from "@/lib/amazonReportShared";
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns } from "@/lib/misAdapters";
 import { categorizeTitle, resolveProductName, CATEGORY_COLORS } from "@/lib/categoryMap";
+import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
 
 // SKU-wise sibling of amazonSalesExport.ts's buildAmazonSalesWorkbook, built for the Weekly
 // Report email attachment only. Fixed to exactly two periods (last week / this week — the same
@@ -76,7 +77,7 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
 
   // Fetch every relevant row once across the combined 2-week span, split by date in memory below —
   // same "fetch once, filter twice" approach historicalAnalysisReportExport.ts uses for its 30/7-day windows.
-  const [orderRows, amReturnRows, fbaReturnRows, priceListingRows, ledgerRows, adRows] = await Promise.all([
+  const [orderRows, amReturnRows, fbaReturnRows, priceListingRows, ledgerRows, adRows, productMaster] = await Promise.all([
     fetchMisAmazonOrders((q) => q.gte("purchase_datetime", ordersWindow.gte).lt("purchase_datetime", ordersWindow.lt)),
     fetchMisAmazonReturns((q) => q.gte("return_request_date", lastWeek.start).lte("return_request_date", thisWeek.end)),
     fetchMisFbaReturns((q) =>
@@ -95,7 +96,9 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
     fetchAllRows("barm_amazon_sp_advertised_product", (q) =>
       q.gte("report_date", lastWeek.start).lte("report_date", thisWeek.end)
     ).catch(() => []),
+    fetchProductMasterMap(),
   ]);
+  const { resolveName: resolveMasterName, resolveCategory: resolveMasterCategory } = buildProductMasterResolver(productMaster);
 
   // How far the uploaded/MIS-synced orders actually reach. If they stop
   // before the end of "this week", the current week is measured over fewer
@@ -284,7 +287,12 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
     let p = products.get(sku);
     if (!p) {
       const rawName = nameBySku.get(sku) || sku;
-      p = { sku, name: resolveProductName(rawName, sku) || rawName, periods: {}, grandTotalSales: 0 };
+      // Product Master's approved name wins over both the order-report name and the older
+      // hand-maintained SKU_NAME_MAP in categoryMap.ts — same seller-curated priority as the
+      // Amazon Sales report. A SKU the master doesn't have yet keeps whatever name resolveProductName
+      // (or the raw order-report name) already produced.
+      const name = resolveMasterName(sku, resolveProductName(rawName, sku) || rawName);
+      p = { sku, name, periods: {}, grandTotalSales: 0 };
       products.set(sku, p);
     }
     return p;
@@ -326,7 +334,10 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
   const categoryAgg = new Map<string, { periods: Record<string, { sales: number; units: number }>; grandSales: number; grandUnits: number }>();
   const catBySku = new Map<string, string>();
   rows.forEach((p) => {
-    const cat = categorizeTitle(p.name, undefined, p.sku);
+    // Product Master's own Category column wins when the SKU is in it, same seller-curated
+    // priority as the name resolution above; categoryMap.ts's SKU_CATEGORY_MAP / title
+    // fuzzy-match only fills in SKUs the master doesn't have a category for yet.
+    const cat = resolveMasterCategory(p.sku, categorizeTitle(p.name, undefined, p.sku));
     catBySku.set(p.sku, cat);
     let c = categoryAgg.get(cat);
     if (!c) { c = { periods: {}, grandSales: 0, grandUnits: 0 }; categoryAgg.set(cat, c); }

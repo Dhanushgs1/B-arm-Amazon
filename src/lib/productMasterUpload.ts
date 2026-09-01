@@ -147,3 +147,53 @@ export async function fetchProductMasterNameMap(): Promise<Map<string, string>> 
     return new Map();
   }
 }
+
+export interface ProductMasterEntry {
+  name: string;
+  category: string;
+}
+
+/** sku -> { name, category }. Same empty-map-never-throws contract as
+ *  fetchProductMasterNameMap above, for callers that also need category
+ *  (currently only the Amazon Sales report — the other exporters have no
+ *  category column). */
+export async function fetchProductMasterMap(): Promise<Map<string, ProductMasterEntry>> {
+  try {
+    const { data, error } = await supabasePublic.from(TABLE).select("sku, product_name, category");
+    if (error || !data) return new Map();
+    const map = new Map<string, ProductMasterEntry>();
+    (data as { sku: string; product_name: string; category: string }[]).forEach((r) => {
+      if (r.sku && r.product_name) map.set(r.sku, { name: r.product_name, category: r.category || "" });
+    });
+    return map;
+  } catch {
+    return new Map();
+  }
+}
+
+// Platform order/ad exports carry whatever variant spelling of a SKU that platform used (e.g. a
+// trailing "-1" or a "(FK)"/"(AM)"/"(MS)" tag), while the master lists one canonical spelling per
+// product — so an exact match misses these. Strip the variant/platform suffix before comparing.
+// Shared by every report exporter that resolves against the product master, so the matching rule
+// stays identical everywhere it's used.
+export function skuBase(sku: string): string {
+  return sku.trim().toUpperCase().replace(/\((AM|FK|MS)\)$/i, "").replace(/-\d+$/, "").replace(/[\s_]+/g, "");
+}
+
+/** Builds sku -> name/category resolvers from a product-master map: exact SKU match first, then
+ *  a fall back to the same SKU's "base" spelling (see skuBase), then the caller's fallback value.
+ *  Only what's actually stored (name always, category only if non-empty) overrides the fallback —
+ *  this only changes which name/category gets displayed, every spend/order figure stays keyed on
+ *  the platform's own exact SKU string. */
+export function buildProductMasterResolver(master: Map<string, ProductMasterEntry>) {
+  const byBase = new Map<string, ProductMasterEntry>();
+  master.forEach((entry, sku) => {
+    const base = skuBase(sku);
+    if (!byBase.has(base)) byBase.set(base, entry);
+  });
+  const lookup = (sku: string): ProductMasterEntry | undefined => master.get(sku) || byBase.get(skuBase(sku));
+  return {
+    resolveName: (sku: string, fallback: string): string => lookup(sku)?.name || fallback,
+    resolveCategory: (sku: string, fallback: string): string => lookup(sku)?.category || fallback,
+  };
+}

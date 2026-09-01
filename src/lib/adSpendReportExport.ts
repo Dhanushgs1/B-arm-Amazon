@@ -3,7 +3,7 @@ import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } fr
 import { fetchMisAmazonOrders, fetchMisFkOrders } from "@/lib/misAdapters";
 import { upsertInChunks } from "@/lib/amazonReportUpload";
 import { resolveProductName } from "@/lib/categoryMap";
-import { fetchProductMasterNameMap } from "@/lib/productMasterUpload";
+import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
 import { SITE_URL } from "@/lib/siteUrl";
 
 // ── Ad Spend Report ──────────────────────────────────────────────────────────
@@ -798,28 +798,19 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // Fetched once and shared across all three platforms — the seller's own
   // approved SKU -> product name list, checked first before falling back to
   // whatever name shows up on an order/price-listing row (see resolveName).
-  const [masterNames, amz, fk, ms] = await Promise.all([
-    fetchProductMasterNameMap(),
+  const [master, amz, fk, ms] = await Promise.all([
+    fetchProductMasterMap(),
     fetchAmazonProducts(range, endDate),
     fetchFlipkartProducts(range, endDate),
     fetchMeeshoProducts(range, endDate),
   ]);
   // The master lists one SKU spelling per product (e.g. "B-BULB-...-PK5(FK)"),
   // but ad/order data carries whatever variant spelling that platform export
-  // used (e.g. "B-BULB-...-PK5-1") — a real, different string, not a typo. An
-  // exact match misses these, so fall back to matching on the SKU's base:
-  // strip a trailing platform tag like "(FK)"/"(AM)"/"(MS)" or a trailing
-  // "-<digits>" variant suffix, then compare. This only changes which NAME
-  // gets displayed — every spend/order figure stays keyed on the exact SKU.
-  const skuBase = (sku: string): string =>
-    sku.trim().toUpperCase().replace(/\((AM|FK|MS)\)$/i, "").replace(/-\d+$/, "").replace(/[\s_]+/g, "");
-  const masterNamesByBase = new Map<string, string>();
-  masterNames.forEach((name, sku) => {
-    const base = skuBase(sku);
-    if (!masterNamesByBase.has(base)) masterNamesByBase.set(base, name);
-  });
-  const resolveName = (sku: string, fallback: string): string =>
-    masterNames.get(sku) || masterNamesByBase.get(skuBase(sku)) || fallback;
+  // used (e.g. "B-BULB-...-PK5-1") — a real, different string, not a typo.
+  // buildProductMasterResolver falls back to matching on the SKU's base (see
+  // skuBase in productMasterUpload.ts) for these. This only changes which
+  // NAME gets displayed — every spend/order figure stays keyed on the exact SKU.
+  const { resolveName } = buildProductMasterResolver(master);
   [amz.products, fk.products, ms.products].forEach((products) => {
     products.forEach((p) => { p.name = resolveName(p.sku, p.name); });
   });

@@ -1,6 +1,7 @@
 import * as XLSX from "xlsx-js-style";
 import { mcp } from "@/lib/api";
 import { categorizeTitle, resolveProductName, CATEGORY_COLORS } from "@/lib/categoryMap";
+import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
 
 // SellerMate's get_retail_product_performance rejects start_date === end_date outright, so a
 // single calendar day can't be queried directly. "daily" instead uses a cumulative-prefix trick:
@@ -132,6 +133,27 @@ async function fetchAllRetail(call: ToolCaller, args: any) {
   return all;
 }
 
+// get_fba_customer_returns (proxied through SellerMate) surfaces no dedicated per-line return
+// ID — only orderId/asin/sku/returnDate/quantity/reason/detailedDisposition/customerComments
+// (see productsWorkbookExport.ts's Returns sheet columns for the full field set this API gives
+// us). So a return record's identity is the combination of every one of those fields together,
+// never a single field alone — two genuinely distinct returns can share the same SKU, the same
+// date, or the same quantity, so deduping on any one of those would silently drop real returns.
+// Two records only collide here when they match on all of them, which is what an exact-duplicate
+// row (e.g. the same page re-served twice) looks like.
+function returnRecordKey(r: any): string {
+  return [
+    r.orderId ?? "",
+    r.asin ?? "",
+    r.sku ?? "",
+    r.returnDate ?? "",
+    r.quantity ?? "",
+    r.reason ?? "",
+    r.detailedDisposition ?? "",
+    r.customerComments ?? "",
+  ].join("|");
+}
+
 async function fetchAllReturns(call: ToolCaller, args: any) {
   // get_fba_customer_returns rejects start_date === end_date outright — a monthly/weekly bucket
   // can collapse to a single day (e.g. a narrow selected range, or a trailing partial period), so
@@ -145,13 +167,36 @@ async function fetchAllReturns(call: ToolCaller, args: any) {
     end_date = toIso(new Date(d.getTime() + 86400000));
   }
 
+  // Dedup incrementally as each page arrives (against everything seen on every earlier page in
+  // this fetch, not just the previous one) rather than after the fact — so a page that repeats or
+  // overlaps an earlier one, from a pagination bug or an upstream retry re-serving the same page,
+  // is caught and attributed to the page it came from instead of silently inflating the total.
+  const seen = new Set<string>();
   const all: any[] = [];
+  let rawCount = 0;
   for (let page = 0; page < 20; page++) {
     const res = await call("get_fba_customer_returns", { ...args, start_date, end_date, page, page_size: 500 });
     const rows = res.order_returns || [];
-    all.push(...rows);
+    rawCount += rows.length;
+    let pageDuplicates = 0;
+    for (const r of rows) {
+      const key = returnRecordKey(r);
+      if (seen.has(key)) { pageDuplicates++; continue; }
+      seen.add(key);
+      all.push(r);
+    }
+    if (pageDuplicates > 0) {
+      console.warn(
+        `[amazonSalesExport] fetchAllReturns: page ${page} carried ${pageDuplicates} return record(s) already seen on an earlier page in this fetch (${start_date}..${end_date}) — dropped.`
+      );
+    }
     if (!res.pagination?.hasMore || rows.length === 0) break;
   }
+  const duplicateCount = rawCount - all.length;
+  console.info(
+    `[amazonSalesExport] fetchAllReturns(${start_date}..${end_date}): ${rawCount} raw return record(s) fetched, ${all.length} unique, ${duplicateCount} duplicate(s) removed.`
+  );
+
   // Every return Amazon reports (genuine customer returns + courier RTO/undeliverable) —
   // callers split these into "All Returns" vs "Customer Returns" via isGenuineReturn below.
   return exactDay ? all.filter((r: any) => String(r.returnDate || "").slice(0, 10) === exactDay) : all;
@@ -327,10 +372,12 @@ async function buildAmazonSalesWorkbook(opts: {
 
   const periods = buildPeriods(startDate, endDate, granularity);
 
-  const [catalog, inventory] = await Promise.all([
+  const [catalog, inventory, productMaster] = await Promise.all([
     fetchFullCatalog(call, baseArgs),
     fetchAllInventory(call, baseArgs).catch(() => []),
+    fetchProductMasterMap(),
   ]);
+  const { resolveName: resolveMasterName, resolveCategory: resolveMasterCategory } = buildProductMasterResolver(productMaster);
 
   // list_product_catalog is the reliable source for SKU — get_inventory's sku field comes back
   // blank for some accounts (seen on B-ARM), so catalog is read first and inventory is only a
@@ -431,10 +478,12 @@ async function buildAmazonSalesWorkbook(opts: {
     }
   }
 
-  // Prefer the seller's own clean product name (matched by SKU) over the raw catalog/listing
-  // title, now that every product's SKU is fully resolved.
+  // Prefer the seller's own approved Product Master name (matched by SKU) over both the raw
+  // catalog/listing title and the older hand-maintained SKU_NAME_MAP in categoryMap.ts — Product
+  // Master is the one the seller's team actually curates and approves, so it wins when present;
+  // categoryMap.ts's SKU_NAME_MAP only fills in SKUs the master hasn't been updated with yet.
   productsByAsin.forEach((p) => {
-    p.name = resolveProductName(p.name, p.sku) || p.name;
+    p.name = resolveMasterName(p.sku, resolveProductName(p.name, p.sku) || p.name);
   });
 
   const rows = [...productsByAsin.values()].sort((a, b) => b.grandTotalSales - a.grandTotalSales);
@@ -445,13 +494,15 @@ async function buildAmazonSalesWorkbook(opts: {
   const EXCLUDED_CATEGORIES = new Set(["Discontinued", "Other"]);
 
   // ── Category/Department aggregation — same per-product per-period data, grouped by
-  // department (Gynaecology / Pulmonology / Occupational Therapy / General / Other) via
-  // categoryMap.ts, so departments can be tracked period-over-period without opening the
-  // full per-product sheet. ──
+  // department (Gynaecology / Pulmonology / Occupational Therapy / General / Other). Product
+  // Master's own Category column wins when the SKU is in it (same seller-curated priority as the
+  // name resolution above); categoryMap.ts's SKU_CATEGORY_MAP / title fuzzy-match only fills in
+  // SKUs the master doesn't have a category for yet — so departments can be tracked
+  // period-over-period without opening the full per-product sheet. ──
   const categoryAgg = new Map<string, { periods: Record<string, { sales: number; units: number }>; grandSales: number; grandUnits: number }>();
   const catByAsin = new Map<string, string>();
   rows.forEach((p) => {
-    const cat = categorizeTitle(p.name, p.asin);
+    const cat = resolveMasterCategory(p.sku, categorizeTitle(p.name, p.asin, p.sku));
     catByAsin.set(p.asin, cat);
     let c = categoryAgg.get(cat);
     if (!c) { c = { periods: {}, grandSales: 0, grandUnits: 0 }; categoryAgg.set(cat, c); }
