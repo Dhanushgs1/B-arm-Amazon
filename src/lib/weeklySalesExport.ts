@@ -1494,6 +1494,16 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
     });
 
     ws["!merges"] = [...(ws["!merges"] || []), ...salesMerges];
+
+    // aoa_to_sheet fixed ws["!ref"] to the original product grid's dimensions; every cell this
+    // block wrote afterward via direct ws[addr] assignment lands outside that stale range and
+    // xlsx-js-style silently drops it on save unless the range is expanded to cover it too — this
+    // whole "Sales Summary (Enhanced)" section was being written and then discarded before the
+    // file ever reached disk. r is one past the last row this block wrote.
+    const existingRange = XLSX.utils.decode_range(ws["!ref"] || "A1");
+    existingRange.e.r = Math.max(existingRange.e.r, r - 1);
+    existingRange.e.c = Math.max(existingRange.e.c, totalCols - 1);
+    ws["!ref"] = XLSX.utils.encode_range(existingRange);
   }
 
   XLSX.utils.book_append_sheet(wb, ws, "Amazon Sales");
