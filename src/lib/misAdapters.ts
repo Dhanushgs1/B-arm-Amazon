@@ -362,10 +362,87 @@ function mapMisFkReturnRow(row: RawRow) {
 
 // ── public fetchers — one per table pair, mirroring fetchAllRows's
 // (apply) => filtered-rows signature ────────────────────────────────────────
+//
+// Every fetcher below USED to pull the whole MIS table unfiltered (see the
+// in-memory filter shim above) before replaying the caller's date filter in
+// memory — fine when these tables were a few thousand rows, but
+// amazon_orders alone is now 34,000+ and growing every day via the external
+// sync, and pulling all of it (paginated 1000 rows at a time, ordered by a
+// random UUID id that needs a full sort each page) started hard-failing in
+// production: "Fetch amazon_orders failed: canceling statement due to
+// statement timeout" on the Historical Analysis Report.
+//
+// Fix: for the 3 tables whose raw date column is lexically/chronologically
+// sortable as a plain string (amazon_orders' "purchase-date", ISO-ish;
+// amazon_fba_returns' "return-date", full ISO timestamptz; fk_orders'
+// "order_date", ISO-ish), peek the caller's date-range bound BEFORE
+// fetching and push an equivalent (deliberately widened) range down to
+// Postgres via peekDateBound/fetchMisDateFiltered — cutting the rows
+// actually fetched from "the whole table" to "roughly the requested
+// window." The caller's EXACT original filter still runs via
+// applyMemoryFilter afterward, so a widened pushdown only costs a few extra
+// fetched rows, never correctness.
+//
+// The other 3 (amazon_returns' "Return request date", amazon_seller_flex_
+// return's "Pick -up date", fk_returns' "Return Requested Date") are all
+// "DD-Mon-YY" text — NOT chronologically sortable as a plain string
+// ("15-Feb-26" < "01-Jan-26" alphabetically, despite Feb being after Jan) —
+// so a naive gte/lte pushdown on them would silently return the WRONG rows,
+// not just extra ones. Left as full-table fetches for now; smaller tables
+// today, but the same timeout risk applies once they grow.
+
+/** Peeks the gte/gt and lt/lte bounds an `apply` callback sets on `field`,
+ *  without touching real rows. */
+function peekDateBound(apply: ApplyFn, field: string): { start?: string; end?: string } {
+  const builder = new MemoryFilterBuilder();
+  apply(builder);
+  let start: string | undefined, end: string | undefined;
+  builder.filters.forEach((f) => {
+    if (f.field !== field || typeof f.value !== "string") return;
+    if (f.op === "gte" || f.op === "gt") start = f.value;
+    if (f.op === "lte" || f.op === "lt") end = f.value;
+  });
+  return { start, end };
+}
+
+function addDays(dateOnly: string, days: number): string {
+  const d = new Date(`${dateOnly.slice(0, 10)}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Fetches `table`, pushing a (marginDays-widened) range on `rawCol` down to
+ *  Postgres when `apply` filters `mappedField` by date — instead of always
+ *  pulling the whole table. Uses a half-open gte/lt range (never lte) so the
+ *  comparison stays correct whether rawCol carries a bare date or a full
+ *  "YYYY-MM-DD HH:mm:ss" string ("...23:59:00" is NOT <= "2026-08-27", but
+ *  it IS < "2026-08-28"). Falls back to an unfiltered fetch if the caller
+ *  didn't filter by the expected field, so this is never less complete than
+ *  before, only faster in the common case. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function fetchMisDateFiltered<T extends Record<string, any>>(
+  table: string,
+  rawCol: string,
+  mappedField: string,
+  marginDays: number,
+  apply: ApplyFn,
+  mapRow: (row: RawRow) => T
+): Promise<T[]> {
+  const { start, end } = peekDateBound(apply, mappedField);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = await fetchAllRows(table, (q: any) => {
+    let qq = q;
+    if (start) qq = qq.gte(rawCol, addDays(start, -marginDays));
+    if (end) qq = qq.lt(rawCol, addDays(end, marginDays + 1));
+    return qq;
+  });
+  return applyMemoryFilter(rows.map(mapRow), apply);
+}
 
 export async function fetchMisAmazonOrders(apply: ApplyFn): Promise<ReturnType<typeof mapMisAmazonOrderRow>[]> {
-  const rows = await fetchAllRows("amazon_orders", (q) => q);
-  return applyMemoryFilter(rows.map(mapMisAmazonOrderRow), apply);
+  // purchase-date is IST wall-clock, purchase_datetime (what callers filter
+  // on) is UTC — up to a day apart, hence the 1-day margin.
+  return fetchMisDateFiltered("amazon_orders", "purchase-date", "purchase_datetime", 1, apply, mapMisAmazonOrderRow);
 }
 
 export async function fetchMisAmazonReturns(apply: ApplyFn): Promise<ReturnType<typeof mapMisAmReturnRow>[]> {
@@ -374,8 +451,9 @@ export async function fetchMisAmazonReturns(apply: ApplyFn): Promise<ReturnType<
 }
 
 export async function fetchMisFbaReturns(apply: ApplyFn): Promise<ReturnType<typeof mapMisFbaReturnRow>[]> {
-  const rows = await fetchAllRows("amazon_fba_returns", (q) => q);
-  return applyMemoryFilter(rows.map(mapMisFbaReturnRow), apply);
+  // return-date already carries an explicit UTC offset — same timeline as
+  // the return_date filter callers pass, so no margin needed.
+  return fetchMisDateFiltered("amazon_fba_returns", "return-date", "return_date", 0, apply, mapMisFbaReturnRow);
 }
 
 export async function fetchMisSellerFlexReturns(apply: ApplyFn): Promise<ReturnType<typeof mapMisSfReturnRow>[]> {
@@ -384,8 +462,10 @@ export async function fetchMisSellerFlexReturns(apply: ApplyFn): Promise<ReturnT
 }
 
 export async function fetchMisFkOrders(apply: ApplyFn): Promise<ReturnType<typeof mapMisFkOrderRow>[]> {
-  const rows = await fetchAllRows("fk_orders", (q) => q);
-  return applyMemoryFilter(rows.map(mapMisFkOrderRow), apply);
+  // order_date is the same field name and timeline raw and mapped — still a
+  // 1-day margin since callers may pass a bare date while the raw column
+  // carries a full timestamp.
+  return fetchMisDateFiltered("fk_orders", "order_date", "order_date", 1, apply, mapMisFkOrderRow);
 }
 
 export async function fetchMisFkReturns(apply: ApplyFn): Promise<ReturnType<typeof mapMisFkReturnRow>[]> {
