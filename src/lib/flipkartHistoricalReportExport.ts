@@ -1,6 +1,7 @@
 import * as XLSX from "xlsx-js-style";
 import { fetchAllRows } from "@/lib/amazonReportShared";
 import { FK_REPORT_LABEL } from "@/lib/flipkartReportUpload";
+import { fetchMisFkOrders, fetchMisFkReturns } from "@/lib/misAdapters";
 
 // ── Flipkart Historical Analysis Report ─────────────────────────────────────
 // The Flipkart counterpart of historicalAnalysisReportExport.ts: the same
@@ -45,10 +46,17 @@ const GST_MULTIPLIER = 1.18;
 const NO_ADS = "(no ads data)";
 
 const FSN_TABLE = "barm_flipkart_fsn_report";
-const ORDER_TABLE = "barm_flipkart_order_report";
 const EARN_MORE_TABLE = "barm_flipkart_earn_more";
 const LISTINGS_TABLE = "barm_flipkart_listings";
-const RETURNS_TABLE = "barm_flipkart_returns";
+// Orders/Returns moved to the MIS-synced fk_orders/fk_returns tables (see
+// misAdapters.ts) — this report used to read barm_flipkart_order_report/
+// barm_flipkart_returns directly, the CSV-upload tables, which sit behind
+// the live MIS feed (5,211 order rows vs fk_orders' 6,723 for the identical
+// window, verified directly against Supabase) even though
+// flipkartWeeklySalesExport.ts and adSpendReportExport.ts already made this
+// switch. fetchMisFkOrders/fetchMisFkReturns map every row into the exact
+// same field shape parseOrderReport/parseReturnsReport produced, so nothing
+// below this — aggregateWindow, the raw-dump sheets — needed to change.
 
 function dotDate(iso: string): string {
   const [y, m, d] = iso.split("-");
@@ -165,7 +173,7 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
   // never to move the window.
   const [maxFsn, maxOrder, maxEarn] = await Promise.all([
     fetchMaxDate(FSN_TABLE, "report_date", selectedEndDate),
-    fetchMaxDate(ORDER_TABLE, "order_date", selectedEndDate),
+    fetchMaxDate("fk_orders", "order_date", selectedEndDate),
     fetchMaxDate(EARN_MORE_TABLE, "order_date", selectedEndDate),
   ]);
   const endDate = selectedEndDate;
@@ -182,9 +190,9 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
   const [fsnRows, earnRows, orderRows, listingRows, returnsRows] = await Promise.all([
     fetchAllRows(FSN_TABLE, (q) => q.gte("report_date", win30.start).lte("report_date", endDate)),
     fetchAllRows(EARN_MORE_TABLE, (q) => q.gte("order_date", win30.start).lte("order_date", endDate)),
-    fetchAllRows(ORDER_TABLE, (q) => q.gte("order_date", win30.start).lte("order_date", endDate)),
+    fetchMisFkOrders((q) => q.gte("order_date", win30.start).lte("order_date", endDate)),
     fetchAllRows(LISTINGS_TABLE, (q) => q).catch(() => []),
-    fetchAllRows(RETURNS_TABLE, (q) => q.gte("return_requested_date", win30.start).lte("return_requested_date", endDate)).catch(() => []),
+    fetchMisFkReturns((q) => q.gte("return_requested_date", win30.start).lte("return_requested_date", endDate)).catch(() => []),
   ]);
 
   // Collapse Order report rows repeating an (order item ID, status, quantity)
