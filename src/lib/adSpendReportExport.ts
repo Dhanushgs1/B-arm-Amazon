@@ -4,7 +4,7 @@ import { fetchMisAmazonOrders, fetchMisFkOrders } from "@/lib/misAdapters";
 import { upsertInChunks } from "@/lib/amazonReportUpload";
 import { resolveProductName } from "@/lib/categoryMap";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
-import { fetchMasterSkuidMap, buildMasterSkuidResolver } from "@/lib/masterProductSkuid";
+import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog } from "@/lib/masterProductSkuid";
 import { SITE_URL } from "@/lib/siteUrl";
 
 // ── Ad Spend Report ──────────────────────────────────────────────────────────
@@ -799,9 +799,10 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // Fetched once and shared across all three platforms — the seller's own
   // approved SKU -> product name list, checked first before falling back to
   // whatever name shows up on an order/price-listing row (see resolveName).
-  const [master, masterSkuid, amz, fk, ms] = await Promise.all([
+  const [master, masterSkuid, masterSkuidCatalog, amz, fk, ms] = await Promise.all([
     fetchProductMasterMap(),
     fetchMasterSkuidMap(),
+    fetchMasterSkuidAmazonCatalog(),
     fetchAmazonProducts(range, endDate),
     fetchFlipkartProducts(range, endDate),
     fetchMeeshoProducts(range, endDate),
@@ -819,6 +820,24 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const resolveName = (sku: string, fallback: string) => resolveSkuidName(sku, resolveBarmName(sku, fallback));
   [amz.products, fk.products, ms.products].forEach((products) => {
     products.forEach((p) => { p.name = resolveName(p.sku, p.name); });
+  });
+
+  // Seed a zero-activity row for every known Amazon catalog SKU with no spend/order data at all
+  // this window, so "B Arm orders" (the one sheet here that isn't ad-spend-scoped — see its own
+  // comment) can show what ISN'T selling, at the bottom. Flipkart/Meesho aren't seeded — there's
+  // no equivalent full-catalog source for them yet. The ad-spend-scoped sheets (Ad spend report,
+  // Low Spend Campaigns) deliberately still exclude these: they proved a real "purely-organic
+  // rows inflate Orders" bug when zero-spend rows were included, so this doesn't touch them.
+  masterSkuidCatalog.forEach((entry) => {
+    if (amz.products.has(entry.sku)) return;
+    amz.products.set(entry.sku, {
+      platform: "Amazon",
+      sku: entry.sku,
+      name: resolveName(entry.sku, entry.name),
+      price: 0,
+      day: { spend: 0, units: 0 },
+      range: { spend: 0, units: 0 },
+    });
   });
 
   if (!amz.products.size && !fk.products.size && !ms.products.size) {
@@ -1112,12 +1131,22 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // "B Arm orders" tab, but actually populated here from the range window's
   // order data already computed above rather than left blank.
   const bArmAoa: (string | number)[][] = [["Product", "Quantity", "Price", "Sales"]];
+  const bArmZeroRows: (string | number)[][] = [];
   platforms.forEach(({ products }) => {
-    groupProductsByName([...products.values()])
+    const grouped = groupProductsByName([...products.values()]);
+    grouped
       .filter((p) => p.range.units > 0)
       .sort((a, b) => b.range.units * b.price - a.range.units * a.price)
       .forEach((p) => bArmAoa.push([p.name, p.range.units, p.price, round2(p.price * p.range.units)]));
+    // Amazon catalog SKUs seeded above with zero orders this window — held back from the main
+    // leaderboard and appended after every platform's real activity below, so a reader sees "who's
+    // actually selling" first and "not selling at all" as a distinct trailing block, not mixed in.
+    grouped
+      .filter((p) => p.range.units === 0)
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .forEach((p) => bArmZeroRows.push([p.name, p.range.units, p.price, round2(p.price * p.range.units)]));
   });
+  bArmAoa.push(...bArmZeroRows);
   const wsBArm = XLSX.utils.aoa_to_sheet(bArmAoa);
   styleHeader(wsBArm, 0, 4, "6B7280");
   wsBArm["!cols"] = [{ wch: 60 }, { wch: 10 }, { wch: 10 }, { wch: 14 }];

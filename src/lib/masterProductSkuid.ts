@@ -70,6 +70,39 @@ export async function fetchMasterSkuidMap(): Promise<Map<string, MasterSkuidEntr
   }
 }
 
+export interface MasterSkuidCatalogEntry {
+  sku: string;
+  name: string;
+  category: string;
+}
+
+/** Every distinct Amazon-platform SKU in master_product_skuid — for seeding a report with a row
+ *  for every known product, even ones with zero orders in the report's window, so the seller can
+ *  see what *isn't* selling and not just what is. Platform-scoped on purpose: a SKU spelling that
+ *  only exists on Flipkart/Meesho/the Barm website must never show up as a "zero-sale Amazon
+ *  product" it never actually was. Empty array (never throws) if the table is missing/empty. */
+export async function fetchMasterSkuidAmazonCatalog(): Promise<MasterSkuidCatalogEntry[]> {
+  try {
+    const { data, error } = await supabasePublic
+      .from(TABLE)
+      .select('"SKU ID","Product Name","Category"')
+      .eq("Platform", "Amazon");
+    if (error || !data) return [];
+    const seen = new Set<string>();
+    const out: MasterSkuidCatalogEntry[] = [];
+    (data as Record<string, unknown>[]).forEach((r) => {
+      const sku = String(r["SKU ID"] ?? "").trim();
+      const name = String(r["Product Name"] ?? "").trim();
+      if (!sku || !name || seen.has(sku)) return;
+      seen.add(sku);
+      out.push({ sku, name, category: normalizeCategory(String(r["Category"] ?? "")) });
+    });
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 /** Builds sku -> name/category/tax/costPrice resolvers: exact SKU match first, then the same
  *  SKU's "base" spelling (see skuBase in productMasterUpload.ts) for a platform-variant spelling
  *  this exact table doesn't carry. Only what's actually stored (name always; category/tax/cost

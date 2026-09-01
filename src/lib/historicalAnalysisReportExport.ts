@@ -3,7 +3,7 @@ import { fcToState } from "@/lib/analysisReportExport";
 import { fetchAllRows, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns } from "@/lib/misAdapters";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
-import { fetchMasterSkuidMap, buildMasterSkuidResolver } from "@/lib/masterProductSkuid";
+import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog } from "@/lib/masterProductSkuid";
 
 // Re-exported for existing importers (weeklySalesExport.ts) — the actual
 // definitions live in amazonReportShared.ts so analysisReportExport.ts can use
@@ -198,7 +198,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   const [
     spRows, sbRows, sdRows, orderRows, amReturnRows, fbaReturnRows, mapRows,
     priceListingRows, fbaInventoryRows, ledgerRows, ledgerRawRows, sfReturnRows,
-    productMaster, masterSkuid,
+    productMaster, masterSkuid, masterSkuidCatalog,
   ] = await Promise.all([
     fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", win30.start).lte("report_date", endDate)),
     fetchAllRows("barm_amazon_sb_campaign", (q) => q.gte("report_date", win30.start).lte("report_date", endDate)),
@@ -230,6 +230,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     fetchMisSellerFlexReturns((q) => q.gte("pickup_date", win30.start).lte("pickup_date", endDate)),
     fetchProductMasterMap(),
     fetchMasterSkuidMap(),
+    fetchMasterSkuidAmazonCatalog(),
   ]);
 
   // Campaign -> weighted SKU allocation. Sponsored Brands / Display exports have
@@ -672,7 +673,25 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     wA: skuRollA.get(sku) || emptyWindowAgg(),
     wB: skuRollB.get(sku) || emptyWindowAgg(),
   }));
-  skuRows.sort((a, b) => (b.wA.spendTax - a.wA.spendTax) || (b.wA.orderUnits - a.wA.orderUnits));
+  // Every other known Amazon SKU from master_product_skuid — no spend, no orders, no stock signal
+  // at all this window — appended (not merged into activeSkus) purely so the seller can see what
+  // ISN'T selling, sorted to the bottom below. Kept out of activeSkus itself so topWorstAcos /
+  // negativeFinalNote / every other analytical pass above stays exactly as it already was.
+  masterSkuidCatalog.forEach((entry) => {
+    if (activeSkus.has(entry.sku)) return;
+    // Reuse whatever metaMap already knows about this SKU (e.g. a price-listing row that named
+    // it without generating enough activity to count as "active") rather than discarding it —
+    // only fall back to the catalog's own name when nothing has resolved a real one yet.
+    const meta = metaMap.get(entry.sku) || emptyMeta(entry.sku);
+    if (meta.name === meta.sku) meta.name = resolveMasterName(entry.sku, entry.name);
+    skuRows.push({ sku: entry.sku, meta, wA: skuRollA.get(entry.sku) || emptyWindowAgg(), wB: skuRollB.get(entry.sku) || emptyWindowAgg() });
+  });
+  skuRows.sort((a, b) => {
+    const aActive = activeSkus.has(a.sku), bActive = activeSkus.has(b.sku);
+    if (aActive !== bActive) return aActive ? -1 : 1;
+    if (!aActive) return a.meta.name.localeCompare(b.meta.name);
+    return (b.wA.spendTax - a.wA.spendTax) || (b.wA.orderUnits - a.wA.orderUnits);
+  });
 
   // Worst-ACOS-first preview for the email body (the workbook itself carries the full detail) —
   // same reasoning as adSpendReportExport.ts's shortlist: a SKU that's barely spent anything can

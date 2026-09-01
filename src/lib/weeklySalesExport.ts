@@ -4,7 +4,7 @@ import { istDayWindowUtc, istDateOnly, isStandardOrderId } from "@/lib/amazonRep
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns } from "@/lib/misAdapters";
 import { categorizeTitle, resolveProductName, CATEGORY_COLORS } from "@/lib/categoryMap";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
-import { fetchMasterSkuidMap, buildMasterSkuidResolver } from "@/lib/masterProductSkuid";
+import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog } from "@/lib/masterProductSkuid";
 
 // SKU-wise sibling of amazonSalesExport.ts's buildAmazonSalesWorkbook, built for the Weekly
 // Report email attachment only. Fixed to exactly two periods (last week / this week — the same
@@ -35,7 +35,13 @@ interface ProductRow {
   name: string;
   periods: Record<string, PeriodStats>;
   grandTotalSales: number;
+  // False for a row seeded purely from the product catalog with zero orders in both periods —
+  // kept out of Growth Summary/decliner analysis (nothing to analyze) but still shown on the
+  // Amazon Sales sheet, at the bottom, so the seller can see what isn't selling.
+  hasActivity: boolean;
 }
+
+const ZERO_PERIOD_STATS: PeriodStats = { orders: 0, allReturns: 0, returns: 0, totalOrders: 0, price: 0, totalSales: 0 };
 
 function fmtDot(iso: string): string {
   const [y, m, d] = iso.split("-");
@@ -78,7 +84,7 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
 
   // Fetch every relevant row once across the combined 2-week span, split by date in memory below —
   // same "fetch once, filter twice" approach historicalAnalysisReportExport.ts uses for its 30/7-day windows.
-  const [orderRows, amReturnRows, fbaReturnRows, priceListingRows, ledgerRows, adRows, productMaster, masterSkuid] = await Promise.all([
+  const [orderRows, amReturnRows, fbaReturnRows, priceListingRows, ledgerRows, adRows, productMaster, masterSkuid, masterSkuidCatalog] = await Promise.all([
     fetchMisAmazonOrders((q) => q.gte("purchase_datetime", ordersWindow.gte).lt("purchase_datetime", ordersWindow.lt)),
     fetchMisAmazonReturns((q) => q.gte("return_request_date", lastWeek.start).lte("return_request_date", thisWeek.end)),
     fetchMisFbaReturns((q) =>
@@ -99,6 +105,7 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
     ).catch(() => []),
     fetchProductMasterMap(),
     fetchMasterSkuidMap(),
+    fetchMasterSkuidAmazonCatalog(),
   ]);
   const { resolveName: resolveBarmName, resolveCategory: resolveBarmCategory } = buildProductMasterResolver(productMaster);
   const { resolveName: resolveSkuidName, resolveCategory: resolveSkuidCategory } = buildMasterSkuidResolver(masterSkuid);
@@ -299,7 +306,7 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
       // Amazon Sales report. A SKU the master doesn't have yet keeps whatever name resolveProductName
       // (or the raw order-report name) already produced.
       const name = resolveMasterName(sku, resolveProductName(rawName, sku) || rawName);
-      p = { sku, name, periods: {}, grandTotalSales: 0 };
+      p = { sku, name, periods: {}, grandTotalSales: 0, hasActivity: true };
       products.set(sku, p);
     }
     return p;
@@ -335,6 +342,22 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
     });
   });
 
+  // Seed a zero-order row for every known Amazon SKU that had no order/return activity at all
+  // this fortnight, so the seller can see what ISN'T selling and not just what is — placed at the
+  // bottom of the sheet (see rowsByCategory below) and excluded from Growth Summary/decliner
+  // analysis (nothing to analyze about a SKU with no activity), but still present on Amazon Sales.
+  masterSkuidCatalog.forEach((entry) => {
+    if (products.has(entry.sku)) return;
+    const price = catalogPriceBySku.get(entry.sku) || 0;
+    products.set(entry.sku, {
+      sku: entry.sku,
+      name: resolveMasterName(entry.sku, entry.name),
+      periods: Object.fromEntries(periods.map((pd) => [pd.label, { ...ZERO_PERIOD_STATS, price }])),
+      grandTotalSales: 0,
+      hasActivity: false,
+    });
+  });
+
   const rows = [...products.values()].sort((a, b) => b.grandTotalSales - a.grandTotalSales);
 
   // ── Category/Department aggregation — same per-product per-period data, grouped by department. ──
@@ -366,10 +389,17 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
   [...categoryAgg.entries()]
     .sort((a, b) => b[1].grandSales - a[1].grandSales)
     .forEach(([name], i) => categoryRank.set(name, i));
+  // Every SKU with real activity first (grouped by department, best-selling department and then
+  // best-selling product within it — unchanged from before), THEN every zero-order catalog-seeded
+  // SKU at the very bottom of the sheet (grouped by department, then alphabetically) — so a reader
+  // scanning top-down sees real performance first and "not selling at all" as a distinct trailing
+  // block, not interleaved with it.
   const rowsByCategory = [...visibleRows].sort((a, b) => {
+    if (a.hasActivity !== b.hasActivity) return a.hasActivity ? -1 : 1;
     const ra = categoryRank.get(catBySku.get(a.sku) || "") ?? 999;
     const rb = categoryRank.get(catBySku.get(b.sku) || "") ?? 999;
     if (ra !== rb) return ra - rb;
+    if (!a.hasActivity) return a.name.localeCompare(b.name);
     return b.grandTotalSales - a.grandTotalSales;
   });
 
