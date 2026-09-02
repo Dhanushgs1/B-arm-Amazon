@@ -690,8 +690,8 @@ export async function fetchMeeshoProducts(
 
 // ── workbook ─────────────────────────────────────────────────────────────────
 
-function styleHeader(ws: XLSX.WorkSheet, row: number, cols: number, fill: string): void {
-  for (let c = 0; c < cols; c++) {
+function styleHeader(ws: XLSX.WorkSheet, row: number, cols: number, fill: string, colStart = 0): void {
+  for (let c = colStart; c < colStart + cols; c++) {
     const addr = XLSX.utils.encode_cell({ r: row, c });
     if (!ws[addr]) ws[addr] = { t: "s", v: "" };
     ws[addr].s = {
@@ -728,15 +728,45 @@ function applyNumberFormats(ws: XLSX.WorkSheet, rowStart: number, rowEnd: number
 // uploaded (their own headers, their own column order), matching the raw
 // "Amazon Spend" / "Flipkart Orders" / etc. sheets in their hand-built
 // workbook instead of inventing a different layout.
+// Product/Quantity/Price/Sales leaderboard written one blank column to the
+// right of a raw dump sheet's own columns (see rawRowsToSheet's sideBlock
+// param) — matches the seller's own hand-built workbook's Meesho orders tab,
+// which pairs the raw export with exactly this per-product summary on the
+// same sheet rather than a separate one.
+interface SideBlock {
+  header: (string | number)[];
+  rows: (string | number)[][];
+  /** Column indexes within `rows` (0-based, relative to the block's own
+   *  first column) that hold currency values — Price/Sales here — so they
+   *  get the same ₹ format the rest of the report uses. */
+  currencyCols: number[];
+}
+
 function rawRowsToSheet(
   wb: XLSX.WorkBook,
   sheetName: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  rows: any[]
+  rows: any[],
+  sideBlock?: SideBlock
 ): void {
   const rawRows: Record<string, unknown>[] = rows.map((r) => r?.raw).filter((r): r is Record<string, unknown> => !!r);
+  const writeSideBlock = (ws: XLSX.WorkSheet, colStart: number) => {
+    if (!sideBlock) return;
+    XLSX.utils.sheet_add_aoa(ws, [sideBlock.header, ...sideBlock.rows], { origin: { r: 0, c: colStart } });
+    styleHeader(ws, 0, sideBlock.header.length, "6B7280", colStart);
+    applyNumberFormats(
+      ws, 1, sideBlock.rows.length + 1,
+      Object.fromEntries(sideBlock.currencyCols.map((c) => [colStart + c, CURRENCY_FMT]))
+    );
+    if (!ws["!cols"]) ws["!cols"] = [];
+    const wsCols = ws["!cols"] as { wch: number }[];
+    while (wsCols.length < colStart) wsCols.push({ wch: 16 });
+    wsCols.push({ wch: 40 }, ...sideBlock.header.slice(1).map(() => ({ wch: 12 })));
+  };
   if (!rawRows.length) {
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["(no data in range)"]]), sheetName);
+    const ws = XLSX.utils.aoa_to_sheet([["(no data in range)"]]);
+    writeSideBlock(ws, 2);
+    XLSX.utils.book_append_sheet(wb, ws, sheetName);
     return;
   }
   const cols: string[] = [];
@@ -757,6 +787,7 @@ function rawRowsToSheet(
   styleHeader(ws, 0, cols.length, "6B7280");
   ws["!views"] = [{ state: "frozen", ySplit: 1 }];
   ws["!cols"] = cols.map(() => ({ wch: 16 }));
+  writeSideBlock(ws, cols.length + 1);
   XLSX.utils.book_append_sheet(wb, ws, sheetName);
 }
 
@@ -1217,7 +1248,19 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   rawRowsToSheet(wb, "Flipkart Spend", fk.fsnRows);
   rawRowsToSheet(wb, "Flipkart Orders", fk.orderRows);
   rawRowsToSheet(wb, "Meesho (B Arm) Spend", ms.adsRows);
-  rawRowsToSheet(wb, "Meesho (B Arm) orders", ms.orderRows);
+  // Meesho orders also gets a Product/Quantity/Price/Sales leaderboard next to
+  // the raw dump — same shape and formula (Sales = Price x range Quantity) as
+  // the cross-platform "B Arm orders" sheet below, scoped to just Meesho here,
+  // matching the seller's own hand-built workbook's Meesho orders tab.
+  const meeshoLeaderboardRows = groupProductsByName([...ms.products.values()])
+    .filter((p) => p.range.units > 0)
+    .sort((a, b) => b.range.units * b.price - a.range.units * a.price)
+    .map((p): (string | number)[] => [p.name, p.range.units, p.price, round2(p.price * p.range.units)]);
+  rawRowsToSheet(wb, "Meesho (B Arm) orders", ms.orderRows, {
+    header: ["Product", "Quantity", "Price", "Sales"],
+    rows: meeshoLeaderboardRows,
+    currencyCols: [2, 3],
+  });
 
   // ── B Arm orders — cross-platform Product/Quantity/Price/Sales leaderboard,
   // matching the hand-built workbook's own (empty, in every sample seen)
