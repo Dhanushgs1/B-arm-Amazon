@@ -18,6 +18,7 @@ import { uploadCombinedWorkbook, fetchDailyTablesDataInfo, type SheetUploadOutco
 import { staleness } from "@/lib/dataFreshness";
 import { fetchAllMisReportDataInfo, type MisReportDataInfo } from "@/lib/misAdapters";
 import { fetchProductMasterNameMap } from "@/lib/productMasterUpload";
+import { uploadProductMarketing, fetchProductMarketingDataInfo, type ProductMarketingDataInfo } from "@/lib/productMarketingUpload";
 import Link from "next/link";
 
 const AD_ORDER_REPORT_TYPES: UploadReportType[] = [
@@ -292,6 +293,107 @@ function CombinedAdSpendUploadCard({ onUploaded, dataInfo }: { onUploaded: () =>
   );
 }
 
+interface ProductMarketingState {
+  status: "idle" | "parsing" | "done" | "error";
+  fileName?: string;
+  message?: string;
+}
+
+// Re-upload point for the marketing team's "Master SKU sheet with Category" workbook — the
+// freshest, most current product master, checked FIRST by every downloadable report when
+// resolving a SKU's display name/category (see src/lib/productMarketingUpload.ts). No date
+// column, so each upload fully replaces the previous snapshot (same pattern as the combined
+// Ad Spend upload card above).
+function ProductMarketingUploadCard({ onUploaded, dataInfo }: { onUploaded: () => void; dataInfo: ProductMarketingDataInfo | undefined }) {
+  const [state, setState] = useState<ProductMarketingState>({ status: "idle" });
+  const [dragOver, setDragOver] = useState(false);
+
+  const handleFile = async (file: File) => {
+    setState({ status: "parsing", fileName: file.name });
+    try {
+      const res = await uploadProductMarketing(file);
+      const message = `${res.savedRows} rows saved${res.skippedRows ? `, ${res.skippedRows} skipped` : ""} (of ${res.totalRows})`;
+      setState({ status: "done", fileName: file.name, message });
+      onUploaded();
+    } catch (err) {
+      setState({ status: "error", fileName: file.name, message: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  return (
+    <div className="glass rounded-2xl border-2 border-primary/30 p-6 shadow-sm">
+      <div className="flex items-center gap-3 mb-2">
+        <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary">
+          <FileSpreadsheet size={20} />
+        </div>
+        <div>
+          <h3 className="font-bold text-sm text-foreground">Master Product Marketing</h3>
+          <span className="text-[10px] text-muted-foreground uppercase font-black tracking-wider">XLSX</span>
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground mb-4">
+        Drop the &quot;Master SKU sheet with Category&quot; workbook here (Product, Product name, SKU ID, Platforms,
+        Category) — this is the marketing team&apos;s freshest master, checked first by every downloadable report for
+        a product&apos;s display name/category. Re-uploading fully replaces the previous snapshot.
+      </p>
+
+      <label
+        htmlFor="product-marketing-upload"
+        className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl py-8 cursor-pointer transition-colors ${
+          dragOver ? "border-primary" : "border-border hover:border-primary/50"
+        }`}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          const f = e.dataTransfer.files?.[0];
+          if (f) handleFile(f);
+        }}
+      >
+        <UploadCloud size={24} className="text-muted-foreground" />
+        <span className="text-xs text-muted-foreground px-2 text-center truncate max-w-full">
+          {state.fileName || "Click or drop the Master SKU sheet .xlsx here"}
+        </span>
+      </label>
+      {dataInfo && (
+        <p className="text-[10px] text-muted-foreground mt-1">
+          {dataInfo.error ? `Table not ready — ${dataInfo.error}` : `${dataInfo.rowCount} rows on file`}
+        </p>
+      )}
+      <input
+        id="product-marketing-upload"
+        type="file"
+        accept=".xlsx,.xls"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) handleFile(f);
+          e.target.value = "";
+        }}
+      />
+
+      <div className="mt-3 text-xs min-h-[1.25rem]">
+        {state.status === "parsing" && (
+          <span className="flex items-center gap-1.5 text-muted-foreground">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Reading sheet &amp; saving to Supabase…
+          </span>
+        )}
+        {state.status === "done" && (
+          <span className="flex items-center gap-1.5 text-green-600 dark:text-green-400 font-semibold">
+            <CheckCircle2 size={14} /> {state.message}
+          </span>
+        )}
+        {state.status === "error" && (
+          <span className="flex items-center gap-1.5 text-red-600 dark:text-red-400 font-semibold">
+            <XCircle size={14} /> {state.message}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Words too generic/common in Amazon campaign names or product titles to mean
 // anything on their own — excluded so a match needs actual product words in
 // common, not just "auto" or "pack" appearing on both sides.
@@ -503,11 +605,18 @@ export default function UploadReportsPage() {
     setCombinedDataInfo(info);
   }, []);
 
+  const [productMarketingDataInfo, setProductMarketingDataInfo] = useState<ProductMarketingDataInfo | undefined>(undefined);
+  const refreshProductMarketingMeta = useCallback(async () => {
+    const info = await fetchProductMarketingDataInfo();
+    setProductMarketingDataInfo(info);
+  }, []);
+
   useEffect(() => {
     refreshMeta();
     refreshCombinedMeta();
     refreshMisMeta();
-  }, [refreshMeta, refreshCombinedMeta, refreshMisMeta]);
+    refreshProductMarketingMeta();
+  }, [refreshMeta, refreshCombinedMeta, refreshMisMeta, refreshProductMarketingMeta]);
 
   const handleFile = async (type: UploadReportType, file: File) => {
     setCardState((prev) => ({ ...prev, [type]: { status: "parsing", fileName: file.name } }));
@@ -561,6 +670,8 @@ export default function UploadReportsPage() {
       </div>
 
       <CombinedAdSpendUploadCard onUploaded={refreshCombinedMeta} dataInfo={combinedDataInfo} />
+
+      <ProductMarketingUploadCard onUploaded={refreshProductMarketingMeta} dataInfo={productMarketingDataInfo} />
 
       <div>
         <h2 className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-3">

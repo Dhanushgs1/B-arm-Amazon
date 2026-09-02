@@ -4,6 +4,7 @@ import { resolveProductName } from "@/lib/categoryMap";
 import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns } from "@/lib/misAdapters";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, gstMultiplierFromTax } from "@/lib/masterProductSkuid";
+import { fetchProductMarketingMap, buildProductMarketingResolver } from "@/lib/productMarketingUpload";
 
 // ── Analysis Report (Ad Performance) ────────────────────────────────────────
 // Recreates the per-product "Analysis report" sheet from the seller's manual
@@ -400,7 +401,7 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
   // matching historicalAnalysisReportExport.ts's single-fetch pattern for the
   // same tables.
   const [
-    spRows30, orderRows30, amReturnRows30, fbaReturnRows30, sfReturnRows30, inventory, catalog, masterSkuid,
+    spRows30, orderRows30, amReturnRows30, fbaReturnRows30, sfReturnRows30, inventory, catalog, masterSkuid, productMarketing,
   ] = await Promise.all([
     fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", start30).lte("report_date", end)),
     fetchMisAmazonOrders((q) => q.gte("purchase_datetime", win30Ist.gte).lt("purchase_datetime", win30Ist.lt)),
@@ -410,8 +411,13 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
     fetchInventoryByLocation(call, baseArgs).catch(() => []),
     fetchFullCatalog(call, baseArgs).catch(() => []),
     fetchMasterSkuidMap(),
+    fetchProductMarketingMap(),
   ]);
-  const { resolveTax: resolveSkuidTax, resolveName: resolveSkuidName } = buildMasterSkuidResolver(masterSkuid);
+  const { resolveTax: resolveSkuidTax, resolveName: resolveSkuidNameRaw } = buildMasterSkuidResolver(masterSkuid);
+  const { resolveName: resolveMarketingName } = buildProductMarketingResolver(productMarketing);
+  // master_product_marketing is the marketing team's freshest, most current master — checked
+  // first; master_product_skuid only fills in a SKU it doesn't have.
+  const resolveSkuidName = (sku: string, fallback: string) => resolveMarketingName(sku, resolveSkuidNameRaw(sku, fallback));
 
   const products = new Map<string, ProductRow>();
   const ensure = (asin: string): ProductRow => {

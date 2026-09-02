@@ -3,6 +3,7 @@ import { mcp } from "@/lib/api";
 import { categorizeTitle, resolveProductName, CATEGORY_COLORS } from "@/lib/categoryMap";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver } from "@/lib/masterProductSkuid";
+import { fetchProductMarketingMap, buildProductMarketingResolver } from "@/lib/productMarketingUpload";
 
 // SellerMate's get_retail_product_performance rejects start_date === end_date outright, so a
 // single calendar day can't be queried directly. "daily" instead uses a cumulative-prefix trick:
@@ -373,18 +374,22 @@ async function buildAmazonSalesWorkbook(opts: {
 
   const periods = buildPeriods(startDate, endDate, granularity);
 
-  const [catalog, inventory, productMaster, masterSkuid] = await Promise.all([
+  const [catalog, inventory, productMarketing, productMaster, masterSkuid] = await Promise.all([
     fetchFullCatalog(call, baseArgs),
     fetchAllInventory(call, baseArgs).catch(() => []),
+    fetchProductMarketingMap(),
     fetchProductMasterMap(),
     fetchMasterSkuidMap(),
   ]);
+  const { resolveName: resolveMarketingName, resolveCategory: resolveMarketingCategory } = buildProductMarketingResolver(productMarketing);
   const { resolveName: resolveBarmName, resolveCategory: resolveBarmCategory } = buildProductMasterResolver(productMaster);
   const { resolveName: resolveSkuidName, resolveCategory: resolveSkuidCategory } = buildMasterSkuidResolver(masterSkuid);
-  // master_product_skuid is the seller's fullest, most current source — checked first; both
-  // barm_product_master and categoryMap.ts's hardcoded maps only fill in a SKU it doesn't have.
-  const resolveMasterName = (sku: string, fallback: string) => resolveSkuidName(sku, resolveBarmName(sku, fallback));
-  const resolveMasterCategory = (sku: string, fallback: string) => resolveSkuidCategory(sku, resolveBarmCategory(sku, fallback));
+  // master_product_marketing is the marketing team's freshest, most current master — checked
+  // first; master_product_skuid and barm_product_master only fill in a SKU it doesn't have.
+  const resolveMasterName = (sku: string, fallback: string) =>
+    resolveMarketingName(sku, resolveSkuidName(sku, resolveBarmName(sku, fallback)));
+  const resolveMasterCategory = (sku: string, fallback: string) =>
+    resolveMarketingCategory(sku, resolveSkuidCategory(sku, resolveBarmCategory(sku, fallback)));
 
   // list_product_catalog is the reliable source for SKU — get_inventory's sku field comes back
   // blank for some accounts (seen on B-ARM), so catalog is read first and inventory is only a

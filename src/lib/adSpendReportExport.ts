@@ -5,6 +5,7 @@ import { toDate as parseFlexibleDate } from "@/lib/meeshoReportUpload";
 import { resolveProductName } from "@/lib/categoryMap";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog, fetchMasterSkuidsByName, gstMultiplierFromTax, DEFAULT_GST_MULTIPLIER } from "@/lib/masterProductSkuid";
+import { fetchProductMarketingMap, buildProductMarketingResolver } from "@/lib/productMarketingUpload";
 import { SITE_URL } from "@/lib/siteUrl";
 
 // ── Ad Spend Report ──────────────────────────────────────────────────────────
@@ -908,11 +909,12 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // Fetched once and shared across all three platforms — the seller's own
   // approved SKU -> product name list, checked first before falling back to
   // whatever name shows up on an order/price-listing row (see resolveName).
-  const [master, masterSkuid, masterSkuidCatalog, masterSkuidsByName, amz, fk, ms] = await Promise.all([
+  const [master, masterSkuid, masterSkuidCatalog, masterSkuidsByName, productMarketing, amz, fk, ms] = await Promise.all([
     fetchProductMasterMap(),
     fetchMasterSkuidMap(),
     fetchMasterSkuidAmazonCatalog(),
     fetchMasterSkuidsByName(),
+    fetchProductMarketingMap(),
     fetchAmazonProducts(range, endDate),
     fetchFlipkartProducts(range, endDate),
     fetchMeeshoProducts(range, endDate),
@@ -923,11 +925,13 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // buildProductMasterResolver falls back to matching on the SKU's base (see
   // skuBase in productMasterUpload.ts) for these. This only changes which
   // NAME gets displayed — every spend/order figure stays keyed on the exact SKU.
-  // master_product_skuid is the seller's fullest, most current source — checked first;
-  // barm_product_master only fills in a SKU it doesn't have.
+  // master_product_marketing is the marketing team's freshest, most current master — checked
+  // first; master_product_skuid and barm_product_master only fill in a SKU it doesn't have.
   const { resolveName: resolveBarmName } = buildProductMasterResolver(master);
   const { resolveName: resolveSkuidName, resolveTax: resolveSkuidTax } = buildMasterSkuidResolver(masterSkuid);
-  const resolveName = (sku: string, fallback: string) => resolveSkuidName(sku, resolveBarmName(sku, fallback));
+  const { resolveName: resolveMarketingName } = buildProductMarketingResolver(productMarketing);
+  const resolveName = (sku: string, fallback: string) =>
+    resolveMarketingName(sku, resolveSkuidName(sku, resolveBarmName(sku, fallback)));
   [amz.products, fk.products, ms.products].forEach((products) => {
     products.forEach((p) => {
       p.name = resolveName(p.sku, p.name);
@@ -996,25 +1000,33 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const METRIC_NAMES = ["Spend", "Spend(with tax)", "Orders", "CPC", "ACOS"];
 
   // ── Summary sheet ──
-  // 17 columns: A Platform, B/C Ad spend without/with tax (range total), D/E
-  // Product/price, F-J day metrics, K-O range metrics, P/Q Overall sales
-  // QTS/Value (single reporting day, matching the dayLabel header — NOT the
-  // 7-day range, see the day-vs-range note where these cells are written
-  // below) — A,B,C,P,Q merge down across however many product rows that
-  // platform gets.
-  const SUM_COLS = 17;
+  // 19 columns: A Platform, B/C Ad spend without/with tax (range total), D/E
+  // Product/price, F-K day metrics, L-Q range metrics — both blocks now
+  // Spend, Spend(with tax), Orders, Orders x Price = Total Sales, CPC, ACOS
+  // (the "Total Sales" column is a per-product-row figure, not ad-spend-
+  // derived, added at the seller's request so a product's implied revenue
+  // sits right next to its Orders count, in both the day and range blocks),
+  // R/S Overall sales QTS/Value (single reporting day, matching the dayLabel
+  // header — NOT the 7-day range, see the day-vs-range note where these
+  // cells are written below) — A,B,C,R,S merge down across however many
+  // product rows that platform gets.
+  const SUM_COLS = 19;
+  // Both the day and range blocks get the extra "Total Sales" column here — the "Ad spend
+  // report" sheet's day/range blocks still use the shared METRIC_NAMES/productAoaRow below,
+  // unchanged, so that sheet's layout isn't affected by this Summary-only addition.
+  const SUMMARY_METRIC_NAMES = ["Spend", "Spend(with tax)", "Orders", "Orders x Price = Total Sales", "CPC", "ACOS"];
   const sumAoa: (string | number)[][] = [
     Array(SUM_COLS).fill(""),
     ["Summary", ...Array(SUM_COLS - 1).fill("")],
     Array(SUM_COLS).fill(""),
-    ["Platform", "Ad spend (without tax)", "Ad spend (with tax)", "Worst ACOS product", "", dayLabel, "", "", "", "", rangeLabel, "", "", "", "", `Overall sales (${dayLabel})`, ""],
-    ["", "", "", "Product", "price", ...METRIC_NAMES, ...METRIC_NAMES, "QTS", "Value"],
+    ["Platform", "Ad spend (without tax)", "Ad spend (with tax)", "Worst ACOS product", "", dayLabel, "", "", "", "", "", rangeLabel, "", "", "", "", "", `Overall sales (${dayLabel})`, ""],
+    ["", "", "", "Product", "price", ...SUMMARY_METRIC_NAMES, ...SUMMARY_METRIC_NAMES, "QTS", "Value"],
   ];
   const sumMerges: XLSX.Range[] = [
     { s: { r: 1, c: 0 }, e: { r: 1, c: SUM_COLS - 1 } },
     { s: { r: 3, c: 0 }, e: { r: 4, c: 0 } }, { s: { r: 3, c: 1 }, e: { r: 4, c: 1 } }, { s: { r: 3, c: 2 }, e: { r: 4, c: 2 } },
-    { s: { r: 3, c: 3 }, e: { r: 3, c: 4 } }, { s: { r: 3, c: 5 }, e: { r: 3, c: 9 } }, { s: { r: 3, c: 10 }, e: { r: 3, c: 14 } },
-    { s: { r: 3, c: 15 }, e: { r: 3, c: 16 } },
+    { s: { r: 3, c: 3 }, e: { r: 3, c: 4 } }, { s: { r: 3, c: 5 }, e: { r: 3, c: 10 } }, { s: { r: 3, c: 11 }, e: { r: 3, c: 16 } },
+    { s: { r: 3, c: 17 }, e: { r: 3, c: 18 } },
   ];
   const sumHeaderRowsStyled = [3, 4];
   const sumLabelCells: { row: number; platform: Platform }[] = [];
@@ -1069,6 +1081,13 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     sumLabelCells.push({ row: blockStart, platform });
     if (shortlist.length) {
       shortlist.forEach((p, i) => {
+        // Total Sales = that product's own Orders x its Price — same "Sales"
+        // formula the B Arm orders / Meesho leaderboard sheets already use
+        // (price x units), computed once for the day's Orders and once for
+        // the range's, so each block gets its own Total Sales next to its
+        // own Orders count.
+        const dayTotalSales = round2(p.price * p.day.units);
+        const rangeTotalSales = round2(p.price * p.range.units);
         sumAoa.push([
           // "Ad spend (without/with tax)" here is the SINGLE-DAY total, matching
           // the seller's own manual workbook's Summary sheet convention — the
@@ -1076,7 +1095,9 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           // preserved separately in platformTotals.rangeSpendTax for the
           // post-generate toast on the Download page.
           i === 0 ? platform : "", i === 0 ? round2(daySpendRaw) : "", i === 0 ? round2(daySpendTaxTotal) : "",
-          ...productAoaRow(p),
+          p.name, p.price,
+          round2(p.day.spend), round2(spendTax(p.day)), p.day.units, dayTotalSales, round2(computeCpc(p.day)), pct(computeAcos(p.day, p.price)),
+          round2(p.range.spend), round2(spendTax(p.range)), p.range.units, rangeTotalSales, round2(computeCpc(p.range)), pct(computeAcos(p.range, p.price)),
           // Overall sales QTS/Value is the SINGLE reporting day's total (matches
           // the dayLabel header above), not the 7-day range — the seller's own
           // manual workbook tracks this figure daily, not as a weekly rollup.
@@ -1086,10 +1107,10 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
         ]);
       });
     } else {
-      sumAoa.push([platform, 0, 0, "(no ad spend in range)", "", "", "", "", "", "", "", "", "", "", "", overallDay.units, round2(overallDay.value)]);
+      sumAoa.push([platform, 0, 0, "(no ad spend in range)", "", "", "", "", "", "", "", "", "", "", "", "", "", overallDay.units, round2(overallDay.value)]);
     }
     if (blockRows > 1) {
-      [0, 1, 2, 15, 16].forEach((c) => sumMerges.push({ s: { r: blockStart, c }, e: { r: blockStart + blockRows - 1, c } }));
+      [0, 1, 2, 17, 18].forEach((c) => sumMerges.push({ s: { r: blockStart, c }, e: { r: blockStart + blockRows - 1, c } }));
     }
   });
 
@@ -1110,12 +1131,14 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   });
   wsSummary["!cols"] = [
     { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 60 }, { wch: 10 },
-    ...Array.from({ length: 10 }, () => ({ wch: 13 })), { wch: 10 }, { wch: 14 },
+    { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 24 }, { wch: 13 }, { wch: 13 }, // day block: Spend, Spend(with tax), Orders, Total Sales (wider header), CPC, ACOS
+    { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 24 }, { wch: 13 }, { wch: 13 }, // range block: same shape
+    { wch: 10 }, { wch: 14 },
   ];
   applyNumberFormats(wsSummary, 5, sumAoa.length, {
     1: CURRENCY_FMT, 2: CURRENCY_FMT, 4: CURRENCY_FMT, 5: CURRENCY_FMT, 6: CURRENCY_FMT,
-    8: CURRENCY_FMT, 9: PERCENT_FMT, 10: CURRENCY_FMT, 11: CURRENCY_FMT, 13: CURRENCY_FMT,
-    14: PERCENT_FMT, 16: CURRENCY_FMT,
+    8: CURRENCY_FMT, 9: CURRENCY_FMT, 10: PERCENT_FMT, 11: CURRENCY_FMT, 12: CURRENCY_FMT,
+    14: CURRENCY_FMT, 15: CURRENCY_FMT, 16: PERCENT_FMT, 18: CURRENCY_FMT,
   });
   // Long titles (a SKU with no product-master entry falls back to the raw
   // marketing title) need to wrap within the column instead of overflowing
@@ -1191,6 +1214,43 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     });
   }
   XLSX.utils.book_append_sheet(wb, wsDetail, "Ad spend report");
+
+  // ── SKU Wise Report — flat, per-SKU (ungrouped) listing across all platforms ──
+  // Unlike "Ad spend report" above (which merges every SKU variant of a product
+  // into one row via groupProductsByName), this sheet keeps one row per actual
+  // SKU — added alongside it at the seller's request, not replacing it, so a
+  // SKU's own individual numbers can be sorted/filtered directly by Platform or
+  // Price. Range-window (7-day) figures throughout; Total Sales uses the same
+  // Price x range-Orders formula the B Arm orders / Meesho leaderboard sheets
+  // already use elsewhere in this workbook.
+  const SKU_WISE_COLS = 9;
+  const skuWiseHeader = ["SKU ID", "Platform", "Price", "Spend (without tax)", "Spend (with tax)", "Orders", "Total Sales", "CPC", "ACOS"];
+  const skuWiseRows: (string | number)[][] = [];
+  platforms.forEach(({ platform, products }) => {
+    [...products.values()]
+      .filter((p) => spendTax(p.range) > 0)
+      .forEach((p) => {
+        skuWiseRows.push([
+          p.sku, platform, p.price,
+          round2(p.range.spend), round2(spendTax(p.range)), p.range.units,
+          round2(p.price * p.range.units), round2(computeCpc(p.range)), pct(computeAcos(p.range, p.price)),
+        ]);
+      });
+  });
+  // Highest Total Sales first, across every platform — the point of a flat,
+  // per-SKU sheet is to see top sellers regardless of which platform they're on.
+  skuWiseRows.sort((a, b) => Number(b[6]) - Number(a[6]));
+  const wsSkuWise = XLSX.utils.aoa_to_sheet([skuWiseHeader, ...skuWiseRows]);
+  styleHeader(wsSkuWise, 0, SKU_WISE_COLS, "312E81");
+  wsSkuWise["!views"] = [{ state: "frozen", ySplit: 1 }];
+  wsSkuWise["!cols"] = [
+    { wch: 24 }, { wch: 10 }, { wch: 10 }, { wch: 16 }, { wch: 16 }, { wch: 10 }, { wch: 14 }, { wch: 12 }, { wch: 10 },
+  ];
+  applyNumberFormats(wsSkuWise, 1, skuWiseRows.length + 1, {
+    2: CURRENCY_FMT, 3: CURRENCY_FMT, 4: CURRENCY_FMT, 6: CURRENCY_FMT, 7: CURRENCY_FMT, 8: PERCENT_FMT,
+  });
+  if (!skuWiseRows.length) XLSX.utils.sheet_add_aoa(wsSkuWise, [["(no advertised SKUs with activity in range)"]], { origin: { r: 1, c: 0 } });
+  XLSX.utils.book_append_sheet(wb, wsSkuWise, "SKU Wise Report");
 
   // ── Ad Status Report — product name x platform, best-effort name match ──
   // No cross-platform SKU/product mapping exists in this dashboard, so a

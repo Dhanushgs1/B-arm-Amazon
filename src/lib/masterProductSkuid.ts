@@ -23,7 +23,10 @@ const CATEGORY_ALIASES: Record<string, string> = {
   gynecology: "Gynaecology",
 };
 
-function normalizeCategory(raw: string): string {
+// Exported so other master tables (e.g. master_product_marketing in
+// productMarketingUpload.ts) normalize the same "Gynecology"/"Gynaecology"
+// spelling the same way, instead of drifting with a second copy of this rule.
+export function normalizeCategory(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return "";
   return CATEGORY_ALIASES[trimmed.toLowerCase()] || trimmed;
@@ -186,13 +189,15 @@ export function buildMasterSkuidResolver(master: Map<string, MasterSkuidEntry>) 
 // silently drop to a 0% assumption it was never verified against.
 export const DEFAULT_GST_MULTIPLIER = 1.18;
 
-// master_product_skuid's Tax column is meant to hold a fraction (0.05 = 5% GST, matching the
-// 853/1000 rows that do), but a couple of rows carry a bare "5" — evidently meant as "5%" typed
-// without the decimal point. Taken literally as a fraction that would be a 500% GST rate (a 6x
-// spend multiplier), which is never a real GST slab, so any value >= 1 is treated as a whole
-// number percentage instead (5 -> 0.05) rather than a fraction.
-export function gstMultiplierFromTax(tax: number | null | undefined): number {
-  if (tax === null || tax === undefined || !Number.isFinite(tax) || tax < 0) return DEFAULT_GST_MULTIPLIER;
-  const rate = tax >= 1 ? tax / 100 : tax;
-  return 1 + rate;
+// Every report used to apply each SKU's own real GST rate from master_product_skuid's Tax
+// column (5% for most health devices, 18% for a few) instead of a flat 18% for everyone — more
+// accurate to the actual invoiced tax, but it made every report disagree with the seller's own
+// manual "Ad spend report" workbook, which has always assumed a flat 18% across every product.
+// Per the seller's explicit choice (reconciling Ad_Spend_Report_2026-08-31 (3).xlsx against
+// their manual file on 2026-09-02), every report now matches the manual file's flat-18%
+// assumption instead — the `tax` argument is intentionally ignored so this only has to change
+// in one place if that decision is ever revisited; the resolveTax plumbing that feeds it is left
+// in place rather than ripped out everywhere it's called.
+export function gstMultiplierFromTax(_tax: number | null | undefined): number {
+  return DEFAULT_GST_MULTIPLIER;
 }

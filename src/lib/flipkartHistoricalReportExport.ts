@@ -3,6 +3,7 @@ import { fetchAllRows } from "@/lib/amazonReportShared";
 import { FK_REPORT_LABEL } from "@/lib/flipkartReportUpload";
 import { fetchMisFkOrders, fetchMisFkReturns } from "@/lib/misAdapters";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, gstMultiplierFromTax } from "@/lib/masterProductSkuid";
+import { fetchProductMarketingMap, buildProductMarketingResolver } from "@/lib/productMarketingUpload";
 
 // ── Flipkart Historical Analysis Report ─────────────────────────────────────
 // The Flipkart counterpart of historicalAnalysisReportExport.ts: the same
@@ -194,15 +195,20 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
   const win7 = getDateWindow(endDate, 7);
 
   // One 30-day fetch per source; the 7-day block is a filter over these.
-  const [fsnRows, earnRows, orderRows, listingRows, returnsRows, masterSkuid] = await Promise.all([
+  const [fsnRows, earnRows, orderRows, listingRows, returnsRows, masterSkuid, productMarketing] = await Promise.all([
     fetchAllRows(FSN_TABLE, (q) => q.gte("report_date", win30.start).lte("report_date", endDate)),
     fetchAllRows(EARN_MORE_TABLE, (q) => q.gte("order_date", win30.start).lte("order_date", endDate)),
     fetchMisFkOrders((q) => q.gte("order_date", win30.start).lte("order_date", endDate)),
     fetchAllRows(LISTINGS_TABLE, (q) => q).catch(() => []),
     fetchMisFkReturns((q) => q.gte("return_requested_date", win30.start).lte("return_requested_date", endDate)).catch(() => []),
     fetchMasterSkuidMap(),
+    fetchProductMarketingMap(),
   ]);
-  const { resolveTax: resolveSkuidTax, resolveName: resolveSkuidName } = buildMasterSkuidResolver(masterSkuid);
+  const { resolveTax: resolveSkuidTax, resolveName: resolveSkuidNameRaw } = buildMasterSkuidResolver(masterSkuid);
+  const { resolveName: resolveMarketingName } = buildProductMarketingResolver(productMarketing);
+  // master_product_marketing is the marketing team's freshest, most current master — checked
+  // first; master_product_skuid only fills in a SKU it doesn't have.
+  const resolveSkuidName = (sku: string, fallback: string) => resolveMarketingName(sku, resolveSkuidNameRaw(sku, fallback));
 
   // Collapse Order report rows repeating an (order item ID, status, quantity)
   // triple — the same key the uploader uses, applied again here to catch rows

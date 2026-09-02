@@ -1,4 +1,5 @@
 import { fetchAllRows } from "@/lib/amazonReportShared";
+import { supabasePublic } from "@/lib/amazonReportUpload";
 import type { UploadReportType } from "@/lib/amazonReportUpload";
 
 // Adapters for the 6 report tables the client moved from this app's own
@@ -496,8 +497,34 @@ function summarizeDates<T extends Record<string, unknown>>(rows: T[], dateField:
   return { rowCount: rows.length, minDate: toDateOnly(dates[0]), maxDate: toDateOnly(dates[dates.length - 1]) };
 }
 
+// Cheap "data on file" summary for a table whose raw date column is
+// chronologically sortable as a plain string (see fetchMisDateFiltered's
+// header comment above for which MIS tables qualify) — count + min + max via
+// 3 small indexed queries instead of pulling every row into memory and
+// sorting client-side. fetchMisAmazonOrdersInfo/fetchMisFbaReturnsInfo used
+// to call their real fetchMisAmazonOrders/fetchMisFbaReturns with an
+// unfiltered `(q) => q`, which meant peekDateBound found nothing to push down
+// and fetchAllRows pulled the WHOLE table — exactly the "canceling statement
+// due to statement timeout" fetchAllRows was fixed for on amazon_orders
+// elsewhere, just re-triggered here since this caption never actually needed
+// the rows, only the 3 numbers.
+async function fetchTableSummary(table: string, rawCol: string): Promise<MisReportDataInfo> {
+  const [{ count, error: countErr }, minRes, maxRes] = await Promise.all([
+    supabasePublic.from(table).select("*", { count: "exact", head: true }),
+    supabasePublic.from(table).select("*").not(rawCol, "is", null).order(rawCol, { ascending: true }).limit(1),
+    supabasePublic.from(table).select("*").not(rawCol, "is", null).order(rawCol, { ascending: false }).limit(1),
+  ]);
+  if (countErr) throw new Error(`Fetch ${table} summary failed: ${countErr.message}`);
+  if (minRes.error) throw new Error(`Fetch ${table} min date failed: ${minRes.error.message}`);
+  if (maxRes.error) throw new Error(`Fetch ${table} max date failed: ${maxRes.error.message}`);
+  const minVal = (minRes.data?.[0] as Record<string, unknown> | undefined)?.[rawCol];
+  const maxVal = (maxRes.data?.[0] as Record<string, unknown> | undefined)?.[rawCol];
+  const toDateOnly = (v: unknown) => (typeof v === "string" && v ? v.slice(0, 10) : null);
+  return { rowCount: count || 0, minDate: toDateOnly(minVal), maxDate: toDateOnly(maxVal) };
+}
+
 export async function fetchMisAmazonOrdersInfo(): Promise<MisReportDataInfo> {
-  return summarizeDates(await fetchMisAmazonOrders((q) => q), "purchase_date");
+  return fetchTableSummary("amazon_orders", "purchase-date");
 }
 
 export async function fetchMisAmazonReturnsInfo(): Promise<MisReportDataInfo> {
@@ -505,7 +532,7 @@ export async function fetchMisAmazonReturnsInfo(): Promise<MisReportDataInfo> {
 }
 
 export async function fetchMisFbaReturnsInfo(): Promise<MisReportDataInfo> {
-  return summarizeDates(await fetchMisFbaReturns((q) => q), "return_date");
+  return fetchTableSummary("amazon_fba_returns", "return-date");
 }
 
 export async function fetchMisSellerFlexReturnsInfo(): Promise<MisReportDataInfo> {

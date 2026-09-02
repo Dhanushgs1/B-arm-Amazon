@@ -3,6 +3,7 @@ import { fetchAllRows } from "@/lib/amazonReportShared";
 import { fetchMisFkOrders, fetchMisFkReturns } from "@/lib/misAdapters";
 import { categorizeTitle, resolveProductName, CATEGORY_COLORS } from "@/lib/categoryMap";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, gstMultiplierFromTax } from "@/lib/masterProductSkuid";
+import { fetchProductMarketingMap, buildProductMarketingResolver } from "@/lib/productMarketingUpload";
 
 // Flipkart's SKU-wise weekly report: last week vs this week, one row per SKU.
 //
@@ -76,7 +77,7 @@ export async function buildFlipkartWeeklySalesWorkbook(opts: {
 
   // One fetch across the combined 2-week span; each period is a filter over it.
   // Listings is a current snapshot with no date column, so it is fetched whole.
-  const [orderRows, returnRows, listingRows, fsnRows, masterSkuid] = await Promise.all([
+  const [orderRows, returnRows, listingRows, fsnRows, masterSkuid, productMarketing] = await Promise.all([
     fetchMisFkOrders((q) => q.gte("order_date", lastWeek.start).lte("order_date", thisWeek.end)),
     fetchMisFkReturns((q) =>
       q.gte("return_requested_date", lastWeek.start).lte("return_requested_date", thisWeek.end)
@@ -86,8 +87,13 @@ export async function buildFlipkartWeeklySalesWorkbook(opts: {
       () => []
     ),
     fetchMasterSkuidMap(),
+    fetchProductMarketingMap(),
   ]);
-  const { resolveTax: resolveSkuidTax, resolveName: resolveSkuidName } = buildMasterSkuidResolver(masterSkuid);
+  const { resolveTax: resolveSkuidTax, resolveName: resolveSkuidNameRaw } = buildMasterSkuidResolver(masterSkuid);
+  const { resolveName: resolveMarketingName } = buildProductMarketingResolver(productMarketing);
+  // master_product_marketing is the marketing team's freshest, most current master — checked
+  // first; master_product_skuid only fills in a SKU it doesn't have.
+  const resolveSkuidName = (sku: string, fallback: string) => resolveMarketingName(sku, resolveSkuidNameRaw(sku, fallback));
 
   if (!orderRows.length) {
     throw new Error(

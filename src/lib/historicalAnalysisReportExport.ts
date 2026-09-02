@@ -4,6 +4,7 @@ import { fetchAllRows, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn, 
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns } from "@/lib/misAdapters";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog, gstMultiplierFromTax } from "@/lib/masterProductSkuid";
+import { fetchProductMarketingMap, buildProductMarketingResolver } from "@/lib/productMarketingUpload";
 
 // Re-exported for existing importers (weeklySalesExport.ts) — the actual
 // definitions live in amazonReportShared.ts so analysisReportExport.ts can use
@@ -210,7 +211,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   const [
     spRows, sbRows, sdRows, orderRows, amReturnRows, fbaReturnRows, mapRows,
     priceListingRows, fbaInventoryRows, ledgerRows, ledgerRawRows, sfReturnRows,
-    productMaster, masterSkuid, masterSkuidCatalog,
+    productMaster, masterSkuid, masterSkuidCatalog, productMarketing,
   ] = await Promise.all([
     fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", win30.start).lte("report_date", endDate)),
     fetchAllRows("barm_amazon_sb_campaign", (q) => q.gte("report_date", win30.start).lte("report_date", endDate)),
@@ -243,6 +244,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     fetchProductMasterMap(),
     fetchMasterSkuidMap(),
     fetchMasterSkuidAmazonCatalog(),
+    fetchProductMarketingMap(),
   ]);
 
   // Campaign -> weighted SKU allocation. Sponsored Brands / Display exports have
@@ -420,9 +422,11 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   // SKU with no product row) keeps whatever name was already resolved above.
   const { resolveName: resolveBarmName } = buildProductMasterResolver(productMaster);
   const { resolveName: resolveSkuidName, resolveTax: resolveSkuidTax } = buildMasterSkuidResolver(masterSkuid);
-  // master_product_skuid is the seller's fullest, most current source — checked first; both
-  // barm_product_master and the order-report name only fill in a SKU it doesn't have.
-  const resolveMasterName = (sku: string, fallback: string) => resolveSkuidName(sku, resolveBarmName(sku, fallback));
+  const { resolveName: resolveMarketingName } = buildProductMarketingResolver(productMarketing);
+  // master_product_marketing is the marketing team's freshest, most current master — checked
+  // first; master_product_skuid and barm_product_master only fill in a SKU it doesn't have.
+  const resolveMasterName = (sku: string, fallback: string) =>
+    resolveMarketingName(sku, resolveSkuidName(sku, resolveBarmName(sku, fallback)));
   metaMap.forEach((m, sku) => {
     if (sku === UNMAPPED) return;
     m.name = resolveMasterName(sku, m.name);
