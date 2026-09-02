@@ -30,6 +30,7 @@ import {
   UploadCloud,
   Star,
   Sparkles,
+  Database,
   type LucideIcon
 } from "lucide-react";
 import { MARKETPLACE_META, getMarketplaceTab } from "@/lib/marketplace";
@@ -73,6 +74,7 @@ const NAV_SECTIONS: SidebarNavSection[] = [
       { id: "products", label: "Products", icon: Package },
       { id: "inventory", label: "Inventory", icon: Box },
       { id: "marketshare", label: "Market Share", icon: TrendingUp },
+      { id: "master", label: "Master", icon: Database },
     ],
   },
   {
