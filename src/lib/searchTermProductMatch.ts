@@ -218,8 +218,20 @@ const KNOWN_RELEVANT_ASINS = new Map<string, { name: string; note?: string }>([
 
 export interface SearchTermClassification {
   negative: boolean;
+  // "positive" = real orders (a proven converting term). "neutral" = zero orders but
+  // relevant to the campaign's own product (own-product word/ASIN match, or a manually
+  // confirmed related ASIN) — worth keeping, just hasn't converted yet, so it shouldn't
+  // read the same as a genuine zero-order winner. "negative" = the same `negative` boolean
+  // above, kept alongside it as a named status rather than replacing that boolean, since
+  // existing call sites already check `.negative` directly.
+  status: "positive" | "neutral" | "negative";
   reasons: string[];
   mismatchedProduct: CatalogEntry | null;
+  // Deterministic 0-100 "how good is this search term" score — rule-based, not an AI model
+  // call, so it's instant and reproducible for however many rows a campaign has (some
+  // campaigns run 500+ search terms per drawer/export). See the scoring block in
+  // classifySearchTerm below for exactly how each status computes its score.
+  score: number;
 }
 
 // The rule: a term is negative whenever it has zero orders — regardless of spend or clicks —
@@ -240,7 +252,7 @@ export interface SearchTermClassification {
 // mismatch-gate: it only requires positive evidence the term IS about the right product, not that
 // mismatch detection could prove it's about a wrong one — so it doesn't reintroduce the same gap.
 export function classifySearchTerm(
-  term: { searchTerm: string; orders?: number },
+  term: { searchTerm: string; orders?: number; clicks?: number },
   campaignProductNames: string[],
   liveIndex?: Map<string, CatalogEntry[]> | null,
   currentCampaignName?: string,
@@ -298,7 +310,41 @@ export function classifySearchTerm(
         );
       }
     }
+  } else if (orders > 0) {
+    // Positive with no other note pushed above (the common case — knownRelevant is the only
+    // other thing that can add a reason here, and that already says why it's relevant) — say
+    // WHY it's positive instead of leaving Reason blank, so every row explains itself.
+    if (!reasons.length) reasons.push(`${orders} order${orders === 1 ? "" : "s"} — proven converting term`);
+  } else {
+    // Neutral: zero orders, but relevant to this campaign's own product — worth keeping, not
+    // a wrong-product click, just hasn't converted yet. isOwnAsin gets its own note since
+    // knownRelevant/matchesOwnProduct-by-name already read clearly on their own (knownRelevant
+    // pushed its note above; a plain name match needs one here, isOwnAsin has neither).
+    if (isOwnAsin) reasons.push("No orders yet; search term is this campaign's own ASIN — relevant, not a mismatch");
+    else if (!reasons.length) reasons.push("No orders yet; matches this campaign's own product — relevant search, not a mismatch");
   }
 
-  return { negative, reasons, mismatchedProduct };
+  const status: SearchTermClassification["status"] = negative ? "negative" : orders > 0 ? "positive" : "neutral";
+
+  // Deterministic 0-100 score — no AI model call, so it's instant and identical on every rerun
+  // of the same data (500+ rows per campaign export need this to stay fast and reproducible).
+  let score: number;
+  if (status === "negative") {
+    // A CONFIRMED wrong-product match (a specific mismatched product/ASIN found) is worse than
+    // a plain "no orders, nothing confirms it's wrong" term — the former is actionable right
+    // now, the latter just needs more data. Both get worse the more clicks (= wasted spend)
+    // they've racked up without converting.
+    const hasConfirmedMismatch = !!mismatchedProduct || isDifferentAsinSearch;
+    const base = hasConfirmedMismatch ? 10 : 30;
+    score = Math.max(0, base - Math.min(base, Math.round((term.clicks || 0) / 5)));
+  } else if (status === "positive") {
+    // More real orders is an unambiguous quality signal — scales up from a 65 floor, capped at 100.
+    score = Math.min(100, 65 + orders * 7);
+  } else {
+    // Neutral has no finer signal to grade by (relevance here is binary: matches or doesn't) —
+    // a flat mid-range score rather than a fabricated ranking.
+    score = 50;
+  }
+
+  return { negative, status, reasons, mismatchedProduct, score };
 }

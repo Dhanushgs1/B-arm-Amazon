@@ -689,17 +689,20 @@ Provide analysis in 4 clear sections using bullet points:
                 const negativeCount = classifiedTerms.filter((s: any) => s._classification.negative).length;
 
                 const handleExport = () => {
-                  // Grouped, not interleaved — every Positive row first (in the on-screen sort
-                  // order), then every Negative row after, so the two are visually separated in
-                  // the sheet instead of scattered wherever spend/clicks happened to sort them.
-                  // Within the Negative block: rows with a specific "Different product" reason
-                  // (something to actually act on) come before plain "No orders"-only rows
-                  // (nothing to add beyond the obvious), which sit last.
-                  const negativeTerms = classifiedTerms.filter((s: any) => s._classification.negative);
+                  // Grouped, not interleaved — Positive rows first (real converters), then
+                  // Neutral (relevant, unconverted), then Negative last, so the three read
+                  // best-to-worst in the sheet instead of scattered wherever spend/clicks
+                  // happened to sort them. Within the Negative block: rows with a specific
+                  // "Different product" reason (something to actually act on) come before plain
+                  // "No orders"-only rows (nothing to add beyond the obvious), which sit last.
+                  const positiveTerms = classifiedTerms.filter((s: any) => s._classification.status === "positive");
+                  const neutralTerms = classifiedTerms.filter((s: any) => s._classification.status === "neutral");
+                  const negativeTerms = classifiedTerms.filter((s: any) => s._classification.status === "negative");
                   const negativeWithProductReason = negativeTerms.filter((s: any) => s._classification.reasons.length > 1);
                   const negativeNoOrdersOnly = negativeTerms.filter((s: any) => s._classification.reasons.length <= 1);
                   const groupedForExport = [
-                    ...classifiedTerms.filter((s: any) => !s._classification.negative),
+                    ...positiveTerms,
+                    ...neutralTerms,
                     ...negativeWithProductReason,
                     ...negativeNoOrdersOnly,
                   ];
@@ -715,7 +718,12 @@ Provide analysis in 4 clear sections using bullet points:
                       {
                         key: "_classification",
                         label: "Classification",
-                        exportValue: (val: any) => (val.negative ? "Negative" : "Positive"),
+                        exportValue: (val: any) => val.status.charAt(0).toUpperCase() + val.status.slice(1),
+                      },
+                      {
+                        key: "_classification",
+                        label: "AI Score",
+                        exportValue: (val: any) => val.score,
                       },
                       {
                         key: "_classification",
@@ -766,6 +774,7 @@ Provide analysis in 4 clear sections using bullet points:
                               <SortableHeader field="clicks" label="Clicks" />
                               <SortableHeader field="orders" label="Orders" />
                               <th className="px-4 py-2.5">Classification</th>
+                              <th className="px-4 py-2.5">AI Score</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-border">
@@ -778,9 +787,13 @@ Provide analysis in 4 clear sections using bullet points:
                                 <td className="px-4 py-3 whitespace-nowrap">{num(s.clicks)}</td>
                                 <td className="px-4 py-3 whitespace-nowrap">{num(s.orders)}</td>
                                 <td className="px-4 py-3 whitespace-nowrap" title={s._classification.reasons.join("; ")}>
-                                  {s._classification.negative ? (
+                                  {s._classification.status === "negative" ? (
                                     <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-red-100 dark:bg-red-500/15 text-red-700 dark:text-red-400">
                                       Negative
+                                    </span>
+                                  ) : s._classification.status === "neutral" ? (
+                                    <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-amber-100 dark:bg-amber-500/15 text-amber-700 dark:text-amber-400">
+                                      Neutral
                                     </span>
                                   ) : (
                                     <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
@@ -788,6 +801,7 @@ Provide analysis in 4 clear sections using bullet points:
                                     </span>
                                   )}
                                 </td>
+                                <td className="px-4 py-3 font-bold whitespace-nowrap">{s._classification.score}</td>
                               </tr>
                             ))}
                           </tbody>
