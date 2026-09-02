@@ -167,19 +167,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
   }
 
-  // Historical 7/30 Day Analysis Report (every Monday) and Daily Ad Spend Report
-  // SKU-wise (every day) — both single fixed-distribution-list sends, so they run
-  // ONCE here rather than once per KEY_SLOT (there's no free Vercel Cron slot to give
-  // either its own schedule — vercel.json already uses both of this project's cron
-  // entries — so both piggyback on this route's existing daily 9:00 AM IST trigger).
-  let adSpendDaily: any = { skipped: dryRun ? "dryRun" : undefined };
-  let historical: any = { skipped: !isMonday ? "not Monday" : dryRun ? "dryRun" : undefined };
-  if (!dryRun) {
-    adSpendDaily = await callReportEndpoint(req, "/api/send-ad-spend-email", {}, "Daily ad spend report");
-    if (isMonday) {
-      historical = await callReportEndpoint(req, "/api/send-historical-email", {}, "Historical report");
-    }
-  }
+  // Historical 7/30 Day Analysis Report and Daily Ad Spend Report (SKU-wise) used
+  // to piggyback on this route's daily 9:00 AM IST cron trigger, auto-sending to a
+  // hardcoded distribution list (kaviyapriyabarm@gmail.com + a 7-address CC list)
+  // with no on/off toggle anywhere — unlike every other send in this file, which at
+  // least checks a Settings flag. That surprised the recipients with an unwanted
+  // daily email nobody had asked for. Both are manual-only now — use the "Send"
+  // button on the Reports page (calls the same /api/send-ad-spend-email and
+  // /api/send-historical-email routes) when you actually want one sent.
+  const adSpendDaily = { skipped: "auto-send disabled — use the Reports page's Send button" };
+  const historical = { skipped: "auto-send disabled — use the Reports page's Send button" };
 
   return res.status(200).json({ ranAt: now.toISOString(), isMonday, isFirstOfMonth, dryRun, bySlot, adSpendDaily, historical });
 }

@@ -1,7 +1,7 @@
 import * as XLSX from "xlsx-js-style";
 import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
-import { fetchMisAmazonOrders, fetchMisFkOrders } from "@/lib/misAdapters";
 import { upsertInChunks } from "@/lib/amazonReportUpload";
+import { toDate as parseFlexibleDate } from "@/lib/meeshoReportUpload";
 import { resolveProductName } from "@/lib/categoryMap";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog } from "@/lib/masterProductSkuid";
@@ -143,6 +143,65 @@ export interface AdSpendReportOpts {
   accountName?: string;
 }
 
+// Amazon/Flipkart order data used to come straight from barm_amazon_am_orders
+// / barm_flipkart_order_report, then got redirected to the external MIS
+// (SellerMate) pipeline tables via misAdapters.ts's fetchMisAmazonOrders/
+// fetchMisFkOrders. That pipeline lags real uploads by days — verified
+// directly against Supabase: its amazon_orders/fk_orders tables stopped
+// syncing at 27 Aug while the seller's own "Last 7 days" workbook already
+// covered through 31 Aug — so Overall sales went blank for every day past
+// whatever the MIS pipeline last synced. Reading straight from
+// barm_daily_am_orders/barm_daily_fk_orders instead — the per-sheet archival
+// mirror combinedAdSpendUpload.ts's one-file upload writes on every run —
+// keeps this report in step with whatever was actually uploaded. Trade-off:
+// a standalone per-report Orders upload (not the one-file workbook) does NOT
+// reach these two mirror tables, only the real barm_amazon_am_orders/
+// barm_flipkart_order_report ones — so Overall sales here still needs the
+// one-file "Last 7 days" upload to run, not just any Orders upload.
+async function fetchDailyAmazonOrders(range: { start: string; end: string }, endDate: string) {
+  const rows = await fetchAllRows("barm_daily_am_orders", (q) => q.gte("report_date", range.start).lte("report_date", endDate));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (rows as any[]).map((r) => {
+    const raw = (r.raw as Record<string, unknown>) || {};
+    return {
+      amazon_order_id: r.order_id,
+      order_item_id: String(raw["order-item-id"] ?? r.order_id),
+      purchase_datetime: r.purchase_datetime,
+      order_status: r.order_status,
+      item_status: raw["item-status"] ?? r.order_status,
+      sku: r.sku,
+      product_name: r.product_name,
+      quantity: r.quantity,
+      item_price: r.item_price,
+      raw,
+    };
+  });
+}
+
+// A handful of rows from an old (since-fixed) upload bug have a null
+// report_date in barm_daily_fk_orders despite a perfectly good "Ordered On"
+// value sitting in raw — recovered here so those orders aren't silently
+// dropped. (Confirmed those nulls only affect a couple of days from a mid-
+// August upload; current/recent report windows are unaffected.)
+async function fetchDailyFlipkartOrders(range: { start: string; end: string }, endDate: string) {
+  const rows = await fetchAllRows("barm_daily_fk_orders", (q) => q.gte("report_date", range.start).lte("report_date", endDate));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (rows as any[]).map((r) => {
+    const raw = (r.raw as Record<string, unknown>) || {};
+    return {
+      order_item_id: r.order_item_id,
+      order_id: r.order_id,
+      order_date: r.report_date || parseFlexibleDate(raw["Ordered On"]),
+      order_item_status: r.order_status,
+      sku: r.sku,
+      fsn: r.fsn,
+      product_title: r.product_name,
+      quantity: r.quantity,
+      raw,
+    };
+  });
+}
+
 // ── Amazon ───────────────────────────────────────────────────────────────────
 export async function fetchAmazonProducts(
   range: { start: string; end: string },
@@ -159,8 +218,6 @@ export async function fetchAmazonProducts(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows: any[];
 }> {
-  const rangeIst = istDayWindowUtc(range.start, endDate);
-
   const [spRows, sbRows, sdRows, mapRows, orderRowsRaw, priceRows] = await Promise.all([
     fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
     fetchAllRows("barm_amazon_sb_campaign", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
@@ -168,7 +225,7 @@ export async function fetchAmazonProducts(
     // No "id" column on this hand-maintained mapping table — order by its
     // natural key instead (fetchAllRows would otherwise error on "id").
     fetchAllRows("barm_amazon_campaign_sku_map", (q) => q, ["campaign_name", "sku"]),
-    fetchMisAmazonOrders((q) => q.gte("purchase_datetime", rangeIst.gte).lt("purchase_datetime", rangeIst.lt)),
+    fetchDailyAmazonOrders(range, endDate),
     fetchAllRows("barm_amazon_price_listing", (q) => q),
   ]);
   // Amazon's own orders export can carry a literal duplicate line (every
@@ -358,7 +415,7 @@ export async function fetchFlipkartProducts(
 }> {
   const [fsnRows, orderRowsRaw, earnRows, listingRows] = await Promise.all([
     fetchAllRows("barm_flipkart_fsn_report", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
-    fetchMisFkOrders((q) => q.gte("order_date", range.start).lte("order_date", endDate)),
+    fetchDailyFlipkartOrders(range, endDate),
     fetchAllRows("barm_flipkart_earn_more", (q) => q.gte("order_date", range.start).lte("order_date", endDate)).catch(() => []),
     fetchAllRows("barm_flipkart_listings", (q) => q).catch(() => []),
   ]);
