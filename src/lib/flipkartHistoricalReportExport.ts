@@ -2,6 +2,7 @@ import * as XLSX from "xlsx-js-style";
 import { fetchAllRows } from "@/lib/amazonReportShared";
 import { FK_REPORT_LABEL } from "@/lib/flipkartReportUpload";
 import { fetchMisFkOrders, fetchMisFkReturns } from "@/lib/misAdapters";
+import { fetchMasterSkuidMap, buildMasterSkuidResolver, gstMultiplierFromTax } from "@/lib/masterProductSkuid";
 
 // ── Flipkart Historical Analysis Report ─────────────────────────────────────
 // The Flipkart counterpart of historicalAnalysisReportExport.ts: the same
@@ -37,7 +38,6 @@ import { fetchMisFkOrders, fetchMisFkReturns } from "@/lib/misAdapters";
 // there is no campaign -> SKU weighting step and no "unmapped campaign" bucket:
 // every rupee of spend already knows its SKU.
 
-const GST_MULTIPLIER = 1.18;
 // Placeholder "campaign" for a SKU with real Order-report activity but no FSN
 // ad row at all in the window — mirrors Amazon's unmapped-campaign bucket.
 // Without this the SKU has no pair row, so it vanishes from the Analysis
@@ -96,6 +96,11 @@ function num(v: unknown): number {
 /** Per campaign x SKU — only these two differ between two rows of one SKU. */
 interface PairAgg {
   spendTax: number;
+  /** Pre-tax spend — kept alongside spendTax so the "Ad Spent" column and the
+   *  GRAND TOTAL row never have to reverse spendTax by some assumed rate,
+   *  which would be wrong per-SKU now that the rate isn't a single flat
+   *  constant (see gstMultiplierFromTax in masterProductSkuid.ts). */
+  spend: number;
   adUnits: number;
   adRevenue: number;
 }
@@ -108,6 +113,8 @@ interface SkuAgg {
 }
 interface WindowAgg {
   spendTax: number;
+  /** Pre-tax counterpart to spendTax — see PairAgg.spend. */
+  spend: number;
   adUnits: number;
   adRevenue: number;
   totalUnits: number;
@@ -115,7 +122,7 @@ interface WindowAgg {
   returns: number;
 }
 const emptyWindowAgg = (): WindowAgg => ({
-  spendTax: 0, adUnits: 0, adRevenue: 0, totalUnits: 0, orderUnits: 0, returns: 0,
+  spendTax: 0, spend: 0, adUnits: 0, adRevenue: 0, totalUnits: 0, orderUnits: 0, returns: 0,
 });
 
 function computeCpc(w: WindowAgg): number {
@@ -187,13 +194,15 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
   const win7 = getDateWindow(endDate, 7);
 
   // One 30-day fetch per source; the 7-day block is a filter over these.
-  const [fsnRows, earnRows, orderRows, listingRows, returnsRows] = await Promise.all([
+  const [fsnRows, earnRows, orderRows, listingRows, returnsRows, masterSkuid] = await Promise.all([
     fetchAllRows(FSN_TABLE, (q) => q.gte("report_date", win30.start).lte("report_date", endDate)),
     fetchAllRows(EARN_MORE_TABLE, (q) => q.gte("order_date", win30.start).lte("order_date", endDate)),
     fetchMisFkOrders((q) => q.gte("order_date", win30.start).lte("order_date", endDate)),
     fetchAllRows(LISTINGS_TABLE, (q) => q).catch(() => []),
     fetchMisFkReturns((q) => q.gte("return_requested_date", win30.start).lte("return_requested_date", endDate)).catch(() => []),
+    fetchMasterSkuidMap(),
   ]);
+  const { resolveTax: resolveSkuidTax, resolveName: resolveSkuidName } = buildMasterSkuidResolver(masterSkuid);
 
   // Collapse Order report rows repeating an (order item ID, status, quantity)
   // triple — the same key the uploader uses, applied again here to catch rows
@@ -262,6 +271,13 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
     if (r.fulfillment_type && !m.fulfilment) m.fulfilment = r.fulfillment_type;
   });
 
+  // master_product_skuid's curated name wins over the raw FSN/order-report title
+  // just filled in above (Flipkart's own export text — often a full marketing
+  // title with pack-size/pipe-separated keywords) when the master has this SKU,
+  // same priority every other report gives it. A SKU the master doesn't have
+  // keeps whatever raw title was already resolved.
+  metaMap.forEach((m, sku) => { m.name = resolveSkuidName(sku, m.name); });
+
   // Price prefers the listings snapshot (what the SKU is actually listed at).
   // Where no listing row exists, fall back to the window's realised ASP —
   // final sale value / final units — so ACOS/TACOS still have a denominator.
@@ -314,7 +330,7 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
     const ensurePair = (campaign: string, sku: string): PairAgg => {
       const k = pairKey(campaign, sku);
       let p = pairs.get(k);
-      if (!p) { p = { spendTax: 0, adUnits: 0, adRevenue: 0 }; pairs.set(k, p); pairIds.set(k, { campaign, sku }); }
+      if (!p) { p = { spendTax: 0, spend: 0, adUnits: 0, adRevenue: 0 }; pairs.set(k, p); pairIds.set(k, { campaign, sku }); }
       return p;
     };
     const ensureSku = (sku: string): SkuAgg => {
@@ -332,8 +348,10 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
       const p = ensurePair(r.campaign_name || "", r.sku_id);
       skusWithAds.add(r.sku_id);
       const units = num(r.direct_units_sold) + num(r.indirect_units_sold);
-      const taxed = num(r.ad_spend) * GST_MULTIPLIER;
+      const spend = num(r.ad_spend);
+      const taxed = spend * gstMultiplierFromTax(resolveSkuidTax(r.sku_id));
       p.spendTax += taxed;
+      p.spend += spend;
       p.adUnits += units;
       p.adRevenue += num(r.total_revenue);
       ensureSku(r.sku_id).adUnitsTotal += units;
@@ -406,6 +424,7 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
     const s = m.skus.get(sku);
     return {
       spendTax: p?.spendTax || 0,
+      spend: p?.spend || 0,
       adUnits: p?.adUnits || 0,
       adRevenue: p?.adRevenue || 0,
       totalUnits: s?.adUnitsTotal || 0,
@@ -455,6 +474,7 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
       if (!p) return;
       const w = ensure(id.sku);
       w.spendTax += p.spendTax;
+      w.spend += p.spend;
       w.adUnits += p.adUnits;
       w.adRevenue += p.adRevenue;
     });
@@ -545,7 +565,7 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
     const cpc = computeCpc(w);
     const rtCpc = orders > 0 ? spendTax / orders : spendTax;
     return [
-      spendTax / GST_MULTIPLIER, spendTax, w.adUnits, orders, w.returns, orders - w.returns,
+      w.spend, spendTax, w.adUnits, orders, w.returns, orders - w.returns,
       cpc, computeAcos(w, price),
       rtCpc, price > 0 ? rtCpc / price : 0,
     ];
@@ -585,10 +605,11 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
   // averaged from the per-row ratios.
   const shownSkus = new Set(rows.map((r) => r.sku));
   const fkTotalCells = (getW: (r: Row) => WindowAgg, getSkuW: (r: SkuRow) => WindowAgg): number[] => {
-    let spendTax = 0, adUnits = 0, acosDenom = 0;
+    let spendTax = 0, spend = 0, adUnits = 0, acosDenom = 0;
     rows.forEach((row) => {
       const w = getW(row);
       spendTax += w.spendTax;
+      spend += w.spend;
       adUnits += w.adUnits;
       acosDenom += row.meta.price * w.adUnits;
     });
@@ -600,7 +621,7 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
       rtDenom += row.meta.price * w.orderUnits;
     });
     return [
-      spendTax / GST_MULTIPLIER, spendTax, adUnits, orders, returns, orders - returns,
+      spend, spendTax, adUnits, orders, returns, orders - returns,
       adUnits > 0 ? spendTax / adUnits : spendTax,
       acosDenom > 0 ? spendTax / acosDenom : 0,
       orders > 0 ? spendTax / orders : spendTax,
@@ -639,7 +660,10 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
     for (let r = 1; r < grandRowIdx; r++) {
       const n = r + 1; // 1 header row, so aoa row 1 is Excel row 2
       const set = (col: string, f: string) => { if (ws[`${col}${n}`]) ws[`${col}${n}`].f = f };
-      set(spendTaxCol, `${adSpendCol}${n}*${GST_MULTIPLIER}`);
+      // aoa row r === rows[r-1] (built 1:1 by rows.forEach above) — that row's
+      // own SKU decides its GST rate, not one flat rate for the whole sheet.
+      const gst = gstMultiplierFromTax(resolveSkuidTax(rows[r - 1]?.sku ?? ""));
+      set(spendTaxCol, `${adSpendCol}${n}*${gst}`);
       set(finalCol, `${ordersCol}${n}-${returnsCol}${n}`);
       set(cpcCol, `IF(${byAdCol}${n}=0,${spendTaxCol}${n},${spendTaxCol}${n}/${byAdCol}${n})`);
       set(acosCol, `IF(${priceCol}${n}=0,0,${cpcCol}${n}/${priceCol}${n})`);
@@ -1168,7 +1192,7 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
     ["Key Insights' 'DATA INTEGRITY CHECKS' section re-derives the Orders/Returns totals a second, independent way (straight off the per-SKU aggregate, bypassing the advertised/non-advertised split) and flags a FAIL if they don't reconcile, or if a naive SUM() over this sheet's Orders column happens to equal the deduped total despite multi-campaign SKUs existing — either would mean the dedup logic broke."],
     ["Unlike the Amazon report, there is no campaign -> SKU weighting: Flipkart's FSN export carries the SKU on every ad row, for every campaign type, so all spend is already attributed, and there is no unmapped-campaign bucket."],
     [`A SKU that sold in the window but was NEVER advertised (no FSN row at all) is reported on the separate "Non-advertised sales" sheet, not in the Analysis report. The Analysis report is one row per campaign x SKU and only covers advertised pairs, so its GRAND TOTAL is the ADVERTISED total — add the "Non-advertised sales" grand total to it for the account-wide Orders/Returns figure. ${noAdsRows.length} SKU(s) fell into that bucket this window.`],
-    ["Spend+Tax = Ad Spend x 1.18 (18% GST), summed per campaign x SKU and multiplied once."],
+    ["Spend+Tax = Ad Spend x (1 + that SKU's GST rate), from the product master's per-SKU Tax column (18% used when a SKU has none on file), summed per campaign x SKU and multiplied once."],
     ["Ad Units = Direct Units Sold + Indirect Units Sold from the FSN report. Ad Revenue = its Total Revenue column — Flipkart attributes revenue to the ad, so ROAS here is genuine, not derived from price x units."],
     ["Orders = every Order report row's Quantity for that SKU/window EXCEPT status CANCELLED (a cancelled unit was never sold, so counting it would inflate Orders and depress ACOS/TACOS). A partially-returned line item exports as two rows sharing one order_item_id (e.g. quantity=2 RETURNED + quantity=1 DELIVERED) — summing both recovers the original gross order. Final = Orders - Returns. This switched from the earn more report to the Order report because earn more is typically uploaded for far fewer days, which starved Orders for most of the 30-day window; the Order report is order-item level so this now needs no netting Flipkart didn't already hand over."],
     returnsRows.length

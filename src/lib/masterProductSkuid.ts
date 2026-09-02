@@ -1,4 +1,4 @@
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { fetchAllRows } from "@/lib/amazonReportShared";
 import { skuBase } from "@/lib/productMasterUpload";
 
 // A second, richer product-master table — Product Name, SKU ID, Platform, Type, Components in
@@ -48,10 +48,13 @@ export interface MasterSkuidEntry {
  *  produce, same contract as fetchProductMasterMap in productMasterUpload.ts. */
 export async function fetchMasterSkuidMap(): Promise<Map<string, MasterSkuidEntry>> {
   try {
-    const { data, error } = await supabasePublic
-      .from(TABLE)
-      .select('"SKU ID","Product Name","Category","Tax","Cost Price"');
-    if (error || !data) return new Map();
+    // fetchAllRows, not a single .select() — this table has 1700+ rows, well
+    // past PostgREST's 1000-row default page cap. An unpaginated select here
+    // silently dropped every SKU past row 1000 (in whatever order Postgres
+    // happened to return), which meant a large, arbitrary slice of products
+    // always fell back to the 18% GST default and their raw SKU as a name,
+    // with no error anywhere to reveal it.
+    const data = await fetchAllRows(TABLE, (q) => q);
     const map = new Map<string, MasterSkuidEntry>();
     (data as Record<string, unknown>[]).forEach((r) => {
       const sku = String(r["SKU ID"] ?? "").trim();
@@ -70,6 +73,38 @@ export async function fetchMasterSkuidMap(): Promise<Map<string, MasterSkuidEntr
   }
 }
 
+/** normalized product name -> Platform -> every SKU ID the master lists for that
+ *  product on that platform, in stored order. Distinct from fetchMasterSkuidMap
+ *  above, which is keyed by SKU and only keeps one entry per SKU — this is the
+ *  reverse direction (name -> its full SKU set), for a "SKU(s)" column that
+ *  should show the master's complete, stable list for a product rather than
+ *  whichever SKU spellings happened to have activity in one report's window
+ *  (a product can be actively sold under only 2 of its 5 known SKU variants on
+ *  a given day, and a window-derived list would silently drop the other 3).
+ *  Empty map (never throws) on a missing table or transient error, same
+ *  contract as fetchMasterSkuidMap. */
+export async function fetchMasterSkuidsByName(): Promise<Map<string, Map<string, string[]>>> {
+  try {
+    const data = await fetchAllRows(TABLE, (q) => q);
+    const out = new Map<string, Map<string, string[]>>();
+    (data as Record<string, unknown>[]).forEach((r) => {
+      const sku = String(r["SKU ID"] ?? "").trim();
+      const name = String(r["Product Name"] ?? "").trim();
+      const platform = String(r["Platform"] ?? "").trim();
+      if (!sku || !name || !platform) return;
+      const key = name.toLowerCase();
+      let byPlatform = out.get(key);
+      if (!byPlatform) { byPlatform = new Map(); out.set(key, byPlatform); }
+      const list = byPlatform.get(platform) || [];
+      if (!list.includes(sku)) list.push(sku);
+      byPlatform.set(platform, list);
+    });
+    return out;
+  } catch {
+    return new Map();
+  }
+}
+
 export interface MasterSkuidCatalogEntry {
   sku: string;
   name: string;
@@ -83,11 +118,7 @@ export interface MasterSkuidCatalogEntry {
  *  product" it never actually was. Empty array (never throws) if the table is missing/empty. */
 export async function fetchMasterSkuidAmazonCatalog(): Promise<MasterSkuidCatalogEntry[]> {
   try {
-    const { data, error } = await supabasePublic
-      .from(TABLE)
-      .select('"SKU ID","Product Name","Category"')
-      .eq("Platform", "Amazon");
-    if (error || !data) return [];
+    const data = await fetchAllRows(TABLE, (q) => q.eq("Platform", "Amazon"));
     const seen = new Set<string>();
     const out: MasterSkuidCatalogEntry[] = [];
     (data as Record<string, unknown>[]).forEach((r) => {
@@ -98,6 +129,33 @@ export async function fetchMasterSkuidAmazonCatalog(): Promise<MasterSkuidCatalo
       out.push({ sku, name, category: normalizeCategory(String(r["Category"] ?? "")) });
     });
     return out;
+  } catch {
+    return [];
+  }
+}
+
+export interface MasterSkuidRow {
+  sku: string;
+  name: string;
+  category: string;
+  platform: string;
+}
+
+/** Every row in master_product_skuid, unfiltered and undeduped — one row per SKU *variant* per
+ *  platform, for browsing/searching the raw table (the "Master" catalog tab) rather than
+ *  resolving a single sku -> entry lookup. Empty array (never throws) if the table is
+ *  missing/empty, same contract as the other fetchers in this file. */
+export async function fetchMasterSkuidCatalog(): Promise<MasterSkuidRow[]> {
+  try {
+    const data = await fetchAllRows(TABLE, (q) => q);
+    return (data as Record<string, unknown>[])
+      .map((r) => ({
+        sku: String(r["SKU ID"] ?? "").trim(),
+        name: String(r["Product Name"] ?? "").trim(),
+        category: normalizeCategory(String(r["Category"] ?? "")),
+        platform: String(r["Platform"] ?? "").trim(),
+      }))
+      .filter((r) => r.sku || r.name);
   } catch {
     return [];
   }
@@ -120,4 +178,21 @@ export function buildMasterSkuidResolver(master: Map<string, MasterSkuidEntry>) 
     resolveTax: (sku: string): number | null => lookup(sku)?.tax ?? null,
     resolveCostPrice: (sku: string): number | null => lookup(sku)?.costPrice ?? null,
   };
+}
+
+// Every report used a single flat 18% GST assumption for every product before per-product tax
+// was wired in — kept as the fallback for a SKU with nothing in master_product_skuid's Tax
+// column (or the 2 rows observed with it NULL), so an unresolved SKU's Spend(with tax) doesn't
+// silently drop to a 0% assumption it was never verified against.
+export const DEFAULT_GST_MULTIPLIER = 1.18;
+
+// master_product_skuid's Tax column is meant to hold a fraction (0.05 = 5% GST, matching the
+// 853/1000 rows that do), but a couple of rows carry a bare "5" — evidently meant as "5%" typed
+// without the decimal point. Taken literally as a fraction that would be a 500% GST rate (a 6x
+// spend multiplier), which is never a real GST slab, so any value >= 1 is treated as a whole
+// number percentage instead (5 -> 0.05) rather than a fraction.
+export function gstMultiplierFromTax(tax: number | null | undefined): number {
+  if (tax === null || tax === undefined || !Number.isFinite(tax) || tax < 0) return DEFAULT_GST_MULTIPLIER;
+  const rate = tax >= 1 ? tax / 100 : tax;
+  return 1 + rate;
 }

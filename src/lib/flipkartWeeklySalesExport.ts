@@ -2,6 +2,7 @@ import * as XLSX from "xlsx-js-style";
 import { fetchAllRows } from "@/lib/amazonReportShared";
 import { fetchMisFkOrders, fetchMisFkReturns } from "@/lib/misAdapters";
 import { categorizeTitle, resolveProductName, CATEGORY_COLORS } from "@/lib/categoryMap";
+import { fetchMasterSkuidMap, buildMasterSkuidResolver, gstMultiplierFromTax } from "@/lib/masterProductSkuid";
 
 // Flipkart's SKU-wise weekly report: last week vs this week, one row per SKU.
 //
@@ -47,7 +48,6 @@ interface ProductRow {
   grandComputedSales: number;
 }
 
-const GST_MULTIPLIER = 1.18;
 const EXCLUDED_CATEGORIES = new Set(["Discontinued", "Other"]);
 
 function fmtDot(iso: string): string {
@@ -76,7 +76,7 @@ export async function buildFlipkartWeeklySalesWorkbook(opts: {
 
   // One fetch across the combined 2-week span; each period is a filter over it.
   // Listings is a current snapshot with no date column, so it is fetched whole.
-  const [orderRows, returnRows, listingRows, fsnRows] = await Promise.all([
+  const [orderRows, returnRows, listingRows, fsnRows, masterSkuid] = await Promise.all([
     fetchMisFkOrders((q) => q.gte("order_date", lastWeek.start).lte("order_date", thisWeek.end)),
     fetchMisFkReturns((q) =>
       q.gte("return_requested_date", lastWeek.start).lte("return_requested_date", thisWeek.end)
@@ -85,7 +85,9 @@ export async function buildFlipkartWeeklySalesWorkbook(opts: {
     fetchAllRows("barm_flipkart_fsn_report", (q) => q.gte("report_date", lastWeek.start).lte("report_date", thisWeek.end)).catch(
       () => []
     ),
+    fetchMasterSkuidMap(),
   ]);
+  const { resolveTax: resolveSkuidTax, resolveName: resolveSkuidName } = buildMasterSkuidResolver(masterSkuid);
 
   if (!orderRows.length) {
     throw new Error(
@@ -169,15 +171,17 @@ export async function buildFlipkartWeeklySalesWorkbook(opts: {
     });
   }
 
-  // Ad spend per SKU per week, from the FSN report. Spend+Tax applies the same
-  // 18% GST the Analysis report and the seller's workbook use.
+  // Ad spend per SKU per week, from the FSN report. Spend+Tax applies that
+  // SKU's own GST rate from the product master (18% used when a SKU has none
+  // on file) — most products are actually 5%, not the flat 18% this used to
+  // apply to everyone.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (fsnRows as any[]).forEach((r) => {
     const sku = String(r.sku_id || "").trim();
     if (!sku || !r.report_date) return;
     const pd = periodForDate(String(r.report_date).slice(0, 10));
     if (!pd) return;
-    ensureStat(sku, pd.label).adSpendTax += num(r.ad_spend) * GST_MULTIPLIER;
+    ensureStat(sku, pd.label).adSpendTax += num(r.ad_spend) * gstMultiplierFromTax(resolveSkuidTax(sku));
   });
   // Clicks per SKU per week, from the same FSN report — used only by the Growth
   // Summary/CEO Decision Center "Campaign Performance" diagnosis (Executive
@@ -200,9 +204,12 @@ export async function buildFlipkartWeeklySalesWorkbook(opts: {
   const products = new Map<string, ProductRow>();
   statsBySkuPeriod.forEach((periodMap, sku) => {
     const rawName = nameBySku.get(sku) || sku;
+    // master_product_skuid's curated name wins over both the categoryMap.ts
+    // hardcoded fallback and the raw listing/order title — same priority
+    // every other report gives it (see masterProductSkuid.ts's header comment).
     const p: ProductRow = {
       sku,
-      name: resolveProductName(rawName, sku) || rawName,
+      name: resolveSkuidName(sku, resolveProductName(rawName, sku) || rawName),
       periods: {},
       grandComputedSales: 0,
     };
@@ -1718,7 +1725,7 @@ export async function buildFlipkartWeeklySalesWorkbook(opts: {
     [hasListings
       ? "Price and the sales figure come from the uploaded Listings snapshot. It is a CURRENT snapshot with no date column, so it is the price as of the upload, not necessarily the price during these weeks."
       : "⚠ NO Listings snapshot uploaded — Price reads 0 for every SKU, so 'Sales (Price x Orders)' and Growth % are 0 throughout and are NOT usable in this file. Upload the Listings export and regenerate."],
-    ["Ad Spend+Tax = FSN report ad spend x 1.18 (18% GST), the same basis the Flipkart Analysis report uses."],
+    ["Ad Spend+Tax = FSN report ad spend x (1 + that SKU's GST rate), from the product master's per-SKU Tax column (18% used when a SKU has none on file), the same basis the Flipkart Analysis report uses."],
     ["Discontinued and uncategorised SKUs are excluded from the sheet."],
     [""],
     ["Growth Summary / Category Breakdown / Executive Dashboard / CEO Decision Center — added to match the Amazon Weekly Sales Report's format. Every 'Sales' figure in these sheets is the SAME computed price x orders basis as the 'Flipkart Sales' sheet above, not realised revenue — see the caveat restated at the top of each sheet. All scores, health bands and recommended actions compare only the two weeks shown, same as the Amazon report's equivalent sheets."],

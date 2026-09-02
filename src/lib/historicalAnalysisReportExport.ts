@@ -3,7 +3,7 @@ import { fcToState } from "@/lib/analysisReportExport";
 import { fetchAllRows, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns } from "@/lib/misAdapters";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
-import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog } from "@/lib/masterProductSkuid";
+import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog, gstMultiplierFromTax } from "@/lib/masterProductSkuid";
 
 // Re-exported for existing importers (weeklySalesExport.ts) — the actual
 // definitions live in amazonReportShared.ts so analysisReportExport.ts can use
@@ -41,8 +41,6 @@ export { fetchAllRows, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn }
 // upload shows as missing data and is named on the Notes sheet, so the reader
 // can see exactly what is absent and upload it.
 
-const GST_MULTIPLIER = 1.18;
-
 function dotDate(iso: string): string {
   const [y, m, d] = iso.split("-");
   return `${d}-${m}-${y}`;
@@ -74,10 +72,16 @@ const UNMAPPED_LABEL = "⚠ Unmapped SB/SD campaigns — assign a SKU on the Upl
 //     no Orders grand total.
 interface PairAgg {
   spendTax: number;
+  /** Pre-tax spend — kept alongside spendTax so a caller that needs the raw
+   *  figure (e.g. the leaderboard sheet's live Spend+Tax formula, which shows
+   *  a real Excel formula rather than a baked-in value) never has to reverse
+   *  spendTax by some assumed rate, which would be wrong per-SKU now that the
+   *  rate isn't a single flat constant. */
+  spend: number;
   advUnits: number;
 }
 function emptyPairAgg(): PairAgg {
-  return { spendTax: 0, advUnits: 0 };
+  return { spendTax: 0, spend: 0, advUnits: 0 };
 }
 interface SkuAgg {
   /** "Total Units (#)" — this SKU's ad-attributed units across ALL campaigns. */
@@ -92,29 +96,37 @@ interface SkuAgg {
    * campaign's slice of the spend. See computeTacos.
    */
   spendTaxTotal: number;
+  /** Pre-tax counterpart to spendTaxTotal — see PairAgg.spend. */
+  spendTotal: number;
 }
 function emptySkuAgg(): SkuAgg {
-  return { advUnitsTotal: 0, orderUnits: 0, returns: 0, spendTaxTotal: 0 };
+  return { advUnitsTotal: 0, orderUnits: 0, returns: 0, spendTaxTotal: 0, spendTotal: 0 };
 }
 
 /** One Analysis-report row: a campaign x SKU pair plus its SKU-level figures. */
 interface WindowAgg {
   spendTax: number;
+  /** Pre-tax counterpart to spendTax — see PairAgg.spend. */
+  spend: number;
   advUnits: number;
   totalUnits: number;
   orderUnits: number;
   returns: number;
   /** SKU-grain Spend+Tax — TACOS only. See SkuAgg.spendTaxTotal. */
   skuSpendTax: number;
+  /** Pre-tax counterpart to skuSpendTax — see SkuAgg.spendTotal. */
+  skuSpend: number;
 }
 function combineAgg(p: PairAgg | undefined, s: SkuAgg | undefined): WindowAgg {
   return {
     spendTax: p?.spendTax || 0,
+    spend: p?.spend || 0,
     advUnits: p?.advUnits || 0,
     totalUnits: s?.advUnitsTotal || 0,
     orderUnits: s?.orderUnits || 0,
     returns: s?.returns || 0,
     skuSpendTax: s?.spendTaxTotal || 0,
+    skuSpend: s?.spendTotal || 0,
   };
 }
 function computeCpc(w: WindowAgg): number {
@@ -407,7 +419,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   // Amazon Sales report. A SKU the master doesn't have (not yet uploaded, or a campaign-only
   // SKU with no product row) keeps whatever name was already resolved above.
   const { resolveName: resolveBarmName } = buildProductMasterResolver(productMaster);
-  const { resolveName: resolveSkuidName } = buildMasterSkuidResolver(masterSkuid);
+  const { resolveName: resolveSkuidName, resolveTax: resolveSkuidTax } = buildMasterSkuidResolver(masterSkuid);
   // master_product_skuid is the seller's fullest, most current source — checked first; both
   // barm_product_master and the order-report name only fill in a SKU it doesn't have.
   const resolveMasterName = (sku: string, fallback: string) => resolveSkuidName(sku, resolveBarmName(sku, fallback));
@@ -472,9 +484,10 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     };
     /** Ad spend + ad-attributed units land on BOTH grains at once. */
     const addAd = (campaign: string, sku: string, spend: number, units: number) => {
-      const taxed = spend * GST_MULTIPLIER;
+      const taxed = spend * gstMultiplierFromTax(resolveSkuidTax(sku));
       const p = ensurePair(campaign, sku);
       p.spendTax += taxed;
+      p.spend += spend;
       p.advUnits += units;
       const s = ensureSku(sku);
       s.advUnitsTotal += units;
@@ -482,6 +495,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
       // funnels through here, so this is the one place that can total spend per
       // SKU without re-walking the pair map later.
       s.spendTaxTotal += taxed;
+      s.spendTotal += spend;
     };
     // SP: true SKU-level ad spend + ad-attributed units, straight from the CSV.
     // "Advertised SKU Units (#)" is deliberately populated from Amazon's "7 Day
@@ -636,8 +650,9 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
         const s = m.skus.get(sku);
         // spendTax accumulates from the pairs below and lands on the same total
         // as skuSpendTax; taking skuSpendTax straight from SkuAgg keeps one
-        // source of truth for the TACOS numerator at either grain.
-        w = { spendTax: 0, advUnits: 0, totalUnits: s?.advUnitsTotal || 0, orderUnits: s?.orderUnits || 0, returns: s?.returns || 0, skuSpendTax: s?.spendTaxTotal || 0 };
+        // source of truth for the TACOS numerator at either grain. skuSpend
+        // (pre-tax) is taken from SkuAgg the same way, for the same reason.
+        w = { spendTax: 0, spend: 0, advUnits: 0, totalUnits: s?.advUnitsTotal || 0, orderUnits: s?.orderUnits || 0, returns: s?.returns || 0, skuSpendTax: s?.spendTaxTotal || 0, skuSpend: s?.spendTotal || 0 };
         out.set(sku, w);
       }
       return w;
@@ -647,6 +662,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
       if (!p) return;
       const w = ensure(id.sku);
       w.spendTax += p.spendTax;
+      w.spend += p.spend;
       w.advUnits += p.advUnits;
     });
     m.skus.forEach((_, sku) => ensure(sku));
@@ -654,7 +670,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   };
   const skuRollA = rollUpToSku(winAMap);
   const skuRollB = rollUpToSku(winBMap);
-  const emptyWindowAgg = (): WindowAgg => ({ spendTax: 0, advUnits: 0, totalUnits: 0, orderUnits: 0, returns: 0, skuSpendTax: 0 });
+  const emptyWindowAgg = (): WindowAgg => ({ spendTax: 0, spend: 0, advUnits: 0, totalUnits: 0, orderUnits: 0, returns: 0, skuSpendTax: 0, skuSpend: 0 });
 
   const activeSkus = new Set<string>();
   skuRollA.forEach((w, sku) => { if (w.spendTax || w.advUnits || w.orderUnits || w.returns) activeSkus.add(sku); });
@@ -1174,7 +1190,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   const topAdspendByCampaign = (map: Map<string, number>) =>
     [...map.entries()].filter(([, spend]) => spend > 0).map((e): [string, number] => [e[0], e[1]]).sort((a, b) => b[1] - a[1]);
   const topAdspendBySku = (map: Map<string, WindowAgg>) =>
-    [...map.entries()].filter(([sku, w]) => sku !== UNMAPPED && w.spendTax > 0).map((e): [string, number, number] => [e[0], e[1].spendTax / GST_MULTIPLIER, e[1].advUnits]).sort((a, b) => b[1] - a[1]);
+    [...map.entries()].filter(([sku, w]) => sku !== UNMAPPED && w.spendTax > 0).map((e): [string, number, number] => [e[0], e[1].spend, e[1].advUnits]).sort((a, b) => b[1] - a[1]);
 
   const lbOrders30 = topOrders(skuRollA), lbOrders7 = topOrders(skuRollB);
   const lbReturns30 = topReturns(skuRollA), lbReturns7 = topReturns(skuRollB);
@@ -1230,8 +1246,8 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     ]);
   }
   const wsLb = XLSX.utils.aoa_to_sheet(lbAoa);
-  // Spend+Tax stays a live formula (= Spend x 1.18) so the GST assumption is
-  // visible and editable in the sheet rather than baked into a value.
+  // Spend+Tax stays a live formula (= Spend x that row's own GST rate) so the
+  // rate is visible and editable in the sheet rather than baked into a value.
   const lbSpendTaxCol = (groupIdx: number) => colLetter(lbStarts[groupIdx] + 2);
   for (let i = 0; i < lbRowCount; i++) {
     const r = i + 3; // 2 header rows
@@ -1239,10 +1255,15 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     const put = (groupIdx: number, present: readonly [string, number, ...number[]] | undefined) => {
       if (!present) return;
       const spendCol = colLetter(lbStarts[groupIdx] + 1);
+      // groupIdx 0/1 key on "campaign*sku" (see campaignSpendMap); 2/3 key on
+      // a bare sku (see topAdspendBySku) — either way the SKU is what its own
+      // GST rate is looked up by.
+      const sku = groupIdx < 2 ? present[0].split("*").pop() || "" : present[0];
+      const gst = gstMultiplierFromTax(resolveSkuidTax(sku));
       // Cached value as well as the formula — xlsx-js-style drops a formula
       // cell with no `v`, which silently blanked this whole column. present[1]
       // is the pre-tax spend, so this is the same arithmetic the formula shows.
-      wsLb[`${lbSpendTaxCol(groupIdx)}${r}`] = { t: "n", v: present[1] * GST_MULTIPLIER, f: `${spendCol}${r}*${GST_MULTIPLIER}` };
+      wsLb[`${lbSpendTaxCol(groupIdx)}${r}`] = { t: "n", v: present[1] * gst, f: `${spendCol}${r}*${gst}` };
     };
     put(0, lbAdCamp30[i]); put(1, lbAdCamp7[i]); put(2, lbAdSku30[i]); put(3, lbAdSku7[i]);
   }
@@ -1771,7 +1792,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     ["GRAIN — the Analysis report has ONE ROW PER CAMPAIGN x SKU. Only Spend+Tax and Advertised SKU Units are per-campaign. Total Units, Orders and Returns belong to the SKU (Amazon reports them per SKU, never per campaign), so a SKU advertised by two campaigns — most commonly one campaign per fulfillment channel, e.g. an FBA campaign and an MFN campaign for the same SKU — shows the SAME Orders/Returns on BOTH of its rows. Summing this sheet's Orders column therefore double-counts every such SKU (looks like ~2x for a dual-channel SKU with exactly one campaign per channel). For a genuine per-SKU total, either read the GRAND TOTAL row (which deliberately sums Orders/Returns/Total Units over distinct SKUs, not over rows, and so will not equal a plain SUM() of the column above it) or the TACOS sheet, which is already one row per SKU."],
     ["A SKU that had orders or returns this window but was never advertised and carries no FBA stock still gets a row here (Row Labels blank campaign, falls back to its product name) — Orders/Returns are real, Spend+Tax and Advertised SKU Units are correctly 0. Previously such SKUs were left out of this sheet entirely (it only covered advertised/FBA-tracked SKUs), which is why a plain SKU export could show far fewer rows here than on the order-driven Weekly Sales Report."],
     ["Sponsored Brands / Display spend is only ever known per campaign (Amazon's own export has no SKU column). Each such campaign's spend is split across the SKUs assigned to it on the Upload Reports page, in proportion to the WEIGHT given to each. Weights are relative, so {2,1,1} and {50,25,25} split identically. Campaigns with no mapping at all are grouped under the '⚠ Unmapped SB/SD campaigns' row rather than being dropped, so their spend still appears in the totals."],
-    ["Spend+Tax = ad spend x 1.18 (18% GST) — computed from each row's raw 'spend' field, summed per campaign x SKU, then multiplied once by 1.18. Not a formula in the Analysis report/TACOS sheets (matches the original workbook), but is a live formula (Spend x 1.18) in the 'Orders, returns, adspend' sheet."],
+    ["Spend+Tax = ad spend x (1 + that SKU's GST rate) — computed from each row's raw 'spend' field, summed per campaign x SKU, then multiplied once. Rate comes from the product master's per-SKU Tax column (18% used when a SKU has none on file). Not a formula in the Analysis report/TACOS sheets (matches the original workbook), but is a live formula (Spend x rate) in the 'Orders, returns, adspend' sheet."],
     ["Orders = the SUM OF ORDER QUANTITY for the SKU (units ordered), NOT the number of order records — matching the seller's own pivot. CANCELLED orders are excluded: they were never sold, so counting them would inflate Orders and depress ACOS/TACOS."],
     ["Total Units (#) = the SKU's ad-attributed units across ALL its campaigns, so it is the same on every campaign row for that SKU, while Advertised SKU Units (#) is just that one campaign's share. For a SKU advertised by a single campaign the two columns are equal."],
     ["Advertised SKU Units is 0 on Sponsored Brands / Display rows. Amazon attributes those units to the campaign, never to a SKU, so apportioning them by the spend weights would invent fractional units (a third of a sale) and then divide spend by them in CPC. Only Sponsored Products units — which are genuinely per-SKU in the export — are counted."],

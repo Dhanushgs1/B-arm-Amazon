@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { AreaChart, Area, BarChart, Bar, Legend, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import AmazonPnlSection from './AmazonPnlSection';
+import { fetchMasterSkuidMap, buildMasterSkuidResolver, gstMultiplierFromTax } from '@/lib/masterProductSkuid';
 
 // Helper mappings for converting SKUs to friendly names
 function formatSkuToName(sku) {
@@ -165,6 +166,14 @@ export default function AmazonDashboard({ activeTab, supabaseUrl, supabaseKey, d
         setAmazonDailyChart(Object.values(byDateMap).sort((a,b) => new Date(a.date) - new Date(b.date)));
       }
 
+      // Per-product GST rate — always read from BARM's own master_product_skuid
+      // table (fetchMasterSkuidMap uses the app's fixed Supabase project, not
+      // this component's own supabaseUrl/supabaseKey props, which point at
+      // whichever account — Barm or Lkn — is active here). A SKU this master
+      // doesn't have (e.g. every Lkn SKU, since that table is Barm-only today)
+      // falls back to the same 18% baseline this used to apply to everyone.
+      const { resolveTax: resolveSkuidTax } = buildMasterSkuidResolver(await fetchMasterSkuidMap());
+
       // Fetch Transaction Data for dynamic P&L
       const resTx = await fetch(`${supabaseUrl}/rest/v1/amazon_transactions_dashboard?select=sku,description,quantity,product_sales,selling_fees,fba_fees`, { headers });
       if (resTx.ok) {
@@ -192,7 +201,9 @@ export default function AmazonDashboard({ activeTab, supabaseUrl, supabaseKey, d
           const qty = s.quantity > 0 ? s.quantity : 1;
           const sellingPrice = s.productSales / qty;
           const amzFee = (s.sellingFees + s.fbaFees) / qty;
-          const gst = sellingPrice * 0.18; // Approx 18% GST baseline
+          // Rate from the product master's per-SKU Tax column (18% baseline
+          // when this SKU has none on file — see resolveSkuidTax above).
+          const gst = sellingPrice * (gstMultiplierFromTax(resolveSkuidTax(s.sku)) - 1);
           const text = sellingPrice * 0.01; // 1% TCS
           
           return {

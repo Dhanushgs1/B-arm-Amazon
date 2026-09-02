@@ -3,6 +3,7 @@ import { mcp } from "@/lib/api";
 import { resolveProductName } from "@/lib/categoryMap";
 import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns } from "@/lib/misAdapters";
+import { fetchMasterSkuidMap, buildMasterSkuidResolver, gstMultiplierFromTax } from "@/lib/masterProductSkuid";
 
 // ── Analysis Report (Ad Performance) ────────────────────────────────────────
 // Recreates the per-product "Analysis report" sheet from the seller's manual
@@ -30,13 +31,13 @@ import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchM
 // isn't included here, matching the live call this replaces — that endpoint
 // only ever covered Sponsored Products too. The CPC / ACOS / TACOS
 // formulas are reproduced exactly as the original sheet computed them:
-//   Spend+Tax = ad spend × 1.18            (18% GST)
+//   Spend+Tax = ad spend × (1 + that ad row's SKU's own GST rate), from the
+//               product master's per-SKU Tax column (18% used when a SKU has
+//               none on file — most products are actually 5%, not 18%)
 //   Final     = Orders − Returns
 //   CPC       = Spend+Tax ÷ Advertised SKU Units   (÷1 when units = 0)
 //   ACOS      = CPC ÷ Price = Spend+Tax ÷ (Price × Advertised SKU Units)   (÷1 when units = 0)
 //   TACOS     = Spend+Tax ÷ (Price × Final)         (÷1 when final = 0)
-
-const GST_MULTIPLIER = 1.18;
 
 // Amazon India fulfillment-centre (FC) code → state/region. Mirrors the mapping
 // the seller's own "Inventory ledger" sheet used (its Location→Area IFS formula),
@@ -145,7 +146,7 @@ function dotDate(iso: string) {
 }
 
 interface WindowStats {
-  spendTax: number;   // ad spend × 1.18
+  spendTax: number;   // ad spend × (1 + that SKU's own GST rate)
   adSales: number;    // ad-attributed sales (for the Total Units estimate)
   advUnits: number;   // Advertised SKU Units (#) — ad orders/purchases
   totalUnits: number; // Total Units (#) — ad-attributed units (adSales ÷ price)
@@ -196,6 +197,10 @@ function spRowsToAdRows(spRows: any[]): any[] {
     .filter((r) => r.advertised_asin)
     .map((r) => ({
       adAsin: r.advertised_asin,
+      // This SP row's own SKU — GST is a per-SKU rate (see aggregateWindow),
+      // so it must travel with the row even though ProductRow itself is keyed
+      // by ASIN, not SKU.
+      adSku: r.advertised_sku || "",
       spend: r.spend || 0,
       sales: r.advertised_sku_sales_7d || r.sales_7d || 0,
       orders: r.advertised_sku_units_7d || r.units_7d || 0,
@@ -298,7 +303,8 @@ function aggregateWindow(
   pick: (p: ProductRow) => WindowStats,
   adRows: any[],
   retailRows: any[],
-  returnRows: any[]
+  returnRows: any[],
+  resolveTax: (sku: string) => number | null
 ) {
   // Ad spend / ad sales / advertised orders per ASIN.
   adRows.forEach((r: any) => {
@@ -306,7 +312,7 @@ function aggregateWindow(
     const p = ensure(r.adAsin);
     if (p.name === p.asin && r.adProductName) p.name = r.adProductName;
     const w = pick(p);
-    w.spendTax += (r.spend || 0) * GST_MULTIPLIER;
+    w.spendTax += (r.spend || 0) * gstMultiplierFromTax(resolveTax(r.adSku || ""));
     w.adSales += r.sales || 0;
     w.advUnits += r.orders || 0; // purchases — closest per-ASIN unit proxy the API exposes
   });
@@ -394,7 +400,7 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
   // matching historicalAnalysisReportExport.ts's single-fetch pattern for the
   // same tables.
   const [
-    spRows30, orderRows30, amReturnRows30, fbaReturnRows30, sfReturnRows30, inventory, catalog,
+    spRows30, orderRows30, amReturnRows30, fbaReturnRows30, sfReturnRows30, inventory, catalog, masterSkuid,
   ] = await Promise.all([
     fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", start30).lte("report_date", end)),
     fetchMisAmazonOrders((q) => q.gte("purchase_datetime", win30Ist.gte).lt("purchase_datetime", win30Ist.lt)),
@@ -403,7 +409,9 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
     fetchMisSellerFlexReturns((q) => q.gte("pickup_date", start30).lte("pickup_date", end)),
     fetchInventoryByLocation(call, baseArgs).catch(() => []),
     fetchFullCatalog(call, baseArgs).catch(() => []),
+    fetchMasterSkuidMap(),
   ]);
+  const { resolveTax: resolveSkuidTax, resolveName: resolveSkuidName } = buildMasterSkuidResolver(masterSkuid);
 
   const products = new Map<string, ProductRow>();
   const ensure = (asin: string): ProductRow => {
@@ -445,8 +453,8 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
   const fbaReturnRows7 = fbaReturnRows30.filter((r: any) => r.return_date >= win7Ist.gte);
   const sfReturnRows7 = sfReturnRows30.filter((r: any) => r.pickup_date >= start7);
 
-  aggregateWindow(products, ensure, (p) => p.w30, spRowsToAdRows(spRows30), ordersToRetailRows(orderRows30), returnsToReturnRows(amReturnRows30, fbaReturnRows30, sfReturnRows30));
-  aggregateWindow(products, ensure, (p) => p.w7, spRowsToAdRows(spRows7), ordersToRetailRows(orderRows7), returnsToReturnRows(amReturnRows7, fbaReturnRows7, sfReturnRows7));
+  aggregateWindow(products, ensure, (p) => p.w30, spRowsToAdRows(spRows30), ordersToRetailRows(orderRows30), returnsToReturnRows(amReturnRows30, fbaReturnRows30, sfReturnRows30), resolveSkuidTax);
+  aggregateWindow(products, ensure, (p) => p.w7, spRowsToAdRows(spRows7), ordersToRetailRows(orderRows7), returnsToReturnRows(amReturnRows7, fbaReturnRows7, sfReturnRows7), resolveSkuidTax);
 
   // Inventory (per-location): FBA warehouse balance per FC → aggregate by state,
   // keyed to the specific SKU each location row carries.
@@ -583,7 +591,10 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
   rows.forEach((p) => {
     const prim = primarySku(p);
     const primInfo = prim ? p.skus.get(prim) : undefined;
-    const name = resolveProductName(p.name, prim) || p.name;
+    // master_product_skuid's curated name wins over both the categoryMap.ts
+    // fallback and the raw ad/order/catalog title — same priority every other
+    // report gives it (see masterProductSkuid.ts's header comment).
+    const name = resolveSkuidName(prim || "", resolveProductName(p.name, prim) || p.name);
     aoa.push([
       name,
       prim || "",
@@ -732,7 +743,7 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
     [`Last 30 days: ${dotDate(start30)} to ${dotDate(end)}`],
     [`Last 7 days: ${dotDate(start7)} to ${dotDate(end)}`],
     [""],
-    ["Spend+Tax = ad spend x 1.18 (18% GST). Final = Orders - Returns."],
+    ["Spend+Tax = ad spend x (1 + that SKU's GST rate), from the product master's per-SKU Tax column (18% used when a SKU has none on file). Final = Orders - Returns."],
     ["CPC = Spend+Tax / Advertised SKU Units (falls back to Spend+Tax when units = 0)."],
     ["ACOS = CPC / Price = Spend+Tax / (Advertised SKU Units x Price)."],
     ["TACOS = Spend+Tax / (Price x Final)."],

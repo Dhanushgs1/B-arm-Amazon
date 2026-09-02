@@ -4,7 +4,7 @@ import { upsertInChunks } from "@/lib/amazonReportUpload";
 import { toDate as parseFlexibleDate } from "@/lib/meeshoReportUpload";
 import { resolveProductName } from "@/lib/categoryMap";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
-import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog } from "@/lib/masterProductSkuid";
+import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog, fetchMasterSkuidsByName, gstMultiplierFromTax, DEFAULT_GST_MULTIPLIER } from "@/lib/masterProductSkuid";
 import { SITE_URL } from "@/lib/siteUrl";
 
 // ── Ad Spend Report ──────────────────────────────────────────────────────────
@@ -24,7 +24,12 @@ import { SITE_URL } from "@/lib/siteUrl";
 // seen for either yet, so there's no column layout to build a parser from.
 //
 // Definitions match historicalAnalysisReportExport.ts / flipkartHistoricalReportExport.ts:
-//   Spend(with tax) = raw ad spend x 1.18 (18% GST), applied once after summing
+//   Spend(with tax) = raw ad spend x (1 + that product's own GST rate), applied
+//                      once after summing raw spend for the window — never a
+//                      per-row multiply. The rate comes from master_product_skuid's
+//                      per-SKU Tax column (most products are 5%, not the flat 18%
+//                      every report assumed before this was wired in); a SKU with
+//                      no Tax on file falls back to DEFAULT_GST_MULTIPLIER (18%).
 //   CPC  = Spend(with tax) / Orders        (Orders = 0 -> CPC = Spend(with tax))
 //   ACOS = CPC / Price
 // "Orders" here means units sold of that product in the window (order-report
@@ -35,7 +40,6 @@ import { SITE_URL } from "@/lib/siteUrl";
 
 export type Platform = "Amazon" | "Flipkart" | "Meesho";
 
-const GST_MULTIPLIER = 1.18;
 // Campaigns spending at or under this on the single reporting day are flagged
 // on the "Low Spend Campaigns" sheet as candidates for pausing/pruning.
 const LOW_SPEND_THRESHOLD = 50;
@@ -78,9 +82,13 @@ function num(v: unknown): number {
 }
 
 // ── per-product aggregate (raw spend, pre-tax) ──────────────────────────────
-export interface WindowAgg { spend: number; units: number; }
+// gstMultiplier travels with the aggregate (set once per product from its own
+// master_product_skuid Tax rate — see the tagging pass in
+// generateAdSpendReportWorkbook below) rather than living as a single global
+// constant, since different products carry different real GST slabs (5%/18%/0%).
+export interface WindowAgg { spend: number; units: number; gstMultiplier?: number; }
 const emptyAgg = (): WindowAgg => ({ spend: 0, units: 0 });
-export const spendTax = (a: WindowAgg): number => a.spend * GST_MULTIPLIER;
+export const spendTax = (a: WindowAgg): number => a.spend * (a.gstMultiplier ?? DEFAULT_GST_MULTIPLIER);
 export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) / a.units : spendTax(a));
 export const computeAcos = (a: WindowAgg, price: number): number => (price > 0 ? computeCpc(a) / price : 0);
 
@@ -115,7 +123,16 @@ interface CampaignSpendRow {
 // variant of one product into a single row, summing its spend/units. The
 // merged row keeps every contributing SKU (comma-joined) so it can still be
 // traced back to the exact SKUs behind the numbers.
-export function groupProductsByName(products: ProductRow[]): ProductRow[] {
+export function groupProductsByName(
+  products: ProductRow[],
+  // name -> Platform -> full master SKU list (fetchMasterSkuidsByName). When a
+  // grouped row's resolved name+platform has an entry here, its "SKU(s)" list
+  // comes from the master instead of the window's own transactional SKUs —
+  // the master's list is the complete, stable set (e.g. all 5 known variants
+  // of a product), while the window-derived set only ever contains whichever
+  // SKUs actually had ad spend or orders in that specific day/range.
+  masterSkuidsByName?: Map<string, Map<string, string[]>>
+): ProductRow[] {
   const byName = new Map<string, ProductRow & { skuSet: Set<string> }>();
   products.forEach((p) => {
     const key = p.name.trim().toLowerCase();
@@ -131,7 +148,11 @@ export function groupProductsByName(products: ProductRow[]): ProductRow[] {
     if (!existing.price && p.price) existing.price = p.price;
     existing.skuSet.add(p.sku);
   });
-  return [...byName.values()].map(({ skuSet, ...p }) => ({ ...p, sku: [...skuSet].join(", ") }));
+  return [...byName.values()].map(({ skuSet, ...p }) => {
+    const masterSkus = masterSkuidsByName?.get(p.name.trim().toLowerCase())?.get(p.platform);
+    const sku = masterSkus && masterSkus.length ? [...masterSkus].sort().join(", ") : [...skuSet].join(", ");
+    return { ...p, sku };
+  });
 }
 
 export interface AdSpendReportOpts {
@@ -856,10 +877,11 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // Fetched once and shared across all three platforms — the seller's own
   // approved SKU -> product name list, checked first before falling back to
   // whatever name shows up on an order/price-listing row (see resolveName).
-  const [master, masterSkuid, masterSkuidCatalog, amz, fk, ms] = await Promise.all([
+  const [master, masterSkuid, masterSkuidCatalog, masterSkuidsByName, amz, fk, ms] = await Promise.all([
     fetchProductMasterMap(),
     fetchMasterSkuidMap(),
     fetchMasterSkuidAmazonCatalog(),
+    fetchMasterSkuidsByName(),
     fetchAmazonProducts(range, endDate),
     fetchFlipkartProducts(range, endDate),
     fetchMeeshoProducts(range, endDate),
@@ -873,10 +895,18 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // master_product_skuid is the seller's fullest, most current source — checked first;
   // barm_product_master only fills in a SKU it doesn't have.
   const { resolveName: resolveBarmName } = buildProductMasterResolver(master);
-  const { resolveName: resolveSkuidName } = buildMasterSkuidResolver(masterSkuid);
+  const { resolveName: resolveSkuidName, resolveTax: resolveSkuidTax } = buildMasterSkuidResolver(masterSkuid);
   const resolveName = (sku: string, fallback: string) => resolveSkuidName(sku, resolveBarmName(sku, fallback));
   [amz.products, fk.products, ms.products].forEach((products) => {
-    products.forEach((p) => { p.name = resolveName(p.sku, p.name); });
+    products.forEach((p) => {
+      p.name = resolveName(p.sku, p.name);
+      // Tagged onto both windows here, once per product, rather than looked up
+      // inside spendTax on every call — the same SKU's rate never changes
+      // within a single report run.
+      const gst = gstMultiplierFromTax(resolveSkuidTax(p.sku));
+      p.day.gstMultiplier = gst;
+      p.range.gstMultiplier = gst;
+    });
   });
 
   // Seed a zero-activity row for every known Amazon catalog SKU with no spend/order data at all
@@ -892,8 +922,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       sku: entry.sku,
       name: resolveName(entry.sku, entry.name),
       price: 0,
-      day: { spend: 0, units: 0 },
-      range: { spend: 0, units: 0 },
+      day: { spend: 0, units: 0, gstMultiplier: gstMultiplierFromTax(resolveSkuidTax(entry.sku)) },
+      range: { spend: 0, units: 0, gstMultiplier: gstMultiplierFromTax(resolveSkuidTax(entry.sku)) },
     });
   });
 
@@ -968,7 +998,13 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     const rows = groupProductsByName([...products.values()]).filter((p) => spendTax(p.range) > 0);
     const rangeSpendRaw = rows.reduce((s, p) => s + p.range.spend, 0);
     const daySpendRaw = rows.reduce((s, p) => s + p.day.spend, 0);
-    platformTotals.push({ platform, daySpendTax: daySpendRaw * GST_MULTIPLIER, rangeSpendTax: rangeSpendRaw * GST_MULTIPLIER });
+    // Summed from each product's own already-tax-adjusted spendTax() rather than
+    // (blended raw total x one flat rate) — products on the same platform can carry
+    // different real GST rates, so there's no single multiplier that applies to a
+    // combined sum across all of them.
+    const daySpendTaxTotal = rows.reduce((s, p) => s + spendTax(p.day), 0);
+    const rangeSpendTaxTotal = rows.reduce((s, p) => s + spendTax(p.range), 0);
+    platformTotals.push({ platform, daySpendTax: daySpendTaxTotal, rangeSpendTax: rangeSpendTaxTotal });
 
     // A product that's barely spent anything can show a misleadingly great
     // (or terrible) ACOS from sheer small-sample noise — one lucky/unlucky
@@ -982,9 +1018,9 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     platformSummaries.push({
       platform,
       daySpend: round2(daySpendRaw),
-      daySpendTax: round2(daySpendRaw * GST_MULTIPLIER),
+      daySpendTax: round2(daySpendTaxTotal),
       rangeSpend: round2(rangeSpendRaw),
-      rangeSpendTax: round2(rangeSpendRaw * GST_MULTIPLIER),
+      rangeSpendTax: round2(rangeSpendTaxTotal),
       overallDayUnits: overallDay.units,
       overallDayValue: round2(overallDay.value),
       overallRangeUnits: overallRange.units,
@@ -1008,7 +1044,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           // 7-day range total is still shown per-product further right, and is
           // preserved separately in platformTotals.rangeSpendTax for the
           // post-generate toast on the Download page.
-          i === 0 ? platform : "", i === 0 ? round2(daySpendRaw) : "", i === 0 ? round2(daySpendRaw * GST_MULTIPLIER) : "",
+          i === 0 ? platform : "", i === 0 ? round2(daySpendRaw) : "", i === 0 ? round2(daySpendTaxTotal) : "",
           ...productAoaRow(p),
           // Overall sales QTS/Value is the SINGLE reporting day's total (matches
           // the dayLabel header above), not the 7-day range — the seller's own
@@ -1083,7 +1119,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     // row at all: against a hand-built reference report, these purely-organic
     // rows were the single biggest source of mismatch — they inflated this
     // sheet's Orders total ~40-60% above what an ad-spend-only view shows.
-    const rows = groupProductsByName([...products.values()])
+    const rows = groupProductsByName([...products.values()], masterSkuidsByName)
       .filter((p) => spendTax(p.range) > 0)
       .sort((a, b) => computeAcos(b.day, b.price) - computeAcos(a.day, a.price));
     detailLabelCells.push({ addr: XLSX.utils.encode_cell({ r: detailAoa.length, c: 0 }), platform });
@@ -1227,7 +1263,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           [""],
         ]
       : []),
-    ["Spend (with tax) = raw ad spend x 1.18 (18% GST), applied once after summing — never a per-row multiply."],
+    ["Spend (with tax) = raw ad spend x (1 + that product's GST rate), applied once after summing — never a per-row multiply. Rate comes from the product master's Tax column per SKU (18% used when a SKU has none on file)."],
     ["CPC = Spend(with tax) / Orders. When Orders = 0, CPC = Spend(with tax) (undefined ratio, shown as the spend itself rather than blank)."],
     ["ACOS = CPC / Price."],
     ["\"Orders\" = units sold of that product in the window, from the Orders/Order report, cancelled orders excluded. This is NOT ad-click-attributed units."],
