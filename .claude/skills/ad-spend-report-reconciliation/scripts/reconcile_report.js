@@ -330,15 +330,27 @@ for (const platform of PLATFORMS) {
   if (!raw.ordSheets.length) continue;
   const sg = sheetGrid(reportWb, "Summary");
   if (!sg) continue;
-  let qts = null, value = null;
+  // Locate the QTS/Value columns by header text (searching every row, since
+  // the header can land on whichever row the sheet's two-row header block
+  // uses) rather than a fixed index — the Summary layout has grown columns
+  // before (e.g. an "Orders x Price = Total Sales" column added to both the
+  // day and range blocks) and will likely again; a hardcoded index silently
+  // reads the wrong cells instead of erroring when that happens.
+  let qtsCol = -1, valueCol = -1;
   for (const row of sg) {
-    if (String(row[0] ?? "").trim() === platform) {
-      // P/Q are the last two columns of the 17-col Summary layout (indices 15, 16).
-      qts = num(row[15]); value = num(row[16]);
-      break;
+    const c = findCol(row, ["QTS"]);
+    if (c !== -1) { qtsCol = c; valueCol = findCol(row, ["Value"]); break; }
+  }
+  let qts = null, value = null;
+  if (qtsCol !== -1) {
+    for (const row of sg) {
+      if (String(row[0] ?? "").trim() === platform) {
+        qts = num(row[qtsCol]); value = valueCol !== -1 ? num(row[valueCol]) : null;
+        break;
+      }
     }
   }
-  if (qts === null) { warn(`[${platform}] Overall sales QTS/Value located on Summary sheet`, "couldn't find the platform's label row or its QTS/Value cells"); continue; }
+  if (qts === null) { warn(`[${platform}] Overall sales QTS/Value located on Summary sheet`, "couldn't find the platform's label row, or the QTS/Value header cells (searched every row for headers literally 'QTS' and 'Value')"); continue; }
 
   const qtsGapPct = raw.qtyDay > 0 ? Math.abs(qts - raw.qtyDay) / raw.qtyDay * 100 : 0;
   const valueGapPct = raw.valueDay > 0 ? Math.abs(value - raw.valueDay) / raw.valueDay * 100 : 0;
@@ -348,6 +360,19 @@ for (const platform of PLATFORMS) {
   else fail(`[${platform}] Overall sales QTS`, `raw SUM(qty) on ${reportDay} = ${raw.qtyDay} vs report ${qts} — gap ${(qts - raw.qtyDay)} (${qtsGapPct.toFixed(1)}%), too large for normal drift. Check the Overall sales accumulation is still scoped to the single reporting day (not the 7-day range) and unfiltered by order status.`);
 
   if (near(value, raw.valueDay, 0.01)) pass(`[${platform}] Overall sales Value`, `raw SUM(value) on ${reportDay} = ${money(raw.valueDay)} = report ${money(value)}`);
+  else if (platform === "Meesho") {
+    // Since 2026-09-03, Meesho's Value (unlike Amazon/Flipkart) is Orders x
+    // each SKU's meesho_price_marketing live scraped price, not a straight
+    // sum of this order sheet's own Supplier Listed/Discounted Price column
+    // — confirmed against the seller's own manual reference workbook, whose
+    // Meesho orders sheet carries a separate per-product Quantity x Price =
+    // Sales side table using the same live-price method. This script only
+    // reads the xlsx, so it can't fetch meesho_price_marketing from Supabase
+    // to verify the report's number directly — a gap from raw here is
+    // therefore expected whenever a SKU's live price differs from its
+    // Supplier Listed/Discounted Price, not necessarily a bug.
+    info(`[${platform}] Overall sales Value`, `raw SUM(value) on ${reportDay} (Supplier Listed/Discounted Price) = ${money(raw.valueDay)} vs report ${money(value)} — gap ${money(value - raw.valueDay)} (${valueGapPct.toFixed(1)}%). Expected: report uses meesho_price_marketing's live price per SKU where available, this script can't fetch that table to verify independently. If the gap looks wrong, check meesho_price_marketing.price for the SKUs active on ${reportDay}.`);
+  }
   else if (valueGapPct <= 3) warn(`[${platform}] Overall sales Value`, `raw ${money(raw.valueDay)} vs report ${money(value)} (${valueGapPct.toFixed(1)}%) — within normal order-status drift, same reasoning as QTS above.`);
   else fail(`[${platform}] Overall sales Value`, `raw SUM(value) on ${reportDay} = ${money(raw.valueDay)} vs report ${money(value)} — gap ${money(value - raw.valueDay)} (${valueGapPct.toFixed(1)}%). Confirm Value is summed straight from the order sheet's own price column (${COLS[platform].ordValue[0]}) for this platform's single reporting day, not the 7-day range or a different report (e.g. Flipkart's separate Earn More export).`);
 }

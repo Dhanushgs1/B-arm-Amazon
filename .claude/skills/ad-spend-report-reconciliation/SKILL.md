@@ -76,7 +76,17 @@ which also tracks this figure daily rather than as a weekly rollup):
 |---|---|---|
 | Amazon | `quantity` | `item-price` |
 | Flipkart | `Quantity` | `Invoice Amount` |
-| Meesho | `Quantity` | `Supplier Listed Price (Incl. GST + Commission)` |
+| Meesho | `Quantity` | `Supplier Listed Price (Incl. GST + Commission)`, but see exception below |
+
+**Meesho exception (since 2026-09-03):** unlike Amazon/Flipkart, Meesho's Value is Orders x
+each SKU's `meesho_price_marketing` live scraped listing price (falling back to this order
+sheet's own Supplier Listed/Discounted Price only for a SKU not in that table yet) — confirmed
+against the seller's own manual reference workbook, whose Meesho orders sheet carries a separate
+per-product "Quantity x Price = Sales" side table using that same live-price method, not a
+straight per-order-row sum. `meesho_price_marketing` lives in Supabase, not the xlsx, so
+`reconcile_report.js` can't verify Meesho's Value independently — it reports any gap from the
+raw Supplier Listed/Discounted Price sum as INFO, not FAIL. **QTS is unaffected** (it never
+depended on price) and still must match the raw sheet exactly like the other two platforms.
 
 A few percent of drift between a live recomputation and a previously-generated report is
 **expected** (orders/cancellations/returns change between the raw file's download moment and
@@ -133,6 +143,29 @@ PivotTable tabs the seller keeps for their own cross-checking). None of that is 
 confirm actual sheet/column names against whatever file you're given; the script's `SHEET_PATTERNS`
 already tries several common variants and reports what it couldn't find rather than
 silently mis-locating a sheet.
+
+**`reconcile_report.js` itself read the wrong Summary columns for QTS/Value.** Fixed
+2026-09-03: the script hardcoded `row[15]`/`row[16]` as "the last two columns of the 17-col
+Summary layout" for every platform's QTS/Value — stale the moment the Summary sheet grew columns
+(an "Orders x Price = Total Sales" column was added to both the day and range blocks, pushing
+QTS/Value to indices 17/18 of a 19-col layout). Symptom: every platform's Overall sales Value
+read as a near-zero garbage number (e.g. Rs 0.37, Rs 0.12) while QTS read some unrelated ACOS/CPC
+figure instead — not a real report bug, just the script misreading cells, and a violation of this
+same script's own stated principle ("never hardcoded positions"). Fixed by locating the `QTS` and
+`Value` header cells by text instead. If Overall sales Value ever again reads suspiciously tiny
+or clearly-wrong-column numbers while everything else passes, suspect this script's own column
+lookup before suspecting the report.
+
+**Don't assume the reconciliation skill's documented rule is still current — check the seller's
+own reference workbook's actual formulas.** On 2026-09-03, this skill's own documented Meesho
+Value rule (straight sum of Supplier Listed/Discounted Price, no other source) led to reverting
+a legitimate improvement (Meesho pricing from `meesho_price_marketing`) as a "regression," because
+that rule predated the seller's manual workbook growing its own live-price side table for Meesho.
+Opening the manual reference file with `cellFormula: true` (not just reading values) and reading
+its actual `SUM()` formulas — not just trusting this document's prose — showed the true, current
+method. Skills describe the last-known-correct state, not an unchangeable spec; when the seller's
+own reference file disagrees with this skill's text, the reference file wins and this file should
+be updated to match (as the Meesho exception above now does).
 
 ## Where the code lives
 

@@ -659,15 +659,15 @@ export async function fetchMeeshoProducts(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows.forEach((r: any) => {
     const qty = num(r.quantity);
-    // Deliberately NOT priceBySku/meesho_price_marketing here: Overall sales
-    // QTS/Value is a straight SUM of the Order report's own Quantity x price
-    // for the window — unrelated to ad data, and with no status filter
-    // (matches the seller's own manual workbook — see the identical
-    // Amazon/Flipkart comment above). Bringing in the live scraped price
-    // would make this total drift from that raw sheet, which is exactly the
-    // class of regression the ad-spend-report-reconciliation skill checks
-    // for — see its "Overall sales (QTS / Value)" rule.
-    const value = orderPriceOf(r) * qty;
+    // Same price precedence as priceBySku above: meesho_price_marketing
+    // first, else this row's own order-derived price. Confirmed against the
+    // seller's own manual reference workbook (2026-09-02): its Meesho orders
+    // sheet carries a separate per-product "Quantity x Price = Sales" side
+    // table (not a straight per-order-row sum) using each SKU's own current
+    // listing price — the same Orders x price method used everywhere else
+    // in this report, not the raw supplier_listed/discounted price alone.
+    const price = (r.sku && priceBySku.get(r.sku)) || orderPriceOf(r);
+    const value = price * qty;
     overallRange.units += qty;
     overallRange.value += value;
     if (r.order_date === endDate) {
@@ -1397,7 +1397,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     [""],
     ["Amazon: Sponsored Products spend is per-SKU (barm_amazon_sp_advertised_product). Sponsored Brands/Display spend has no SKU column and is split across the SKUs mapped to that campaign on the Upload page, in proportion to their weight. Unmapped SB/SD spend for the range window: ₹" + round2(amz.unmappedSpend) + " — not attributed to any product below."],
     ["Flipkart: FSN report spend is per-SKU for every campaign type, so no apportioning is needed. Price prefers the Listings snapshot; where a SKU has no listing row, price falls back to the window's realised average selling price (Earn more report)."],
-    ["Meesho: Ads report spend is per-SKU. Price prefers meesho_price_marketing's live scraped Meesho listing price; a SKU not in that table yet (or out of stock there) falls back to the Orders report's Supplier Discounted Price (else Supplier Listed Price). Overall sales QTS/Value stays a straight sum of the Orders report's own price column regardless, to match the seller's manual workbook. Column names come from the seller's own workbook, not a native Meesho export seen directly — see src/lib/meeshoReportUpload.ts if a real export's headers turn out to differ."],
+    ["Meesho: Ads report spend is per-SKU. Price prefers meesho_price_marketing's live scraped Meesho listing price; a SKU not in that table yet (or out of stock there) falls back to the Orders report's Supplier Discounted Price (else Supplier Listed Price). Overall sales QTS/Value uses that same price (Orders x price, per SKU), matching the seller's own manual workbook. Column names come from the seller's own workbook, not a native Meesho export seen directly — see src/lib/meeshoReportUpload.ts if a real export's headers turn out to differ."],
     ["Google Ads and social-media (Meta) spend are not included — no sample export has been seen for either, so there's no confirmed column layout to parse."],
     [""],
     ["Ad Status Report matches products across Amazon, Flipkart and Meesho by product NAME only (no cross-platform SKU mapping exists) — two listings with different titles for the same physical product will show as separate rows."],
