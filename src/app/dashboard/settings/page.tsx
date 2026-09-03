@@ -622,13 +622,14 @@ export default function SettingsPage() {
                     <label className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-widest mt-3 block">CC Email Address (optional)</label>
                     <input
                       type="email"
-                      placeholder="teammate@example.com"
+                      multiple
+                      placeholder="teammate@example.com, another@example.com"
                       value={ccEmail}
                       onChange={(e) => setCcEmail(e.target.value)}
                       className={cn(inputCls, "w-full mt-1")}
                       autoComplete="email"
                     />
-                    <p className="text-[10px] text-muted-foreground font-medium mt-1">Optional — CC&apos;d on every report and alert alongside the recipient above.</p>
+                    <p className="text-[10px] text-muted-foreground font-medium mt-1">Optional — comma-separated for multiple recipients. CC&apos;d on every report and alert alongside the recipient above.</p>
 
                     <div className="mt-3 flex items-center gap-3">
                       <button
