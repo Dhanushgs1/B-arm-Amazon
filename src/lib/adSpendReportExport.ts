@@ -566,10 +566,11 @@ export async function fetchFlipkartProducts(
 // ── Meesho ───────────────────────────────────────────────────────────────────
 // No native Meesho export has been seen directly — barm_meesho_ads/orders are
 // populated by src/lib/meeshoReportUpload.ts from the seller's own
-// hand-assembled workbook column names (see that file's header comment). Both
-// fetches are wrapped in .catch(() => []) because the two Meesho tables may
-// not exist yet (scripts/meesho_tables.sql not run) — that must degrade to
-// "no Meesho data" rather than take down the whole report.
+// hand-assembled workbook column names (see that file's header comment). All
+// three fetches are wrapped in .catch(() => []) because their tables may not
+// exist yet (scripts/meesho_tables.sql / scripts/meesho_price_marketing_table.sql
+// not run) — that must degrade to "no Meesho data" / "no marketing price"
+// rather than take down the whole report.
 export async function fetchMeeshoProducts(
   range: { start: string; end: string },
   endDate: string
@@ -584,16 +585,25 @@ export async function fetchMeeshoProducts(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows: any[];
 }> {
-  const [adsRows, orderRows] = await Promise.all([
+  const [adsRows, orderRows, marketingRows] = await Promise.all([
     fetchAllRows("barm_meesho_ads", (q) => q.gte("report_date", range.start).lte("report_date", endDate)).catch(() => []),
     fetchAllRows("barm_meesho_orders", (q) => q.gte("order_date", range.start).lte("order_date", endDate)).catch(() => []),
+    // meesho_price_marketing (scripts/meesho_price_marketing_table.sql) holds
+    // the live scraped Meesho listing price per SKU — the same role
+    // barm_amazon_price_listing/barm_flipkart_listings play for the other two
+    // platforms. Wrapped in .catch(() => []) like the tables above: if this
+    // table hasn't been created yet, Meesho just falls all the way back to
+    // its old order-derived price below rather than breaking the report.
+    fetchAllRows("meesho_price_marketing", (q) => q).catch(() => []),
   ]);
 
   const isCancelled = (status: unknown) => String(status || "").toUpperCase().startsWith("CANCEL");
-  // Discounted price (post-commission net) is the closer analog to Amazon's
-  // item_price / Flipkart's selling_price; listed price is the fallback for a
-  // SKU whose orders never carry a discounted figure.
-  const priceOf = (r: { supplier_discounted_price?: unknown; supplier_listed_price?: unknown }) =>
+  // Order-derived fallback price, used only for a SKU meesho_price_marketing
+  // doesn't have a price for yet (not scraped, or currently out of stock on
+  // Meesho). Discounted price (post-commission net) is the closer analog to
+  // Amazon's item_price / Flipkart's selling_price; listed price is the
+  // fallback for a SKU whose orders never carry a discounted figure.
+  const orderPriceOf = (r: { supplier_discounted_price?: unknown; supplier_listed_price?: unknown }) =>
     num(r.supplier_discounted_price) || num(r.supplier_listed_price);
 
   const nameBySku = new Map<string, string>();
@@ -602,11 +612,20 @@ export async function fetchMeeshoProducts(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   adsRows.forEach((r: any) => { if (r.sku && r.product_name && !nameBySku.has(r.sku)) nameBySku.set(r.sku, r.product_name); });
 
+  // Price precedence: meesho_price_marketing's live listing price first
+  // (independent of whether the SKU had any orders in this window, same as
+  // Amazon/Flipkart's listing tables), then each SKU's own order rows as a
+  // fallback for SKUs not in that table yet.
   const priceBySku = new Map<string, number>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  marketingRows.forEach((r: any) => {
+    const price = num(r.price);
+    if (r.sku_id && price > 0) priceBySku.set(r.sku_id, price);
+  });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows.forEach((r: any) => {
     if (!r.sku || priceBySku.has(r.sku)) return;
-    const price = priceOf(r);
+    const price = orderPriceOf(r);
     if (price > 0) priceBySku.set(r.sku, price);
   });
 
@@ -640,7 +659,10 @@ export async function fetchMeeshoProducts(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows.forEach((r: any) => {
     const qty = num(r.quantity);
-    const value = priceOf(r) * qty;
+    // Same price precedence as priceBySku above: meesho_price_marketing
+    // first, else this row's own order-derived price.
+    const price = (r.sku && priceBySku.get(r.sku)) || orderPriceOf(r);
+    const value = price * qty;
     // Overall sales QTS/Value: a straight SUM of the Order report's own
     // Quantity x price for the window — unrelated to ad data, and with no
     // status filter (matches the seller's own manual workbook — see the
