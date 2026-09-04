@@ -444,6 +444,13 @@ const REPORT_TARGETS: Record<string, ReportTableSpec> = {
     dateCol: "report_date",
     strategy: "upsert",
     onConflict: "report_date,campaign_id,adgroup_id,sku_id",
+    // Flipkart's own FSN export sometimes splits one SKU/day/campaign/ad
+    // group's stats across two rows (seen in practice: one row with blank
+    // Product Name and a handful of views, another with the real product
+    // name and the rest of the views/clicks/spend) — same conflict key,
+    // same Postgres "cannot affect row a second time" failure as AM ads
+    // above, so it needs the same merge-before-upsert treatment.
+    mergeSumFields: ["views", "clicks", "direct_units_sold", "indirect_units_sold", "total_revenue", "ad_spend"],
     buildRow: (r) => {
       const p = makePicker(r);
       const report_date = parseFlexibleDate(p("Date"));
