@@ -217,26 +217,6 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
   });
   const adsOf = (sku: string, label: string) => adsBySkuPeriod.get(`${sku}|${label}`);
   const hasAdData = adRows.length > 0;
-  // AM-else-(FBA+SF) returns per SKU per period — the same physical return can
-  // be recorded in BOTH the AM returns export and the FBA/SF returns export,
-  // so historicalAnalysisReportExport.ts's Final column (verified against the
-  // seller's own workbook) takes the AM figure when one exists and only falls
-  // back to FBA+SF otherwise, never adds them together. "All Returns"/
-  // "Customer Returns" below stay a plain additive dump on purpose (they are
-  // meant to show every return reported, not a deduped figure) — only
-  // totalOrders (this file's Final-equivalent) needs the deduped version, so
-  // it is tracked separately here rather than changing allReturns' meaning.
-  const amReturnQtyBySkuPeriod = new Map<string, number>();
-  const fbaSfReturnQtyBySkuPeriod = new Map<string, number>();
-  const addReturnQty = (map: Map<string, number>, sku: string, label: string, qty: number) => {
-    const key = `${sku}|${label}`;
-    map.set(key, (map.get(key) || 0) + qty);
-  };
-  const dedupedReturnsOf = (sku: string, label: string): number => {
-    const key = `${sku}|${label}`;
-    const amQty = amReturnQtyBySkuPeriod.get(key) || 0;
-    return amQty > 0 ? amQty : (fbaSfReturnQtyBySkuPeriod.get(key) || 0);
-  };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   amReturnRows.forEach((r: any) => {
     if (!r.merchant_sku || !r.return_request_date) return;
@@ -246,7 +226,6 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
     const s = ensurePeriodStat(r.merchant_sku, pd.label);
     s.allReturns += qty;
     if (isGenuineAmReturn(r)) s.returns += qty;
-    addReturnQty(amReturnQtyBySkuPeriod, r.merchant_sku, pd.label, qty);
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   fbaReturnRows.forEach((r: any) => {
@@ -261,7 +240,6 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
     const s = ensurePeriodStat(r.sku, pd.label);
     s.allReturns += qty;
     if (isGenuineFbaReturn(r)) s.returns += qty;
-    addReturnQty(fbaSfReturnQtyBySkuPeriod, r.sku, pd.label, qty);
   });
 
   // ── Stock-on-hand (best-effort — only used for the Growth Summary's "Low stock" reason) ──
@@ -321,17 +299,29 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
     periods.forEach((pd) => {
       const raw = periodMap.get(pd.label);
       if (!raw) return;
-      // Total Orders = Orders - Returns, using the SAME deduped (AM-else-
-      // FBA+SF) return figure the Historical Analysis Report's Final column
-      // uses — NOT raw.allReturns, which sums AM and FBA/SF unconditionally
-      // and so double-counts a return that both exports recorded. Left
-      // unclamped for the same reason Historical's Final is unclamped: a
-      // return recorded with no matching order THIS window (the order
-      // belongs to an earlier period) legitimately goes negative.
-      const totalOrders = raw.orders - dedupedReturnsOf(sku, pd.label);
+      // Total Orders = Orders - All Returns. Previously this subtracted a
+      // deduped AM-else-FBA+SF figure instead of raw.allReturns, on the theory
+      // that AM and FBA/SF sometimes record the SAME physical return twice —
+      // but that logic silently dropped genuinely distinct courier RTO returns
+      // (recorded only in the FBA/SF export) any time the SKU/period also had
+      // an ordinary AM-recorded customer return, e.g. A019-13: Orders 4, AM
+      // returns 3 (all genuine), FBA/SF returns a further 2 courier RTOs — the
+      // dedup used only the AM figure (3) instead of All Returns (5). Flagged
+      // by the seller reconciling this report against their own workbook, which
+      // reduces Total Orders by every return reported. Left unclamped: a return
+      // recorded with no matching order THIS window (the order belongs to an
+      // earlier period) legitimately goes negative.
+      const totalOrders = raw.orders - raw.allReturns;
       const price = raw.orders > 0 ? raw.totalSales / raw.orders : 0;
-      p.periods[pd.label] = { orders: raw.orders, allReturns: raw.allReturns, returns: raw.returns, totalOrders, price, totalSales: raw.totalSales };
-      p.grandTotalSales += raw.totalSales;
+      // Total Sales must reflect the SAME net-of-returns units as Total Orders —
+      // raw.totalSales is the gross revenue for every unit ORDERED this period,
+      // so a fully-returned order (Total Orders 0) still showed its full gross
+      // revenue instead of 0. Also flagged by the seller (A019-13: Total Orders
+      // 0 but Total Sales showed 3,156, i.e. Orders x Price instead of Total
+      // Orders x Price).
+      const totalSales = price * totalOrders;
+      p.periods[pd.label] = { orders: raw.orders, allReturns: raw.allReturns, returns: raw.returns, totalOrders, price, totalSales };
+      p.grandTotalSales += totalSales;
     });
   });
 
