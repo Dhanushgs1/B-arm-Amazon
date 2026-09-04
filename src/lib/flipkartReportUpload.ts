@@ -1,6 +1,7 @@
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { supabasePublic, pruneOutsideRange } from "@/lib/amazonReportUpload";
+import { mergeByConflictKey } from "@/lib/mergeByConflictKey";
 
 // Flipkart counterpart of src/lib/amazonReportUpload.ts — same shape (one card
 // per seller-downloaded export, parsed in the browser and written into a
@@ -828,6 +829,18 @@ async function mirrorEarnMoreToOverallSales(
   return "dashboard sales data refreshed";
 }
 
+// The FSN report's own conflict key — several rows can share it when
+// Flipkart's export splits one SKU/day/campaign/ad group's stats across two
+// rows (seen in practice: one row with a blank Product Name and a handful of
+// views, another with the real product name and the rest of the views/
+// clicks/spend). dedupeExactRows only catches byte-identical rows, so it
+// misses this; left unmerged, one upsert statement would carry the same
+// conflict key twice and Postgres would throw "ON CONFLICT DO UPDATE command
+// cannot affect row a second time" for the whole upload. Same convention as
+// combinedAdSpendUpload.ts's "FK ads"/"AM ads" REPORT_TARGETS specs.
+const FSN_CONFLICT_KEY = ["report_date", "campaign_id", "adgroup_id", "sku_id"];
+const FSN_MERGE_SUM_FIELDS = ["views", "clicks", "direct_units_sold", "indirect_units_sold", "total_revenue", "ad_spend"];
+
 /**
  * Parse one Flipkart export in the browser and write it to its barm_flipkart_*
  * table. The FSN report upserts per row on (date, campaign, ad group, SKU); the
@@ -842,7 +855,10 @@ export async function uploadFlipkartReportFile(
   const parsed = await PARSER[type](file);
   const table = FK_REPORT_TABLE[type];
   const dateCol = FK_DATE_COLUMN[type];
-  const rows = type === "order_report" ? dedupeOrderReportRows(parsed.rows) : dedupeExactRows(parsed.rows);
+  let rows = type === "order_report" ? dedupeOrderReportRows(parsed.rows) : dedupeExactRows(parsed.rows);
+  if (type === "fsn_report") {
+    rows = mergeByConflictKey(rows, FSN_CONFLICT_KEY, FSN_MERGE_SUM_FIELDS);
+  }
 
   if (!rows.length) {
     return {
@@ -857,7 +873,7 @@ export async function uploadFlipkartReportFile(
 
   let mirrored: string | undefined;
   if (type === "fsn_report") {
-    await upsertInChunks(table, rows, "report_date,campaign_id,adgroup_id,sku_id");
+    await upsertInChunks(table, rows, FSN_CONFLICT_KEY.join(","));
     mirrored = await mirrorFsnToCampaignPerformance(rows);
   } else if (FULL_REPLACE_TYPES[type]) {
     await truncateAndInsert(table, rows);
