@@ -19,19 +19,16 @@ export const config = {
   maxDuration: 300,
 };
 
-// TEST OVERRIDE (temporary — revert to the real distribution list below once testing is done):
-// const DEFAULT_TO = "kaviyapriyabarm@gmail.com";
-// const DEFAULT_CC = [
-//   "jayaprakashbarm@gmail.com",
-//   "dangibbs@b-arm.com",
-//   "nivetha@b-arm.com",
-//   "prinesh@b-arm.com",
-//   "akshaya.v@b-arm.com",
-//   "ceo@barmenterprises.com",
-//   "sriram@b-arm.com",
-// ].join(",");
-const DEFAULT_TO = "dhanushgovinthang@gmail.com";
-const DEFAULT_CC = "";
+const DEFAULT_TO = "kaviyapriyabarm@gmail.com";
+const DEFAULT_CC = [
+  "jayaprakashbarm@gmail.com",
+  "dangibbs@b-arm.com",
+  "nivetha@b-arm.com",
+  "prinesh@b-arm.com",
+  "akshaya.v@b-arm.com",
+  "ceo@barmenterprises.com",
+  "sriram@b-arm.com",
+].join(",");
 
 function iso(d: Date): string {
   return d.toISOString().slice(0, 10);
