@@ -181,7 +181,17 @@ export interface AdSpendReportOpts {
 // barm_flipkart_order_report ones — so Overall sales here still needs the
 // one-file "Last 7 days" upload to run, not just any Orders upload.
 async function fetchDailyAmazonOrders(range: { start: string; end: string }, endDate: string) {
-  const rows = await fetchAllRows("barm_daily_am_orders", (q) => q.gte("report_date", range.start).lte("report_date", endDate));
+  // Ordered by (report_date, id) instead of fetchAllRows's default "id" — report_date has its own
+  // index (barm_daily_am_orders_date_idx) and is what this query filters on, so Postgres can
+  // satisfy the ORDER BY directly from that index scan. Ordering by "id" instead forced a separate
+  // Sort over every row in the date range on each paginated page, which grew slow enough to hit a
+  // statement timeout as the table grew with months of daily uploads. "id" stays as a tiebreaker
+  // for .range() pagination stability, same reasoning as fetchAllRows's own comment on ordering.
+  const rows = await fetchAllRows(
+    "barm_daily_am_orders",
+    (q) => q.gte("report_date", range.start).lte("report_date", endDate),
+    ["report_date", "id"]
+  );
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (rows as any[]).map((r) => {
     const raw = (r.raw as Record<string, unknown>) || {};
@@ -206,7 +216,13 @@ async function fetchDailyAmazonOrders(range: { start: string; end: string }, end
 // dropped. (Confirmed those nulls only affect a couple of days from a mid-
 // August upload; current/recent report windows are unaffected.)
 async function fetchDailyFlipkartOrders(range: { start: string; end: string }, endDate: string) {
-  const rows = await fetchAllRows("barm_daily_fk_orders", (q) => q.gte("report_date", range.start).lte("report_date", endDate));
+  // See fetchDailyAmazonOrders's comment — same fix, ordered by the indexed report_date column
+  // (barm_daily_fk_orders_date_idx) instead of "id" to avoid the same statement-timeout risk.
+  const rows = await fetchAllRows(
+    "barm_daily_fk_orders",
+    (q) => q.gte("report_date", range.start).lte("report_date", endDate),
+    ["report_date", "id"]
+  );
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (rows as any[]).map((r) => {
     const raw = (r.raw as Record<string, unknown>) || {};
