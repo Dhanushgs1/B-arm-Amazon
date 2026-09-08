@@ -41,3 +41,4 @@ yarn-error.log*
 dump.txt
 page_backup.tsx
 page_modifications.txt
+.superpowers/
