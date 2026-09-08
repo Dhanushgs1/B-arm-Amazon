@@ -3,7 +3,6 @@
     { "source": "/sm/(.*)", "destination": "/api/sm?path=$1" }
   ],
   "crons": [
-    { "path": "/api/cron/scheduled-reports", "schedule": "30 3 * * *" },
-    { "path": "/api/cron/ad-spend-history", "schedule": "0 4 * * *" }
+    { "path": "/api/cron/scheduled-reports", "schedule": "30 3 * * *" }
   ]
 }
