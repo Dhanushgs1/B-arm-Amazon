@@ -1,14 +1,45 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import nodemailer from "nodemailer";
 import { SITE_URL } from "@/lib/siteUrl";
 
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  auth: {
-    user: process.env.SMTP_FROM,
-    pass: process.env.SMTP_PASS,
-  },
-});
+// Resend's HTTP API replaces nodemailer/Gmail SMTP here — the SMTP send was observed taking
+// 65-70+ seconds by itself from Vercel's serverless environment (vs. Resend's typical 1-2s),
+// which was silently killing report-send requests on Vercel's default function timeout even after
+// raising maxDuration, since Vercel's free Hobby plan hard-caps every function at 10s regardless.
+// EMAIL_FROM defaults to Resend's sandbox sender (onboarding@resend.dev), which only delivers to
+// the email address the Resend account itself was signed up with — set EMAIL_FROM to an address on
+// a domain verified in Resend (e.g. reports@b-arm.com) once that's done, to send to the real
+// distribution list.
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const EMAIL_FROM = process.env.EMAIL_FROM || "onboarding@resend.dev";
+
+async function sendViaResend(opts: {
+  to: string;
+  cc?: string;
+  subject: string;
+  html: string;
+  attachments?: { filename: string; content: string; encoding?: string }[];
+}): Promise<{ id: string }> {
+  const splitList = (s?: string) => (s ? s.split(",").map((v) => v.trim()).filter(Boolean) : undefined);
+  const body: Record<string, unknown> = {
+    from: `Marketplace360 Dashboard <${EMAIL_FROM}>`,
+    to: splitList(opts.to),
+    subject: opts.subject,
+    html: opts.html,
+  };
+  const ccList = splitList(opts.cc);
+  if (ccList?.length) body.cc = ccList;
+  if (opts.attachments?.length) {
+    body.attachments = opts.attachments.map((a) => ({ filename: a.filename, content: a.content }));
+  }
+  const r = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${RESEND_API_KEY}` },
+    body: JSON.stringify(body),
+  });
+  const json = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(json?.message || json?.error?.message || `Resend send failed (HTTP ${r.status})`);
+  return json as { id: string };
+}
 
 // Every email carries a channel badge in the header naming which marketplace the numbers came
 // from, plus a muted "Flipkart · soon" chip beside it. Today everything below is Amazon, and
@@ -72,6 +103,9 @@ function wrap(body: string, channel: string | null = "amazon", headExtra = "") {
 function buildHtml(type: string, data: Record<string, any>, toEmail: string): string {
   // Every template below renders through this so the header's channel badge follows the data.
   const w = (body: string) => wrap(body, data.channel || "amazon");
+  // Raw-HTML passthrough for callers that already built their own body (e.g. the monthly
+  // placeholder in cron/scheduled-reports.ts) rather than needing a named template here.
+  if (type === "custom") return w(data.html || "");
   if (type === "test") {
     return w(`
       <table width="100%" cellpadding="0" cellspacing="0" border="0">
@@ -91,7 +125,7 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
             <table width="100%" cellpadding="12" cellspacing="0" border="0" style="border:1px solid #e5e7eb;border-radius:10px;margin-bottom:20px;">
               <tr style="border-bottom:1px solid #f0f0f0;">
                 <td width="80" style="color:#6b7280;font-size:13px;font-weight:700;border-bottom:1px solid #f0f0f0;">FROM</td>
-                <td style="color:#111;font-size:13px;font-weight:800;border-bottom:1px solid #f0f0f0;">${process.env.SMTP_FROM}</td>
+                <td style="color:#111;font-size:13px;font-weight:800;border-bottom:1px solid #f0f0f0;">${EMAIL_FROM}</td>
               </tr>
               <tr>
                 <td style="color:#6b7280;font-size:13px;font-weight:700;">TO</td>
@@ -1196,8 +1230,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const { type = "test", to, cc, data = {}, subject, attachments } = req.body;
 
   if (!to) return res.status(400).json({ error: "Recipient email (to) is required" });
-  if (!process.env.SMTP_FROM || !process.env.SMTP_PASS) {
-    return res.status(500).json({ error: "SMTP credentials not configured" });
+  if (!RESEND_API_KEY) {
+    return res.status(500).json({ error: "RESEND_API_KEY is not configured" });
   }
 
   try {
@@ -1207,8 +1241,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // send still reports success). If this creeps past ~90KB for a template with large generated
     // tables (e.g. adSpendDaily), trim content or move more repeated styling into CSS classes.
     console.log(`[send-email] type=${type} html size=${Buffer.byteLength(html, "utf8")} bytes`);
-    const info = await transporter.sendMail({
-      from: `Marketplace360 Dashboard <${process.env.SMTP_FROM}>`,
+    const info = await sendViaResend({
       to,
       cc: cc || undefined,
       subject: subject || SUBJECTS[type] || "Marketplace360 Notification",
@@ -1217,8 +1250,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       // travels as base64 over JSON since raw Buffers don't survive a fetch() body.
       attachments: Array.isArray(attachments) && attachments.length ? attachments : undefined,
     });
-    console.log("Email sent:", info.messageId, "→", to, cc ? `(cc: ${cc})` : "");
-    res.status(200).json({ success: true, message: `Email sent to ${to}${cc ? ` (cc: ${cc})` : ""}`, messageId: info.messageId });
+    console.log("Email sent:", info.id, "→", to, cc ? `(cc: ${cc})` : "");
+    res.status(200).json({ success: true, message: `Email sent to ${to}${cc ? ` (cc: ${cc})` : ""}`, messageId: info.id });
   } catch (err: any) {
     console.error("Email send error:", err);
     res.status(500).json({ error: err.message || "Failed to send email" });

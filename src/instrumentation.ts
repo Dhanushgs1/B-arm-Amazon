@@ -1,7 +1,6 @@
 // Next.js instrumentation — runs once when the server starts
 // Sets up cron jobs for scheduled email reports
 
-import { SITE_URL } from "@/lib/siteUrl";
 import { readEmailSettings } from "@/lib/emailSettingsStore";
 
 // Two accounts share this dashboard — "A" (Lkn) and "B" (Barm) — each with its
@@ -23,134 +22,36 @@ export async function register() {
   // a local dev server sent a real Daily Digest + Live Alerts email).
   if (process.env.NEXT_RUNTIME === "nodejs" && process.env.NODE_ENV === "production") {
     const cron = (await import("node-cron")).default;
-    const nodemailer = (await import("nodemailer")).default;
 
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        user: process.env.SMTP_FROM,
-        pass: process.env.SMTP_PASS,
-      },
-    });
-
-    function buildSummaryHtml(period: string, metrics: Record<string, any>, toEmail: string) {
-      const now = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
-      return `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><title>Marketplace360 Report</title></head>
-<body style="margin:0;padding:0;background:#f4f4f7;font-family:Arial,Helvetica,sans-serif;">
-<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f4f7;padding:32px 16px;">
-  <tr><td align="center">
-    <table width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
-      <tr>
-        <td style="background:linear-gradient(135deg,#6D5EF8 0%,#8B5CF6 100%);padding:28px 32px;">
-          <p style="margin:0;color:#fff;font-size:22px;font-weight:800;">&#128202; Marketplace360 &mdash; ${period} Report</p>
-          <p style="margin:6px 0 0;color:rgba(255,255,255,0.75);font-size:13px;">${now} IST</p>
-        </td>
-      </tr>
-      <tr>
-        <td style="padding:28px 32px;">
-          <table width="100%" cellpadding="0" cellspacing="0" border="0">
-            <tr>
-              <td width="48%" style="padding:6px 6px 6px 0;">
-                <table width="100%" cellpadding="16" cellspacing="0" border="0" style="background:#f0fdf4;border-radius:12px;">
-                  <tr><td>
-                    <p style="margin:0;color:#6b7280;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;">Total Sales</p>
-                    <p style="margin:6px 0 0;color:#059669;font-size:26px;font-weight:900;">&#8377;${(metrics.sales || 0).toLocaleString("en-IN")}</p>
-                  </td></tr>
-                </table>
-              </td>
-              <td width="4%"></td>
-              <td width="48%" style="padding:6px 0 6px 6px;">
-                <table width="100%" cellpadding="16" cellspacing="0" border="0" style="background:#fef2f2;border-radius:12px;">
-                  <tr><td>
-                    <p style="margin:0;color:#6b7280;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;">Total Spend</p>
-                    <p style="margin:6px 0 0;color:#dc2626;font-size:26px;font-weight:900;">&#8377;${(metrics.spend || 0).toLocaleString("en-IN")}</p>
-                  </td></tr>
-                </table>
-              </td>
-            </tr>
-            <tr><td colspan="3" style="padding:3px 0;"></td></tr>
-            <tr>
-              <td width="48%" style="padding:6px 6px 6px 0;">
-                <table width="100%" cellpadding="16" cellspacing="0" border="0" style="background:#f5f3ff;border-radius:12px;">
-                  <tr><td>
-                    <p style="margin:0;color:#6b7280;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;">ROAS</p>
-                    <p style="margin:6px 0 0;color:#6D5EF8;font-size:26px;font-weight:900;">${metrics.roas || 0}x</p>
-                  </td></tr>
-                </table>
-              </td>
-              <td width="4%"></td>
-              <td width="48%" style="padding:6px 0 6px 6px;">
-                <table width="100%" cellpadding="16" cellspacing="0" border="0" style="background:#fffbeb;border-radius:12px;">
-                  <tr><td>
-                    <p style="margin:0;color:#6b7280;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;">ACOS</p>
-                    <p style="margin:6px 0 0;color:#d97706;font-size:26px;font-weight:900;">${metrics.acos || 0}%</p>
-                  </td></tr>
-                </table>
-              </td>
-            </tr>
-            <tr><td colspan="3" style="padding:3px 0;"></td></tr>
-            <tr>
-              <td width="48%" style="padding:6px 6px 6px 0;">
-                <table width="100%" cellpadding="16" cellspacing="0" border="0" style="background:#f0f9ff;border-radius:12px;">
-                  <tr><td>
-                    <p style="margin:0;color:#6b7280;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;">Orders</p>
-                    <p style="margin:6px 0 0;color:#0891b2;font-size:26px;font-weight:900;">${(metrics.orders || 0).toLocaleString()}</p>
-                  </td></tr>
-                </table>
-              </td>
-              <td width="4%"></td>
-              <td width="48%" style="padding:6px 0 6px 6px;">
-                <table width="100%" cellpadding="16" cellspacing="0" border="0" style="background:#fdf4ff;border-radius:12px;">
-                  <tr><td>
-                    <p style="margin:0;color:#6b7280;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;">Impressions</p>
-                    <p style="margin:6px 0 0;color:#7c3aed;font-size:26px;font-weight:900;">${(metrics.impressions || 0).toLocaleString()}</p>
-                  </td></tr>
-                </table>
-              </td>
-            </tr>
-          </table>
-          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:24px;">
-            <tr>
-              <td align="center">
-                <a href="${SITE_URL}/dashboard" style="background:#6D5EF8;color:#fff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Dashboard &#8594;</a>
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-      <tr>
-        <td style="padding:16px 32px;border-top:1px solid #f0f0f0;text-align:center;">
-          <p style="margin:0;color:#9ca3af;font-size:12px;">Marketplace360 Dashboard &nbsp;&#183;&nbsp; Automated ${period} Report &nbsp;&#183;&nbsp; <a href="${SITE_URL}/dashboard/settings" style="color:#6D5EF8;text-decoration:none;">Manage alerts</a></p>
-        </td>
-      </tr>
-    </table>
-  </td></tr>
-</table>
-</body></html>`;
-    }
-
+    // Only "Monthly" is ever actually called below (Daily/Weekly are handled by the real
+    // /api/daily-digest, /api/live-alerts and /api/weekly-report routes via runAlertEndpoint) — no
+    // live monthly metrics are wired up yet, so this stays a placeholder. Routed through
+    // /api/send-email (Resend) rather than its own direct nodemailer/Gmail SMTP call — see
+    // send-email.ts's own comment on why, and scheduled-reports.ts's identical Monthly placeholder.
     async function sendReport(period: string, toEmail: string, ccEmail?: string) {
-      // Use placeholder metrics for now — will be replaced with live API data
-      const metrics = {
-        sales: 0, spend: 0, roas: 0, acos: 0, orders: 0, impressions: 0,
-      };
-
+      const now = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
       const subjects: Record<string, string> = {
         Daily: "Marketplace360 - Daily Performance Report",
         Weekly: "Marketplace360 - Weekly Performance Report",
         Monthly: "Marketplace360 - Monthly Performance Report",
       };
-
       try {
-        await transporter.sendMail({
-          from: `Marketplace360 Dashboard <${process.env.SMTP_FROM}>`,
-          to: toEmail,
-          cc: ccEmail || undefined,
-          subject: subjects[period] || "Marketplace360 Report",
-          html: buildSummaryHtml(period, metrics, toEmail),
+        const port = process.env.PORT || 3000;
+        const r = await fetch(`http://localhost:${port}/api/send-email`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "custom",
+            to: toEmail,
+            cc: ccEmail || undefined,
+            subject: subjects[period] || "Marketplace360 Report",
+            data: {
+              html: `<p>${period} report placeholder — generated ${now} IST. Live ${period.toLowerCase()} metrics aren't wired up yet; see the Daily/Weekly reports for real data.</p>`,
+            },
+          }),
         });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j?.error || "send failed");
         console.log(`[Marketplace360] ✅ ${period} report sent → ${toEmail}`);
       } catch (err) {
         console.error(`[Marketplace360] ❌ Failed to send ${period} report:`, err);

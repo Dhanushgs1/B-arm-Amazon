@@ -13,7 +13,6 @@
 // other's automated emails.
 
 import type { NextApiRequest, NextApiResponse } from "next";
-import nodemailer from "nodemailer";
 import { readEmailSettings } from "@/lib/emailSettingsStore";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
 
@@ -37,19 +36,25 @@ async function callReportEndpoint(req: NextApiRequest, pathname: string, body: R
 
 // Placeholder monthly summary (mirrors the instrumentation.ts version) — no live
 // data wiring exists for the monthly send yet, only daily/weekly pull real metrics.
-async function sendMonthlyPlaceholder(toEmail: string, ccEmail?: string) {
-  const transporter = nodemailer.createTransport({
-    service: "gmail",
-    auth: { user: process.env.SMTP_FROM, pass: process.env.SMTP_PASS },
-  });
+// Routed through /api/send-email (Resend) like every other send in this file now goes through,
+// rather than its own direct nodemailer/Gmail SMTP call — see send-email.ts's own comment on why.
+async function sendMonthlyPlaceholder(req: NextApiRequest, toEmail: string, ccEmail?: string) {
   const now = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
-  await transporter.sendMail({
-    from: `Marketplace360 Dashboard <${process.env.SMTP_FROM}>`,
-    to: toEmail,
-    cc: ccEmail || undefined,
-    subject: "Marketplace360 - Monthly Performance Report",
-    html: `<p>Monthly report placeholder — generated ${now} IST. Live monthly metrics aren't wired up yet; see the Daily/Weekly reports for real data.</p>`,
+  const r = await internalFetch(`${internalOrigin(req)}/api/send-email`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "custom",
+      to: toEmail,
+      cc: ccEmail || undefined,
+      subject: "Marketplace360 - Monthly Performance Report",
+      data: {
+        html: `<p>Monthly report placeholder — generated ${now} IST. Live monthly metrics aren't wired up yet; see the Daily/Weekly reports for real data.</p>`,
+      },
+    }),
   });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j?.error || "Monthly placeholder send failed");
 }
 
 async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, isFirstOfMonth: boolean, dryRun: boolean) {
@@ -122,7 +127,7 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
   // account/Settings row), so running them once per slot here would double-send them.
   if (isFirstOfMonth && s.monthlySummary) {
     try {
-      await sendMonthlyPlaceholder(s.notifEmail, s.ccEmail);
+      await sendMonthlyPlaceholder(req, s.notifEmail, s.ccEmail);
       results.monthly = { ok: true };
       console.log(`[Marketplace360 Cron] ✅ [${slot}] Monthly report sent → ${s.notifEmail}`);
     } catch (err: any) {
