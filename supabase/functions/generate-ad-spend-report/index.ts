@@ -24,16 +24,17 @@ Deno.serve(async (req: Request) => {
   const acctName = account_name || "";
 
   const run = async () => {
-    await supabase.from("report_generation_jobs").update({
-      status: "processing",
-      started_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      email_status: "not_sent",
-      email_sent_at: null,
-      email_error: null,
-    }).eq("id", job_id);
-
     try {
+      const { error: statusError } = await supabase.from("report_generation_jobs").update({
+        status: "processing",
+        started_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        email_status: "not_sent",
+        email_sent_at: null,
+        email_error: null,
+      }).eq("id", job_id);
+      if (statusError) throw new Error(`Failed to mark job as processing: ${statusError.message}`);
+
       // report_date is passed through to buildAdSpendReportWorkbook's endDate
       // option exactly as received — no reformatting, no "today" fallback.
       const result = await buildAdSpendReportWorkbook({
