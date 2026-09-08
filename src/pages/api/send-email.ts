@@ -32,11 +32,11 @@ function channelBar(active = "amazon") {
   return `<p style="margin:10px 0 0;">${chips}</p>`;
 }
 
-function wrap(body: string, channel: string | null = "amazon") {
+function wrap(body: string, channel: string | null = "amazon", headExtra = "") {
   const now = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   return `<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Marketplace360</title></head>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Marketplace360</title>${headExtra}</head>
 <body style="margin:0;padding:0;background:#f4f4f7;font-family:Arial,Helvetica,sans-serif;">
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f4f7;padding:32px 16px;">
   <tr><td align="center">
@@ -902,61 +902,70 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
   }
 
   if (type === "adSpendDaily") {
-    // Mirrors the "Summary" sheet of the attached Ad Spend Report workbook —
-    // one card per platform (day/range spend + up to 3 top-spend products +
-    // overall sales), same numbers as the seller's own hand-written daily
-    // mail. Rendered as single-column cards rather than a wide multi-column
-    // table: the original table version (Platform / product / 3 day metrics /
-    // 3 range metrics / overall sales = 9 columns) was unreadable squeezed
-    // into the shared 600px email width, especially with long product titles.
+    // Reproduces the exact table layout of the manual daily mail Aparna has sent by hand
+    // (Platform | Ad spend without/with tax | High spending product [Product, price] |
+    // <day> Spend/Spend(with tax)/Orders/CPC/ACOS | <range> Spend/Spend(with tax)/Orders/CPC/ACOS |
+    // Overall sales QTS/Value), one merged row-group per platform covering its up-to-3
+    // top-spend products, rather than the card layout previously used here — so recipients
+    // used to Aparna's format see the same shape, not a redesign.
     // data: { dayLabel, rangeLabel, currency, platformSummaries: PlatformEmailSummary[],
     //         productCount, lowSpendCampaignCount }
     const currency = data.currency === "INR" ? "₹" : "$";
     const money = (v: number) => currency + new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 }).format(v || 0);
+    // CPC is shown as a bare number in the manual mail (no currency symbol), unlike Spend/price.
+    const num = (v: number) => new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 }).format(v || 0);
     const acosPct = (v: number) => `${Math.round((v || 0) * 100)}%`;
-    // Same thresholds as the Daily Digest's ACOS badge — a bare "99% ACOS" in grey text didn't
-    // separate "fine" from "the worst ACOS product on the platform" (which is exactly what these
-    // three per-platform products are, since the workbook shortlists worst-ACOS-first). Colouring
-    // it makes severity scannable without reading every number.
-    const acosColor = (v: number) => ((v || 0) > 0.5 ? "#dc2626" : (v || 0) > 0.25 ? "#d97706" : "#059669");
-    const acosSpan = (v: number) => `<strong style="color:${acosColor(v)};">${acosPct(v)} ACOS</strong>`;
-    const clip = (s: string, len = 60) => ((s || "").length > len ? (s || "").slice(0, len) + "…" : s || "");
+    // Same thresholds as the Daily Digest's ACOS badge — colours ACOS so a problem product
+    // is scannable without reading every number.
+    const acosClass = (v: number) => ((v || 0) > 0.5 ? "aspd-hi" : (v || 0) > 0.25 ? "aspd-mid" : "aspd-lo");
+    const clip = (s: string, len = 46) => ((s || "").length > len ? (s || "").slice(0, len) + "…" : s || "");
     const platforms: any[] = data.platformSummaries || [];
     const PLATFORM_COLOR: Record<string, string> = { Amazon: "#FF9900", Flipkart: "#2874F0", Meesho: "#9F2089" };
-    // Grand total across all platforms — the per-platform cards below answer "which platform",
-    // but the first thing a reader wants is "how much did we spend today, total" before drilling in.
-    const totalDaySpend = platforms.reduce((a, p) => a + (p.daySpendTax || 0), 0);
-    const totalRangeSpend = platforms.reduce((a, p) => a + (p.rangeSpendTax || 0), 0);
 
-    const platformCards = platforms.map((p) => {
+    // Every cell below carries a class instead of a repeated inline style attribute — with
+    // Amazon/Flipkart's full per-product tables running 20-40+ rows x 11 columns each, inline
+    // styles on every <td> pushed the message past Gmail's ~102KB clip threshold, silently
+    // truncating the mail (Flipkart's table — the second big one — got cut off entirely). See
+    // the <style> block below (only used by this adSpendDaily template).
+    const th = 'class="aspd-th"';
+    const td = 'class="aspd-td"';
+    const tdName = 'class="aspd-name"';
+    const styleBlock = `<style>
+      .aspd-th{padding:10px 12px;border:1px solid #000000;background:#f3f4f6;font-size:11px;font-weight:800;color:#111;text-transform:uppercase;text-align:center;vertical-align:middle;white-space:nowrap;}
+      .aspd-td{padding:10px 12px;border:1px solid #000000;font-size:12.5px;color:#111;text-align:center;vertical-align:middle;white-space:nowrap;}
+      .aspd-name{padding:10px 12px;border:1px solid #000000;font-size:12.5px;color:#111;text-align:left;vertical-align:middle;white-space:normal;}
+      .aspd-hi{color:#dc2626;font-weight:800;}
+      .aspd-mid{color:#d97706;font-weight:800;}
+      .aspd-lo{color:#059669;font-weight:800;}
+    </style>`;
+
+    const platformRows = platforms.map((p) => {
       const products = p.topProducts.length
         ? p.topProducts
-        : [{ name: "(no ad spend in range)", price: 0, day: { spendTax: 0, orders: 0, acos: 0 }, range: { spendTax: 0, orders: 0, acos: 0 } }];
-      const productRows = products.map((prod: any) => `
-        <tr><td style="padding:10px 14px;border-top:1px solid #f5f5f5;">
-          <p style="margin:0 0 3px;font-size:12.5px;font-weight:700;color:#111;line-height:1.4;">
-            ${clip(prod.name)}${prod.price ? `<span style="color:#9ca3af;font-weight:600;"> &#183; ${money(prod.price)}</span>` : ""}
-          </p>
-          <p style="margin:0;font-size:11px;color:#6b7280;font-weight:600;line-height:1.5;">
-            ${data.dayLabel || "Day"}: ${money(prod.day.spendTax)} spend, ${prod.day.orders} orders, ${acosSpan(prod.day.acos)}
-            &nbsp;&#183;&nbsp;
-            Range: ${money(prod.range.spendTax)} spend, ${prod.range.orders} orders, ${acosSpan(prod.range.acos)}
-          </p>
-        </td></tr>`).join("");
-
-      return `
-      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #f0f0f0;border-radius:12px;overflow:hidden;margin-bottom:14px;">
-        <tr><td style="padding:12px 14px;background:#f9fafb;border-left:4px solid ${PLATFORM_COLOR[p.platform] || "#111"};">
-          <table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
-            <td style="font-size:13px;font-weight:800;color:#111;">${p.platform}</td>
-            <td align="right" style="font-size:11px;color:#6b7280;font-weight:700;white-space:nowrap;">${data.dayLabel || "Day"} ${money(p.daySpendTax)} &nbsp;&#183;&nbsp; Range ${money(p.rangeSpendTax)}</td>
-          </tr></table>
-        </td></tr>
-        ${productRows}
-        <tr><td style="padding:8px 14px;background:#fafafa;font-size:11px;color:#6b7280;font-weight:600;">
-          Overall sales (${data.dayLabel || "Day"}): ${p.overallDayUnits} units, ${money(p.overallDayValue)}
-        </td></tr>
-      </table>`;
+        : [{ name: "(no ad spend in range)", price: 0, day: { spend: 0, spendTax: 0, orders: 0, cpc: 0, acos: 0 }, range: { spend: 0, spendTax: 0, orders: 0, cpc: 0, acos: 0 } }];
+      const n = products.length;
+      return products.map((prod: any, i: number) => `
+        <tr>
+          ${i === 0 ? `
+          <td rowspan="${n}" ${td} style="font-weight:800;border-left:3px solid ${PLATFORM_COLOR[p.platform] || "#111"};">${p.platform}</td>
+          <td rowspan="${n}" ${td}>${money(p.daySpend)}</td>
+          <td rowspan="${n}" ${td}>${money(p.daySpendTax)}</td>` : ""}
+          <td ${tdName}>${clip(prod.name)}</td>
+          <td ${td}>${prod.price ? money(prod.price) : "-"}</td>
+          <td ${td}>${money(prod.day.spend)}</td>
+          <td ${td}>${money(prod.day.spendTax)}</td>
+          <td ${td}>${prod.day.orders}</td>
+          <td ${td}>${num(prod.day.cpc)}</td>
+          <td class="aspd-td ${acosClass(prod.day.acos)}">${acosPct(prod.day.acos)}</td>
+          <td ${td}>${money(prod.range.spend)}</td>
+          <td ${td}>${money(prod.range.spendTax)}</td>
+          <td ${td}>${prod.range.orders}</td>
+          <td ${td}>${num(prod.range.cpc)}</td>
+          <td class="aspd-td ${acosClass(prod.range.acos)}">${acosPct(prod.range.acos)}</td>
+          ${i === 0 ? `
+          <td rowspan="${n}" ${td}>${p.overallDayUnits}</td>
+          <td rowspan="${n}" ${td}>${money(p.overallDayValue)}</td>` : ""}
+        </tr>`).join("");
     }).join("");
 
     // No channelBar here: unlike the single-platform templates above (where
@@ -974,56 +983,114 @@ function buildHtml(type: string, data: Record<string, any>, toEmail: string): st
           </table>
         </td></tr>`
       : "";
+
+    // Full per-product breakdown for Amazon and Flipkart specifically — matching the manual
+    // mail's separate "Here is the Amazon/Flipkart platform's ad spend report" tables, which
+    // list every advertised product (not just the top-3 shortlist above). The manual mail never
+    // included a matching table for Meesho, so this intentionally only covers those two.
+    const fullTables = ["Amazon", "Flipkart"].map((name) => {
+      const p = platforms.find((pl) => pl.platform === name);
+      const items: any[] = p?.allProducts || [];
+      if (!items.length) return "";
+      const rowsHtml = items.map((prod) => `
+        <tr>
+          <td ${tdName}>${clip(prod.name)}</td>
+          <td ${td}>${prod.price ? money(prod.price) : "-"}</td>
+          <td ${td}>${money(prod.day.spend)}</td>
+          <td ${td}>${money(prod.day.spendTax)}</td>
+          <td ${td}>${prod.day.orders}</td>
+          <td ${td}>${num(prod.day.cpc)}</td>
+          <td class="aspd-td ${acosClass(prod.day.acos)}">${acosPct(prod.day.acos)}</td>
+          <td ${td}>${money(prod.range.spend)}</td>
+          <td ${td}>${money(prod.range.spendTax)}</td>
+          <td ${td}>${prod.range.orders}</td>
+          <td ${td}>${num(prod.range.cpc)}</td>
+          <td class="aspd-td ${acosClass(prod.range.acos)}">${acosPct(prod.range.acos)}</td>
+        </tr>`).join("");
+      return `
+        <tr><td style="padding-top:22px;padding-bottom:6px;">
+          <p style="margin:0;font-size:13px;font-weight:700;color:#111;">Here is the ${name} platform's ad spend report.</p>
+        </td></tr>
+        <tr><td style="padding-top:6px;">
+          <div style="overflow-x:auto;">
+          <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;min-width:900px;">
+            <thead>
+              <tr>
+                <th rowspan="2" ${th}>Product Name</th>
+                <th rowspan="2" ${th}>Price</th>
+                <th colspan="5" ${th}>${data.dayLabel || "Day"}</th>
+                <th colspan="5" ${th}>${data.rangeLabel || "Range"}</th>
+              </tr>
+              <tr>
+                <th ${th}>Spend</th>
+                <th ${th}>Spend(with tax)</th>
+                <th ${th}>Orders</th>
+                <th ${th}>CPC</th>
+                <th ${th}>ACOS</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+          </div>
+        </td></tr>`;
+    }).join("");
+
     return wrap(`
       <table width="100%" cellpadding="0" cellspacing="0" border="0">
-        <tr><td style="padding-bottom:16px;">
+        <tr><td style="padding-bottom:14px;">
           <h2 style="margin:0;color:#111;font-size:20px;font-weight:800;">&#128200; Daily Ad Spend Report</h2>
-          <p style="margin:4px 0 0;color:#6b7280;font-size:13px;font-weight:600;">${data.dayLabel || ""} &nbsp;&#183;&nbsp; trailing range ${data.rangeLabel || ""}</p>
-          <p style="margin:8px 0 0;font-size:13px;font-weight:700;color:#111;">
-            Total ad spend today: <strong style="color:#dc2626;">${money(totalDaySpend)}</strong>
-            <span style="color:#9ca3af;font-weight:600;"> &#183; ${money(totalRangeSpend)} over the trailing range</span>
-            <span style="color:#9ca3af;font-weight:600;"> &#183; ${platforms.length} platform${platforms.length === 1 ? "" : "s"}</span>
+          <p style="margin:10px 0 0;color:#374151;font-size:13px;line-height:1.7;">
+            Hi Team,<br/><br/>
+            Below is the Ad spend report for all platforms. The table shows platform-wise ad spend including each platform's top spending products with their past 7 days ACOS, so you can see which products were promoted. The Ad Status Report, Action Sheet (products over 14% 7-day ACOS with a recommended action) and Low Spend Campaigns list are in the attached workbook.<br/><br/>
+            Here is the summary of the ad spend report.
           </p>
         </td></tr>
-        <tr><td style="padding-top:14px;">
-          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #f0f0f0;border-radius:10px;overflow:hidden;">
-            <thead><tr style="background:#f9fafb;">
-              <th style="padding:8px 10px;text-align:left;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">Platform</th>
-              <th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">Spend (1d)</th>
-              <th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">Sales (1d)</th>
-              <th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">Spend (7d)</th>
-              <th style="padding:8px 10px;text-align:right;font-size:10px;font-weight:800;color:#6b7280;text-transform:uppercase;">Sales (7d)</th>
-            </tr></thead>
-            <tbody>
-              ${platforms.map((p) => `<tr>
-                <td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12px;font-weight:800;color:#111;border-left:3px solid ${PLATFORM_COLOR[p.platform] || "#111"};">${p.platform}</td>
-                <td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12px;font-weight:700;color:#dc2626;text-align:right;">${money(p.daySpendTax)}</td>
-                <td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12px;font-weight:700;color:#059669;text-align:right;">${money(p.overallDayValue)}</td>
-                <td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12px;font-weight:700;color:#dc2626;text-align:right;">${money(p.rangeSpendTax)}</td>
-                <td style="padding:9px 10px;border-top:1px solid #f5f5f5;font-size:12px;font-weight:700;color:#059669;text-align:right;">${money(p.overallRangeValue)}</td>
-              </tr>`).join("")}
-              <tr style="background:#fafafa;">
-                <td style="padding:9px 10px;border-top:1px solid #e5e7eb;font-size:12px;font-weight:800;color:#111;">Total</td>
-                <td style="padding:9px 10px;border-top:1px solid #e5e7eb;font-size:12px;font-weight:800;color:#dc2626;text-align:right;">${money(totalDaySpend)}</td>
-                <td style="padding:9px 10px;border-top:1px solid #e5e7eb;font-size:12px;font-weight:800;color:#059669;text-align:right;">${money(platforms.reduce((a, p) => a + (p.overallDayValue || 0), 0))}</td>
-                <td style="padding:9px 10px;border-top:1px solid #e5e7eb;font-size:12px;font-weight:800;color:#dc2626;text-align:right;">${money(totalRangeSpend)}</td>
-                <td style="padding:9px 10px;border-top:1px solid #e5e7eb;font-size:12px;font-weight:800;color:#059669;text-align:right;">${money(platforms.reduce((a, p) => a + (p.overallRangeValue || 0), 0))}</td>
-              </tr>
-            </tbody>
-          </table>
-        </td></tr>
         ${incompleteBanner}
-        <tr><td style="padding-top:16px;">${platformCards}</td></tr>
+        <tr><td style="padding-top:6px;">
+          <div style="overflow-x:auto;">
+          <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;min-width:1100px;">
+            <thead>
+              <tr>
+                <th rowspan="2" ${th}>Platform</th>
+                <th rowspan="2" ${th}>Ad spend<br/>(without tax)</th>
+                <th rowspan="2" ${th}>Ad spend<br/>(with tax)</th>
+                <th colspan="2" ${th}>High spending product</th>
+                <th colspan="5" ${th}>${data.dayLabel || "Day"}</th>
+                <th colspan="5" ${th}>${data.rangeLabel || "Range"}</th>
+                <th colspan="2" ${th}>Overall sales</th>
+              </tr>
+              <tr>
+                <th ${th}>Product</th>
+                <th ${th}>Price</th>
+                <th ${th}>Spend</th>
+                <th ${th}>Spend(with tax)</th>
+                <th ${th}>Orders</th>
+                <th ${th}>CPC</th>
+                <th ${th}>ACOS</th>
+                <th ${th}>Spend</th>
+                <th ${th}>Spend(with tax)</th>
+                <th ${th}>Orders</th>
+                <th ${th}>CPC</th>
+                <th ${th}>ACOS</th>
+                <th ${th}>QTS</th>
+                <th ${th}>Value</th>
+              </tr>
+            </thead>
+            <tbody>${platformRows}</tbody>
+          </table>
+          </div>
+        </td></tr>
+        ${fullTables}
         <tr><td>
-          <p style="margin:0;color:#9ca3af;font-size:11px;line-height:1.6;">
+          <p style="margin:16px 0 0;color:#9ca3af;font-size:11px;line-height:1.6;">
             ${data.productCount || 0} advertised products across platforms${data.lowSpendCampaignCount ? ` &#183; ${data.lowSpendCampaignCount} low-spend campaigns flagged` : ""}.
-            Full per-product breakdown, Ad Status Report and Low Spend Campaigns are in the attached workbook.
+            Full per-product breakdown, Ad Status Report, Action Sheet and Low Spend Campaigns are in the attached workbook.
           </p>
         </td></tr>
         <tr><td align="center" style="padding-top:24px;">
           <a href="${SITE_URL}/dashboard/reports" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Reports &#8594;</a>
         </td></tr>
-      </table>`, null);
+      </table>`, null, styleBlock);
   }
 
   // Daily / Weekly summary
@@ -1128,6 +1195,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     const html = buildHtml(type, data, to);
+    // Gmail silently clips a received message around ~102KB, cutting off whatever comes after —
+    // logged here because that failure mode is invisible from the sender's side otherwise (the
+    // send still reports success). If this creeps past ~90KB for a template with large generated
+    // tables (e.g. adSpendDaily), trim content or move more repeated styling into CSS classes.
+    console.log(`[send-email] type=${type} html size=${Buffer.byteLength(html, "utf8")} bytes`);
     const info = await transporter.sendMail({
       from: `Marketplace360 Dashboard <${process.env.SMTP_FROM}>`,
       to,

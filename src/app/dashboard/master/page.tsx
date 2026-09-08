@@ -6,7 +6,7 @@ import { Loader2, Database } from "lucide-react";
 import { DataTable } from "@/components/DataTable";
 import { PageHero } from "@/components/PageHero";
 import { QueryErrorState } from "@/components/QueryErrorState";
-import { fetchMasterSkuidCatalog } from "@/lib/masterProductSkuid";
+import { fetchProductMarketingCatalog } from "@/lib/productMarketingUpload";
 import { CATEGORY_COLORS } from "@/lib/categoryMap";
 import { cn } from "@/lib/utils";
 
@@ -22,8 +22,8 @@ export default function MasterPage() {
   const [selectedPlatform, setSelectedPlatform] = useState("All");
 
   const { data, isLoading, isError, refetch } = useQuery({
-    queryKey: ["master_product_skuid_catalog"],
-    queryFn: fetchMasterSkuidCatalog,
+    queryKey: ["product_marketing_catalog"],
+    queryFn: fetchProductMarketingCatalog,
   });
 
   const rows = data || [];
@@ -84,8 +84,8 @@ export default function MasterPage() {
 
       <PageHero
         title="Master Product Catalog"
-        subtitle="Every SKU ID, product name and category on record in master_product_skuid, across platforms."
-        badge="master_product_skuid"
+        subtitle="Every SKU ID, product name and category on record in master_product_marketing, across platforms."
+        badge="master_product_marketing"
         onRefresh={() => refetch()}
         chips={[{ label: "Rows", value: String(filteredRows.length) }]}
       />
@@ -98,7 +98,7 @@ export default function MasterPage() {
       ) : rows.length === 0 ? (
         <div className="flex h-[300px] items-center justify-center text-muted-foreground flex-col gap-3 glass rounded-[22px] border border-border text-center px-6">
           <Database className="w-7 h-7 text-muted-foreground" />
-          <p className="font-semibold text-sm">No rows in master_product_skuid yet.</p>
+          <p className="font-semibold text-sm">No rows in master_product_marketing yet.</p>
         </div>
       ) : (
         <>
@@ -148,7 +148,7 @@ export default function MasterPage() {
             })}
           </div>
 
-          <DataTable data={filteredRows} columns={columns} defaultSort="sku" exportName="master-product-skuid" />
+          <DataTable data={filteredRows} columns={columns} defaultSort="sku" exportName="master-product-marketing" />
         </>
       )}
     </div>

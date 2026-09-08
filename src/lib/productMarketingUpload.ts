@@ -116,6 +116,34 @@ export async function fetchProductMarketingDataInfo(): Promise<ProductMarketingD
   return { rowCount: count || 0 };
 }
 
+export interface ProductMarketingCatalogRow {
+  sku: string;
+  name: string;
+  category: string;
+  platform: string;
+}
+
+/** Every row in master_product_marketing, unfiltered and undeduped — one row per SKU *variant*
+ *  per platform, for browsing/searching the raw table (the "Master" catalog tab) rather than
+ *  resolving a single sku -> entry lookup. Same shape/contract as fetchMasterSkuidCatalog in
+ *  masterProductSkuid.ts, which the Master page fetched before this table existed — empty array
+ *  (never throws) if the table is missing/empty. */
+export async function fetchProductMarketingCatalog(): Promise<ProductMarketingCatalogRow[]> {
+  try {
+    const data = await fetchAllRows(TABLE, (q) => q);
+    return (data as Record<string, unknown>[])
+      .map((r) => ({
+        sku: String(r.sku ?? "").trim(),
+        name: String(r.product_name ?? "").trim(),
+        category: String(r.category ?? "").trim(),
+        platform: String(r.platform ?? "").trim(),
+      }))
+      .filter((r) => r.sku || r.name);
+  } catch {
+    return [];
+  }
+}
+
 export interface ProductMarketingEntry {
   name: string;
   category: string;

@@ -11,8 +11,17 @@ import { readEmailSettings } from "@/lib/emailSettingsStore";
 const KEY_SLOTS = ["A", "B"] as const;
 
 export async function register() {
-  // Only run in Node.js runtime (not Edge)
-  if (process.env.NEXT_RUNTIME === "nodejs") {
+  // Only run in Node.js runtime (not Edge), and only on a real production host.
+  // `next dev` also sets NEXT_RUNTIME === "nodejs" and keeps this process alive
+  // continuously just like a deployed server would, so without the NODE_ENV
+  // check below, leaving `npm run dev` running past a schedule below (e.g. past
+  // 10:00 AM IST) fires these node-cron jobs for real — hitting the same live
+  // Supabase settings and recipient list as production. `next dev` always runs
+  // with NODE_ENV=development, `next start`/a deployed host runs with
+  // NODE_ENV=production, so this guard is what actually separates "testing
+  // locally" from "running on the host" (see the incident this guard fixed:
+  // a local dev server sent a real Daily Digest + Live Alerts email).
+  if (process.env.NEXT_RUNTIME === "nodejs" && process.env.NODE_ENV === "production") {
     const cron = (await import("node-cron")).default;
     const nodemailer = (await import("nodemailer")).default;
 

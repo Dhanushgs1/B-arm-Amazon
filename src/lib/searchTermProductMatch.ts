@@ -52,6 +52,24 @@ const STOPWORDS = new Set([
   "durabl", "natura", "free", "each", "instan", "upgrad", "integr", "accura", "improv",
   "holder", "stand", "body", "heat", "coolin", "foam", "mesh", "nylon", "plasti", "tool",
   "cleani", "displa", "medica", "delive", "levels", "relief", "mother",
+  // Found running a full real search-term export through classifySearchTerm (500 rows, a
+  // sensory/therapressure brush campaign): "brush" alone matched completely unrelated searches
+  // as a relevant own-product term purely because the campaign's own title also says "Brush" —
+  // "sink cleaner brush", "clothes brush for washing", "sensodyne tooth brush", "clothe brush",
+  // "sink brush", "dry body brush for women" all stayed Neutral instead of Negative. Same generic
+  // implement-shape problem "holder"/"stand"/"tool" above already cover, just missed for this
+  // product family. Genuinely relevant terms ("soft bristle brush", "wilbarger sensory brush")
+  // still match correctly through their OTHER distinctive words ("bristle", "sensory",
+  // "wilbarger", "occupational", "therapressure"), so this only removes the false positives.
+  "brush",
+  // Same discovery, same product family: "therapy" alone is a generic medical/wellness word
+  // (occupational therapy, light therapy, hair therapy, physical therapy — spans totally
+  // unrelated product categories account-wide), not a signal specific to this product. Matched
+  // "led face mask light therapy" and "hair therapy comb" as relevant purely because the
+  // product title says "...Wilbarger Protocol Therapy...Occupational Therapy...". Terms actually
+  // about this product still match through "occupational" or "wilbarger" independently
+  // ("occupational therapy kit/equipment/items"), so this only removes the false positives too.
+  "therapy",
 ]);
 
 // Short (<4 char) tokens that are still distinctive enough to trust, unlike most short words.
@@ -77,13 +95,24 @@ function stem(token: string): string {
   return token.length > 6 ? token.slice(0, 6) : token;
 }
 
+// "iui" (Intrauterine Insemination, the standard medical term) and "ivi" (this account's own
+// product-title spelling) name the same real-world product category — canonicalized onto one
+// token so a search term spelling it "iui" matches a product title spelling it "ivi", and vice
+// versa. Without this, a search term using ONLY the acronym with no other matching word ("iui
+// kit" — "kit" is stopworded, nothing else to match on) never finds this account's own "...IVI
+// Kit..." titles at all, and stays classified Negative despite being exactly on-topic. Caught in
+// a real export: "iui kit" alone was Negative while "iui kit- home insemination kit" (same
+// campaign, same intent) stayed Positive purely for also spelling out "insemination".
+const ACRONYM_SYNONYMS: Record<string, string> = { iui: "ivi" };
+
 function tokenize(text: string): string[] {
   return (text || "")
     .toLowerCase()
     .replace(/[()\-–/]/g, " ")
     .split(/[^a-z0-9]+/)
     .filter((t) => (t.length >= 4 || SHORT_TOKEN_ALLOWLIST.has(t)) && !STOPWORDS.has(t) && !/^\d+$/.test(t))
-    .map(stem);
+    .map(stem)
+    .map((t) => ACRONYM_SYNONYMS[t] || t);
 }
 
 export interface CatalogEntry {
@@ -279,7 +308,25 @@ export function classifySearchTerm(
   // competitor/category ASIN (knownRelevant) gets the same treatment.
   const relevantToOwnProduct = matchesOwnProduct(rawTerm, campaignProductNames) || isOwnAsin || !!knownRelevant;
 
-  const negative = (orders === 0 && !relevantToOwnProduct) || isDifferentAsinSearch;
+  // Word-overlap hit against the wider catalogue, computed up front (not only to explain an
+  // already-decided negative) so a hit against ANOTHER of B-ARM's own live campaigns can also
+  // exempt a zero-order term below — findMismatchedProduct only ever returns B-ARM's own
+  // products (liveIndex is built from this account's own advertised products, STATIC_INDEX from
+  // categoryMap.ts, this account's own SKU catalogue — see both files' headers), so a "mismatch"
+  // here never means a true external competitor, only "right account, wrong campaign." Only a
+  // liveIndex hit (mismatchedProduct.campaignName set) gets the exemption — a STATIC_INDEX-only
+  // hit (campaignName undefined, nothing currently advertises it) stays flagged, since that's the
+  // genuinely discontinued/unrelated product line this file's header comment says should still be
+  // caught. Skipped entirely when already relevantToOwnProduct or orders > 0, matching the only
+  // cases where the original code called this (inside the old negative-only branch), so this
+  // doesn't add extra findMismatchedProduct calls beyond what already ran per row.
+  const ownAccountMismatch =
+    !relevantToOwnProduct && orders === 0
+      ? findMismatchedProduct(term.searchTerm, campaignProductNames, liveIndex, currentCampaignName)
+      : null;
+  const relevantToOwnAccount = relevantToOwnProduct || !!ownAccountMismatch?.campaignName;
+
+  const negative = (orders === 0 && !relevantToOwnAccount) || isDifferentAsinSearch;
 
   let mismatchedProduct: CatalogEntry | null = null;
   if (knownRelevant) {
@@ -300,7 +347,9 @@ export function classifySearchTerm(
     }
 
     if (!mismatchedProduct) {
-      mismatchedProduct = findMismatchedProduct(term.searchTerm, campaignProductNames, liveIndex, currentCampaignName);
+      // A STATIC_INDEX-only hit (no live campaign advertises it) never got the exemption above,
+      // so ownAccountMismatch — when set here — is exactly that discontinued/unrelated case.
+      mismatchedProduct = ownAccountMismatch;
       if (mismatchedProduct) {
         const asinPart = mismatchedProduct.asin ? `, ASIN ${mismatchedProduct.asin}` : "";
         reasons.push(
@@ -315,6 +364,14 @@ export function classifySearchTerm(
     // other thing that can add a reason here, and that already says why it's relevant) — say
     // WHY it's positive instead of leaving Reason blank, so every row explains itself.
     if (!reasons.length) reasons.push(`${orders} order${orders === 1 ? "" : "s"} — proven converting term`);
+  } else if (ownAccountMismatch?.campaignName) {
+    // Neutral via the new account-wide exemption: zero orders, not this campaign's own product,
+    // but a live word-overlap match against ANOTHER of B-ARM's own campaigns — relevant to the
+    // account, not a wasted click on someone else's listing, just possibly the wrong ad group.
+    mismatchedProduct = ownAccountMismatch;
+    reasons.push(
+      `No orders yet; matches this account's own product under campaign "${ownAccountMismatch.campaignName}" ("${ownAccountMismatch.name}") — relevant, not a mismatch, consider moving budget there`
+    );
   } else {
     // Neutral: zero orders, but relevant to this campaign's own product — worth keeping, not
     // a wrong-product click, just hasn't converted yet. isOwnAsin gets its own note since

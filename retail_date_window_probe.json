@@ -1,0 +1,59 @@
+{
+  "account": "B-ARM",
+  "results": [
+    {
+      "label": "17-23 Aug (last week)",
+      "start": "2026-08-17",
+      "end": "2026-08-23",
+      "groundTruth": 577970,
+      "totalSales": 1254436.2,
+      "totalUnitsOrdered": 1944,
+      "rowCount": 235
+    },
+    {
+      "label": "24-30 Aug (this week)",
+      "start": "2026-08-24",
+      "end": "2026-08-30",
+      "groundTruth": 662092,
+      "totalSales": 1271976.76,
+      "totalUnitsOrdered": 1779,
+      "rowCount": 225
+    },
+    {
+      "label": "17-30 Aug (both weeks combined)",
+      "start": "2026-08-17",
+      "end": "2026-08-30",
+      "groundTruth": 1240062,
+      "totalSales": 2526412.96,
+      "totalUnitsOrdered": 3723,
+      "rowCount": 243
+    },
+    {
+      "label": "24-29 Aug (this week minus last day)",
+      "start": "2026-08-24",
+      "end": "2026-08-29",
+      "groundTruth": null,
+      "totalSales": 1113368.25,
+      "totalUnitsOrdered": 1541,
+      "rowCount": 225
+    },
+    {
+      "label": "29-30 Aug (last 2 days of this week)",
+      "start": "2026-08-29",
+      "end": "2026-08-30",
+      "groundTruth": null,
+      "totalSales": 380247.57,
+      "totalUnitsOrdered": 504,
+      "rowCount": 190
+    },
+    {
+      "label": "1-30 Aug (whole month so far)",
+      "start": "2026-08-01",
+      "end": "2026-08-30",
+      "groundTruth": null,
+      "totalSales": 5696826.48,
+      "totalUnitsOrdered": 8612,
+      "rowCount": 253
+    }
+  ]
+}
