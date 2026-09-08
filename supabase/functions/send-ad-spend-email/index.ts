@@ -216,6 +216,11 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
                 <th ${th}>Orders</th>
                 <th ${th}>CPC</th>
                 <th ${th}>ACOS</th>
+                <th ${th}>Spend</th>
+                <th ${th}>Spend(with tax)</th>
+                <th ${th}>Orders</th>
+                <th ${th}>CPC</th>
+                <th ${th}>ACOS</th>
               </tr>
             </thead>
             <tbody>${rowsHtml}</tbody>
