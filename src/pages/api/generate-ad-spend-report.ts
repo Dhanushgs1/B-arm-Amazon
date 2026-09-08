@@ -7,13 +7,19 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { findOrCreateJob } from "@/lib/adSpendJobs";
 import { supabase } from "@/lib/supabaseClient";
 
-async function markJobFailed(jobId: number, message: string): Promise<void> {
+// Only writes "failed" while the job is still "pending" — i.e. before the
+// Edge Function itself has taken over. A slow-but-real Edge Function
+// response that already flipped the job to "processing" (or beyond) can
+// never be clobbered by this route once this guard is in place; only the
+// Edge Function itself is allowed to mark a job "completed"/"failed" once
+// it has actually started running.
+async function markJobFailedIfStillPending(jobId: number, message: string): Promise<void> {
   await supabase.from("report_generation_jobs").update({
     status: "failed",
     error_message: message,
     completed_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
-  }).eq("id", jobId);
+  }).eq("id", jobId).eq("status", "pending");
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -36,7 +42,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const edgeBaseUrl = process.env.SUPABASE_EDGE_URL;
     if (!edgeBaseUrl) {
-      await markJobFailed(job.id, "SUPABASE_EDGE_URL is not configured");
+      await markJobFailedIfStillPending(job.id, "SUPABASE_EDGE_URL is not configured");
       return res.status(500).json({ error: "SUPABASE_EDGE_URL is not configured" });
     }
 
@@ -53,13 +59,32 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (!edgeRes.ok) {
         const errBody = await edgeRes.json().catch(() => ({}));
         const message = errBody?.error || "Edge Function invocation failed";
-        await markJobFailed(job.id, message);
+        await markJobFailedIfStillPending(job.id, message);
         return res.status(502).json({ error: message });
       }
     } catch (fetchErr) {
       clearTimeout(ackTimeout);
+      const isAckTimeout = fetchErr instanceof Error && fetchErr.name === "AbortError";
       const message = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
-      await markJobFailed(job.id, `Edge Function invocation failed: ${message}`);
+      if (isAckTimeout) {
+        // We only know the 8s acknowledgment window elapsed — not that the Edge
+        // Function never received the request. It may still be starting (e.g. a
+        // cold start) and will flip the job's status itself once it does.
+        // Marking this "failed" here would race with, and could incorrectly
+        // override, a real invocation that's actually running in the background.
+        // Leave the job's row untouched (still "pending") so only the Edge
+        // Function itself can move it forward from here.
+        return res.status(202).json({
+          success: false,
+          job_id: job.id,
+          status: "pending",
+          message: "Report generation was triggered but did not acknowledge within 8s — it may still be starting. Check back shortly.",
+        });
+      }
+      // A non-abort network error (e.g. DNS/connection failure) happened before
+      // any response could possibly exist — this is a genuine, confirmed
+      // failure to reach the Edge Function at all, safe to mark failed.
+      await markJobFailedIfStillPending(job.id, `Edge Function invocation failed: ${message}`);
       return res.status(502).json({ error: `Edge Function invocation failed: ${message}` });
     }
 
