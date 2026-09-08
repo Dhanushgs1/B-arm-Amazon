@@ -804,6 +804,36 @@ const OPT_ACOS_THRESHOLD = 0.14;
 interface OptAdGroupAgg { name: string; spend: number; revenue: number; units: number; skus: Map<string, number> }
 interface OptCampaignAgg { name: string; spend: number; revenue: number; units: number; adGroups: Map<string, OptAdGroupAgg> }
 
+// Which campaign a SKU is associated with, scanning EVERY row across the full 7-day range (not
+// just one day) — deliberately separate from aggregateForOptimization's campaign-level spend/
+// revenue analysis below, which must stay scoped to a single day for Amazon (see
+// enrichAmazonActionRows's own comment on why summing sales_7d/orders_7d across days would
+// double-count). Summing each row's own per-day `spend` field across many days is safe here since
+// that field isn't a rolling window — this only decides identity ("which campaign"), not amounts.
+// Without this, a SKU whose only Sponsored Products spend fell on a day other than the report's
+// end date never matched any campaign at all, showing "no matching campaign found" even though a
+// real one exists in the uploaded data — this is exactly that gap, closed.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildSkuCampaignMap(rows: any[], f: { campaign: string; sku: string; spend: string }): Map<string, string> {
+  const bySku = new Map<string, Map<string, number>>();
+  rows.forEach((r) => {
+    const campaignName: string = r[f.campaign];
+    const sku: string = r[f.sku];
+    if (!campaignName || !sku) return;
+    const perCampaign = bySku.get(sku) || new Map<string, number>();
+    perCampaign.set(campaignName, (perCampaign.get(campaignName) || 0) + num(r[f.spend]));
+    bySku.set(sku, perCampaign);
+  });
+  const result = new Map<string, string>();
+  bySku.forEach((perCampaign, sku) => {
+    let best: string | null = null;
+    let bestSpend = -1;
+    perCampaign.forEach((spend, name) => { if (spend > bestSpend) { bestSpend = spend; best = name; } });
+    if (best) result.set(sku, best);
+  });
+  return result;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function aggregateForOptimization(rows: any[], f: { campaign: string; adGroup: string; sku: string; spend: string; revenue: string; units: string[] }): Map<string, OptCampaignAgg> {
   const campaigns = new Map<string, OptCampaignAgg>();
@@ -827,32 +857,18 @@ function aggregateForOptimization(rows: any[], f: { campaign: string; adGroup: s
 }
 
 async function enrichOptimizationActionRows(
-  actionRows: { platform: Platform; name: string; sku: string; action: string }[],
+  actionRows: { platform: Platform; name: string; sku: string; campaign?: string; acos: number; action: string }[],
   platform: Platform,
   campaigns: Map<string, OptCampaignAgg>,
+  skuToCampaignName: Map<string, string>,
   platformLabel: string,
   searchTermTool: string
 ): Promise<void> {
-  if (!campaigns.size) return;
-
-  // sku -> its highest-spend campaign, so an actionRow bundling several SKU variants (see
-  // groupProductsByName) still attributes to one campaign — whichever actually drove its spend.
-  const skuToCampaign = new Map<string, { campaign: string; spend: number }>();
-  campaigns.forEach((c) => {
-    c.adGroups.forEach((ag) => {
-      ag.skus.forEach((spend, sku) => {
-        const existing = skuToCampaign.get(sku);
-        if (!existing || spend > existing.spend) skuToCampaign.set(sku, { campaign: c.name, spend });
-      });
-    });
-  });
-
   const acosOf = (c: OptCampaignAgg) => (c.revenue > 0 ? c.spend / c.revenue : c.spend > 0 ? 9.99 : 0);
   const flagged = [...campaigns.values()]
     .filter((c) => c.spend >= OPT_MIN_SPEND && acosOf(c) >= OPT_ACOS_THRESHOLD)
     .sort((a, b) => b.spend - a.spend)
     .slice(0, 15); // caps prompt size/cost — the daily cron runs this unattended every day
-  if (!flagged.length) return;
 
   const suggestionByCampaign = new Map<string, string>();
   // Rule-based fallback first (same shape/spirit as uploadAcosAlert.ts's fallbackSuggestion) —
@@ -869,57 +885,66 @@ async function enrichOptimizationActionRows(
     );
   });
 
-  const promptLines = flagged
-    .map((c) => {
-      const acosPct = Math.round(acosOf(c) * 100);
-      const topAdGroups = [...c.adGroups.values()].sort((a, b) => b.spend - a.spend).slice(0, 5);
-      const agLines = topAdGroups
-        .map((ag) => {
-          const agAcosPct = Math.round((ag.revenue > 0 ? ag.spend / ag.revenue : ag.spend > 0 ? 9.99 : 0) * 100);
-          const topSkus = [...ag.skus.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([sku]) => sku);
-          return `    - Ad group "${ag.name}" (top SKUs: ${topSkus.join(", ") || "n/a"}): spend ₹${round2(ag.spend)}, revenue ₹${round2(ag.revenue)}, ACOS ${agAcosPct}%, units sold ${ag.units}`;
-        })
-        .join("\n");
-      return `- Campaign "${c.name}": spend ₹${round2(c.spend)}, revenue ₹${round2(c.revenue)}, ACOS ${acosPct}%, units sold ${c.units}\n  Ad groups within this campaign:\n${agLines}`;
-    })
-    .join("\n");
-  const prompt =
-    `You are a ${platformLabel} PPC analyst. Over the trailing 7 days, these campaigns exceeded the 14% ACOS threshold, broken down by ad group and top SKU:\n\n${promptLines}\n\n` +
-    `Return ONLY a JSON object, no markdown fences, no text outside the JSON, of this exact shape:\n` +
-    `{"campaigns":[{"name":"<exact campaign name as given above>","suggestion":"<1-2 sentences: a specific bid or budget cut % on a named ad group, or pause it if units sold is 0; end by naming which ad group to open ${searchTermTool}'s search-term report for first to add negative keywords — never invent a specific search term or keyword, since none is available in this data>"}]}\n` +
-    `Include every one of the ${flagged.length} campaigns listed above, using their exact name string.`;
+  if (flagged.length) {
+    const promptLines = flagged
+      .map((c) => {
+        const acosPct = Math.round(acosOf(c) * 100);
+        const topAdGroups = [...c.adGroups.values()].sort((a, b) => b.spend - a.spend).slice(0, 5);
+        const agLines = topAdGroups
+          .map((ag) => {
+            const agAcosPct = Math.round((ag.revenue > 0 ? ag.spend / ag.revenue : ag.spend > 0 ? 9.99 : 0) * 100);
+            const topSkus = [...ag.skus.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([sku]) => sku);
+            return `    - Ad group "${ag.name}" (top SKUs: ${topSkus.join(", ") || "n/a"}): spend ₹${round2(ag.spend)}, revenue ₹${round2(ag.revenue)}, ACOS ${agAcosPct}%, units sold ${ag.units}`;
+          })
+          .join("\n");
+        return `- Campaign "${c.name}": spend ₹${round2(c.spend)}, revenue ₹${round2(c.revenue)}, ACOS ${acosPct}%, units sold ${c.units}\n  Ad groups within this campaign:\n${agLines}`;
+      })
+      .join("\n");
+    const prompt =
+      `You are a ${platformLabel} PPC analyst. Over the trailing 7 days, these campaigns exceeded the 14% ACOS threshold, broken down by ad group and top SKU:\n\n${promptLines}\n\n` +
+      `Return ONLY a JSON object, no markdown fences, no text outside the JSON, of this exact shape:\n` +
+      `{"campaigns":[{"name":"<exact campaign name as given above>","suggestion":"<1-2 sentences: a specific bid or budget cut % on a named ad group, or pause it if units sold is 0; end by naming which ad group to open ${searchTermTool}'s search-term report for first to add negative keywords — never invent a specific search term or keyword, since none is available in this data>"}]}\n` +
+      `Include every one of the ${flagged.length} campaigns listed above, using their exact name string.`;
 
-  try {
-    const geminiText = await callGeminiText(prompt);
-    if (geminiText) {
-      const parsed = JSON.parse(extractJsonBlock(geminiText));
-      const entries: Array<{ name?: string; suggestion?: string }> = parsed?.campaigns || [];
-      entries.forEach((e) => {
-        if (e.name && e.suggestion && suggestionByCampaign.has(e.name)) suggestionByCampaign.set(e.name, e.suggestion);
-      });
+    try {
+      const geminiText = await callGeminiText(prompt);
+      if (geminiText) {
+        const parsed = JSON.parse(extractJsonBlock(geminiText));
+        const entries: Array<{ name?: string; suggestion?: string }> = parsed?.campaigns || [];
+        entries.forEach((e) => {
+          if (e.name && e.suggestion && suggestionByCampaign.has(e.name)) suggestionByCampaign.set(e.name, e.suggestion);
+        });
+      }
+    } catch {
+      // JSON.parse or fetch failure — the rule-based suggestionByCampaign map stands as-is.
     }
-  } catch {
-    // JSON.parse or fetch failure — the rule-based suggestionByCampaign map stands as-is.
   }
 
   actionRows.forEach((r) => {
     if (r.platform !== platform) return;
     const skus = r.sku ? r.sku.split(",").map((s) => s.trim()).filter(Boolean) : [];
     let bestCampaign: string | null = null;
-    let bestSpend = -1;
-    skus.forEach((sku) => {
-      const hit = skuToCampaign.get(sku);
-      if (hit && hit.spend > bestSpend) { bestSpend = hit.spend; bestCampaign = hit.campaign; }
-    });
-    if (bestCampaign) {
-      const suggestion = suggestionByCampaign.get(bestCampaign);
-      if (suggestion) r.action = suggestion;
+    for (const sku of skus) {
+      const hit = skuToCampaignName.get(sku);
+      if (hit) { bestCampaign = hit; break; }
     }
+    if (!bestCampaign) return; // no identity match anywhere in the range — leave the product-ACOS fallback set earlier
+    r.campaign = bestCampaign;
+    const suggestion = suggestionByCampaign.get(bestCampaign);
+    if (suggestion) {
+      r.action = suggestion;
+      return;
+    }
+    // Campaign identified, but its own aggregate spend/ACOS didn't clear the analysis threshold
+    // (or fell outside the top-15 prompt cap) — name it rather than claim no match was found.
+    const acosPct = Math.round(r.acos * 100);
+    const cut = acosPct >= 90 ? 50 : acosPct >= 60 ? 35 : 20;
+    r.action = `Cut bids ~${cut}% on campaign "${bestCampaign}" (this SKU's 7-day ACOS ${acosPct}%). Open ${searchTermTool}'s search-term report for this campaign to add negative keywords for zero-conversion terms.`;
   });
 }
 
 async function enrichFlipkartActionRows(
-  actionRows: { platform: Platform; name: string; sku: string; action: string }[],
+  actionRows: { platform: Platform; name: string; sku: string; campaign?: string; acos: number; action: string }[],
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   fsnRows: any[]
 ): Promise<void> {
@@ -927,7 +952,10 @@ async function enrichFlipkartActionRows(
     campaign: "campaign_name", adGroup: "adgroup_name", sku: "sku_id",
     spend: "ad_spend", revenue: "total_revenue", units: ["direct_units_sold", "indirect_units_sold"],
   });
-  await enrichOptimizationActionRows(actionRows, "Flipkart", campaigns, "Flipkart Ads", "Flipkart Ads Manager");
+  // fsnRows already spans the full 7-day range (see fetchFlipkartAdSpendData) — no day-filtering
+  // to widen here, unlike Amazon below.
+  const skuToCampaignName = buildSkuCampaignMap(fsnRows, { campaign: "campaign_name", sku: "sku_id", spend: "ad_spend" });
+  await enrichOptimizationActionRows(actionRows, "Flipkart", campaigns, skuToCampaignName, "Flipkart Ads", "Flipkart Ads Manager");
 }
 
 // Amazon's sp_advertised_product carries Amazon's own trailing-7-day sales_7d/orders_7d per row
@@ -940,7 +968,7 @@ async function enrichFlipkartActionRows(
 // file header), so a suggestion for them couldn't name anything more specific than sp_advertised_
 // product already does, and are usually the smaller share of total Amazon ad spend anyway.
 async function enrichAmazonActionRows(
-  actionRows: { platform: Platform; name: string; sku: string; action: string }[],
+  actionRows: { platform: Platform; name: string; sku: string; campaign?: string; acos: number; action: string }[],
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   spRows: any[],
   endDate: string
@@ -950,7 +978,11 @@ async function enrichAmazonActionRows(
     campaign: "campaign_name", adGroup: "ad_group_name", sku: "advertised_sku",
     spend: "spend", revenue: "sales_7d", units: ["orders_7d"],
   });
-  await enrichOptimizationActionRows(actionRows, "Amazon", campaigns, "Amazon Ads", "Amazon Ads Console");
+  // Identity mapping (which campaign is this SKU in) scans the FULL spRows across all 7 days, not
+  // just endDate — a SKU whose only spend fell on an earlier day in the range still resolves to
+  // its real campaign this way, even though its severity/Gemini analysis above stays day-scoped.
+  const skuToCampaignName = buildSkuCampaignMap(spRows, { campaign: "campaign_name", sku: "advertised_sku", spend: "spend" });
+  await enrichOptimizationActionRows(actionRows, "Amazon", campaigns, skuToCampaignName, "Amazon Ads", "Amazon Ads Console");
 }
 
 // Every uploaded row keeps its original file's columns verbatim in a `raw`
@@ -1278,9 +1310,20 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // -keyword suggestions there only exist via SellerMate's live API, which this server-side report
   // code has no access to (only an interactive chat session can pull that, on request).
   const ACTION_ACOS_THRESHOLD = 0.14;
-  const actionRows: { platform: Platform; name: string; sku: string; price: number; daySpend: number; daySpendTax: number; dayOrders: number; acos: number; action: string }[] = [];
-  const actionFor = (acos: number): string =>
-    acos > 0.5 ? "Pause campaign / reduce bid urgently" : acos > 0.25 ? "Reduce bid" : "Monitor / review keywords";
+  const actionRows: { platform: Platform; name: string; sku: string; campaign?: string; price: number; spend: number; spendTax: number; orders: number; acos: number; action: string }[] = [];
+  // Fallback action for a row with no matched campaign (see enrichOptimizationActionRows below,
+  // which overwrites this with a campaign-specific suggestion when one is found) — still gives a
+  // concrete bid-cut % based on the SKU's own 7-day ACOS, rather than leaving it a vague tier label,
+  // per the seller's own request that every row carry a number.
+  const bidCutPct = (acosPct: number): number => (acosPct >= 90 ? 50 : acosPct >= 60 ? 35 : 20);
+  const actionFor = (acosFrac: number): string => {
+    const acosPct = Math.round(acosFrac * 100);
+    const cut = bidCutPct(acosPct);
+    const note = "No matching campaign found in the uploaded ad data to confirm which ad group/keyword to open.";
+    if (acosPct > 50) return `Pause campaign / reduce bid urgently — cut bids ~${cut}% (7-day ACOS ${acosPct}%). ${note}`;
+    if (acosPct > 25) return `Reduce bid ~${cut}% (7-day ACOS ${acosPct}%). ${note}`;
+    return `Monitor / review keywords — trim bids ~${cut}% (7-day ACOS ${acosPct}%). ${note}`;
+  };
   const TOP_N = 3; // shortlist length — worst (highest) DAY ACOS first, matching the visible ACOS column, not range ACOS or spend
   platforms.forEach(({ platform, products, overallDay, overallRange }) => {
     // All products with any spend at all — totals must include every rupee,
@@ -1296,9 +1339,14 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           name: p.name,
           sku: p.sku,
           price: p.price,
-          daySpend: round2(p.day.spend),
-          daySpendTax: round2(spendTax(p.day)),
-          dayOrders: p.day.units,
+          // Spend/Orders here are the 7-day range, matching the ACOS column's window — showing
+          // the single reporting day's spend (which can be ₹0 for a SKU with no activity today
+          // but real ad spend earlier in the week) produced rows reading "₹0.00 spend, 91% ACOS",
+          // which looked wrong even though it wasn't. The Summary sheet nearby still has the
+          // single-day figures.
+          spend: round2(p.range.spend),
+          spendTax: round2(spendTax(p.range)),
+          orders: p.range.units,
           acos: pct(rangeAcos),
           action: actionFor(rangeAcos),
         });
@@ -1566,21 +1614,28 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   XLSX.utils.book_append_sheet(wb, wsStatus, "Ad Status Report");
 
   // ── Action Sheet — products over the 14% trailing-7-day ACOS threshold, worst first.
-  // Spend/Orders columns are still the single reporting day (matching every other sheet's
-  // "Spend (date)" columns), but the ACOS column and threshold are the 7-day range figure —
-  // the Summary sheet nearby is where the single-day ACOS still lives.
+  // Spend/Orders/ACOS are ALL the 7-day range window here (unlike every other sheet's "Spend
+  // (date)" columns, which are the single reporting day) — showing the single day's spend/orders
+  // next to a 7-day ACOS produced rows like "₹0.00 spend, 91% ACOS" for a SKU with no activity
+  // today but real spend earlier in the week, which read as wrong even though it wasn't. The
+  // Summary sheet nearby is where the single-day figures still live.
+  // Campaign Name + SKU ID replace the Product column (per the seller's own request) — Campaign
+  // Name comes from enrichOptimizationActionRows's sku->campaign resolution above and is only
+  // populated for rows that matched a real campaign in the uploaded ad-spend data; a row with no
+  // match (e.g. Meesho, which has no campaign data in this app at all, or a SKU that didn't appear
+  // in any campaign row) shows "-" rather than a guessed campaign name.
   const actionAoa: (string | number)[][] = [
-    ["Platform", "Product", "Price", `Spend (${dotDate(endDate)})`, `Spend with tax (${dotDate(endDate)})`, "Orders", `ACOS (${dotDate(range.start)} to ${dotDate(endDate)})`, "Recommended Action"],
+    ["Platform", "Campaign Name", "SKU ID", "Price", `Spend (${dotDate(range.start)} to ${dotDate(endDate)})`, `Spend with tax (${dotDate(range.start)} to ${dotDate(endDate)})`, "Orders", `ACOS (${dotDate(range.start)} to ${dotDate(endDate)})`, "Recommended Action"],
   ];
   [...actionRows]
     .sort((a, b) => b.acos - a.acos)
-    .forEach((r) => actionAoa.push([r.platform, r.name, r.price, r.daySpend, r.daySpendTax, r.dayOrders, r.acos, r.action]));
-  if (!actionRows.length) actionAoa.push(["(no products over the 14% 7-day ACOS threshold)", "", "", "", "", "", "", ""]);
+    .forEach((r) => actionAoa.push([r.platform, r.campaign || "-", r.sku, r.price, r.spend, r.spendTax, r.orders, r.acos, r.action]));
+  if (!actionRows.length) actionAoa.push(["(no products over the 14% 7-day ACOS threshold)", "", "", "", "", "", "", "", ""]);
   const wsAction = XLSX.utils.aoa_to_sheet(actionAoa);
-  styleHeader(wsAction, 0, 8, "B91C1C");
-  wsAction["!cols"] = [{ wch: 12 }, { wch: 50 }, { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 10 }, { wch: 16 }, { wch: 32 }];
+  styleHeader(wsAction, 0, 9, "B91C1C");
+  wsAction["!cols"] = [{ wch: 12 }, { wch: 34 }, { wch: 20 }, { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 10 }, { wch: 16 }, { wch: 32 }];
   wsAction["!views"] = [{ state: "frozen", ySplit: 1 }];
-  applyNumberFormats(wsAction, 1, actionAoa.length, { 2: CURRENCY_FMT, 3: CURRENCY_FMT, 4: CURRENCY_FMT, 6: PERCENT_FMT });
+  applyNumberFormats(wsAction, 1, actionAoa.length, { 3: CURRENCY_FMT, 4: CURRENCY_FMT, 5: CURRENCY_FMT, 7: PERCENT_FMT });
   XLSX.utils.book_append_sheet(wb, wsAction, "Action Sheet");
 
   // ── Low Spend Campaigns — single reporting day, both platforms ──
@@ -1677,7 +1732,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     ["Google Ads and social-media (Meta) spend are not included — no sample export has been seen for either, so there's no confirmed column layout to parse."],
     [""],
     ["Ad Status Report matches products across Amazon, Flipkart and Meesho by product NAME only (no cross-platform SKU mapping exists) — two listings with different titles for the same physical product will show as separate rows."],
-    ["Action Sheet lists every product whose trailing 7-day ACOS is above 14%, worst first, with a recommended action: 14-25% ACOS → Monitor / review keywords, 25-50% → Reduce bid, above 50% → Pause campaign / reduce bid urgently. Spend/Orders columns are still the single reporting day."],
+    ["Action Sheet lists every SKU whose trailing 7-day ACOS is above 14%, worst first (identified by Campaign Name + SKU ID, not product name; Spend/Spend with tax/Orders/ACOS are all the 7-day range here, unlike every other sheet's single-day figures). Every row carries a concrete bid-cut %: rows matched to a real campaign in the uploaded Amazon/Flipkart ad data get one sized to that campaign's own ad-group/SKU performance (AI-assisted); unmatched rows (e.g. Meesho, which has no campaign data in this app, or a SKU that matched no campaign) get one computed from the SKU's own 7-day ACOS instead (20%/35%/50% cut for 14-60%/60-90%/90%+ ACOS). No specific search-term/keyword name is ever invented — that data isn't captured anywhere in this app; only a live SellerMate pull (Amazon only, on request) has real keyword-level detail."],
     [`Low Spend Campaigns lists every campaign spending ₹${LOW_SPEND_THRESHOLD} or less on the single reporting day above, across all platforms, ascending by spend.`],
     [""],
     [`Every product with activity in the range window above was also upserted into the barm_ad_spend_history table (Spend/Orders/CPC/ACOS, day and range) — a running history independent of this file, keyed on (report_date, platform, sku). Rows saved this run: ${historyRowsSaved}.`],
