@@ -430,13 +430,21 @@ async function fetchMisDateFiltered<T extends Record<string, any>>(
   mapRow: (row: RawRow) => T
 ): Promise<T[]> {
   const { start, end } = peekDateBound(apply, mappedField);
+  // Ordered by (rawCol, id) instead of fetchAllRows's default "id" whenever this call actually
+  // filters by date — rawCol is what the WHERE clause above is on, so Postgres can (if that column
+  // is indexed, as report_date is on the barm_* tables) satisfy the ORDER BY from the same index
+  // scan instead of a separate Sort over every matching row on each paginated page. Without this,
+  // fetchMisAmazonOrders/fetchMisFbaReturns hit a statement timeout once these MIS tables grew —
+  // same root cause and fix as adSpendReportExport.ts's fetchDailyAmazonOrders/fetchDailyFlipkartOrders.
+  // "id" stays as a tiebreaker for .range() pagination stability (fetchAllRows's own requirement).
+  const orderBy = start || end ? [rawCol, "id"] : "id";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rows = await fetchAllRows(table, (q: any) => {
     let qq = q;
     if (start) qq = qq.gte(rawCol, addDays(start, -marginDays));
     if (end) qq = qq.lt(rawCol, addDays(end, marginDays + 1));
     return qq;
-  });
+  }, orderBy);
   return applyMemoryFilter(rows.map(mapRow), apply);
 }
 

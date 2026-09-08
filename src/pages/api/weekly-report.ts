@@ -6,37 +6,51 @@
 // endDate: last day of "this week" (default: yesterday).
 
 import type { NextApiRequest, NextApiResponse } from "next";
-import { resolveSellerMateKey } from "@/lib/adAlerts";
 import { buildWeeklySalesWorkbookFromHistorical } from "@/lib/weeklySalesExport";
 import { fetchAllRows } from "@/lib/historicalAnalysisReportExport";
-import { istDayWindowUtc, isStandardOrderId } from "@/lib/amazonReportShared";
-import { fetchMisAmazonOrders } from "@/lib/misAdapters";
+import { istDayWindowUtc, isStandardOrderId, isGenuineFbaReturn } from "@/lib/amazonReportShared";
+import { fetchMisAmazonOrders, fetchMisFbaReturns } from "@/lib/misAdapters";
 import { categorizeTitle, resolveProductName } from "@/lib/categoryMap";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
 import * as XLSX from "xlsx-js-style";
 
-const SELLERMATE_BASE_URL = "https://api.sellermate.ai/public/v1/tools";
+// Every KPI in this email (Total Sales, Units Ordered, Ad Spend, Ad Sales, ROAS, ACOS, Returns) is
+// sourced from the app's own synced/uploaded data — the MIS tables (fetchMisAmazonOrders,
+// fetchMisFbaReturns) and the barm_amazon_sp/sb/sd_campaign ad-spend tables — never from a live
+// SellerMate API call. This used to call SellerMate's get_retail_product_performance /
+// get_fba_customer_returns for these numbers; that was replaced after confirming (see the
+// ppc-dashboard-sellermate-summary-bug finding) that get_retail_product_performance is inflated
+// ~1.7-2.2x at the source for this account, and per the seller's own standing instruction that no
+// downloadable/emailed report may source figures from a live SellerMate pull.
+async function fetchWeeklyAdRows(start: string, end: string) {
+  const [spRows, sbRows, sdRows] = await Promise.all([
+    fetchAllRows("barm_amazon_sp_advertised_product", (q: any) => q.gte("report_date", start).lte("report_date", end)),
+    fetchAllRows("barm_amazon_sb_campaign", (q: any) => q.gte("report_date", start).lte("report_date", end)),
+    fetchAllRows("barm_amazon_sd_campaign", (q: any) => q.gte("report_date", start).lte("report_date", end)),
+  ]);
+  return { spRows, sbRows, sdRows };
+}
 
-// SellerMate cold-caches report ranges: the first hit to an un-cached window
-// can be slow enough to hit its ~10s gateway timeout (500), but the attempt
-// warms the cache so a retry returns fast. Retry a few times before giving up.
-async function callTool(tool: string, args: Record<string, any>, apiKey: string, attempts = 4) {
-  let lastErr: any;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      const r = await fetch(`${SELLERMATE_BASE_URL}/${tool}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
-        body: JSON.stringify(args),
-      });
-      if (r.ok) return r.json();
-      lastErr = new Error(`${tool} ${r.status}: ${(await r.text()).slice(0, 200)}`);
-    } catch (e) {
-      lastErr = e;
-    }
-    if (i < attempts - 1) await new Promise((res) => setTimeout(res, 800));
-  }
-  throw lastErr;
+// Spend is a normal per-day figure on every ad-report row, safe to sum across the window. Sales
+// fields with an "Nd" rolling-attribution-window name (sp's sales_7d, sd's sales_14d) are NOT —
+// summing those across multiple days' rows would multiply-count the same rolling total, so each is
+// read only once, off the window's own end-date row (same convention adSpendReportExport.ts's
+// enrichAmazonActionRows uses). SB's plain "sales" field is per-day, so it's summed like spend.
+function weekAdKpis(
+  spRows: any[], sbRows: any[], sdRows: any[], start: string, end: string
+): { spend: number; adSales: number } {
+  const n = (v: unknown) => Number(v) || 0;
+  const inRange = (r: { report_date?: string }) => !!r.report_date && r.report_date >= start && r.report_date <= end;
+  const onEndDate = (rows: any[]) => rows.filter((r) => r.report_date === end);
+  const spend =
+    spRows.filter(inRange).reduce((s, r) => s + n(r.spend), 0) +
+    sbRows.filter(inRange).reduce((s, r) => s + n(r.spend), 0) +
+    sdRows.filter(inRange).reduce((s, r) => s + n(r.spend), 0);
+  const adSales =
+    onEndDate(spRows).reduce((s, r) => s + n(r.sales_7d), 0) +
+    sbRows.filter(inRange).reduce((s, r) => s + n(r.sales), 0) +
+    onEndDate(sdRows).reduce((s, r) => s + n(r.sales_14d), 0);
+  return { spend, adSales };
 }
 
 // Local Y-M-D (avoid toISOString's UTC shift on an IST server, which would
@@ -93,21 +107,12 @@ async function retailMapBySku(start: string, end: string) {
   return map;
 }
 
-// Account-wide KPI totals (Total Sales, Ad Spend, ROAS, ACOS, ...) stay sourced from the live
-// SellerMate summary — these aren't ASIN/SKU-keyed at all, so they're out of scope for the
-// SKU-wise switch below. page_size is irrelevant to `summary` (it reflects the whole filtered
-// window regardless of how many product rows are paginated back); kept identical to the old
-// retailMap() call for safety.
-async function fetchSummary(apiKey: string, base: any, start: string, end: string) {
-  const res = await callTool("get_retail_product_performance", { ...base, start_date: start, end_date: end, page_size: 500 }, apiKey);
-  return res.summary || {};
-}
-
-async function returnsCount(apiKey: string, base: any, start: string, end: string) {
-  try {
-    const res = await callTool("get_fba_customer_returns", { ...base, start_date: start, end_date: end, page_size: 1 }, apiKey);
-    return res.total_count ?? (res.order_returns || []).length;
-  } catch { return 0; }
+// FBA returns in the window, same "genuine return" filter (excludes courier RTO/undeliverable
+// parcels) the Historical Analysis Report and Weekly Sales Report attachment already use — counts
+// return events (rows), matching what the old get_fba_customer_returns total_count represented.
+async function returnsCount(start: string, end: string): Promise<number> {
+  const rows = await fetchMisFbaReturns((q: any) => q.gte("return_date", start).lte("return_date", end));
+  return rows.filter((r: any) => isGenuineFbaReturn(r)).length;
 }
 
 // Same fixed distribution list as send-ad-spend-email.ts / send-historical-email.ts — used only
@@ -138,8 +143,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // that intentional "no CC" from being overwritten with DEFAULT_CC.
   const to = toBody !== undefined ? toBody : DEFAULT_TO;
   const cc = toBody !== undefined ? ccBody : (ccBody !== undefined ? ccBody : DEFAULT_CC);
-  const apiKey = resolveSellerMateKey(slot === "B" ? "B" : "A");
-  if (!apiKey) return res.status(500).json({ error: `Missing SellerMate API key for slot ${slot}` });
 
   // Windows: this week = [end-6, end]; last week = [end-13, end-7]. Default end = yesterday.
   let end = endDate as string | undefined;
@@ -149,25 +152,35 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const lastEnd = new Date(endD); lastEnd.setDate(endD.getDate() - 7);
   const lastStart = new Date(endD); lastStart.setDate(endD.getDate() - 13);
   const T = { start: iso(thisStart), end }, L = { start: iso(lastStart), end: iso(lastEnd) };
-  const base = { amazon_account_id, workspace_id };
 
   try {
-    // Sequential — SellerMate rate-limits bursts of heavy report calls.
-    const ts = await fetchSummary(apiKey, base, T.start, T.end);
-    const ls = await fetchSummary(apiKey, base, L.start, L.end);
-    const retThis = await returnsCount(apiKey, base, T.start, T.end);
-    const retLast = await returnsCount(apiKey, base, L.start, L.end);
     // Per-product data is SKU-wise, sourced from the uploaded Orders export (see retailMapBySku).
     const tMap = await retailMapBySku(T.start, T.end);
     const lMap = await retailMapBySku(L.start, L.end);
+    const tSalesTotal = [...tMap.values()].reduce((s, p) => s + p.sales, 0);
+    const lSalesTotal = [...lMap.values()].reduce((s, p) => s + p.sales, 0);
+    const tUnitsTotal = [...tMap.values()].reduce((s, p) => s + p.units, 0);
+    const lUnitsTotal = [...lMap.values()].reduce((s, p) => s + p.units, 0);
+
+    // One fetch spanning both weeks (14 days), split by date below — same "fetch once, filter
+    // twice" approach the rest of this file (and historicalAnalysisReportExport.ts) uses.
+    const { spRows, sbRows, sdRows } = await fetchWeeklyAdRows(L.start, T.end);
+    const tAd = weekAdKpis(spRows, sbRows, sdRows, T.start, T.end);
+    const lAd = weekAdKpis(spRows, sbRows, sdRows, L.start, L.end);
+    const roas = (a: { spend: number; adSales: number }) => (a.spend > 0 ? a.adSales / a.spend : 0);
+    const acos = (a: { spend: number; adSales: number }) => (a.adSales > 0 ? (a.spend / a.adSales) * 100 : 0);
+
+    const retThis = await returnsCount(T.start, T.end);
+    const retLast = await returnsCount(L.start, L.end);
+
     const money = (v: number) => (currency === "INR" ? "₹" : "$") + new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(v || 0));
     const compare = [
-      { label: "Total Sales", lastStr: money(ls.totalSales), thisStr: money(ts.totalSales), deltaPct: pctChange(ls.totalSales, ts.totalSales), goodUp: true },
-      { label: "Units Ordered", lastStr: String(ls.totalUnitsOrdered || 0), thisStr: String(ts.totalUnitsOrdered || 0), deltaPct: pctChange(ls.totalUnitsOrdered, ts.totalUnitsOrdered), goodUp: true },
-      { label: "Ad Spend", lastStr: money(ls.totalAdSpend), thisStr: money(ts.totalAdSpend), deltaPct: pctChange(ls.totalAdSpend, ts.totalAdSpend), goodUp: false },
-      { label: "Ad Sales", lastStr: money(ls.totalAdSales), thisStr: money(ts.totalAdSales), deltaPct: pctChange(ls.totalAdSales, ts.totalAdSales), goodUp: true },
-      { label: "ROAS", lastStr: (ls.overallRoas || 0).toFixed(2) + "x", thisStr: (ts.overallRoas || 0).toFixed(2) + "x", deltaPct: pctChange(ls.overallRoas, ts.overallRoas), goodUp: true },
-      { label: "ACOS", lastStr: (ls.overallAcos || 0).toFixed(1) + "%", thisStr: (ts.overallAcos || 0).toFixed(1) + "%", deltaPct: pctChange(ls.overallAcos, ts.overallAcos), goodUp: false },
+      { label: "Total Sales", lastStr: money(lSalesTotal), thisStr: money(tSalesTotal), deltaPct: pctChange(lSalesTotal, tSalesTotal), goodUp: true },
+      { label: "Units Ordered", lastStr: String(lUnitsTotal || 0), thisStr: String(tUnitsTotal || 0), deltaPct: pctChange(lUnitsTotal, tUnitsTotal), goodUp: true },
+      { label: "Ad Spend", lastStr: money(lAd.spend), thisStr: money(tAd.spend), deltaPct: pctChange(lAd.spend, tAd.spend), goodUp: false },
+      { label: "Ad Sales", lastStr: money(lAd.adSales), thisStr: money(tAd.adSales), deltaPct: pctChange(lAd.adSales, tAd.adSales), goodUp: true },
+      { label: "ROAS", lastStr: roas(lAd).toFixed(2) + "x", thisStr: roas(tAd).toFixed(2) + "x", deltaPct: pctChange(roas(lAd), roas(tAd)), goodUp: true },
+      { label: "ACOS", lastStr: acos(lAd).toFixed(1) + "%", thisStr: acos(tAd).toFixed(1) + "%", deltaPct: pctChange(acos(lAd), acos(tAd)), goodUp: false },
       { label: "Returns", lastStr: String(retLast), thisStr: String(retThis), deltaPct: pctChange(retLast, retThis), goodUp: false },
     ];
 
@@ -188,7 +201,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // Platform line: only Amazon is connected today — structured as a list so
     // Flipkart/other marketplaces can be appended here once wired up.
-    const platforms = [{ name: "Amazon", sales: ts.totalSales || 0 }];
+    const platforms = [{ name: "Amazon", sales: tSalesTotal || 0 }];
 
     // Department breakdown, this week AND last week — reuses the same per-product rows already
     // fetched above, categorized via the product->department map (categoryMap.ts).
@@ -227,7 +240,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       `📈 *Weekly Performance Report* — ${accountName}`,
       `${emailData.thisLabel} vs ${emailData.lastLabel}`,
       "",
-      `🛒 *Platform Sales:* ${platforms.map((p) => `${p.name} ${waMoney(p.sales)}`).join(" · ")} → *Total ${waMoney(ts.totalSales || 0)}* (${pctChange(ls.totalSales, ts.totalSales) >= 0 ? "▲" : "▼"} ${Math.abs(pctChange(ls.totalSales, ts.totalSales)).toFixed(1)}% WoW)`,
+      `🛒 *Platform Sales:* ${platforms.map((p) => `${p.name} ${waMoney(p.sales)}`).join(" · ")} → *Total ${waMoney(tSalesTotal || 0)}* (${pctChange(lSalesTotal, tSalesTotal) >= 0 ? "▲" : "▼"} ${Math.abs(pctChange(lSalesTotal, tSalesTotal)).toFixed(1)}% WoW)`,
       `🏥 *Department Breakup:* ${departments.map((d) => `${d.name} ${waMoney(d.sales)} (${d.units} units)`).join(" · ")}`,
     ].join("\n");
 
