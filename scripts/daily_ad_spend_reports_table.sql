@@ -31,12 +31,17 @@ insert into storage.buckets (id, name, public)
 values ('ad-spend-reports', 'ad-spend-reports', false)
 on conflict (id) do nothing;
 
-create policy if not exists "ad-spend-reports anon read"
+drop policy if exists "ad-spend-reports anon read" on storage.objects;
+create policy "ad-spend-reports anon read"
   on storage.objects for select
   using (bucket_id = 'ad-spend-reports');
-create policy if not exists "ad-spend-reports anon write"
+
+drop policy if exists "ad-spend-reports anon write" on storage.objects;
+create policy "ad-spend-reports anon write"
   on storage.objects for insert
   with check (bucket_id = 'ad-spend-reports');
-create policy if not exists "ad-spend-reports anon update"
+
+drop policy if exists "ad-spend-reports anon update" on storage.objects;
+create policy "ad-spend-reports anon update"
   on storage.objects for update
   using (bucket_id = 'ad-spend-reports');
