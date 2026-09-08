@@ -14,6 +14,13 @@ import { categorizeTitle, resolveProductName } from "@/lib/categoryMap";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
 import * as XLSX from "xlsx-js-style";
 
+// See send-email.ts's own config comment — this route's Supabase fetches (MIS orders/returns
+// across two weeks, ad-spend tables, the attached workbook) can run long, so it needs the same
+// raised Vercel timeout.
+export const config = {
+  maxDuration: 300,
+};
+
 // Every KPI in this email (Total Sales, Units Ordered, Ad Spend, Ad Sales, ROAS, ACOS, Returns) is
 // sourced from the app's own synced/uploaded data — the MIS tables (fetchMisAmazonOrders,
 // fetchMisFbaReturns) and the barm_amazon_sp/sb/sd_campaign ad-spend tables — never from a live

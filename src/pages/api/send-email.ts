@@ -1175,12 +1175,19 @@ const SUBJECTS: Record<string, string> = {
 // attachment above the limit failed with a silent 413 before this route's own
 // handler ever ran — including the Reports page's manual "Send" button, not just
 // the automated crons. 50mb leaves headroom as the uploaded history keeps growing.
+// maxDuration raises this route's Vercel serverless function timeout past the platform default
+// (10s on Hobby — hard-capped there regardless of this setting; a low default on Pro unless
+// raised, up to 300s without Enterprise). Building the attached workbook + calling Gemini for the
+// Action Sheet + sending via Gmail SMTP has been observed taking 70-160+ seconds in practice, which
+// silently failed on production as a bare "send-email failed" (a timed-out response has no JSON
+// body to read an error from) even though the identical call succeeded locally with no time limit.
 export const config = {
   api: {
     bodyParser: {
       sizeLimit: "50mb",
     },
   },
+  maxDuration: 300,
 };
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {

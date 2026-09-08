@@ -13,6 +13,12 @@ import * as XLSX from "xlsx-js-style";
 import { buildHistoricalAnalysisReportWorkbook } from "@/lib/historicalAnalysisReportExport";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
 
+// See send-email.ts's own config comment — this route does the slow part (Supabase fetch across
+// 30/7-day windows) before even calling send-email, so it needs the same raised Vercel timeout.
+export const config = {
+  maxDuration: 300,
+};
+
 const DEFAULT_TO = "kaviyapriyabarm@gmail.com";
 const DEFAULT_CC = [
   "jayaprakashbarm@gmail.com",

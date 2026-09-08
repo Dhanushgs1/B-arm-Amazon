@@ -14,6 +14,13 @@ import * as XLSX from "xlsx-js-style";
 import { buildAdSpendReportWorkbook } from "@/lib/adSpendReportExport";
 import { internalFetch } from "@/lib/internalFetch";
 
+// See send-email.ts's own config comment — this route does the slow part (Supabase fetch across
+// 3 platforms + Gemini Action Sheet suggestions) before even calling send-email, so it needs the
+// same raised Vercel timeout or it gets killed first.
+export const config = {
+  maxDuration: 300,
+};
+
 const DEFAULT_TO = "kaviyapriyabarm@gmail.com";
 const DEFAULT_CC = [
   "jayaprakashbarm@gmail.com",
