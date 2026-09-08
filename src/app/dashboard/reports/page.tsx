@@ -167,12 +167,21 @@ export default function ReportsPage() {
       );
       // Poll every 5s until the job leaves pending/processing.
       const poll = async () => {
-        const job = await pollJobStatus(endDate, account?.name);
-        if (!job) return;
-        setJobStatus(job.status);
-        if (job.status === "completed") { setJobMsg("Completed."); setJobGenerating(false); return; }
-        if (job.status === "failed") { setJobMsg(`Failed: ${job.error_message || "unknown error"} — Retry`); setJobGenerating(false); return; }
-        setTimeout(poll, 5000);
+        try {
+          const job = await pollJobStatus(endDate, account?.name);
+          if (!job) {
+            setJobMsg("Lost track of the report's status — please try Generate again.");
+            setJobGenerating(false);
+            return;
+          }
+          setJobStatus(job.status);
+          if (job.status === "completed") { setJobMsg("Completed."); setJobGenerating(false); return; }
+          if (job.status === "failed") { setJobMsg(`Failed: ${job.error_message || "unknown error"} — Retry`); setJobGenerating(false); return; }
+          setTimeout(poll, 5000);
+        } catch (err) {
+          setJobMsg("Failed to check report status: " + (err instanceof Error ? err.message : String(err)));
+          setJobGenerating(false);
+        }
       };
       setTimeout(poll, 5000);
     } catch (err) {
