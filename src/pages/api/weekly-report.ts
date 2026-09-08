@@ -127,16 +127,19 @@ async function returnsCount(start: string, end: string): Promise<number> {
 // those two — has no per-account Settings row to read a recipient from). The cron and the Settings
 // page's "Send Weekly Report Now" button always pass an explicit `to`/`cc` (Settings' notifEmail/
 // ccEmail), so this fallback never overrides either of those.
-const DEFAULT_TO = "kaviyapriyabarm@gmail.com";
-const DEFAULT_CC = [
-  "jayaprakashbarm@gmail.com",
-  "dangibbs@b-arm.com",
-  "nivetha@b-arm.com",
-  "prinesh@b-arm.com",
-  "akshaya.v@b-arm.com",
-  "ceo@barmenterprises.com",
-  "sriram@b-arm.com",
-].join(",");
+// TEST OVERRIDE (temporary — revert to the real distribution list below once testing is done):
+// const DEFAULT_TO = "kaviyapriyabarm@gmail.com";
+// const DEFAULT_CC = [
+//   "jayaprakashbarm@gmail.com",
+//   "dangibbs@b-arm.com",
+//   "nivetha@b-arm.com",
+//   "prinesh@b-arm.com",
+//   "akshaya.v@b-arm.com",
+//   "ceo@barmenterprises.com",
+//   "sriram@b-arm.com",
+// ].join(",");
+const DEFAULT_TO = "dhanushgovinthang@gmail.com";
+const DEFAULT_CC = "";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
