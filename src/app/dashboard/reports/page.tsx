@@ -30,6 +30,9 @@ export default function ReportsPage() {
   const [adSpendMsg, setAdSpendMsg] = useState<string | null>(null);
   const [adSpendSending, setAdSpendSending] = useState(false);
   const [adSpendSendMsg, setAdSpendSendMsg] = useState<string | null>(null);
+  const [jobGenerating, setJobGenerating] = useState(false);
+  const [jobStatus, setJobStatus] = useState<string | null>(null);
+  const [jobMsg, setJobMsg] = useState<string | null>(null);
 
   const refreshMeta = useCallback(async () => {
     const r = await fetchUploadedDateRange();
@@ -128,12 +131,54 @@ export default function ReportsPage() {
         body: JSON.stringify({ endDate, accountName: account?.name }),
       });
       const j = await r.json();
+      if (r.status === 202) { setAdSpendSendMsg(j.message || "Report is still being generated. Please try again shortly."); return; }
+      if (r.status === 409) { setAdSpendSendMsg(`Report generation failed — Retry. (${j.error})`); return; }
       if (!r.ok) throw new Error(j.error || "Send failed");
       const ccCount = j.cc ? String(j.cc).split(",").filter(Boolean).length : 0;
-      setAdSpendSendMsg(`Emailed ${j.filename} to ${j.to}${ccCount ? ` (cc ${ccCount})` : ""}.`);
+      setAdSpendSendMsg(`Sending ${j.filename} to ${j.to}${ccCount ? ` (cc ${ccCount})` : ""} — you'll see it land shortly.`);
     } catch (err) {
       setAdSpendSendMsg("Failed: " + (err instanceof Error ? err.message : String(err)));
     } finally { setAdSpendSending(false); }
+  };
+
+  const pollJobStatus = async (date: string, account?: string) => {
+    const qs = new URLSearchParams({ endDate: date, ...(account ? { accountName: account } : {}) });
+    const r = await fetch(`/api/ad-spend-report-status?${qs.toString()}`);
+    const j = await r.json();
+    return j.job as { status: string; error_message: string | null; email_status: string } | null;
+  };
+
+  const handleGenerateAdSpendJob = async (force = false) => {
+    if (!endDate) { alert("Pick a date at the top of the dashboard first."); return; }
+    setJobGenerating(true); setJobMsg(null);
+    try {
+      const r = await fetch("/api/generate-ad-spend-report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ endDate, accountName: account?.name, force }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "Failed to start report generation");
+      setJobStatus(j.status);
+      setJobMsg(
+        j.status === "completed" ? "Report already generated for this date." :
+        j.status === "processing" ? "Generating..." :
+        "Queued — generating..."
+      );
+      // Poll every 5s until the job leaves pending/processing.
+      const poll = async () => {
+        const job = await pollJobStatus(endDate, account?.name);
+        if (!job) return;
+        setJobStatus(job.status);
+        if (job.status === "completed") { setJobMsg("Completed."); setJobGenerating(false); return; }
+        if (job.status === "failed") { setJobMsg(`Failed: ${job.error_message || "unknown error"} — Retry`); setJobGenerating(false); return; }
+        setTimeout(poll, 5000);
+      };
+      setTimeout(poll, 5000);
+    } catch (err) {
+      setJobMsg("Failed: " + (err instanceof Error ? err.message : String(err)));
+      setJobGenerating(false);
+    }
   };
 
   const handleDownload = async (type: string) => {
@@ -578,9 +623,26 @@ export default function ReportsPage() {
               </>
             )}
           </button>
+          <button
+            onClick={() => handleGenerateAdSpendJob(jobStatus === "failed" || jobStatus === "completed")}
+            disabled={jobGenerating || !endDate}
+            title="Generates the report asynchronously in the background (Supabase job queue) instead of computing it in this browser tab"
+            className="px-4 py-2 bg-white dark:bg-white/10 border border-border hover:border-primary/50 text-foreground text-xs font-bold rounded-lg transition-colors flex items-center gap-2 shadow-sm disabled:opacity-50"
+          >
+            {jobGenerating ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Generating…
+              </>
+            ) : (
+              <>
+                <RotateCcw size={14} /> {jobStatus === "completed" ? "Regenerate Report" : jobStatus === "failed" ? "Retry" : "Generate Report"}
+              </>
+            )}
+          </button>
         </div>
         {adSpendMsg && <p className="text-xs mt-3 font-semibold">{adSpendMsg}</p>}
         {adSpendSendMsg && <p className="text-xs mt-1 font-semibold">{adSpendSendMsg}</p>}
+        {jobMsg && <p className="text-xs mt-1 font-semibold">{jobMsg}</p>}
       </div>
 
       {/* Live API reports */}
