@@ -5,7 +5,10 @@
 // via EdgeRuntime.waitUntil so the caller (a Vercel route or pg_cron) never
 // waits on it either.
 import { createClient } from "npm:@supabase/supabase-js@2.110.8";
-import * as XLSX from "npm:xlsx-js-style@1.2.0";
+// Default import, not `import * as` — see the matching comment in
+// ../_shared/adSpendReportExport.ts for why (Deno's npm compat nests the
+// real exports at `.default` for this package).
+import XLSX from "npm:xlsx-js-style@1.2.0";
 import { buildAdSpendReportWorkbook } from "../_shared/adSpendReportExport.ts";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -43,7 +46,11 @@ Deno.serve(async (req: Request) => {
         accountName: acctName || undefined,
       });
 
-      const xlsxBytes = XLSX.write(result.wb, { type: "array", bookType: "xlsx" }) as Uint8Array;
+      // type: "array" returns a bare ArrayBuffer under this Deno npm-compat
+      // setup (no .length property, only .byteLength) rather than a
+      // Uint8Array like Node's xlsx-js-style gives — confirmed by direct
+      // probe. type: "buffer" correctly returns a real Uint8Array here.
+      const xlsxBytes = XLSX.write(result.wb, { type: "buffer", bookType: "xlsx" }) as Uint8Array;
       const storagePath = `${report_date}/${acctName || "default"}.xlsx`;
       const { error: uploadError } = await supabase.storage
         .from("ad-spend-reports")

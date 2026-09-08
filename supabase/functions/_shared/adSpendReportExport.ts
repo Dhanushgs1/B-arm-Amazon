@@ -1,4 +1,10 @@
-import * as XLSX from "npm:xlsx-js-style@1.2.0";
+// Default import, not `import * as` — under Deno's npm compatibility layer,
+// `import * as XLSX from "npm:xlsx-js-style"` nests the real exports one
+// level deeper at `XLSX.default.utils` instead of `XLSX.utils`, unlike
+// Node's CJS interop. Confirmed by direct probe: `XLSX.utils` is undefined
+// with `import *`, but present with a default import. This is an import-
+// syntax-only fix — no formula/logic change.
+import XLSX from "npm:xlsx-js-style@1.2.0";
 import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } from "./deps/amazonReportShared.ts";
 import { upsertInChunks } from "./deps/amazonReportUpload.ts";
 import { toDate as parseFlexibleDate } from "./deps/meeshoReportUpload.ts";
