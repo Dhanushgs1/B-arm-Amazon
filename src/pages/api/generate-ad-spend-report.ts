@@ -5,6 +5,16 @@
 // docs/superpowers/specs/2026-09-08-daily-ad-spend-async-architecture-design.md.
 import type { NextApiRequest, NextApiResponse } from "next";
 import { findOrCreateJob } from "@/lib/adSpendJobs";
+import { supabase } from "@/lib/supabaseClient";
+
+async function markJobFailed(jobId: number, message: string): Promise<void> {
+  await supabase.from("report_generation_jobs").update({
+    status: "failed",
+    error_message: message,
+    completed_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }).eq("id", jobId);
+}
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
@@ -25,7 +35,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     const edgeBaseUrl = process.env.SUPABASE_EDGE_URL;
-    if (!edgeBaseUrl) return res.status(500).json({ error: "SUPABASE_EDGE_URL is not configured" });
+    if (!edgeBaseUrl) {
+      await markJobFailed(job.id, "SUPABASE_EDGE_URL is not configured");
+      return res.status(500).json({ error: "SUPABASE_EDGE_URL is not configured" });
+    }
 
     const ackController = new AbortController();
     const ackTimeout = setTimeout(() => ackController.abort(), 8000);
@@ -39,11 +52,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       clearTimeout(ackTimeout);
       if (!edgeRes.ok) {
         const errBody = await edgeRes.json().catch(() => ({}));
-        return res.status(502).json({ error: errBody?.error || "Edge Function invocation failed" });
+        const message = errBody?.error || "Edge Function invocation failed";
+        await markJobFailed(job.id, message);
+        return res.status(502).json({ error: message });
       }
     } catch (fetchErr) {
       clearTimeout(ackTimeout);
       const message = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+      await markJobFailed(job.id, `Edge Function invocation failed: ${message}`);
       return res.status(502).json({ error: `Edge Function invocation failed: ${message}` });
     }
 
