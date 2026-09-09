@@ -542,17 +542,22 @@ export async function fetchMisAmazonOrdersInfo(): Promise<MisReportDataInfo> {
 // "DD-Mon-YY" text (see the "DD-Mon-YY text" comment above
 // fetchMisDateFiltered) — NOT chronologically sortable as a plain string, so
 // fetchTableSummary's Postgres-side ORDER BY would silently return the wrong
-// min/max row. But the previous fix here (fetchMisAmazonReturns((q) => q),
-// i.e. a full `select("*")` of every column) is exactly the unbounded
-// full-table fetch that hit "canceling statement due to statement timeout"
-// for amazon_orders/amazon_fba_returns — same risk here as those tables grow.
-// Compromise: a fast indexed count (safe regardless of column format) plus a
-// full-table fetch of ONLY the raw date column (not select("*")), parsed and
-// sorted client-side for a correct min/max at a fraction of the payload.
+// min/max row. Both tables are small (911 / 545 rows, nowhere near
+// amazon_orders' 34,000+), so a full-table fetch here is not a real timeout
+// risk — just do a fast indexed count plus a plain `select("*")` fetch,
+// parsed and sorted client-side for a correct min/max.
+//
+// Deliberately no `.not(rawCol, "is", null)` push-down: PostgREST's filter
+// key is the raw column name verbatim (unlike a quoted select= identifier),
+// and amazon_seller_flex_return's "Pick -up date" — space immediately
+// followed by a hyphen — breaks PostgREST's filter-key parsing outright
+// ("column ...Pick-up date does not exist", confirmed against the live
+// table even with the space explicitly %-encoded, so it isn't a supabase-js
+// encoding bug). Client-side null filtering below covers the same need.
 async function fetchTextDateTableSummary(table: string, rawCol: string): Promise<MisReportDataInfo> {
   const [{ count, error: countErr }, rows] = await Promise.all([
     supabasePublic.from(table).select("*", { count: "exact", head: true }),
-    fetchAllRows(table, (q) => q.select(rawCol).not(rawCol, "is", null)),
+    fetchAllRows(table, (q) => q),
   ]);
   if (countErr) throw new Error(`Fetch ${table} summary failed: ${countErr.message}`);
   const dates = (rows as Record<string, unknown>[])
