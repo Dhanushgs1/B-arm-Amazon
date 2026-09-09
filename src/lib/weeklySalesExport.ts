@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx-js-style";
 import { fetchAllRows, isGenuineAmReturn, isGenuineFbaReturn } from "@/lib/historicalAnalysisReportExport";
-import { istDayWindowUtc, istDateOnly, isStandardOrderId } from "@/lib/amazonReportShared";
+import { buildOrphanSpendDivisor, istDayWindowUtc, istDateOnly, isStandardOrderId } from "@/lib/amazonReportShared";
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns } from "@/lib/misAdapters";
 import { categorizeTitle, resolveProductName, CATEGORY_COLORS } from "@/lib/categoryMap";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
@@ -201,6 +201,7 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
 
   // ── Ad spend/clicks per SKU per period (Sponsored Products) ──
   const adsBySkuPeriod = new Map<string, { spend: number; adSales: number; clicks: number; impressions: number }>();
+  const orphanShareDivisor = buildOrphanSpendDivisor(adRows);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   adRows.forEach((r: any) => {
     const sku = r.advertised_sku;
@@ -209,7 +210,7 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
     if (!pd) return;
     const key = `${sku}|${pd.label}`;
     const cur = adsBySkuPeriod.get(key) || { spend: 0, adSales: 0, clicks: 0, impressions: 0 };
-    cur.spend += Number(r.spend) || 0;
+    cur.spend += (Number(r.spend) || 0) / orphanShareDivisor(r);
     cur.adSales += Number(r.sales_7d) || 0;
     cur.clicks += Number(r.clicks) || 0;
     cur.impressions += Number(r.impressions) || 0;

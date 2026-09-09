@@ -109,3 +109,35 @@ export function istDateOnly(utcIso: string): string {
   d.setUTCMinutes(d.getUTCMinutes() + 330);
   return d.toISOString().slice(0, 10);
 }
+
+// barm_amazon_sp_advertised_product rows for a deleted/archived Sponsored Products campaign come
+// back with campaign_name AND ad_group_name both blank — Amazon can no longer break that
+// campaign's spend down per SKU once it's gone, so its export repeats the SAME full daily spend
+// figure on every advertised SKU the campaign used to target, rather than splitting it across them
+// (confirmed against the seller's own uploaded "Last 7 days" workbook and the full available
+// history: the exact same set of SKUs recurs every single day sharing one identical spend value
+// that itself changes day to day, tracking one underlying campaign's real daily spend — not
+// coincidence). Summed naively — whether per SKU or into a flat platform total — that inflates
+// spend by however many SKUs/rows shared it. Shared here so every report that reads this table
+// detects and corrects the same pattern the same way, instead of each carrying its own copy.
+//
+// Returns a per-row divisor: 1 for any row with a real campaign_name or ad_group_name (never
+// touches attributed spend, including legitimate multi-SKU SB/SD spend apportioned by weight
+// elsewhere), or the cluster size for a blank-identity row that shares an exact spend value with
+// other blank-identity rows on the same report_date.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function buildOrphanSpendDivisor(rows: any[]): (r: any) => number {
+  const clusterSize = new Map<string, number>();
+  rows.forEach((r) => {
+    if (r.campaign_name || r.ad_group_name || !r.advertised_sku) return;
+    const spend = Number(r.spend) || 0;
+    const key = `${r.report_date}|${spend.toFixed(6)}`;
+    clusterSize.set(key, (clusterSize.get(key) || 0) + 1);
+  });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (r: any): number => {
+    if (r.campaign_name || r.ad_group_name) return 1;
+    const spend = Number(r.spend) || 0;
+    return clusterSize.get(`${r.report_date}|${spend.toFixed(6)}`) || 1;
+  };
+}

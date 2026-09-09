@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx-js-style";
 import { fcToState } from "@/lib/analysisReportExport";
-import { fetchAllRows, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
+import { buildOrphanSpendDivisor, fetchAllRows, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns } from "@/lib/misAdapters";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog, gstMultiplierFromTax } from "@/lib/masterProductSkuid";
@@ -510,9 +510,10 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     // (e.g. SKU A001-5 over 2026-07-04→2026-08-02: units_7d sums to 4, matching
     // their 4 — advertised_sku_units_7d sums to only 1, which is what this line
     // used to read and is why CPC/ACOS were previously off by ~4x for that SKU).
+    const orphanShareDivisor = buildOrphanSpendDivisor(rowsSp);
     rowsSp.forEach((r) => {
       if (!r.advertised_sku) return;
-      addAd(r.campaign_name || "", r.advertised_sku, r.spend || 0, r.units_7d || 0);
+      addAd(r.campaign_name || "", r.advertised_sku, (r.spend || 0) / orphanShareDivisor(r), r.units_7d || 0);
     });
     // SB/SD: campaign-level only — SPEND is split across the campaign's mapped
     // SKUs by weight, but Advertised SKU Units are recorded as 0, matching the

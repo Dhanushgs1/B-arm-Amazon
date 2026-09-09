@@ -8,7 +8,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { buildWeeklySalesWorkbookFromHistorical } from "@/lib/weeklySalesExport";
 import { fetchAllRows } from "@/lib/historicalAnalysisReportExport";
-import { istDayWindowUtc, isStandardOrderId, isGenuineFbaReturn } from "@/lib/amazonReportShared";
+import { buildOrphanSpendDivisor, istDayWindowUtc, isStandardOrderId, isGenuineFbaReturn } from "@/lib/amazonReportShared";
 import { fetchMisAmazonOrders, fetchMisFbaReturns } from "@/lib/misAdapters";
 import { categorizeTitle, resolveProductName } from "@/lib/categoryMap";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
@@ -49,8 +49,9 @@ function weekAdKpis(
   const n = (v: unknown) => Number(v) || 0;
   const inRange = (r: { report_date?: string }) => !!r.report_date && r.report_date >= start && r.report_date <= end;
   const onEndDate = (rows: any[]) => rows.filter((r) => r.report_date === end);
+  const spOrphanDivisor = buildOrphanSpendDivisor(spRows.filter(inRange));
   const spend =
-    spRows.filter(inRange).reduce((s, r) => s + n(r.spend), 0) +
+    spRows.filter(inRange).reduce((s, r) => s + n(r.spend) / spOrphanDivisor(r), 0) +
     sbRows.filter(inRange).reduce((s, r) => s + n(r.spend), 0) +
     sdRows.filter(inRange).reduce((s, r) => s + n(r.spend), 0);
   const adSales =
