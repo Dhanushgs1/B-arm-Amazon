@@ -329,10 +329,35 @@ export async function fetchAmazonProducts(
     campaignSpendByDay.set(campaign, (campaignSpendByDay.get(campaign) || 0) + spend);
   };
 
+  // barm_amazon_sp_advertised_product rows for a deleted/archived campaign come back
+  // with campaign_name AND ad_group_name both blank — Amazon can no longer break that
+  // campaign's spend down per SKU once it's gone, so its export repeats the SAME full
+  // daily spend figure on every advertised SKU the campaign used to target, rather than
+  // splitting it across them (confirmed against the seller's own uploaded "Last 7 days"
+  // workbook: the exact same set of SKUs recurs every single day sharing one identical
+  // spend value that itself changes day to day, tracking one underlying campaign's real
+  // daily spend — not coincidence). Summed naively, that inflates both that campaign's
+  // SKUs' individual spend AND the platform's total spend by however many SKUs shared
+  // it. Detected by an exact spend match among blank-identity rows on the same day, then
+  // divided evenly across the group so each SKU gets its fair share instead of the full
+  // amount — same spirit as campaignShares() below apportioning SB/SD spend by weight.
+  const orphanClusterSize = new Map<string, number>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  spRows.forEach((r: any) => {
+    if (r.campaign_name || r.ad_group_name || !r.advertised_sku) return;
+    const key = `${r.report_date}|${num(r.spend).toFixed(6)}`;
+    orphanClusterSize.set(key, (orphanClusterSize.get(key) || 0) + 1);
+  });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const orphanShareDivisor = (r: any): number => {
+    if (r.campaign_name || r.ad_group_name) return 1;
+    return orphanClusterSize.get(`${r.report_date}|${num(r.spend).toFixed(6)}`) || 1;
+  };
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   spRows.forEach((r: any) => {
     if (!r.advertised_sku) return;
-    const spend = num(r.spend);
+    const spend = num(r.spend) / orphanShareDivisor(r);
     const a = ensureSpend(r.advertised_sku);
     a.spend += spend;
     if (r.report_date === endDate) addCampaignSpend(r.campaign_name || "", spend);
@@ -352,7 +377,7 @@ export async function fetchAmazonProducts(
   const spendBySkuDay = new Map<string, number>();
   const addDay = (sku: string, spend: number) => spendBySkuDay.set(sku, (spendBySkuDay.get(sku) || 0) + spend);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  spRows.filter((r: any) => r.report_date === endDate).forEach((r: any) => { if (r.advertised_sku) addDay(r.advertised_sku, num(r.spend)); });
+  spRows.filter((r: any) => r.report_date === endDate).forEach((r: any) => { if (r.advertised_sku) addDay(r.advertised_sku, num(r.spend) / orphanShareDivisor(r)); });
   [...sbRows, ...sdRows]
     .filter((r: { report_date?: string }) => r.report_date === endDate)
     .forEach((r: { campaign_name?: string; spend?: number }) => {
