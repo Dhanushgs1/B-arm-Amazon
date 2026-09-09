@@ -6,7 +6,7 @@ import { mcp, fetchSkuMap } from "@/lib/api";
 import { X, Loader2, Target, KeyRound, Search, Package, TrendingUp, Sparkles, HelpCircle, ArrowUpDown, ArrowUp, ArrowDown, RefreshCw, AlertTriangle, Download } from "lucide-react";
 import { useState, useEffect, useMemo } from "react";
 import { cn } from "@/lib/utils";
-import { classifySearchTerm, buildProductIndex } from "@/lib/searchTermProductMatch";
+import { classifySearchTerm, buildProductIndex, computeProductNameRelevance } from "@/lib/searchTermProductMatch";
 import { exportToExcel } from "@/lib/excelExport";
 
 const cur = (val: number, currency?: string) => {
@@ -726,14 +726,24 @@ Provide analysis in 4 clear sections using bullet points:
                         exportValue: (val: any) => val.score,
                       },
                       {
+                        // Separate from "AI Score" above (which grades performance/orders) — this
+                        // grades how much of the search term's own words actually appear in the
+                        // campaign's full advertised product name, per client request (Sept 2026).
+                        key: "_classification",
+                        label: "AI Relevance Score",
+                        exportValue: (_val: any, row: any) => computeProductNameRelevance(row.searchTerm, campaignProductNames),
+                      },
+                      {
                         key: "_classification",
                         label: "Reason",
                         exportValue: (val: any) => (val.reasons.length ? val.reasons.join("; ") : "—"),
                       },
                       {
+                        // Left blank on export (rather than the auto-generated recommendation) per
+                        // client request (Sept 2026): the client fills this column in themselves.
                         key: "_classification",
                         label: "Feedback",
-                        exportValue: (val: any) => val.recommendation,
+                        exportValue: () => "",
                       },
                     ],
                     `${(selectedCampaignName || "campaign").replace(/[^a-z0-9]+/gi, "-")}-search-terms`

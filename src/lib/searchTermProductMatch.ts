@@ -193,6 +193,33 @@ export function matchesOwnProduct(searchTerm: string, campaignProductNames: stri
   return termTokens.some((t) => ownTokens.has(t));
 }
 
+// Client feedback (Sept 2026): the "AI Score" column already on the search-term export grades
+// PERFORMANCE (orders/clicks — see the scoring block in classifySearchTerm below), which says
+// nothing about whether the term's words actually describe this campaign's product. This is a
+// separate, independent score for that: what fraction of the search term's real (non-generic)
+// words are actually present in the campaign's own FULL advertised product name(s) — the live
+// SellerMate listing title(s) in campaignProductNames, not the trimmed static catalogue. 0 means
+// the term shares nothing with the product name at all; 100 means every distinctive word in the
+// term also appears in the product's own name. Deliberately reuses the same tokenize() used for
+// negative-keyword matching (stopwords stripped, iui/ivi synonym applied, stemmed) rather than a
+// raw substring/full-string compare — an unfiltered full-text compare would let generic shared
+// words ("kit", "for", "home", "women") inflate an unrelated term's score, which is exactly the
+// false-match failure mode the STOPWORDS list above was hardened against with real export data.
+export function computeProductNameRelevance(searchTerm: string, campaignProductNames: string[]): number {
+  const termTokens = Array.from(new Set(tokenize(searchTerm)));
+  if (termTokens.length === 0 || campaignProductNames.length === 0) return 0;
+
+  let best = 0;
+  for (const productName of campaignProductNames) {
+    const nameTokens = new Set(tokenize(productName));
+    if (nameTokens.size === 0) continue;
+    const matched = termTokens.filter((t) => nameTokens.has(t)).length;
+    const ratio = matched / termTokens.length;
+    if (ratio > best) best = ratio;
+  }
+  return Math.round(best * 100);
+}
+
 // Returns the product (and, when known live, the campaign that actually advertises it) a search
 // term's words most strongly point at, when that product is clearly NOT one the campaign itself
 // advertises. Null when the term shares no distinctive words with anything, or when it does
