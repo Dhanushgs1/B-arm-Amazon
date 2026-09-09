@@ -117,6 +117,7 @@ export async function fetchProductMarketingDataInfo(): Promise<ProductMarketingD
 }
 
 export interface ProductMarketingCatalogRow {
+  id: number;
   sku: string;
   name: string;
   category: string;
@@ -133,6 +134,7 @@ export async function fetchProductMarketingCatalog(): Promise<ProductMarketingCa
     const data = await fetchAllRows(TABLE, (q) => q);
     return (data as Record<string, unknown>[])
       .map((r) => ({
+        id: Number(r.id),
         sku: String(r.sku ?? "").trim(),
         name: String(r.product_name ?? "").trim(),
         category: String(r.category ?? "").trim(),
@@ -142,6 +144,25 @@ export async function fetchProductMarketingCatalog(): Promise<ProductMarketingCa
   } catch {
     return [];
   }
+}
+
+export interface ProductMarketingRowEdits {
+  product_name: string;
+  category: string;
+  platform: string;
+}
+
+/** Edits a single master_product_marketing row in place (by its stable `id`) — unlike the
+ *  snapshot-upload path above, this doesn't touch any other row. */
+export async function updateProductMarketingRow(id: number, edits: ProductMarketingRowEdits): Promise<void> {
+  const { error } = await supabasePublic.from(TABLE).update(edits).eq("id", id);
+  if (error) throw new Error(`Updating ${TABLE} row ${id} failed: ${error.message}`);
+}
+
+/** Removes a single master_product_marketing row (by its stable `id`). */
+export async function deleteProductMarketingRow(id: number): Promise<void> {
+  const { error } = await supabasePublic.from(TABLE).delete().eq("id", id);
+  if (error) throw new Error(`Deleting ${TABLE} row ${id} failed: ${error.message}`);
 }
 
 export interface ProductMarketingEntry {

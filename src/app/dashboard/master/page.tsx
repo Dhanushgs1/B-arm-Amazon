@@ -2,13 +2,18 @@
 
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, Database } from "lucide-react";
+import { Loader2, Database, Pencil, Trash2, CheckCircle2, XCircle } from "lucide-react";
 import { DataTable } from "@/components/DataTable";
 import { PageHero } from "@/components/PageHero";
 import { QueryErrorState } from "@/components/QueryErrorState";
-import { fetchProductMarketingCatalog } from "@/lib/productMarketingUpload";
+import {
+  fetchProductMarketingCatalog,
+  deleteProductMarketingRow,
+  type ProductMarketingCatalogRow,
+} from "@/lib/productMarketingUpload";
 import { CATEGORY_COLORS } from "@/lib/categoryMap";
 import { cn } from "@/lib/utils";
+import { MasterProductEditModal } from "./MasterProductEditModal";
 
 // Not in CATEGORY_COLORS (which is Amazon-category-scoped) — brand colors for the platform tabs,
 // falling back to indigo for any platform value the sheet carries that isn't one of these two.
@@ -20,6 +25,9 @@ const PLATFORM_COLORS: Record<string, string> = {
 export default function MasterPage() {
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [selectedPlatform, setSelectedPlatform] = useState("All");
+  const [editingRow, setEditingRow] = useState<ProductMarketingCatalogRow | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [actionStatus, setActionStatus] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["product_marketing_catalog"],
@@ -27,6 +35,23 @@ export default function MasterPage() {
   });
 
   const rows = data || [];
+
+  const handleDelete = async (row: ProductMarketingCatalogRow) => {
+    if (!window.confirm(`Delete "${row.name || row.sku}" (${row.platform}) from the master catalog? This can't be undone.`)) {
+      return;
+    }
+    setDeletingId(row.id);
+    setActionStatus(null);
+    try {
+      await deleteProductMarketingRow(row.id);
+      setActionStatus({ type: "success", message: `Deleted "${row.name || row.sku}".` });
+      await refetch();
+    } catch (e) {
+      setActionStatus({ type: "error", message: e instanceof Error ? e.message : "Delete failed" });
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   // Tab lists driven by what's actually in the data, not a hardcoded set — this table's
   // Category/Platform values aren't curated the way the Amazon-ads Category filter is.
@@ -74,12 +99,50 @@ export default function MasterPage() {
       sortable: true,
       render: (val: string) => <span className="text-xs font-semibold text-muted-foreground">{val || "—"}</span>,
     },
+    {
+      key: "id",
+      label: "Actions",
+      exportValue: () => "",
+      render: (_val: number, row: ProductMarketingCatalogRow) => (
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => setEditingRow(row)}
+            className="p-1.5 rounded-lg text-muted-foreground hover:text-indigo-600 hover:bg-indigo-500/10 transition-colors cursor-pointer"
+            title="Edit"
+          >
+            <Pencil size={14} />
+          </button>
+          <button
+            onClick={() => handleDelete(row)}
+            disabled={deletingId === row.id}
+            className="p-1.5 rounded-lg text-muted-foreground hover:text-red-600 hover:bg-red-500/10 transition-colors disabled:opacity-40 cursor-pointer"
+            title="Delete"
+          >
+            {deletingId === row.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+          </button>
+        </div>
+      ),
+    },
   ];
 
   return (
     <div className="space-y-8 pb-12">
       {isError && (
         <QueryErrorState compact message="Master SKU catalog couldn't load — retry." onRetry={() => refetch()} />
+      )}
+
+      {actionStatus && (
+        <div
+          className={cn(
+            "flex items-center gap-1.5 text-xs font-semibold rounded-xl px-4 py-2.5 border",
+            actionStatus.type === "success"
+              ? "text-green-600 dark:text-green-400 bg-green-500/10 border-green-500/20"
+              : "text-red-600 dark:text-red-400 bg-red-500/10 border-red-500/20"
+          )}
+        >
+          {actionStatus.type === "success" ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+          {actionStatus.message}
+        </div>
       )}
 
       <PageHero
@@ -150,6 +213,18 @@ export default function MasterPage() {
 
           <DataTable data={filteredRows} columns={columns} defaultSort="sku" exportName="master-product-marketing" />
         </>
+      )}
+
+      {editingRow && (
+        <MasterProductEditModal
+          row={editingRow}
+          onClose={() => setEditingRow(null)}
+          onSaved={async () => {
+            setEditingRow(null);
+            setActionStatus({ type: "success", message: `Updated "${editingRow.name || editingRow.sku}".` });
+            await refetch();
+          }}
+        />
       )}
     </div>
   );

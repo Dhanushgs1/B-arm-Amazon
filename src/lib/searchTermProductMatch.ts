@@ -245,6 +245,30 @@ const KNOWN_RELEVANT_ASINS = new Map<string, { name: string; note?: string }>([
   ["b004rbl5zm", { name: "Pre-Seed Fertility Lubricant", note: "fertility-adjacent" }],
 ]);
 
+// Client feedback (Sept 2026): when a search term names a competitor's own brand rather than
+// just the generic product category, that's a customer actively looking for THAT competitor's
+// listing — negating it only throws the click away. The client wants these kept and called out
+// specifically so the recommendation is "go get found on their page" (Sponsored Products Product
+// Targeting against the competitor's ASIN/brand), not "block this search." Patterns (not plain
+// substrings) so common misspellings customers actually type still match: "nory"/"noory" both hit
+// via `no+ry`, e.g. — confirmed real competitor brands for this account's insemination-kit line via
+// a live Amazon.in search (Nory "At Home Self Insemination IVI/IUI Kit", NeoDocs "I-Conceive" line,
+// Prega/PregaPath at-home insemination kits) rather than guessed from the search-term spelling
+// alone. Curated by hand like KNOWN_RELEVANT_ASINS above — add to this list as more competitor
+// brand terms turn up in real exports, rather than trying to auto-detect an arbitrary brand name.
+const COMPETITOR_BRAND_PATTERNS: Array<{ pattern: RegExp; brand: string }> = [
+  { pattern: /\bno+ry\b/i, brand: "Nory" },
+  { pattern: /\bneodocs?\b/i, brand: "NeoDocs" },
+  { pattern: /\bprega\w*\b/i, brand: "Prega" },
+];
+
+function findCompetitorBrand(searchTerm: string): string | null {
+  for (const { pattern, brand } of COMPETITOR_BRAND_PATTERNS) {
+    if (pattern.test(searchTerm)) return brand;
+  }
+  return null;
+}
+
 export interface SearchTermClassification {
   negative: boolean;
   // "positive" = real orders (a proven converting term). "neutral" = zero orders but
@@ -261,6 +285,13 @@ export interface SearchTermClassification {
   // campaigns run 500+ search terms per drawer/export). See the scoring block in
   // classifySearchTerm below for exactly how each status computes its score.
   score: number;
+  // Which competitor brand (see COMPETITOR_BRAND_PATTERNS) this search term names, if any —
+  // null when it doesn't match a known competitor brand at all.
+  competitorBrand: string | null;
+  // Short, client-facing action for this row — separate from `reasons` (which explains WHY the
+  // classifier decided what it did) so a business reader gets a one-line next step instead of
+  // the classifier's internal reasoning. Exported as the report's "Feedback" column.
+  recommendation: string;
 }
 
 // The rule: a term is negative whenever it has zero orders — regardless of spend or clicks —
@@ -300,13 +331,16 @@ export function classifySearchTerm(
 
   const isOwnAsin = (campaignAsins || []).some((a) => a.toLowerCase() === rawTerm.toLowerCase());
   const knownRelevant = KNOWN_RELEVANT_ASINS.get(rawTerm.toLowerCase()) || null;
+  const competitorBrand = findCompetitorBrand(rawTerm);
   const isDifferentAsinSearch = ASIN_PATTERN.test(rawTerm) && !isOwnAsin && !knownRelevant;
   // Own-ASIN search terms have no words to trip matchesOwnProduct's name-based check (an ASIN
   // string shares no tokens with a product title) — check the ASIN directly too, so a customer
   // pasting/typing this campaign's own exact ASIN with zero orders is relevant traffic that
   // hasn't converted yet, same as searching the product by name. A manually-confirmed relevant
-  // competitor/category ASIN (knownRelevant) gets the same treatment.
-  const relevantToOwnProduct = matchesOwnProduct(rawTerm, campaignProductNames) || isOwnAsin || !!knownRelevant;
+  // competitor/category ASIN (knownRelevant) gets the same treatment. A named competitor brand
+  // (competitorBrand) is exempted the same way, per the client feedback in COMPETITOR_BRAND_PATTERNS
+  // above — that traffic is never a mismatch to negate, it's a customer to win over.
+  const relevantToOwnProduct = matchesOwnProduct(rawTerm, campaignProductNames) || isOwnAsin || !!knownRelevant || !!competitorBrand;
 
   // Word-overlap hit against the wider catalogue, computed up front (not only to explain an
   // already-decided negative) so a hit against ANOTHER of B-ARM's own live campaigns can also
@@ -378,7 +412,11 @@ export function classifySearchTerm(
     // knownRelevant/matchesOwnProduct-by-name already read clearly on their own (knownRelevant
     // pushed its note above; a plain name match needs one here, isOwnAsin has neither).
     if (isOwnAsin) reasons.push("No orders yet; search term is this campaign's own ASIN — relevant, not a mismatch");
-    else if (!reasons.length) reasons.push("No orders yet; matches this campaign's own product — relevant search, not a mismatch");
+    else if (competitorBrand) {
+      reasons.push(
+        `Competitor brand search ("${competitorBrand}") — customer is looking for ${competitorBrand}'s product, not a mismatch`
+      );
+    } else if (!reasons.length) reasons.push("No orders yet; matches this campaign's own product — relevant search, not a mismatch");
   }
 
   const status: SearchTermClassification["status"] = negative ? "negative" : orders > 0 ? "positive" : "neutral";
@@ -403,5 +441,19 @@ export function classifySearchTerm(
     score = 50;
   }
 
-  return { negative, status, reasons, mismatchedProduct, score };
+  // Client-facing action, separate from the classifier's internal `reasons` — a competitor
+  // brand always recommends going after their page, even on the rare case one has already
+  // converted, since that's still the highest-value next step for that term.
+  let recommendation: string;
+  if (competitorBrand) {
+    recommendation = `Target ${competitorBrand}'s product page (Sponsored Products Product Targeting) — do not add as negative`;
+  } else if (status === "negative") {
+    recommendation = "Add as negative keyword";
+  } else if (status === "positive") {
+    recommendation = "Keep — proven converting term";
+  } else {
+    recommendation = "Keep — relevant search, monitor for conversions";
+  }
+
+  return { negative, status, reasons, mismatchedProduct, score, competitorBrand, recommendation };
 }

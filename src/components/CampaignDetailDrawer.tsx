@@ -730,6 +730,11 @@ Provide analysis in 4 clear sections using bullet points:
                         label: "Reason",
                         exportValue: (val: any) => (val.reasons.length ? val.reasons.join("; ") : "—"),
                       },
+                      {
+                        key: "_classification",
+                        label: "Feedback",
+                        exportValue: (val: any) => val.recommendation,
+                      },
                     ],
                     `${(selectedCampaignName || "campaign").replace(/[^a-z0-9]+/gi, "-")}-search-terms`
                   );

@@ -17,6 +17,7 @@ const DEFAULT_CC = [
   "akshaya.v@b-arm.com",
   "ceo@barmenterprises.com",
   "sriram@b-arm.com",
+  "dhanush@stratai.io",
 ].join(",");
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
