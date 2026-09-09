@@ -61,6 +61,14 @@ function DataOnFileCaption({
   // instead of the upload table's, and say so, so a stale/absent CSV upload
   // doesn't read as "no data" when the report is in fact fine.
   if (misInfo) {
+    if (misInfo.error) {
+      return (
+        <>
+          <p className="text-[10px] text-red-600 dark:text-red-400 font-semibold mt-1">&#9888; MIS data unavailable — {misInfo.error}</p>
+          <p className="text-[10px] text-primary/70 mt-0.5">Synced live from MIS — reports use this, not the CSV upload below.</p>
+        </>
+      );
+    }
     const stale = staleAfterDays !== undefined ? staleness(misInfo.maxDate, staleAfterDays) : null;
     return (
       <>

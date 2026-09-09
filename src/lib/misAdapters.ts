@@ -494,6 +494,9 @@ export interface MisReportDataInfo {
   rowCount: number;
   minDate: string | null;
   maxDate: string | null;
+  /** Set when this source's fetch failed — rowCount/minDate/maxDate are
+   *  meaningless zero/null placeholders in that case, not "table is empty". */
+  error?: string;
 }
 
 function summarizeDates<T extends Record<string, unknown>>(rows: T[], dateField: keyof T): MisReportDataInfo {
@@ -535,8 +538,32 @@ export async function fetchMisAmazonOrdersInfo(): Promise<MisReportDataInfo> {
   return fetchTableSummary("amazon_orders", "purchase-date");
 }
 
+// amazon_returns' and amazon_seller_flex_return's raw date columns are
+// "DD-Mon-YY" text (see the "DD-Mon-YY text" comment above
+// fetchMisDateFiltered) — NOT chronologically sortable as a plain string, so
+// fetchTableSummary's Postgres-side ORDER BY would silently return the wrong
+// min/max row. But the previous fix here (fetchMisAmazonReturns((q) => q),
+// i.e. a full `select("*")` of every column) is exactly the unbounded
+// full-table fetch that hit "canceling statement due to statement timeout"
+// for amazon_orders/amazon_fba_returns — same risk here as those tables grow.
+// Compromise: a fast indexed count (safe regardless of column format) plus a
+// full-table fetch of ONLY the raw date column (not select("*")), parsed and
+// sorted client-side for a correct min/max at a fraction of the payload.
+async function fetchTextDateTableSummary(table: string, rawCol: string): Promise<MisReportDataInfo> {
+  const [{ count, error: countErr }, rows] = await Promise.all([
+    supabasePublic.from(table).select("*", { count: "exact", head: true }),
+    fetchAllRows(table, (q) => q.select(rawCol).not(rawCol, "is", null)),
+  ]);
+  if (countErr) throw new Error(`Fetch ${table} summary failed: ${countErr.message}`);
+  const dates = (rows as Record<string, unknown>[])
+    .map((r) => parseDDMonYY(r[rawCol]))
+    .filter((d): d is string => !!d)
+    .sort();
+  return { rowCount: count || 0, minDate: dates[0] ?? null, maxDate: dates[dates.length - 1] ?? null };
+}
+
 export async function fetchMisAmazonReturnsInfo(): Promise<MisReportDataInfo> {
-  return summarizeDates(await fetchMisAmazonReturns((q) => q), "return_request_date");
+  return fetchTextDateTableSummary("amazon_returns", "Return request date");
 }
 
 export async function fetchMisFbaReturnsInfo(): Promise<MisReportDataInfo> {
@@ -544,19 +571,29 @@ export async function fetchMisFbaReturnsInfo(): Promise<MisReportDataInfo> {
 }
 
 export async function fetchMisSellerFlexReturnsInfo(): Promise<MisReportDataInfo> {
-  return summarizeDates(await fetchMisSellerFlexReturns((q) => q), "pickup_date");
+  return fetchTextDateTableSummary("amazon_seller_flex_return", "Pick -up date");
 }
 
 /** The Upload cards whose "data on file" caption should reflect the MIS feed. */
 export const MIS_BACKED_UPLOAD_TYPES: UploadReportType[] = ["am_orders", "am_returns", "fba_returns", "sf_return"];
 
+// One failed MIS source (e.g. amazon_returns timing out) must never blank out
+// the other 3 cards — each fetch settles independently, and a rejected one
+// becomes an explicit error result instead of taking the whole call down.
+function toSettledInfo(result: PromiseSettledResult<MisReportDataInfo>): MisReportDataInfo {
+  if (result.status === "fulfilled") return result.value;
+  return { rowCount: 0, minDate: null, maxDate: null, error: result.reason instanceof Error ? result.reason.message : String(result.reason) };
+}
+
 export async function fetchAllMisReportDataInfo(): Promise<Partial<Record<UploadReportType, MisReportDataInfo>>> {
-  const [am_orders, am_returns, fba_returns, sf_return] = await Promise.all([
-    fetchMisAmazonOrdersInfo(),
-    fetchMisAmazonReturnsInfo(),
-    fetchMisFbaReturnsInfo(),
-    fetchMisSellerFlexReturnsInfo(),
-  ]);
+  const [am_orders, am_returns, fba_returns, sf_return] = (
+    await Promise.allSettled([
+      fetchMisAmazonOrdersInfo(),
+      fetchMisAmazonReturnsInfo(),
+      fetchMisFbaReturnsInfo(),
+      fetchMisSellerFlexReturnsInfo(),
+    ])
+  ).map(toSettledInfo);
   return { am_orders, am_returns, fba_returns, sf_return };
 }
 
