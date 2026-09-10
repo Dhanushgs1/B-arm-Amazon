@@ -395,35 +395,19 @@ export async function fetchAmazonProducts(
     campaignSpendByDay.set(campaign, (campaignSpendByDay.get(campaign) || 0) + spend);
   };
 
-  // barm_amazon_sp_advertised_product rows for a deleted/archived campaign come back
-  // with campaign_name AND ad_group_name both blank — Amazon can no longer break that
-  // campaign's spend down per SKU once it's gone, so its export repeats the SAME full
-  // daily spend figure on every advertised SKU the campaign used to target, rather than
-  // splitting it across them (confirmed against the seller's own uploaded "Last 7 days"
-  // workbook: the exact same set of SKUs recurs every single day sharing one identical
-  // spend value that itself changes day to day, tracking one underlying campaign's real
-  // daily spend — not coincidence). Summed naively, that inflates both that campaign's
-  // SKUs' individual spend AND the platform's total spend by however many SKUs shared
-  // it. Detected by an exact spend match among blank-identity rows on the same day, then
-  // divided evenly across the group so each SKU gets its fair share instead of the full
-  // amount — same spirit as campaignShares() below apportioning SB/SD spend by weight.
-  const orphanClusterSize = new Map<string, number>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  spRows.forEach((r: any) => {
-    if (r.campaign_name || r.ad_group_name || !r.advertised_sku) return;
-    const key = `${r.report_date}|${num(r.spend).toFixed(6)}`;
-    orphanClusterSize.set(key, (orphanClusterSize.get(key) || 0) + 1);
-  });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const orphanShareDivisor = (r: any): number => {
-    if (r.campaign_name || r.ad_group_name) return 1;
-    return orphanClusterSize.get(`${r.report_date}|${num(r.spend).toFixed(6)}`) || 1;
-  };
-
+  // Per the seller's explicit choice, Amazon SP spend is always the plain sum of the
+  // raw export's own Spend column, per SKU — no correction applied for deleted/archived
+  // campaigns whose rows come back with campaign_name and ad_group_name both blank
+  // (Amazon repeats that campaign's full daily spend on every SKU it used to target once
+  // it's gone, rather than splitting it across them). An earlier version of this code
+  // divided such rows evenly across same-day/same-spend clusters to avoid double-counting
+  // that repetition, but the seller asked for the report to always match a straight sum
+  // of the raw file instead, even though that means a re-surfaced deleted campaign can
+  // inflate the total.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   spRows.forEach((r: any) => {
     if (!r.advertised_sku) return;
-    const spend = num(r.spend) / orphanShareDivisor(r);
+    const spend = num(r.spend);
     const a = ensureSpend(r.advertised_sku);
     a.spend += spend;
     if (r.report_date === endDate) addCampaignSpend(r.campaign_name || "", spend);
@@ -443,7 +427,7 @@ export async function fetchAmazonProducts(
   const spendBySkuDay = new Map<string, number>();
   const addDay = (sku: string, spend: number) => spendBySkuDay.set(sku, (spendBySkuDay.get(sku) || 0) + spend);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  spRows.filter((r: any) => r.report_date === endDate).forEach((r: any) => { if (r.advertised_sku) addDay(r.advertised_sku, num(r.spend) / orphanShareDivisor(r)); });
+  spRows.filter((r: any) => r.report_date === endDate).forEach((r: any) => { if (r.advertised_sku) addDay(r.advertised_sku, num(r.spend)); });
   [...sbRows, ...sdRows]
     .filter((r: { report_date?: string }) => r.report_date === endDate)
     .forEach((r: { campaign_name?: string; spend?: number }) => {
