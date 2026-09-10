@@ -19,6 +19,11 @@ import { staleness } from "@/lib/dataFreshness";
 import { fetchAllMisReportDataInfo, type MisReportDataInfo } from "@/lib/misAdapters";
 import { fetchProductMasterNameMap } from "@/lib/productMasterUpload";
 import { uploadProductMarketing, fetchProductMarketingDataInfo, type ProductMarketingDataInfo } from "@/lib/productMarketingUpload";
+import {
+  uploadSocialMediaReportFile,
+  fetchSocialMediaReportDataInfo,
+  type SocialMediaReportDataInfo,
+} from "@/lib/socialMediaReportUpload";
 import Link from "next/link";
 
 const AD_ORDER_REPORT_TYPES: UploadReportType[] = [
@@ -295,6 +300,109 @@ function CombinedAdSpendUploadCard({ onUploaded, dataInfo }: { onUploaded: () =>
               </div>
             ))}
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+interface SocialMediaState {
+  status: "idle" | "parsing" | "done" | "error";
+  fileName?: string;
+  message?: string;
+}
+
+// Meta Ads Manager's "Raw Data Report" export — feeds the Ad Spend Report's
+// Summary sheet "Social Media" row (spend for whichever product is currently
+// running Meta ads, cross-referenced against that product's own Amazon
+// orders — see fetchSocialMediaAdSpend in adSpendReportExport.ts). Accepts
+// either a single-day export or a multi-day range export; see
+// socialMediaReportUpload.ts for how the two coexist without double-counting.
+function SocialMediaUploadCard({ onUploaded, dataInfo }: { onUploaded: () => void; dataInfo: SocialMediaReportDataInfo | undefined }) {
+  const [state, setState] = useState<SocialMediaState>({ status: "idle" });
+  const [dragOver, setDragOver] = useState(false);
+
+  const handleFile = async (file: File) => {
+    setState({ status: "parsing", fileName: file.name });
+    try {
+      const res = await uploadSocialMediaReportFile(file);
+      const message = `${res.savedRows} rows saved${res.skippedRows ? `, ${res.skippedRows} skipped` : ""} (of ${res.totalRows})`;
+      setState({ status: "done", fileName: file.name, message });
+      onUploaded();
+    } catch (err) {
+      setState({ status: "error", fileName: file.name, message: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  return (
+    <div className="glass rounded-2xl border-2 border-primary/30 p-6 shadow-sm">
+      <div className="flex items-center gap-3 mb-2">
+        <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary">
+          <FileSpreadsheet size={20} />
+        </div>
+        <div>
+          <h3 className="font-bold text-sm text-foreground">Social Media Ad Spend (Meta)</h3>
+          <span className="text-[10px] text-muted-foreground uppercase font-black tracking-wider">XLSX</span>
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground mb-4">
+        Drop Meta Ads Manager&apos;s &quot;Raw Data Report&quot; export here — a single day&apos;s export or a
+        multi-day range both work, this card auto-detects which. Feeds the{" "}
+        <Link href="/dashboard/reports" className="underline hover:text-foreground">Ad Spend Report</Link>&apos;s
+        Summary sheet &quot;Social Media&quot; row.
+      </p>
+
+      <label
+        htmlFor="social-media-ad-spend-upload"
+        className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl py-8 cursor-pointer transition-colors ${
+          dragOver ? "border-primary" : "border-border hover:border-primary/50"
+        }`}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          const f = e.dataTransfer.files?.[0];
+          if (f) handleFile(f);
+        }}
+      >
+        <UploadCloud size={24} className="text-muted-foreground" />
+        <span className="text-xs text-muted-foreground px-2 text-center truncate max-w-full">
+          {state.fileName || "Click or drop the Meta \"Raw Data Report\" .xlsx here"}
+        </span>
+      </label>
+      {dataInfo && (
+        <p className="text-[10px] text-muted-foreground mt-1">
+          {dataInfo.error ? `Table not ready — ${dataInfo.error}` : dataInfo.minDate ? `Data: ${dataInfo.minDate} to ${dataInfo.maxDate} (${dataInfo.rowCount} rows)` : "No data"}
+        </p>
+      )}
+      <input
+        id="social-media-ad-spend-upload"
+        type="file"
+        accept=".xlsx,.xls"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) handleFile(f);
+          e.target.value = "";
+        }}
+      />
+
+      <div className="mt-3 text-xs min-h-[1.25rem]">
+        {state.status === "parsing" && (
+          <span className="flex items-center gap-1.5 text-muted-foreground">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Reading sheet &amp; saving to Supabase…
+          </span>
+        )}
+        {state.status === "done" && (
+          <span className="flex items-center gap-1.5 text-green-600 dark:text-green-400 font-semibold">
+            <CheckCircle2 size={14} /> {state.message}
+          </span>
+        )}
+        {state.status === "error" && (
+          <span className="flex items-center gap-1.5 text-red-600 dark:text-red-400 font-semibold">
+            <XCircle size={14} /> {state.message}
+          </span>
         )}
       </div>
     </div>
@@ -619,12 +727,19 @@ export default function UploadReportsPage() {
     setProductMarketingDataInfo(info);
   }, []);
 
+  const [socialMediaDataInfo, setSocialMediaDataInfo] = useState<SocialMediaReportDataInfo | undefined>(undefined);
+  const refreshSocialMediaMeta = useCallback(async () => {
+    const info = await fetchSocialMediaReportDataInfo();
+    setSocialMediaDataInfo(info);
+  }, []);
+
   useEffect(() => {
     refreshMeta();
     refreshCombinedMeta();
     refreshMisMeta();
     refreshProductMarketingMeta();
-  }, [refreshMeta, refreshCombinedMeta, refreshMisMeta, refreshProductMarketingMeta]);
+    refreshSocialMediaMeta();
+  }, [refreshMeta, refreshCombinedMeta, refreshMisMeta, refreshProductMarketingMeta, refreshSocialMediaMeta]);
 
   const handleFile = async (type: UploadReportType, file: File) => {
     setCardState((prev) => ({ ...prev, [type]: { status: "parsing", fileName: file.name } }));
@@ -678,6 +793,8 @@ export default function UploadReportsPage() {
       </div>
 
       <CombinedAdSpendUploadCard onUploaded={refreshCombinedMeta} dataInfo={combinedDataInfo} />
+
+      <SocialMediaUploadCard onUploaded={refreshSocialMediaMeta} dataInfo={socialMediaDataInfo} />
 
       <ProductMarketingUploadCard onUploaded={refreshProductMarketingMeta} dataInfo={productMarketingDataInfo} />
 

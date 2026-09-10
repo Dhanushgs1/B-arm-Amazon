@@ -597,8 +597,9 @@ export default function ReportsPage() {
           the single day selected above ({endDate || "yesterday"}) and its trailing 7 days, plus a cross-platform Ad
           Status Report and a Low Spend Campaigns list. Built from the data uploaded on the Amazon, Flipkart, and{" "}
           <a href="/dashboard/meesho/upload" className="underline hover:text-foreground">Meesho</a>{" "}
-          Upload pages (Meesho needs scripts/meesho_tables.sql run once in Supabase first). Google Ads and social-media spend
-          aren&apos;t included yet — no sample export has been seen for either.
+          Upload pages (Meesho needs scripts/meesho_tables.sql run once in Supabase first), plus a Social Media
+          (Meta Ads) Summary row from the Upload page&apos;s &quot;Social Media Ad Spend&quot; card. Google Ads spend
+          still isn&apos;t included — no sample export has been seen for it yet.
         </p>
         <div className="flex flex-wrap gap-2">
           <button

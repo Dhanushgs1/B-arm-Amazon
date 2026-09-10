@@ -825,6 +825,61 @@ export async function fetchMeeshoProducts(
   return { products, overallDay, overallRange, campaigns, reportDates, adsRows, orderRows };
 }
 
+// ── Social Media (Meta Ads) ──────────────────────────────────────────────────
+// Lightweight add-on, NOT a full `Platform` — Meta ad spend only feeds one
+// extra Summary-sheet row (see the "Social Media" row built in
+// buildAdSpendReportWorkbook below), not its own Ad spend report / SKU Wise
+// Report / Ad Status Report / Action Sheet / Low Spend Campaigns entries —
+// there's exactly one product running Meta ads today and no per-SKU campaign
+// breakdown the way the three real platforms above have, so those sheets
+// don't have anything meaningful to add for it (per the seller's own choice).
+//
+// Every uploaded row (see socialMediaReportUpload.ts) carries its own
+// [report_start, report_end] window rather than a single report_date, since
+// Meta's own export can be either a single day or a multi-day range — and in
+// practice the same campaign can end up with BOTH a daily row (today's
+// export) and a wider row covering the whole trailing week for the very same
+// days (a "last 7 days" export pulled separately), which must never both be
+// summed for the same campaign or the range total would double-count. So the
+// range total is resolved per campaign: a row whose window exactly matches
+// [range.start, endDate] is that campaign's authoritative whole-window total
+// and wins outright over any narrower row for the same campaign (which is
+// necessarily a subset of it); only when no such row exists does it fall
+// back to summing whatever narrower (typically daily) rows that campaign has
+// inside the window. The single reporting day's own figure only ever comes
+// from a literal daily row for that exact date — a range row can't tell us
+// one day's specific share of its total.
+async function fetchSocialMediaAdSpend(
+  range: { start: string; end: string },
+  endDate: string
+): Promise<{ daySpend: number; rangeSpend: number }> {
+  const rows = (await fetchAllRows(
+    "barm_daily_social_media",
+    (q) => q.lte("report_start", endDate).gte("report_end", range.start)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ).catch(() => [])) as any[];
+
+  const daySpend = rows
+    .filter((r) => r.report_start === endDate && r.report_end === endDate)
+    .reduce((s, r) => s + num(r.spend), 0);
+
+  const byCampaign = new Map<string, typeof rows>();
+  rows
+    .filter((r) => r.report_start >= range.start && r.report_end <= endDate) // fully inside the window only
+    .forEach((r) => {
+      const list = byCampaign.get(r.campaign_name) ?? [];
+      list.push(r);
+      byCampaign.set(r.campaign_name, list);
+    });
+  let rangeSpend = 0;
+  byCampaign.forEach((campaignRows) => {
+    const wideRow = campaignRows.find((r) => r.report_start === range.start && r.report_end === endDate);
+    rangeSpend += wideRow ? num(wideRow.spend) : campaignRows.reduce((s, r) => s + num(r.spend), 0);
+  });
+
+  return { daySpend: round2(daySpend), rangeSpend: round2(rangeSpend) };
+}
+
 // ── workbook ─────────────────────────────────────────────────────────────────
 
 function styleHeader(ws: XLSX.WorkSheet, row: number, cols: number, fill: string, colStart = 0): void {
@@ -1292,7 +1347,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // Fetched once and shared across all three platforms — the seller's own
   // approved SKU -> product name list, checked first before falling back to
   // whatever name shows up on an order/price-listing row (see resolveName).
-  const [master, masterSkuid, masterSkuidCatalog, masterSkuidsByName, productMarketing, amz, fk, ms] = await Promise.all([
+  const [master, masterSkuid, masterSkuidCatalog, masterSkuidsByName, productMarketing, amz, fk, ms, socialMedia] = await Promise.all([
     fetchProductMasterMap(),
     fetchMasterSkuidMap(),
     fetchMasterSkuidAmazonCatalog(),
@@ -1301,6 +1356,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     fetchAmazonProducts(range, endDate),
     fetchFlipkartProducts(range, endDate),
     fetchMeeshoProducts(range, endDate),
+    fetchSocialMediaAdSpend(range, endDate),
   ]);
   // The master lists one SKU spelling per product (e.g. "B-BULB-...-PK5(FK)"),
   // but ad/order data carries whatever variant spelling that platform export
@@ -1554,6 +1610,33 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     }
   });
 
+  // Social Media (Meta Ads) — one extra Summary row, added only when there's actually spend to
+  // show (an empty/not-yet-uploaded barm_daily_social_media leaves the Summary sheet unchanged).
+  // Orders/CPC/ACOS are cross-referenced from the Amazon platform's own already-computed product
+  // rows for the one product currently running Meta ads — per the seller's explicit choice, since
+  // Meta's campaign name alone ("Peak flow meter - <date>") doesn't distinguish the with-BLE vs
+  // without-BLE SKU families, and only the without-BLE listing is what these campaigns promote.
+  // Overall sales QTS/Value is left blank here — that sale is already counted once under Amazon's
+  // own Overall Sales, so repeating it would double-count.
+  let socialMediaRow: number | null = null;
+  if (socialMedia.daySpend > 0 || socialMedia.rangeSpend > 0) {
+    const SOCIAL_MEDIA_PRODUCT_NAME = "Sonmol Peak Flow meter (without BLE)";
+    const amazonRowsForSocial = groupProductsByName([...amz.products.values()]);
+    const socialProduct = amazonRowsForSocial.find((p) => p.name.trim().toLowerCase() === SOCIAL_MEDIA_PRODUCT_NAME.toLowerCase());
+    const price = socialProduct?.price ?? 0;
+    const dayAgg: WindowAgg = { spend: socialMedia.daySpend, units: socialProduct?.day.units ?? 0 };
+    const rangeAgg: WindowAgg = { spend: socialMedia.rangeSpend, units: socialProduct?.range.units ?? 0 };
+    socialMediaRow = sumAoa.length;
+    sumAoa.push([
+      "Social Media",
+      round2(socialMedia.daySpend), round2(spendTax(dayAgg)),
+      socialProduct?.name ?? SOCIAL_MEDIA_PRODUCT_NAME, price,
+      round2(dayAgg.spend), round2(spendTax(dayAgg)), dayAgg.units, round2(price * dayAgg.units), round2(computeCpc(dayAgg)), pct(computeAcos(dayAgg, price)),
+      round2(rangeAgg.spend), round2(spendTax(rangeAgg)), rangeAgg.units, round2(price * rangeAgg.units), round2(computeCpc(rangeAgg)), pct(computeAcos(rangeAgg, price)),
+      "", "",
+    ]);
+  }
+
   // Optimization suggestions (Gemini) — replaces the Action Sheet's generic tiered text with a
   // real per-campaign bid-cut/negative-keyword recommendation, for both Amazon and Flipkart rows,
   // matching the seller's own request. One Gemini call per platform covers every flagged campaign
@@ -1577,6 +1660,10 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     if (!cell) return;
     cell.l = { Target: `${SITE_URL}/dashboard/daily-ad-spend`, Tooltip: `Open ${platform} in the Daily Ad Spend dashboard` };
   });
+  // Social Media isn't a real `Platform` (see the comment where socialMediaRow is built), so it's
+  // styled directly here instead of through sumLabelCells/PLATFORM_FILL — same bold-label
+  // treatment, a Meta-blue fill, no dashboard hyperlink (there's no dedicated Social Media page).
+  if (socialMediaRow !== null) styleLabel(wsSummary, XLSX.utils.encode_cell({ r: socialMediaRow, c: 0 }), "1877F2");
   wsSummary["!cols"] = [
     { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 60 }, { wch: 10 },
     { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 24 }, { wch: 13 }, { wch: 13 }, // day block: Spend, Spend(with tax), Orders, Total Sales (wider header), CPC, ACOS
