@@ -126,6 +126,35 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
       .aspd-lo{color:#059669;font-weight:800;}
     </style>`;
 
+  // Social Media (Meta Ads) isn't a real platform in the data model (see the comment where
+  // socialMediaSummary is built in adSpendReportExport.ts), so it's rendered here as one bespoke
+  // extra row appended after the real platform rows below — same column shape as a one-product
+  // platform block, just built from a differently-shaped object (no topProducts/allProducts list,
+  // since there's only ever the one product).
+  const socialMedia = data.socialMediaSummary;
+  const socialMediaRowHtml = socialMedia
+    ? `
+        <tr>
+          <td ${td} style="font-weight:800;border-left:3px solid #1877F2;">Social Media</td>
+          <td ${td}>${money(socialMedia.daySpend)}</td>
+          <td ${td}>${money(socialMedia.daySpendTax)}</td>
+          <td ${tdName}>${clip(socialMedia.product)}</td>
+          <td ${td}>${socialMedia.price ? money(socialMedia.price) : "-"}</td>
+          <td ${td}>${money(socialMedia.day.spend)}</td>
+          <td ${td}>${money(socialMedia.day.spendTax)}</td>
+          <td ${td}>${socialMedia.day.orders}</td>
+          <td ${td}>${num(socialMedia.day.cpc)}</td>
+          <td class="aspd-td ${acosClass(socialMedia.day.acos)}">${acosPct(socialMedia.day.acos)}</td>
+          <td ${td}>${money(socialMedia.range.spend)}</td>
+          <td ${td}>${money(socialMedia.range.spendTax)}</td>
+          <td ${td}>${socialMedia.range.orders}</td>
+          <td ${td}>${num(socialMedia.range.cpc)}</td>
+          <td class="aspd-td ${acosClass(socialMedia.range.acos)}">${acosPct(socialMedia.range.acos)}</td>
+          <td ${td}>-</td>
+          <td ${td}>-</td>
+        </tr>`
+    : "";
+
   const platformRows = platforms.map((p) => {
     const products = p.topProducts.length
       ? p.topProducts
@@ -270,7 +299,7 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
                 <th ${th}>Value</th>
               </tr>
             </thead>
-            <tbody>${platformRows}</tbody>
+            <tbody>${platformRows}${socialMediaRowHtml}</tbody>
           </table>
           </div>
         </td></tr>
@@ -333,7 +362,7 @@ Deno.serve(async (req: Request) => {
 
       const result = reportRow.result_json as {
         endDate: string; rangeStart: string; filename: string; productCount: number;
-        platformTotals: unknown; platformSummaries: unknown; lowSpendCampaignCount: number;
+        platformTotals: unknown; platformSummaries: unknown; socialMediaSummary: unknown; lowSpendCampaignCount: number;
         incompleteDates: unknown;
       };
       // dmy(): 'YYYY-MM-DD' -> 'DD-MM-YYYY' — same as adSpendReportExport.ts's
@@ -348,6 +377,7 @@ Deno.serve(async (req: Request) => {
       const html = buildAdSpendDailyHtml({
         dayLabel, rangeLabel, currency: "INR",
         platformSummaries: result.platformSummaries,
+        socialMediaSummary: result.socialMediaSummary,
         productCount: result.productCount,
         lowSpendCampaignCount: result.lowSpendCampaignCount,
         incompleteDates: result.incompleteDates,

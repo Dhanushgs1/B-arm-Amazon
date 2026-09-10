@@ -1269,6 +1269,19 @@ export interface PlatformEmailSummary {
   allProducts: { name: string; price: number; day: ProductMetricBlock; range: ProductMetricBlock }[];
 }
 
+// Same shape as one PlatformEmailSummary row, minus the shortlist/allProducts fields (there's
+// only ever the one product) — kept as its own type instead of widening Platform/PlatformEmailSummary
+// to include "Social Media", since it's deliberately not a real platform (see the comment where
+// socialMediaRow is built in buildAdSpendReportWorkbook).
+export interface SocialMediaEmailSummary {
+  daySpend: number;
+  daySpendTax: number;
+  product: string;
+  price: number;
+  day: ProductMetricBlock;
+  range: ProductMetricBlock;
+}
+
 export interface AdSpendReportResult {
   wb: XLSX.WorkBook;
   filename: string;
@@ -1277,6 +1290,9 @@ export interface AdSpendReportResult {
   productCount: number;
   platformTotals: { platform: Platform; daySpendTax: number; rangeSpendTax: number }[];
   platformSummaries: PlatformEmailSummary[];
+  // null when there's no Social Media spend for this window — same condition that skips the
+  // Summary sheet's own "Social Media" row.
+  socialMediaSummary: SocialMediaEmailSummary | null;
   unmappedAmazonSpend: number;
   lowSpendCampaignCount: number;
   historyRowsSaved: number;
@@ -1619,6 +1635,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // Overall sales QTS/Value is left blank here — that sale is already counted once under Amazon's
   // own Overall Sales, so repeating it would double-count.
   let socialMediaRow: number | null = null;
+  let socialMediaSummary: SocialMediaEmailSummary | null = null;
   if (socialMedia.daySpend > 0 || socialMedia.rangeSpend > 0) {
     const SOCIAL_MEDIA_PRODUCT_NAME = "Sonmol Peak Flow meter (without BLE)";
     const amazonRowsForSocial = groupProductsByName([...amz.products.values()]);
@@ -1635,6 +1652,17 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       round2(rangeAgg.spend), round2(spendTax(rangeAgg)), rangeAgg.units, round2(price * rangeAgg.units), round2(computeCpc(rangeAgg)), pct(computeAcos(rangeAgg, price)),
       "", "",
     ]);
+    // Same figures as the Summary-sheet row above, reshaped for the emailed daily digest (see
+    // buildAdSpendDailyHtml in supabase/functions/send-ad-spend-email/index.ts), which renders
+    // this as one more row directly below Meesho's, per the seller's explicit request.
+    socialMediaSummary = {
+      daySpend: round2(socialMedia.daySpend),
+      daySpendTax: round2(spendTax(dayAgg)),
+      product: socialProduct?.name ?? SOCIAL_MEDIA_PRODUCT_NAME,
+      price,
+      day: { spend: round2(dayAgg.spend), spendTax: round2(spendTax(dayAgg)), orders: dayAgg.units, cpc: round2(computeCpc(dayAgg)), acos: pct(computeAcos(dayAgg, price)) },
+      range: { spend: round2(rangeAgg.spend), spendTax: round2(spendTax(rangeAgg)), orders: rangeAgg.units, cpc: round2(computeCpc(rangeAgg)), acos: pct(computeAcos(rangeAgg, price)) },
+    };
   }
 
   // Optimization suggestions (Gemini) — replaces the Action Sheet's generic tiered text with a
@@ -1956,6 +1984,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     productCount: amz.products.size + fk.products.size + ms.products.size,
     platformTotals,
     platformSummaries,
+    socialMediaSummary,
     unmappedAmazonSpend: round2(amz.unmappedSpend),
     lowSpendCampaignCount: lowSpend.length,
     historyRowsSaved,
