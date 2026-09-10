@@ -124,6 +124,17 @@ interface CampaignSpendRow {
 // variant of one product into a single row, summing its spend/units. The
 // merged row keeps every contributing SKU (comma-joined) so it can still be
 // traced back to the exact SKUs behind the numbers.
+// A SKU code re-tagged "(Old)" (e.g. "B-CT-Y(Old)") is the exact same physical
+// SKU as its current, un-tagged counterpart ("B-CT-Y") — the master table just
+// renamed the product at some point (e.g. "Chewy tube (Yellow)" became "Chewy
+// tube (Yellow) - Spiral model") without changing the underlying SKU. Stripped
+// here so groupProductsByName can recognize that overlap and fold the legacy
+// row into the current one, instead of printing two near-duplicate rows for
+// one product — per the seller's explicit instruction that same name OR same
+// SKU means one row.
+const stripOldSuffix = (sku: string): string => sku.trim().toLowerCase().replace(/\s*\(old\)\s*$/i, "");
+const isLiveSku = (sku: string): boolean => sku.trim().toLowerCase() === stripOldSuffix(sku);
+
 export function groupProductsByName(
   products: ProductRow[],
   // name -> Platform -> full master SKU list (fetchMasterSkuidsByName). When a
@@ -149,7 +160,62 @@ export function groupProductsByName(
     if (!existing.price && p.price) existing.price = p.price;
     existing.skuSet.add(p.sku);
   });
-  return [...byName.values()].map(({ skuSet, ...p }) => {
+
+  // Second pass — fold one name-group into another when a SKU in one, once its
+  // "(Old)" tag is stripped, matches a SKU in the other: same physical product,
+  // just renamed in the master table, so it must not print as two rows. Union-
+  // find over the name-keys above, joined whenever a normalized SKU is shared.
+  const parent = new Map<string, string>([...byName.keys()].map((k) => [k, k]));
+  const find = (k: string): string => {
+    let root = k;
+    while (parent.get(root) !== root) root = parent.get(root)!;
+    let cur = k;
+    while (parent.get(cur) !== root) {
+      const next = parent.get(cur)!;
+      parent.set(cur, root);
+      cur = next;
+    }
+    return root;
+  };
+  const skuNormToKeys = new Map<string, string[]>();
+  byName.forEach((group, key) => {
+    group.skuSet.forEach((s) => {
+      const norm = stripOldSuffix(s);
+      skuNormToKeys.set(norm, [...(skuNormToKeys.get(norm) ?? []), key]);
+    });
+  });
+  skuNormToKeys.forEach((keys) => {
+    for (let i = 1; i < keys.length; i++) {
+      const ra = find(keys[0]);
+      const rb = find(keys[i]);
+      if (ra !== rb) parent.set(ra, rb);
+    }
+  });
+
+  const merged = new Map<string, ProductRow & { skuSet: Set<string>; hasLiveSku: boolean }>();
+  byName.forEach((group, key) => {
+    const root = find(key);
+    const groupHasLive = [...group.skuSet].some(isLiveSku);
+    const existing = merged.get(root);
+    if (!existing) {
+      merged.set(root, { ...group, day: { ...group.day }, range: { ...group.range }, skuSet: new Set(group.skuSet), hasLiveSku: groupHasLive });
+      return;
+    }
+    existing.day.spend += group.day.spend;
+    existing.day.units += group.day.units;
+    existing.range.spend += group.range.spend;
+    existing.range.units += group.range.units;
+    if (!existing.price && group.price) existing.price = group.price;
+    group.skuSet.forEach((s) => existing.skuSet.add(s));
+    // Prefer the currently-active (non-"(Old)") naming as the merged row's display name — an
+    // all-"(Old)" group only keeps its own name if the group it merged with has no live SKU either.
+    if (!existing.hasLiveSku && groupHasLive) {
+      existing.name = group.name;
+      existing.hasLiveSku = true;
+    }
+  });
+
+  return [...merged.values()].map(({ skuSet, hasLiveSku, ...p }) => {
     const masterSkus = masterSkuidsByName?.get(p.name.trim().toLowerCase())?.get(p.platform);
     const sku = masterSkus && masterSkus.length ? [...masterSkus].sort().join(", ") : [...skuSet].join(", ");
     return { ...p, sku };
@@ -919,7 +985,10 @@ async function enrichOptimizationActionRows(
     const worst = [...c.adGroups.values()].sort((a, b) => b.spend - a.spend)[0];
     const acosPct = Math.round(acosOf(c) * 100);
     const cut = acosPct >= 90 ? 50 : acosPct >= 60 ? 35 : 20;
-    const pauseNote = worst && worst.units === 0 ? ` Pause it outright — zero units sold on ₹${round2(worst.spend)} spend.` : "";
+    // Zero units sold on real spend is the worst case — call for the maximum bid cut rather than
+    // saying "pause", per the seller's explicit instruction that this sheet always give a concrete
+    // % to act on, never a blanket pause instruction.
+    const pauseNote = worst && worst.units === 0 ? ` Cut this ad group's bids as close to 80% as the platform allows — zero units sold on ₹${round2(worst.spend)} spend.` : "";
     suggestionByCampaign.set(
       c.name,
       `Cut bids ${cut}% on ad group "${worst?.name || c.name}" (ACOS ${acosPct}%, ₹${round2(worst?.spend ?? c.spend)} spend).${pauseNote} Open that ad group's search-term report in ${searchTermTool} first to add negative keywords for zero-conversion terms.`
@@ -944,7 +1013,7 @@ async function enrichOptimizationActionRows(
     const prompt =
       `You are a ${platformLabel} PPC analyst. Over the trailing 7 days, these campaigns exceeded the 14% ACOS threshold, broken down by ad group and top SKU:\n\n${promptLines}\n\n` +
       `Return ONLY a JSON object, no markdown fences, no text outside the JSON, of this exact shape:\n` +
-      `{"campaigns":[{"name":"<exact campaign name as given above>","suggestion":"<1-2 sentences: a specific bid or budget cut % on a named ad group, or pause it if units sold is 0; end by naming which ad group to open ${searchTermTool}'s search-term report for first to add negative keywords — never invent a specific search term or keyword, since none is available in this data>"}]}\n` +
+      `{"campaigns":[{"name":"<exact campaign name as given above>","suggestion":"<1-2 sentences: a specific bid or budget cut % on a named ad group — never tell the seller to pause or stop a campaign, always give a concrete % cut instead (use an aggressive cut like 70-80% for an ad group with 0 units sold); end by naming which ad group to open ${searchTermTool}'s search-term report for first to add negative keywords — never invent a specific search term or keyword, since none is available in this data>"}]}\n` +
       `Include every one of the ${flagged.length} campaigns listed above, using their exact name string.`;
 
     try {
@@ -1342,7 +1411,10 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const platformSummaries: PlatformEmailSummary[] = [];
   // Action Sheet — every product whose trailing 7-day (range) ACOS clears 14%, tiered into a
   // recommended action by how bad it is: 14-25% ACOS is early warning ("Monitor"), 25-50% is a
-  // real problem ("Reduce bid"), above 50% is urgent ("Pause"). Range ACOS specifically (not the
+  // real problem ("Reduce bid"), above 50% is urgent ("Reduce bid urgently"). No tier ever says
+  // "Pause" — the seller explicitly asked that every row carry a concrete bid-cut % to act on
+  // instead of a blanket pause instruction (this reverses an earlier version of this sheet that
+  // did use "Pause" wording for the worst tier). Range ACOS specifically (not the
   // single reporting day) per the seller's request — a one-day spike is noisy, and this sheet
   // should reflect the week-long picture (the Summary sheet nearby still shows both Day and Range
   // ACOS per product unchanged). Flipkart rows get their generic tier text replaced below with a
@@ -1361,7 +1433,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     const acosPct = Math.round(acosFrac * 100);
     const cut = bidCutPct(acosPct);
     const note = "No matching campaign found in the uploaded ad data to confirm which ad group/keyword to open.";
-    if (acosPct > 50) return `Pause campaign / reduce bid urgently — cut bids ~${cut}% (7-day ACOS ${acosPct}%). ${note}`;
+    if (acosPct > 50) return `Reduce bid urgently — cut bids ~${cut}% (7-day ACOS ${acosPct}%). ${note}`;
     if (acosPct > 25) return `Reduce bid ~${cut}% (7-day ACOS ${acosPct}%). ${note}`;
     return `Monitor / review keywords — trim bids ~${cut}% (7-day ACOS ${acosPct}%). ${note}`;
   };

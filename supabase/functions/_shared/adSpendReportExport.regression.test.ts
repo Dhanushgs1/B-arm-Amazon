@@ -28,3 +28,24 @@ Deno.test("groupProductsByName sums spend/units across SKU variants of the same 
   assertEquals(rows[0].range.units, 7);
   assertEquals(rows[0].sku, "SKU-A, SKU-B");
 });
+
+Deno.test("groupProductsByName merges a legacy \"(Old)\"-suffixed SKU group into its renamed live counterpart", () => {
+  const rows = groupProductsByName([
+    { platform: "Amazon" as const, sku: "B-CT-Y", name: "Chewy tube (Yellow) - Spiral model", price: 247, day: { spend: 10, units: 1 }, range: { spend: 50, units: 5 } },
+    { platform: "Amazon" as const, sku: "B-CT-Y-1", name: "Chewy tube (Yellow) - Spiral model", price: 247, day: { spend: 2, units: 0 }, range: { spend: 10, units: 1 } },
+    { platform: "Amazon" as const, sku: "B-CT-Y(Old)", name: "Chewy tube (Yellow)", price: 247, day: { spend: 5, units: 1 }, range: { spend: 20, units: 2 } },
+    { platform: "Amazon" as const, sku: "B-CT-Y-1(Old)", name: "Chewy tube (Yellow)", price: 247, day: { spend: 1, units: 0 }, range: { spend: 5, units: 1 } },
+  ]);
+  assertEquals(rows.length, 1);
+  assertEquals(rows[0].name, "Chewy tube (Yellow) - Spiral model");
+  assertEquals(rows[0].day.spend, 18);
+  assertEquals(rows[0].range.units, 9);
+});
+
+Deno.test("groupProductsByName keeps genuinely different SKU families separate even with similar names", () => {
+  const rows = groupProductsByName([
+    { platform: "Amazon" as const, sku: "B-CT-G", name: "Chewy tube (Green - Spiral model)", price: 239, day: { spend: 10, units: 1 }, range: { spend: 50, units: 5 } },
+    { platform: "Amazon" as const, sku: "B-CT-G-BUMP", name: "Chewy tube Green (Bump model New)", price: 199, day: { spend: 5, units: 1 }, range: { spend: 20, units: 2 } },
+  ]);
+  assertEquals(rows.length, 2);
+});
