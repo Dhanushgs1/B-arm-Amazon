@@ -591,6 +591,14 @@ export async function fetchFlipkartProducts(
   };
   const overallDay = emptySales();
   const overallRange = emptySales();
+  // Real per-unit price each SKU actually sold for this window, straight from its own
+  // Invoice Amount rows — the seller's explicit preference over the static
+  // barm_flipkart_listings snapshot below, which goes stale between re-uploads (found via
+  // Chewy tube green- Pack of 2: listed ₹345 in barm_flipkart_listings vs a real ₹351
+  // Invoice Amount on every one of its orders this window). Used as the primary Flipkart
+  // price source; the listing price / Earn More average only fill in for a SKU with no
+  // real (non-cancelled) orders in this window.
+  const invoiceAcc = new Map<string, { amount: number; units: number }>();
   orderRows.forEach((r) => {
     const qty = num(r.quantity);
     // Overall sales QTS/Value: a straight SUM of the Order report's own
@@ -616,12 +624,20 @@ export async function fetchFlipkartProducts(
     const status = String(r.order_item_status || "").toUpperCase();
     if (status.startsWith("CANCEL")) return;
     ensureUnits(r.sku).units += qty;
+    if (qty > 0 && invoiceAmount > 0) {
+      const acc = invoiceAcc.get(r.sku) || { amount: 0, units: 0 };
+      acc.amount += invoiceAmount;
+      acc.units += qty;
+      invoiceAcc.set(r.sku, acc);
+    }
   });
 
   const skus = new Set<string>([...spendBySku.keys(), ...unitsBySku.keys(), ...priceBySku.keys()].filter(Boolean));
   const products = new Map<string, ProductRow>();
   skus.forEach((sku) => {
-    let price = priceBySku.get(sku) || 0;
+    const inv = invoiceAcc.get(sku);
+    let price = inv && inv.units > 0 ? inv.amount / inv.units : 0;
+    if (price <= 0) price = priceBySku.get(sku) || 0;
     if (price <= 0) {
       const a = aspAcc.get(sku);
       if (a && a.units > 0) price = a.amount / a.units;
