@@ -1,4 +1,5 @@
 import Papa from "papaparse";
+import * as XLSX from "xlsx";
 import { createClient } from "@supabase/supabase-js";
 import { lazySupabase, SUPABASE_URL, SUPABASE_ANON_KEY } from "@/lib/supabaseLazy";
 
@@ -228,7 +229,7 @@ function parseAnySfDate(v: string): string | null {
   return isoDateOnly(v) || parseLongDate(v) || parseDDMonYY(v) || parseMDY(v);
 }
 
-// ── CSV parsing ──────────────────────────────────────────────────────────────
+// ── CSV/XLSX parsing ─────────────────────────────────────────────────────────
 
 export function parseCsvFile(file: File): Promise<RawRow[]> {
   return new Promise((resolve, reject) => {
@@ -240,6 +241,30 @@ export function parseCsvFile(file: File): Promise<RawRow[]> {
       error: (err: Error) => reject(err),
     });
   });
+}
+
+async function parseXlsxFile(file: File): Promise<RawRow[]> {
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { raw: false, defval: "" });
+  return rows.map((row) => {
+    const out: RawRow = {};
+    for (const [k, v] of Object.entries(row)) out[k.trim()] = v == null ? "" : String(v).trim();
+    return out;
+  });
+}
+
+// Seller Central's catalog/inventory downloads (Price / FBA Inventory /
+// Inventory Ledger) come out as either .csv or .xlsx depending on how the
+// seller exported them — a seller CSV export has repeatedly arrived corrupted
+// (Amazon's own report tool wrapping the whole tab-separated row into a
+// single quoted CSV field, so every column-name regex in the mappers above
+// misses and every row gets dropped as missing its required fields) while the
+// .xlsx export from the same report is clean, so dispatch on extension
+// instead of assuming CSV.
+export function parseReportFile(file: File): Promise<RawRow[]> {
+  return /\.xlsx?$/i.test(file.name) ? parseXlsxFile(file) : parseCsvFile(file);
 }
 
 // ── per-report-type row mappers ─────────────────────────────────────────────
@@ -675,7 +700,7 @@ export function dedupeExactRows(rows: any[]): any[] {
 // table (see FULL_REPLACE_TYPES). Either way, re-uploading a file that
 // overlaps previous data converges to the new data rather than duplicating it.
 export async function uploadReportFile(type: UploadReportType, file: File): Promise<UploadResult> {
-  const rawRows = await parseCsvFile(file);
+  const rawRows = await parseReportFile(file);
   const mapper = REPORT_MAPPER[type];
   const required = REQUIRED_FIELDS[type];
   const mapped = rawRows.map(mapper);

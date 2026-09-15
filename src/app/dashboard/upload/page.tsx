@@ -151,7 +151,7 @@ function UploadCard({
         </div>
         <div>
           <h3 className="font-bold text-sm text-foreground">{REPORT_LABEL[type]}</h3>
-          <span className="text-[10px] text-muted-foreground uppercase font-black tracking-wider">CSV</span>
+          <span className="text-[10px] text-muted-foreground uppercase font-black tracking-wider">CSV or XLSX</span>
         </div>
       </div>
 
@@ -161,14 +161,14 @@ function UploadCard({
       >
         <UploadCloud size={22} className="text-muted-foreground" />
         <span className="text-xs text-muted-foreground px-2 text-center truncate max-w-full">
-          {state.fileName || "Click or drop CSV here"}
+          {state.fileName || "Click or drop CSV/XLSX here"}
         </span>
       </label>
       <DataOnFileCaption info={info} misInfo={misInfo} staleAfterDays={type === AD_SPEND_REPORT_TYPE ? 1 : undefined} />
       <input
         id={inputId}
         type="file"
-        accept=".csv"
+        accept=".csv,.xlsx,.xls"
         className="hidden"
         onChange={(e) => {
           const f = e.target.files?.[0];
