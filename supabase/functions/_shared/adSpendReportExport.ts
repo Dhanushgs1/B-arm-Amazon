@@ -532,11 +532,20 @@ export async function fetchFlipkartProducts(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows: any[];
 }> {
-  const [fsnRows, orderRowsRaw, earnRows, listingRows] = await Promise.all([
+  const [fsnRows, orderRowsRaw, earnRows, listingRows, priceListRows] = await Promise.all([
     fetchAllRows("barm_flipkart_fsn_report", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
     fetchDailyFlipkartOrders(range, endDate),
     fetchAllRows("barm_flipkart_earn_more", (q) => q.gte("order_date", range.start).lte("order_date", endDate)).catch(() => []),
     fetchAllRows("barm_flipkart_listings", (q) => q).catch(() => []),
+    // flipkart_price_list (scripts/flipkart_price_list_table.sql) holds the
+    // seller's own manual master-price-list workbook, filtered to the
+    // Flipkart-tagged rows — a fallback below barm_flipkart_listings (which
+    // stays authoritative when Flipkart's own official Listings export has
+    // been uploaded) for a SKU neither that table nor real orders cover yet.
+    // Wrapped in .catch(() => []) like the tables above: if this table
+    // hasn't been created yet, Flipkart just falls through to the existing
+    // Earn More ASP fallback rather than breaking the report.
+    fetchAllRows("flipkart_price_list", (q) => q).catch(() => []),
   ]);
 
   // Same dedup key the Flipkart Historical Analysis Report uses, for rows
@@ -553,6 +562,9 @@ export async function fetchFlipkartProducts(
   const priceBySku = new Map<string, number>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   listingRows.forEach((r: any) => { if (r.seller_sku_id && num(r.selling_price) > 0) priceBySku.set(r.seller_sku_id, num(r.selling_price)); });
+  const priceListBySku = new Map<string, number>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  priceListRows.forEach((r: any) => { if (r.sku_id && num(r.price) > 0) priceListBySku.set(r.sku_id, num(r.price)); });
   // Fall back to the window's realised average selling price where there's no
   // listing row, so ACOS still has a denominator.
   const aspAcc = new Map<string, { amount: number; units: number }>();
@@ -644,6 +656,7 @@ export async function fetchFlipkartProducts(
     const inv = invoiceAcc.get(sku);
     let price = inv && inv.units > 0 ? inv.amount / inv.units : 0;
     if (price <= 0) price = priceBySku.get(sku) || 0;
+    if (price <= 0) price = priceListBySku.get(sku) || 0;
     if (price <= 0) {
       const a = aspAcc.get(sku);
       if (a && a.units > 0) price = a.amount / a.units;
