@@ -100,10 +100,14 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
   const money = (v: number) => currency + new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 }).format(v || 0);
   // CPC is shown as a bare number in the manual mail (no currency symbol), unlike Spend/price.
   const num = (v: number) => new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 }).format(v || 0);
-  const acosPct = (v: number) => `${Math.round((v || 0) * 100)}%`;
+  // null means adSpendReportExport.ts's acosCell hit the "ad spend with zero attributed sales"
+  // sentinel — a genuinely undefined ratio, not 0%. Rendered as a dash, not coerced to "0%" by
+  // the `v || 0` pattern the other formatters here use (that would misleadingly read as a great,
+  // zero-cost result instead of "no signal for this window").
+  const acosPct = (v: number | null) => (v == null ? "–" : `${Math.round(v * 100)}%`);
   // Same thresholds as the Daily Digest's ACOS badge — colours ACOS so a problem product
-  // is scannable without reading every number.
-  const acosClass = (v: number) => ((v || 0) > 0.5 ? "aspd-hi" : (v || 0) > 0.25 ? "aspd-mid" : "aspd-lo");
+  // is scannable without reading every number. No colour for the undefined/null case.
+  const acosClass = (v: number | null) => (v == null ? "aspd-lo" : v > 0.5 ? "aspd-hi" : v > 0.25 ? "aspd-mid" : "aspd-lo");
   const clip = (s: string, len = 46) => ((s || "").length > len ? (s || "").slice(0, len) + "…" : s || "");
   // deno-lint-ignore no-explicit-any
   const platforms: any[] = data.platformSummaries || [];

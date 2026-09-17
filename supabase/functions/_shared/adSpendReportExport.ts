@@ -38,7 +38,15 @@ import { SITE_URL } from "./deps/siteUrl.ts";
 //                      every report assumed before this was wired in); a SKU with
 //                      no Tax on file falls back to DEFAULT_GST_MULTIPLIER (18%).
 //   CPC  = Spend(with tax) / Orders        (Orders = 0 -> CPC = Spend(with tax))
-//   ACOS = CPC / Price
+//   ACOS = CPC / Price, EXCEPT for Amazon, where it is instead raw Sponsored
+//          Products Spend / "7 Day Total Sales" straight off the ad platform's
+//          own export (no GST added) whenever that SKU has a Sponsored
+//          Products row on file — per the seller's explicit request that
+//          ACOS match Amazon's own raw export number-for-number, even though
+//          that can disagree sharply with the Orders/CPC columns beside it
+//          (see computeAcos's adAttributedSales branch). Falls back to CPC /
+//          Price for Flipkart/Meesho and for any Amazon SKU with no
+//          Sponsored Products row at all (SB/SD-only spend).
 // "Orders" here means units sold of that product in the window (order-report
 // quantity, cancelled orders excluded) — not ad-click-attributed units and not
 // order records. This is a deliberate choice (see the Notes sheet) so the
@@ -93,11 +101,37 @@ function num(v: unknown): number {
 // master_product_skuid Tax rate — see the tagging pass in
 // generateAdSpendReportWorkbook below) rather than living as a single global
 // constant, since different products carry different real GST slabs (5%/18%/0%).
-export interface WindowAgg { spend: number; units: number; gstMultiplier?: number; }
+// adAttributedSpend/adAttributedSales carry Amazon's own Sponsored Products
+// numbers (raw spend and "7 Day Total Sales", both un-adjusted for GST) for
+// the ACOS column specifically — per the seller's explicit request that ACOS
+// match Amazon's own ad-attributed report number-for-number, even though that
+// number can read very differently from this report's Orders/CPC (which stay
+// on real order-report units — see computeAcos below and its call sites).
+// Left undefined for a SKU with no Sponsored Products row at all (e.g.
+// SB/SD-only spend, or Flipkart/Meesho), so computeAcos falls back to the
+// real-order-based formula for it instead of reading as a false 0% ACOS.
+export interface WindowAgg { spend: number; units: number; gstMultiplier?: number; adAttributedSpend?: number; adAttributedSales?: number; }
 const emptyAgg = (): WindowAgg => ({ spend: 0, units: 0 });
 export const spendTax = (a: WindowAgg): number => a.spend * (a.gstMultiplier ?? DEFAULT_GST_MULTIPLIER);
 export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) / a.units : spendTax(a));
-export const computeAcos = (a: WindowAgg, price: number): number => (price > 0 ? computeCpc(a) / price : 0);
+// ACOS: when Amazon's own ad-attributed spend/sales are on file for this
+// window, use those directly (matches the raw Sponsored Products export
+// exactly, no GST added — same convention this file uses elsewhere for a
+// spend/revenue ratio it can't compute: a sentinel for "spend with zero
+// attributed sales" rather than Infinity). Otherwise falls back to the
+// real-order-based CPC/Price formula. This sentinel is deliberately reused
+// (not Infinity/NaN) for internal comparisons — sorting "worst ACOS first"
+// and the Action Sheet's >14% threshold both still want a very-high-but-
+// finite number here. Only the user-visible cell/JSON writers (acosCell
+// below) treat it specially, blanking it out instead of showing "999%".
+export const ACOS_UNDEFINED_SENTINEL = 9.99;
+export const computeAcos = (a: WindowAgg, price: number): number => {
+  if (a.adAttributedSales !== undefined) {
+    const spend = a.adAttributedSpend ?? 0;
+    return a.adAttributedSales > 0 ? spend / a.adAttributedSales : spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
+  }
+  return price > 0 ? computeCpc(a) / price : 0;
+};
 
 // Platform-wide "Overall sales" figures (units sold + realised sale value) —
 // unrelated to ad spend, so kept as its own shape rather than overloading
@@ -130,16 +164,28 @@ interface CampaignSpendRow {
 // variant of one product into a single row, summing its spend/units. The
 // merged row keeps every contributing SKU (comma-joined) so it can still be
 // traced back to the exact SKUs behind the numbers.
-// A SKU code re-tagged "(Old)" (e.g. "B-CT-Y(Old)") is the exact same physical
-// SKU as its current, un-tagged counterpart ("B-CT-Y") — the master table just
-// renamed the product at some point (e.g. "Chewy tube (Yellow)" became "Chewy
-// tube (Yellow) - Spiral model") without changing the underlying SKU. Stripped
-// here so groupProductsByName can recognize that overlap and fold the legacy
-// row into the current one, instead of printing two near-duplicate rows for
-// one product — per the seller's explicit instruction that same name OR same
-// SKU means one row.
-const stripOldSuffix = (sku: string): string => sku.trim().toLowerCase().replace(/\s*\(old\)\s*$/i, "");
-const isLiveSku = (sku: string): boolean => sku.trim().toLowerCase() === stripOldSuffix(sku);
+// A SKU code carrying either of these two suffixes is the exact same physical SKU as its base
+// counterpart, just tagged for a reason internal to the seller's own listing/master-table setup:
+//   - "(Old)" (e.g. "B-CT-Y(Old)") is the same SKU as its current, un-tagged counterpart
+//     ("B-CT-Y") — the master table just renamed the product at some point (e.g. "Chewy tube
+//     (Yellow)" became "Chewy tube (Yellow) - Spiral model") without changing the underlying SKU.
+//   - "-S" (e.g. "A015-S", "B-CT-G-BUMP-S") has no entry of its own in master_product_skuid at
+//     all, so it resolves through a different fallback path than its base SKU ("A015",
+//     "B-CT-G-BUMP") and lands on a different display name — splitting one product into two
+//     incomplete rows even though it's the identical physical SKU.
+// Stripped here so groupProductsByName can recognize either overlap and fold the tagged row into
+// the base one, instead of printing two near-duplicate rows for one product — per the seller's
+// explicit instruction that same name OR same SKU (after stripping either suffix) means one row.
+const stripLegacySkuSuffix = (sku: string): string =>
+  sku.trim().toLowerCase().replace(/\s*\(old\)\s*$/i, "").replace(/-s$/i, "");
+const isLiveSku = (sku: string): boolean => sku.trim().toLowerCase() === stripLegacySkuSuffix(sku);
+
+// Sums two WindowAgg.adAttributedSpend/adAttributedSales values across a merge, keeping the
+// "undefined = no Sponsored Products row on file" distinction from computeAcos intact: only
+// when both sides are undefined does the merged value stay undefined (falls back to the
+// real-order ACOS formula), otherwise a missing side counts as 0 spend/sales contributed.
+const sumOptional = (a?: number, b?: number): number | undefined =>
+  a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0);
 
 export function groupProductsByName(
   products: ProductRow[],
@@ -149,7 +195,17 @@ export function groupProductsByName(
   // the master's list is the complete, stable set (e.g. all 5 known variants
   // of a product), while the window-derived set only ever contains whichever
   // SKUs actually had ad spend or orders in that specific day/range.
-  masterSkuidsByName?: Map<string, Map<string, string[]>>
+  masterSkuidsByName?: Map<string, Map<string, string[]>>,
+  // sku -> master_product_skuid's own "Product Name" (fetchMasterSkuidMap). A product's own
+  // display name (p.name) goes through a resolver chain — master_product_marketing first,
+  // then master_product_skuid, then barm_product_master, then a raw fallback — so two sibling
+  // SKUs of the exact same physical product can land on two DIFFERENT final display names if
+  // only one of them has a master_product_marketing entry. Grouping on p.name alone then prints
+  // that one product as two separate rows, each with an incomplete SKU subset and therefore
+  // wrong Spend/Orders/ACOS. This second identity source lets the union-find below fold those
+  // apart-by-name groups back together whenever master_product_skuid says their SKUs belong to
+  // the same product, regardless of what each one's own resolved display name ended up being.
+  skuToMasterSkuidName?: Map<string, string>
 ): ProductRow[] {
   const byName = new Map<string, ProductRow & { skuSet: Set<string> }>();
   products.forEach((p) => {
@@ -161,8 +217,12 @@ export function groupProductsByName(
     }
     existing.day.spend += p.day.spend;
     existing.day.units += p.day.units;
+    existing.day.adAttributedSpend = sumOptional(existing.day.adAttributedSpend, p.day.adAttributedSpend);
+    existing.day.adAttributedSales = sumOptional(existing.day.adAttributedSales, p.day.adAttributedSales);
     existing.range.spend += p.range.spend;
     existing.range.units += p.range.units;
+    existing.range.adAttributedSpend = sumOptional(existing.range.adAttributedSpend, p.range.adAttributedSpend);
+    existing.range.adAttributedSales = sumOptional(existing.range.adAttributedSales, p.range.adAttributedSales);
     if (!existing.price && p.price) existing.price = p.price;
     existing.skuSet.add(p.sku);
   });
@@ -186,7 +246,7 @@ export function groupProductsByName(
   const skuNormToKeys = new Map<string, string[]>();
   byName.forEach((group, key) => {
     group.skuSet.forEach((s) => {
-      const norm = stripOldSuffix(s);
+      const norm = stripLegacySkuSuffix(s);
       skuNormToKeys.set(norm, [...(skuNormToKeys.get(norm) ?? []), key]);
     });
   });
@@ -197,6 +257,28 @@ export function groupProductsByName(
       if (ra !== rb) parent.set(ra, rb);
     }
   });
+
+  // Third union rule — fold groups together whenever a SKU in each carries the same
+  // master_product_skuid "Product Name", even though their own resolved p.name strings
+  // differ (see skuToMasterSkuidName's param comment above). Same union-find machinery,
+  // just keyed on the master table's identity instead of a normalized SKU string.
+  if (skuToMasterSkuidName) {
+    const masterNameToKeys = new Map<string, string[]>();
+    byName.forEach((group, key) => {
+      group.skuSet.forEach((s) => {
+        const masterName = skuToMasterSkuidName.get(s)?.trim().toLowerCase();
+        if (!masterName) return;
+        masterNameToKeys.set(masterName, [...(masterNameToKeys.get(masterName) ?? []), key]);
+      });
+    });
+    masterNameToKeys.forEach((keys) => {
+      for (let i = 1; i < keys.length; i++) {
+        const ra = find(keys[0]);
+        const rb = find(keys[i]);
+        if (ra !== rb) parent.set(ra, rb);
+      }
+    });
+  }
 
   const merged = new Map<string, ProductRow & { skuSet: Set<string>; hasLiveSku: boolean }>();
   byName.forEach((group, key) => {
@@ -209,8 +291,12 @@ export function groupProductsByName(
     }
     existing.day.spend += group.day.spend;
     existing.day.units += group.day.units;
+    existing.day.adAttributedSpend = sumOptional(existing.day.adAttributedSpend, group.day.adAttributedSpend);
+    existing.day.adAttributedSales = sumOptional(existing.day.adAttributedSales, group.day.adAttributedSales);
     existing.range.spend += group.range.spend;
     existing.range.units += group.range.units;
+    existing.range.adAttributedSpend = sumOptional(existing.range.adAttributedSpend, group.range.adAttributedSpend);
+    existing.range.adAttributedSales = sumOptional(existing.range.adAttributedSales, group.range.adAttributedSales);
     if (!existing.price && group.price) existing.price = group.price;
     group.skuSet.forEach((s) => existing.skuSet.add(s));
     // Prefer the currently-active (non-"(Old)") naming as the merged row's display name — an
@@ -410,6 +496,17 @@ export async function fetchAmazonProducts(
   // that repetition, but the seller asked for the report to always match a straight sum
   // of the raw file instead, even though that means a re-surfaced deleted campaign can
   // inflate the total.
+  // Amazon's own ad-attributed spend/sales (raw "Spend" and "7 Day Total
+  // Sales" columns, un-adjusted for GST), tracked alongside the real-order
+  // aggregate above purely so the ACOS column can match the raw Sponsored
+  // Products export number-for-number — see computeAcos's adAttributedSales
+  // branch. Sponsored Products only (sbRows/sdRows carry no per-SKU sales
+  // figure), matching the raw file this is meant to reproduce, which is
+  // itself a Sponsored Products Advertised Product report.
+  const adSpendRangeBySku = new Map<string, number>();
+  const adSalesRangeBySku = new Map<string, number>();
+  const adSpendDayBySku = new Map<string, number>();
+  const adSalesDayBySku = new Map<string, number>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   spRows.forEach((r: any) => {
     if (!r.advertised_sku) return;
@@ -417,6 +514,15 @@ export async function fetchAmazonProducts(
     const a = ensureSpend(r.advertised_sku);
     a.spend += spend;
     if (r.report_date === endDate) addCampaignSpend(r.campaign_name || "", spend);
+
+    const sku = r.advertised_sku;
+    const sales7d = num(r.sales_7d);
+    adSpendRangeBySku.set(sku, (adSpendRangeBySku.get(sku) || 0) + spend);
+    adSalesRangeBySku.set(sku, (adSalesRangeBySku.get(sku) || 0) + sales7d);
+    if (r.report_date === endDate) {
+      adSpendDayBySku.set(sku, (adSpendDayBySku.get(sku) || 0) + spend);
+      adSalesDayBySku.set(sku, (adSalesDayBySku.get(sku) || 0) + sales7d);
+    }
   });
   [...sbRows, ...sdRows].forEach((r: { campaign_name?: string; spend?: number; report_date?: string }) => {
     const spend = num(r.spend);
@@ -485,6 +591,11 @@ export async function fetchAmazonProducts(
     const rangeSpend = spendBySku.get(sku)?.spend || 0;
     const daySpend = spendBySkuDay.get(sku) || 0;
     const rangeUnits = unitsBySku.get(sku)?.units || 0;
+    // adAttributedSpend/Sales stay undefined for a SKU with no Sponsored
+    // Products row at all (SB/SD-only spend) rather than defaulting to 0, so
+    // computeAcos falls back to the real-order formula for it instead of
+    // reading as a false 0% ACOS.
+    const hasSpRow = adSalesRangeBySku.has(sku) || adSpendRangeBySku.has(sku);
     // Day units aren't tracked per-SKU above (only the overall total) — derive
     // them with the same IST-day filter, scoped to this one SKU.
     products.set(sku, {
@@ -492,8 +603,16 @@ export async function fetchAmazonProducts(
       sku,
       name: resolveProductName(nameBySku.get(sku), sku) || nameBySku.get(sku) || sku,
       price: priceBySku.get(sku) || 0,
-      day: { spend: daySpend, units: 0 },
-      range: { spend: rangeSpend, units: rangeUnits },
+      day: {
+        spend: daySpend,
+        units: 0,
+        ...(hasSpRow ? { adAttributedSpend: adSpendDayBySku.get(sku) || 0, adAttributedSales: adSalesDayBySku.get(sku) || 0 } : {}),
+      },
+      range: {
+        spend: rangeSpend,
+        units: rangeUnits,
+        ...(hasSpRow ? { adAttributedSpend: adSpendRangeBySku.get(sku) || 0, adAttributedSales: adSalesRangeBySku.get(sku) || 0 } : {}),
+      },
     });
   });
   // Fill in day units per SKU (separate pass — keeps the loop above simple).
@@ -1220,7 +1339,7 @@ function rawRowsToSheet(
   const seen = new Set<string>();
   rawRows.forEach((r) => Object.keys(r).forEach((k) => { if (!seen.has(k)) { seen.add(k); cols.push(k); } }));
 
-  const aoa: (string | number)[][] = [cols];
+  const aoa: (string | number | null)[][] = [cols];
   rawRows.forEach((r) => {
     aoa.push(
       cols.map((c) => {
@@ -1239,13 +1358,37 @@ function rawRowsToSheet(
 }
 
 const PLATFORM_FILL: Record<Platform, string> = { Amazon: "FF9900", Flipkart: "2874F0", Meesho: "9F2089" };
-const productAoaRow = (p: ProductRow): (string | number)[] => [
+const productAoaRow = (p: ProductRow): (string | number | null)[] => [
   p.name, p.price,
-  round2(p.day.spend), round2(spendTax(p.day)), p.day.units, round2(computeCpc(p.day)), pct(computeAcos(p.day, p.price)),
-  round2(p.range.spend), round2(spendTax(p.range)), p.range.units, round2(computeCpc(p.range)), pct(computeAcos(p.range, p.price)),
+  round2(p.day.spend), round2(spendTax(p.day)), p.day.units, round2(computeCpc(p.day)), acosCell(p.day, p.price),
+  round2(p.range.spend), round2(spendTax(p.range)), p.range.units, round2(computeCpc(p.range)), acosCell(p.range, p.price),
 ];
 function round2(n: number): number { return Math.round(n * 100) / 100; }
 function pct(n: number): number { return Math.round(n * 10000) / 10000; }
+// Every user-visible ACOS cell/field goes through this instead of computeAcos(...)
+// directly: the ACOS_UNDEFINED_SENTINEL means "ad spend with zero attributed sales", a
+// genuinely undefined ratio, and rendering it as "999%" reads as a data error rather than
+// "no signal" — this blanks it out (null: an empty xlsx cell, an empty DB column, and a
+// dash in the email template) instead, matching the raw Sponsored Products export's own
+// convention of leaving ACOS blank when Total Sales is 0. The Action Sheet's own >14%
+// threshold check still uses computeAcos's raw sentinel value directly (a genuinely
+// unknown ACOS with real spend should still clear that bar) — but see acosSortRank
+// below for every "worst ACOS first" ordering, which treats it differently.
+export function acosCell(a: WindowAgg, price: number): number | null {
+  const v = computeAcos(a, price);
+  return v === ACOS_UNDEFINED_SENTINEL ? null : pct(v);
+}
+// "Worst ACOS first" sort ordering only (the Summary sheet's per-platform shortlist, the
+// email's top-3 table, and the full Ad spend report tab's row order) — a known, finite
+// ACOS ranks ABOVE the sentinel here, not below. A blank "Amazon attributed zero sales"
+// row is genuinely less informative than a concrete 136%, so burying every real number
+// under a pile of blanks (the sentinel is numerically huge) defeats the point of a
+// worst-first list. The Action Sheet's own threshold check is unaffected — it doesn't
+// sort, it just filters every product against >14% independently of this ranking.
+export function acosSortRank(a: WindowAgg, price: number): number {
+  const v = computeAcos(a, price);
+  return v === ACOS_UNDEFINED_SENTINEL ? -1 : v;
+}
 
 // One product's day/range Spend, Spend(with tax), Orders, CPC, ACOS — the same
 // five metrics as METRIC_NAMES/productAoaRow above, just as a named object
@@ -1256,7 +1399,9 @@ export interface ProductMetricBlock {
   spendTax: number;
   orders: number;
   cpc: number;
-  acos: number;
+  // null when computeAcos hit the ACOS_UNDEFINED_SENTINEL (ad spend with zero
+  // attributed sales) — see acosCell. Renders as a blank cell/dash, never "999%".
+  acos: number | null;
 }
 
 // Mirrors exactly the Summary sheet's per-platform block (platform totals +
@@ -1346,12 +1491,12 @@ async function saveAdSpendHistory(
         day_spend_tax: round2(spendTax(p.day)),
         day_orders: p.day.units,
         day_cpc: round2(computeCpc(p.day)),
-        day_acos: pct(computeAcos(p.day, p.price)),
+        day_acos: acosCell(p.day, p.price),
         range_spend: round2(p.range.spend),
         range_spend_tax: round2(spendTax(p.range)),
         range_orders: p.range.units,
         range_cpc: round2(computeCpc(p.range)),
-        range_acos: pct(computeAcos(p.range, p.price)),
+        range_acos: acosCell(p.range, p.price),
       });
     });
   });
@@ -1400,6 +1545,11 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const { resolveName: resolveMarketingName } = buildProductMarketingResolver(productMarketing);
   const resolveName = (sku: string, fallback: string) =>
     resolveMarketingName(sku, resolveSkuidName(sku, resolveBarmName(sku, fallback)));
+  // sku -> master_product_skuid's own "Product Name", passed to every groupProductsByName call
+  // below as its third argument so sibling SKUs of one product never split into separate report
+  // rows just because only some of them have a master_product_marketing entry (see
+  // groupProductsByName's skuToMasterSkuidName param comment for the full explanation).
+  const skuToMasterSkuidName = new Map<string, string>([...masterSkuid.entries()].map(([sku, entry]) => [sku, entry.name]));
   [amz.products, fk.products, ms.products].forEach((products) => {
     products.forEach((p) => {
       p.name = resolveName(p.sku, p.name);
@@ -1483,7 +1633,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // report" sheet's day/range blocks still use the shared METRIC_NAMES/productAoaRow below,
   // unchanged, so that sheet's layout isn't affected by this Summary-only addition.
   const SUMMARY_METRIC_NAMES = ["Spend", "Spend(with tax)", "Orders", "Orders x Price = Total Sales", "CPC", "ACOS"];
-  const sumAoa: (string | number)[][] = [
+  const sumAoa: (string | number | null)[][] = [
     Array(SUM_COLS).fill(""),
     ["Summary", ...Array(SUM_COLS - 1).fill("")],
     Array(SUM_COLS).fill(""),
@@ -1534,7 +1684,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     // not just the ones that clear the shortlist bar below. Grouped by
     // resolved product name first, so a product's 4-5 SKU variants sum into
     // one row instead of showing up as separate near-duplicate rows.
-    const rows = groupProductsByName([...products.values()]).filter((p) => spendTax(p.range) > 0);
+    const rows = groupProductsByName([...products.values()], undefined, skuToMasterSkuidName).filter((p) => spendTax(p.range) > 0);
     rows.forEach((p) => {
       const rangeAcos = computeAcos(p.range, p.price);
       if (rangeAcos > ACTION_ACOS_THRESHOLD) {
@@ -1573,7 +1723,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     // products, not noise.
     const shortlist = rows
       .filter((p) => spendTax(p.range) > ACOS_SHORTLIST_MIN_SPEND)
-      .sort((a, b) => computeAcos(b.day, b.price) - computeAcos(a.day, a.price))
+      .sort((a, b) => acosSortRank(b.day, b.price) - acosSortRank(a.day, a.price))
       .slice(0, TOP_N);
     platformSummaries.push({
       platform,
@@ -1588,16 +1738,16 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       topProducts: shortlist.map((p) => ({
         name: p.name,
         price: p.price,
-        day: { spend: round2(p.day.spend), spendTax: round2(spendTax(p.day)), orders: p.day.units, cpc: round2(computeCpc(p.day)), acos: pct(computeAcos(p.day, p.price)) },
-        range: { spend: round2(p.range.spend), spendTax: round2(spendTax(p.range)), orders: p.range.units, cpc: round2(computeCpc(p.range)), acos: pct(computeAcos(p.range, p.price)) },
+        day: { spend: round2(p.day.spend), spendTax: round2(spendTax(p.day)), orders: p.day.units, cpc: round2(computeCpc(p.day)), acos: acosCell(p.day, p.price) },
+        range: { spend: round2(p.range.spend), spendTax: round2(spendTax(p.range)), orders: p.range.units, cpc: round2(computeCpc(p.range)), acos: acosCell(p.range, p.price) },
       })),
       allProducts: [...rows]
-        .sort((a, b) => computeAcos(b.day, b.price) - computeAcos(a.day, a.price))
+        .sort((a, b) => acosSortRank(b.day, b.price) - acosSortRank(a.day, a.price))
         .map((p) => ({
           name: p.name,
           price: p.price,
-          day: { spend: round2(p.day.spend), spendTax: round2(spendTax(p.day)), orders: p.day.units, cpc: round2(computeCpc(p.day)), acos: pct(computeAcos(p.day, p.price)) },
-          range: { spend: round2(p.range.spend), spendTax: round2(spendTax(p.range)), orders: p.range.units, cpc: round2(computeCpc(p.range)), acos: pct(computeAcos(p.range, p.price)) },
+          day: { spend: round2(p.day.spend), spendTax: round2(spendTax(p.day)), orders: p.day.units, cpc: round2(computeCpc(p.day)), acos: acosCell(p.day, p.price) },
+          range: { spend: round2(p.range.spend), spendTax: round2(spendTax(p.range)), orders: p.range.units, cpc: round2(computeCpc(p.range)), acos: acosCell(p.range, p.price) },
         })),
     });
 
@@ -1621,8 +1771,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           // post-generate toast on the Download page.
           i === 0 ? platform : "", i === 0 ? round2(daySpendRaw) : "", i === 0 ? round2(daySpendTaxTotal) : "",
           p.name, p.price,
-          round2(p.day.spend), round2(spendTax(p.day)), p.day.units, dayTotalSales, round2(computeCpc(p.day)), pct(computeAcos(p.day, p.price)),
-          round2(p.range.spend), round2(spendTax(p.range)), p.range.units, rangeTotalSales, round2(computeCpc(p.range)), pct(computeAcos(p.range, p.price)),
+          round2(p.day.spend), round2(spendTax(p.day)), p.day.units, dayTotalSales, round2(computeCpc(p.day)), acosCell(p.day, p.price),
+          round2(p.range.spend), round2(spendTax(p.range)), p.range.units, rangeTotalSales, round2(computeCpc(p.range)), acosCell(p.range, p.price),
           // Overall sales QTS/Value is the SINGLE reporting day's total (matches
           // the dayLabel header above), not the 7-day range — the seller's own
           // manual workbook tracks this figure daily, not as a weekly rollup.
@@ -1651,7 +1801,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   let socialMediaSummary: SocialMediaEmailSummary | null = null;
   if (socialMedia.daySpend > 0 || socialMedia.rangeSpend > 0) {
     const SOCIAL_MEDIA_PRODUCT_NAME = "Sonmol Peak Flow meter (without BLE)";
-    const amazonRowsForSocial = groupProductsByName([...amz.products.values()]);
+    const amazonRowsForSocial = groupProductsByName([...amz.products.values()], undefined, skuToMasterSkuidName);
     const socialProduct = amazonRowsForSocial.find((p) => p.name.trim().toLowerCase() === SOCIAL_MEDIA_PRODUCT_NAME.toLowerCase());
     const price = socialProduct?.price ?? 0;
     const dayAgg: WindowAgg = { spend: socialMedia.daySpend, units: socialProduct?.day.units ?? 0 };
@@ -1661,8 +1811,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       "Social Media",
       round2(socialMedia.daySpend), round2(spendTax(dayAgg)),
       socialProduct?.name ?? SOCIAL_MEDIA_PRODUCT_NAME, price,
-      round2(dayAgg.spend), round2(spendTax(dayAgg)), dayAgg.units, round2(price * dayAgg.units), round2(computeCpc(dayAgg)), pct(computeAcos(dayAgg, price)),
-      round2(rangeAgg.spend), round2(spendTax(rangeAgg)), rangeAgg.units, round2(price * rangeAgg.units), round2(computeCpc(rangeAgg)), pct(computeAcos(rangeAgg, price)),
+      round2(dayAgg.spend), round2(spendTax(dayAgg)), dayAgg.units, round2(price * dayAgg.units), round2(computeCpc(dayAgg)), acosCell(dayAgg, price),
+      round2(rangeAgg.spend), round2(spendTax(rangeAgg)), rangeAgg.units, round2(price * rangeAgg.units), round2(computeCpc(rangeAgg)), acosCell(rangeAgg, price),
       "", "",
     ]);
     // Same figures as the Summary-sheet row above, reshaped for the emailed daily digest (see
@@ -1673,8 +1823,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       daySpendTax: round2(spendTax(dayAgg)),
       product: socialProduct?.name ?? SOCIAL_MEDIA_PRODUCT_NAME,
       price,
-      day: { spend: round2(dayAgg.spend), spendTax: round2(spendTax(dayAgg)), orders: dayAgg.units, cpc: round2(computeCpc(dayAgg)), acos: pct(computeAcos(dayAgg, price)) },
-      range: { spend: round2(rangeAgg.spend), spendTax: round2(spendTax(rangeAgg)), orders: rangeAgg.units, cpc: round2(computeCpc(rangeAgg)), acos: pct(computeAcos(rangeAgg, price)) },
+      day: { spend: round2(dayAgg.spend), spendTax: round2(spendTax(dayAgg)), orders: dayAgg.units, cpc: round2(computeCpc(dayAgg)), acos: acosCell(dayAgg, price) },
+      range: { spend: round2(rangeAgg.spend), spendTax: round2(spendTax(rangeAgg)), orders: rangeAgg.units, cpc: round2(computeCpc(rangeAgg)), acos: acosCell(rangeAgg, price) },
     };
   }
 
@@ -1731,7 +1881,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // that's just wrong/ambiguous) can always be traced back to the exact SKU
   // the spend/orders were keyed on.
   const DETAIL_COLS = 13;
-  const detailAoa: (string | number)[][] = [];
+  const detailAoa: (string | number | null)[][] = [];
   const detailHeaderRows: number[] = [];
   const detailLabelCells: { addr: string; platform: Platform }[] = [];
   const detailMerges: XLSX.Range[] = [];
@@ -1749,9 +1899,9 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     // row at all: against a hand-built reference report, these purely-organic
     // rows were the single biggest source of mismatch — they inflated this
     // sheet's Orders total ~40-60% above what an ad-spend-only view shows.
-    const rows = groupProductsByName([...products.values()], masterSkuidsByName)
+    const rows = groupProductsByName([...products.values()], masterSkuidsByName, skuToMasterSkuidName)
       .filter((p) => spendTax(p.range) > 0)
-      .sort((a, b) => computeAcos(b.day, b.price) - computeAcos(a.day, a.price));
+      .sort((a, b) => acosSortRank(b.day, b.price) - acosSortRank(a.day, a.price));
     detailLabelCells.push({ addr: XLSX.utils.encode_cell({ r: detailAoa.length, c: 0 }), platform });
     detailAoa.push([platform, ...Array(DETAIL_COLS - 1).fill("")]);
     detailAoa.push(Array(DETAIL_COLS).fill(""));
@@ -1801,7 +1951,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // already use elsewhere in this workbook.
   const SKU_WISE_COLS = 9;
   const skuWiseHeader = ["SKU ID", "Platform", "Price", "Spend (without tax)", "Spend (with tax)", "Orders", "Total Sales", "CPC", "ACOS"];
-  const skuWiseRows: (string | number)[][] = [];
+  const skuWiseRows: (string | number | null)[][] = [];
   platforms.forEach(({ platform, products }) => {
     [...products.values()]
       .filter((p) => spendTax(p.range) > 0)
@@ -1809,7 +1959,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
         skuWiseRows.push([
           p.sku, platform, p.price,
           round2(p.range.spend), round2(spendTax(p.range)), p.range.units,
-          round2(p.price * p.range.units), round2(computeCpc(p.range)), pct(computeAcos(p.range, p.price)),
+          round2(p.price * p.range.units), round2(computeCpc(p.range)), acosCell(p.range, p.price),
         ]);
       });
   });
@@ -1913,7 +2063,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // the raw dump — same shape and formula (Sales = Price x range Quantity) as
   // the cross-platform "B Arm orders" sheet below, scoped to just Meesho here,
   // matching the seller's own hand-built workbook's Meesho orders tab.
-  const meeshoLeaderboardRows = groupProductsByName([...ms.products.values()])
+  const meeshoLeaderboardRows = groupProductsByName([...ms.products.values()], undefined, skuToMasterSkuidName)
     .filter((p) => p.range.units > 0)
     .sort((a, b) => b.range.units * b.price - a.range.units * a.price)
     .map((p): (string | number)[] => [p.name, p.range.units, p.price, round2(p.price * p.range.units)]);
@@ -1930,7 +2080,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const bArmAoa: (string | number)[][] = [["Product", "Quantity", "Price", "Sales"]];
   const bArmZeroRows: (string | number)[][] = [];
   platforms.forEach(({ products }) => {
-    const grouped = groupProductsByName([...products.values()]);
+    const grouped = groupProductsByName([...products.values()], undefined, skuToMasterSkuidName);
     grouped
       .filter((p) => p.range.units > 0)
       .sort((a, b) => b.range.units * b.price - a.range.units * a.price)
@@ -1969,7 +2119,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       : []),
     ["Spend (with tax) = raw ad spend x (1 + that product's GST rate), applied once after summing — never a per-row multiply. Rate comes from the product master's Tax column per SKU (18% used when a SKU has none on file)."],
     ["CPC = Spend(with tax) / Orders. When Orders = 0, CPC = Spend(with tax) (undefined ratio, shown as the spend itself rather than blank)."],
-    ["ACOS = CPC / Price."],
+    ["ACOS = CPC / Price, EXCEPT for Amazon: whenever a SKU has a Sponsored Products row on file, ACOS instead uses Amazon's own raw Sponsored Products Spend / \"7 Day Total Sales\" directly from the ad export (no GST added) — matching Amazon's own report number-for-number rather than this sheet's real-order-based Orders/CPC. Falls back to CPC / Price for Flipkart, Meesho, and any Amazon SKU with no Sponsored Products row (SB/SD-only spend)."],
     ["\"Orders\" = units sold of that product in the window, from the Orders/Order report, cancelled orders excluded. This is NOT ad-click-attributed units."],
     ["\"Day\" = the single reporting day above. \"Range\" = that day and the", rangeDays - 1, "days before it, inclusive."],
     [""],

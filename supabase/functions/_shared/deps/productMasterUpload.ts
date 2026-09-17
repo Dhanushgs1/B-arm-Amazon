@@ -172,12 +172,15 @@ export async function fetchProductMasterMap(): Promise<Map<string, ProductMaster
 }
 
 // Platform order/ad exports carry whatever variant spelling of a SKU that platform used (e.g. a
-// trailing "-1" or a "(FK)"/"(AM)"/"(MS)" tag), while the master lists one canonical spelling per
-// product — so an exact match misses these. Strip the variant/platform suffix before comparing.
-// Shared by every report exporter that resolves against the product master, so the matching rule
-// stays identical everywhere it's used.
+// trailing "-1", a "-S" (a listing/campaign variant with no row of its own in any master table),
+// or a "(FK)"/"(AM)"/"(MS)" tag), while the master lists one canonical spelling per product — so
+// an exact match misses these. Strip the variant/platform suffix before comparing. Shared by every
+// report exporter that resolves against the product master, so the matching rule stays identical
+// everywhere it's used — this is also why a SKU ending in "-S" (e.g. "B-INSEM-KIT-PK5-S", "A015-S")
+// used to resolve to the wrong (fallback) product name and print as its own incomplete report row:
+// it never matched anything by base SKU, since only the numeric-suffix strip existed here.
 export function skuBase(sku: string): string {
-  return sku.trim().toUpperCase().replace(/\((AM|FK|MS)\)$/i, "").replace(/-\d+$/, "").replace(/[\s_]+/g, "");
+  return sku.trim().toUpperCase().replace(/\((AM|FK|MS)\)$/i, "").replace(/-\d+$/, "").replace(/-S$/i, "").replace(/[\s_]+/g, "");
 }
 
 /** Builds sku -> name/category resolvers from a product-master map: exact SKU match first, then
