@@ -499,8 +499,20 @@ export async function fetchAmazonProducts(
   // branch. Sponsored Products only (sbRows/sdRows carry no per-SKU sales
   // figure), matching the raw file this is meant to reproduce, which is
   // itself a Sponsored Products Advertised Product report.
+  //
+  // "7 Day Total Sales" is ITSELF a trailing 7-day rolling total as of that
+  // row's own report_date — summing it across every day in a 7-day range (as
+  // an earlier version of this code did) massively over-counts, since a real
+  // sale gets counted once per day whose own trailing window includes it (up
+  // to 7x for a sale mid-range). Confirmed against the raw export: Sonmol RMT
+  // (BRmtz) sums to a nonsense 24.66% range ACOS this way (real ad spend
+  // ₹3,966.45 over an inflated ₹16,087.64 "sales" total), when the real
+  // figure — verified against the seller's own manual reference — is 104.0%.
+  // So the single-day figure below still reads sales_7d directly (correct;
+  // no rolling-window overlap within one day), but the *range* ACOS instead
+  // uses real week Orders x Price as its sales figure (see hasSpRow below) —
+  // it never sums sales_7d across days at all.
   const adSpendRangeBySku = new Map<string, number>();
-  const adSalesRangeBySku = new Map<string, number>();
   const adSpendDayBySku = new Map<string, number>();
   const adSalesDayBySku = new Map<string, number>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -512,12 +524,10 @@ export async function fetchAmazonProducts(
     if (r.report_date === endDate) addCampaignSpend(r.campaign_name || "", spend);
 
     const sku = r.advertised_sku;
-    const sales7d = num(r.sales_7d);
     adSpendRangeBySku.set(sku, (adSpendRangeBySku.get(sku) || 0) + spend);
-    adSalesRangeBySku.set(sku, (adSalesRangeBySku.get(sku) || 0) + sales7d);
     if (r.report_date === endDate) {
       adSpendDayBySku.set(sku, (adSpendDayBySku.get(sku) || 0) + spend);
-      adSalesDayBySku.set(sku, (adSalesDayBySku.get(sku) || 0) + sales7d);
+      adSalesDayBySku.set(sku, (adSalesDayBySku.get(sku) || 0) + num(r.sales_7d));
     }
   });
   [...sbRows, ...sdRows].forEach((r: { campaign_name?: string; spend?: number; report_date?: string }) => {
@@ -591,14 +601,15 @@ export async function fetchAmazonProducts(
     // Products row at all (SB/SD-only spend) rather than defaulting to 0, so
     // computeAcos falls back to the real-order formula for it instead of
     // reading as a false 0% ACOS.
-    const hasSpRow = adSalesRangeBySku.has(sku) || adSpendRangeBySku.has(sku);
+    const hasSpRow = adSpendRangeBySku.has(sku);
+    const price = priceBySku.get(sku) || 0;
     // Day units aren't tracked per-SKU above (only the overall total) — derive
     // them with the same IST-day filter, scoped to this one SKU.
     products.set(sku, {
       platform: "Amazon",
       sku,
       name: resolveProductName(nameBySku.get(sku), sku) || nameBySku.get(sku) || sku,
-      price: priceBySku.get(sku) || 0,
+      price,
       day: {
         spend: daySpend,
         units: 0,
@@ -607,7 +618,11 @@ export async function fetchAmazonProducts(
       range: {
         spend: rangeSpend,
         units: rangeUnits,
-        ...(hasSpRow ? { adAttributedSpend: adSpendRangeBySku.get(sku) || 0, adAttributedSales: adSalesRangeBySku.get(sku) || 0 } : {}),
+        // Real week Orders x Price, NOT a sum of sales_7d across the range (see this
+        // section's opening comment for why that double-counts). rangeUnits = 0 with real
+        // spend correctly falls through to computeAcos's 9.99 sentinel (blanked by acosCell),
+        // exactly like a SKU with ad spend but zero attributed sales on a single day.
+        ...(hasSpRow ? { adAttributedSpend: adSpendRangeBySku.get(sku) || 0, adAttributedSales: price * rangeUnits } : {}),
       },
     });
   });

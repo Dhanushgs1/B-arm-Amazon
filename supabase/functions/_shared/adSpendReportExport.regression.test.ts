@@ -33,6 +33,23 @@ Deno.test("computeAcos prefers Amazon's own ad-attributed spend/sales when on fi
   assertEquals(computeAcos({ spend: 100, units: 10 }, 20), 118 / 10 / 20);
 });
 
+Deno.test("computeAcos's range/week figure must be real Orders x Price, never a sum of \"7 Day Total Sales\" across multiple days", () => {
+  // Real bug this documents: "7 Day Total Sales" is ITSELF a trailing 7-day rolling total as of
+  // that row's own date. Summing it across every day in a 7-day range (as adSpendReportExport.ts
+  // used to do for the range/week WindowAgg) massively over-counts — a real sale gets counted
+  // once per day whose own trailing window includes it. Verified against the raw Sponsored
+  // Products export for Sonmol RMT (SKU BRmtz): real week ad spend ₹3,966.45 against a
+  // 7-days-summed "sales" total of ₹16,087.64 gives a nonsense 24.66% ACOS, when the real figure
+  // (confirmed against the seller's manual reference workbook) is 104.0% — computed as raw Spend
+  // (no GST) / (real week Orders x Price), never a summed sales_7d.
+  const sonmolRmtWeek = { spend: 3966.45, units: 2, adAttributedSpend: 3966.45, adAttributedSales: 1907 * 2 };
+  const acos = computeAcos(sonmolRmtWeek, 1907);
+  assertEquals(Math.round(acos * 1000) / 1000, 1.04);
+  // The old (buggy) sum-of-sales_7d approach would have given ~0.2466 here — asserting the real
+  // figure is the useful regression: if this ever creeps back toward ~0.25, the range WindowAgg
+  // construction went back to summing sales_7d across days instead of using Orders x Price.
+});
+
 Deno.test("acosCell blanks out the ACOS_UNDEFINED_SENTINEL to null instead of showing a literal 999% cell", () => {
   // Real bug this was written for: a single day where Amazon attributed zero sales despite real ad
   // spend rendered as a spreadsheet cell showing "999%", read by the seller as a data error. Every
