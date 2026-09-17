@@ -54,7 +54,12 @@ export default function DashboardOverview() {
 
   const { data: cpData, isLoading: cpLoading, isError: cpError, refetch: refetchCp } = useQuery({
     queryKey: ["cp", keySlot, account?.id, startDate, endDate],
-    queryFn: () => mcp("get_campaign_performance", { ...baseArgs, page_size: 500 }, keySlot),
+    // get_campaign_performance defaults to ENABLED campaigns only, which silently
+    // drops historical spend/sales from any campaign paused or archived since the
+    // selected date — undercounting Ad Spend on the KPI card. A past date's totals
+    // must include every campaign that actually spent that day, regardless of its
+    // status today.
+    queryFn: () => mcp("get_campaign_performance", { ...baseArgs, page_size: 500, status: ["ENABLED", "PAUSED", "ARCHIVED"] }, keySlot),
     enabled: !!account,
   });
 

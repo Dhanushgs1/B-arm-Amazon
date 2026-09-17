@@ -224,7 +224,10 @@ export async function fetchUnifiedDailyTrend(args: UnifiedTrendArgs, slot: strin
   const tail = dates.slice(-2);
   await Promise.all(
     tail.map((d) =>
-      mcp("get_campaign_performance", { ...base, start_date: d, end_date: d, page_size: 1 }, slot)
+      // status must be explicit — get_campaign_performance defaults to ENABLED
+      // only, which would undercount a day that had spend from a campaign since
+      // paused or archived (see the same fix on the Overview KPI query).
+      mcp("get_campaign_performance", { ...base, start_date: d, end_date: d, page_size: 1, status: ["ENABLED", "PAUSED", "ARCHIVED"] }, slot)
         .then((res) => {
           const s = res.summary || {};
           adOverride[d] = {
