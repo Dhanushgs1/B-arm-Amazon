@@ -459,6 +459,7 @@ export async function fetchAmazonProducts(
   spRows: any[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows: any[];
+  revenueRangeBySku: Map<string, number>;
 }> {
   const [spRows, sbRows, sdRows, mapRows, orderRowsRaw, priceRows] = await Promise.all([
     fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
@@ -617,6 +618,14 @@ export async function fetchAmazonProducts(
     if (!a) { a = emptyAgg(); unitsBySku.set(sku, a); }
     return a;
   };
+  // SKU Wise Report's own "Total Sales" column, per the seller's explicit request: real
+  // per-order revenue (SUM of item-price x quantity across this SKU's own order rows in the
+  // range window) instead of one flat listing Price x total range units — the flat-price
+  // version was only ever an estimate and could disagree with what the SKU actually sold for
+  // across the week (discounts, mid-week price changes). Scoped to the exact same
+  // non-cancelled/standard-order-ID rows as unitsBySku just below, so Total Sales and Orders
+  // on that sheet always describe the same set of real sales.
+  const revenueBySku = new Map<string, number>();
   const overallDay = emptySales();
   const overallRange = emptySales();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -640,6 +649,7 @@ export async function fetchAmazonProducts(
     // math, a different question from the Overall sales total above.
     if (!r.sku || isCancelledOrder(r) || !isStandardOrderId(r.amazon_order_id)) return;
     ensureUnits(r.sku).units += qty;
+    revenueBySku.set(r.sku, (revenueBySku.get(r.sku) || 0) + num(r.item_price) * qty);
   });
 
   const skus = new Set<string>([...spendBySku.keys(), ...unitsBySku.keys(), ...priceBySku.keys()].filter(Boolean));
@@ -690,7 +700,7 @@ export async function fetchAmazonProducts(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [...spRows, ...sbRows, ...sdRows].forEach((r: any) => { if (r.report_date) reportDates.add(r.report_date); });
 
-  return { products, overallDay, overallRange, campaigns, unmappedSpend, reportDates, spRows, orderRows };
+  return { products, overallDay, overallRange, campaigns, unmappedSpend, reportDates, spRows, orderRows, revenueRangeBySku: revenueBySku };
 }
 
 // ── Flipkart ─────────────────────────────────────────────────────────────────
@@ -707,6 +717,7 @@ export async function fetchFlipkartProducts(
   fsnRows: any[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows: any[];
+  revenueRangeBySku: Map<string, number>;
 }> {
   const [fsnRows, orderRowsRaw, earnRows, listingRows, priceListRows] = await Promise.all([
     fetchAllRows("barm_flipkart_fsn_report", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
@@ -862,7 +873,12 @@ export async function fetchFlipkartProducts(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   fsnRows.forEach((r: any) => { if (r.report_date) reportDates.add(r.report_date); });
 
-  return { products, overallDay, overallRange, campaigns, reportDates, fsnRows, orderRows };
+  // SKU Wise Report's "Total Sales" per the seller's explicit request: real per-order revenue
+  // instead of flat Price x range units. invoiceAcc already sums each SKU's real Invoice
+  // Amount across its own non-cancelled order rows in this window (see above, where it also
+  // feeds this SKU's own price) — reused directly here rather than re-summing orderRows.
+  const revenueRangeBySku = new Map<string, number>([...invoiceAcc].map(([sku, acc]) => [sku, acc.amount]));
+  return { products, overallDay, overallRange, campaigns, reportDates, fsnRows, orderRows, revenueRangeBySku };
 }
 
 // ── Meesho ───────────────────────────────────────────────────────────────────
@@ -886,6 +902,7 @@ export async function fetchMeeshoProducts(
   adsRows: any[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows: any[];
+  revenueRangeBySku: Map<string, number>;
 }> {
   const [adsRows, orderRows, marketingRows] = await Promise.all([
     fetchAllRows("barm_meesho_ads", (q) => q.gte("report_date", range.start).lte("report_date", endDate)).catch(() => []),
@@ -956,6 +973,10 @@ export async function fetchMeeshoProducts(
     if (!a) { a = emptyAgg(); unitsBySku.set(sku, a); }
     return a;
   };
+  // SKU Wise Report's "Total Sales" per the seller's explicit request: real per-order revenue
+  // instead of flat Price x range units — see the Amazon/Flipkart fetch functions' matching
+  // comment. Scoped to the same non-cancelled rows as unitsBySku just below.
+  const revenueBySku = new Map<string, number>();
   const overallDay = emptySales();
   const overallRange = emptySales();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -982,6 +1003,7 @@ export async function fetchMeeshoProducts(
     // Overall sales total above.
     if (!r.sku || isCancelled(r.order_status)) return;
     ensureUnits(r.sku).units += qty;
+    revenueBySku.set(r.sku, (revenueBySku.get(r.sku) || 0) + value);
   });
 
   const skus = new Set<string>([...spendBySku.keys(), ...unitsBySku.keys(), ...priceBySku.keys()].filter(Boolean));
@@ -1011,7 +1033,7 @@ export async function fetchMeeshoProducts(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   adsRows.forEach((r: any) => { if (r.report_date) reportDates.add(r.report_date); });
 
-  return { products, overallDay, overallRange, campaigns, reportDates, adsRows, orderRows };
+  return { products, overallDay, overallRange, campaigns, reportDates, adsRows, orderRows, revenueRangeBySku: revenueBySku };
 }
 
 // ── Social Media (Meta Ads) ──────────────────────────────────────────────────
@@ -1644,10 +1666,10 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     );
   }
 
-  const platforms: { platform: Platform; products: Map<string, ProductRow>; overallDay: SalesAgg; overallRange: SalesAgg; campaigns: CampaignSpendRow[] }[] = [
-    { platform: "Amazon", products: amz.products, overallDay: amz.overallDay, overallRange: amz.overallRange, campaigns: amz.campaigns },
-    { platform: "Flipkart", products: fk.products, overallDay: fk.overallDay, overallRange: fk.overallRange, campaigns: fk.campaigns },
-    { platform: "Meesho", products: ms.products, overallDay: ms.overallDay, overallRange: ms.overallRange, campaigns: ms.campaigns },
+  const platforms: { platform: Platform; products: Map<string, ProductRow>; overallDay: SalesAgg; overallRange: SalesAgg; campaigns: CampaignSpendRow[]; revenueRangeBySku: Map<string, number> }[] = [
+    { platform: "Amazon", products: amz.products, overallDay: amz.overallDay, overallRange: amz.overallRange, campaigns: amz.campaigns, revenueRangeBySku: amz.revenueRangeBySku },
+    { platform: "Flipkart", products: fk.products, overallDay: fk.overallDay, overallRange: fk.overallRange, campaigns: fk.campaigns, revenueRangeBySku: fk.revenueRangeBySku },
+    { platform: "Meesho", products: ms.products, overallDay: ms.overallDay, overallRange: ms.overallRange, campaigns: ms.campaigns, revenueRangeBySku: ms.revenueRangeBySku },
   ];
 
   const incompleteDates: AdSpendReportResult["incompleteDates"] = [
@@ -2003,20 +2025,24 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // into one row via groupProductsByName), this sheet keeps one row per actual
   // SKU — added alongside it at the seller's request, not replacing it, so a
   // SKU's own individual numbers can be sorted/filtered directly by Platform or
-  // Price. Range-window (7-day) figures throughout; Total Sales uses the same
-  // Price x range-Orders formula the B Arm orders / Meesho leaderboard sheets
-  // already use elsewhere in this workbook.
+  // Price. Range-window (7-day) figures throughout; Total Sales is real
+  // per-order revenue — SUM(item-price x quantity) across this SKU's own
+  // non-cancelled order rows in the range window (revenueRangeBySku, built
+  // alongside each platform's per-SKU Orders count) — per the seller's
+  // explicit request, replacing the flat Price x range-Orders estimate this
+  // sheet used before (that estimate is still what the B Arm orders / Meesho
+  // leaderboard sheets elsewhere in this workbook use, untouched by this change).
   const SKU_WISE_COLS = 9;
   const skuWiseHeader = ["SKU ID", "Platform", "Price", "Spend (without tax)", "Spend (with tax)", "Orders", "Total Sales", "CPC", "ACOS"];
   const skuWiseRows: (string | number | null)[][] = [];
-  platforms.forEach(({ platform, products }) => {
+  platforms.forEach(({ platform, products, revenueRangeBySku }) => {
     [...products.values()]
       .filter((p) => spendTax(p.range) > 0)
       .forEach((p) => {
         skuWiseRows.push([
           p.sku, platform, p.price,
           round2(p.range.spend), round2(spendTax(p.range)), p.range.units,
-          round2(p.price * p.range.units), round2(computeCpc(p.range)), acosCell(p.range, p.price),
+          round2(revenueRangeBySku.get(p.sku) || 0), round2(computeCpc(p.range)), acosCell(p.range, p.price),
         ]);
       });
   });
