@@ -2025,13 +2025,15 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // into one row via groupProductsByName), this sheet keeps one row per actual
   // SKU — added alongside it at the seller's request, not replacing it, so a
   // SKU's own individual numbers can be sorted/filtered directly by Platform or
-  // Price. Range-window (7-day) figures throughout; Total Sales is real
-  // per-order revenue — SUM(item-price x quantity) across this SKU's own
-  // non-cancelled order rows in the range window (revenueRangeBySku, built
-  // alongside each platform's per-SKU Orders count) — per the seller's
-  // explicit request, replacing the flat Price x range-Orders estimate this
-  // sheet used before (that estimate is still what the B Arm orders / Meesho
-  // leaderboard sheets elsewhere in this workbook use, untouched by this change).
+  // Price. Range-window (7-day) figures throughout. Total Sales, per the
+  // seller's explicit request: Amazon and Flipkart use real per-order revenue
+  // — SUM(item-price x quantity) across this SKU's own non-cancelled order
+  // rows in the range window (revenueRangeBySku, built alongside each
+  // platform's per-SKU Orders count) — replacing the flat Price x
+  // range-Orders estimate this sheet used before. Meesho stays on that flat
+  // Price x range-Orders estimate, at the seller's explicit choice (also
+  // still what the B Arm orders / Meesho leaderboard sheets elsewhere in
+  // this workbook use, untouched by this change).
   const SKU_WISE_COLS = 9;
   const skuWiseHeader = ["SKU ID", "Platform", "Price", "Spend (without tax)", "Spend (with tax)", "Orders", "Total Sales", "CPC", "ACOS"];
   const skuWiseRows: (string | number | null)[][] = [];
@@ -2039,10 +2041,13 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     [...products.values()]
       .filter((p) => spendTax(p.range) > 0)
       .forEach((p) => {
+        // Meesho stays on the old flat Price x range-Orders estimate, per the seller's explicit
+        // choice — only Amazon/Flipkart use the real per-order revenue sum above.
+        const totalSales = platform === "Meesho" ? p.price * p.range.units : revenueRangeBySku.get(p.sku) || 0;
         skuWiseRows.push([
           p.sku, platform, p.price,
           round2(p.range.spend), round2(spendTax(p.range)), p.range.units,
-          round2(revenueRangeBySku.get(p.sku) || 0), round2(computeCpc(p.range)), acosCell(p.range, p.price),
+          round2(totalSales), round2(computeCpc(p.range)), acosCell(p.range, p.price),
         ]);
       });
   });
