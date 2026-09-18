@@ -683,7 +683,9 @@ export async function fetchAmazonProducts(
     // math, a different question from the Overall sales total above.
     if (!r.sku || isCancelledOrder(r) || !isStandardOrderId(r.amazon_order_id)) return;
     ensureUnits(r.sku).units += qty;
-    revenueBySku.set(r.sku, (revenueBySku.get(r.sku) || 0) + num(r.item_price) * qty);
+    // item-price is already that line's full total (verified against AM ord: a qty-2 row's
+    // item-price is exactly double a qty-1 row's, for the same SKU) — never multiply by qty here.
+    revenueBySku.set(r.sku, (revenueBySku.get(r.sku) || 0) + num(r.item_price));
   });
 
   const skus = new Set<string>([...spendBySku.keys(), ...unitsBySku.keys(), ...priceBySku.keys()].filter(Boolean));
@@ -728,7 +730,8 @@ export async function fetchAmazonProducts(
     if (!p) return;
     const qty = num(r.quantity);
     p.day.units += qty;
-    p.day.revenue = (p.day.revenue || 0) + num(r.item_price) * qty;
+    // item-price is already that line's full total — never multiply by qty (see revenueBySku above).
+    p.day.revenue = (p.day.revenue || 0) + num(r.item_price);
   });
 
   const campaigns: CampaignSpendRow[] = [...campaignSpendByDay.entries()]
