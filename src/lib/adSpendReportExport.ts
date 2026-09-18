@@ -198,9 +198,16 @@ const sumOptional = (a?: number, b?: number): number | undefined =>
 // own (spend, sales) pair forward untouched — exactly reproducing that one row's own raw ACOS. Spend
 // from every other same-day variant (including a real Sponsored Products row that spent but got zero
 // attributed sales) is dropped from the DAY ACOS pair entirely; it still counts in WindowAgg.spend for
-// CPC/Orders, just not here. Two variants both landing a sale on the same day is rare but real — then
-// both are kept and genuinely summed, since that's an honest combined ratio, not a blend against dead
-// spend. Two variants that both spent with zero sales sum to (spend, 0), preserving the existing
+// CPC/Orders, just not here. Two variants both landing a sale on the same day is rare but real (seen
+// in practice: the same SKU running under two different campaigns, each with its own conversion) —
+// summing those two would be an honest combined ratio mathematically, but it's still a NUMBER THAT
+// MATCHES NO ROW of the raw export, which is exactly what this function exists to avoid; it also
+// reorders the product out of the position its own raw row would sort into (verified: "Bulb Syringe
+// IUI applicator (10.5 cm)(Pack of 5)" dropped from the raw sheet's rank 5, at its own 97.83%, to
+// rank 7 at a blended 56.71%, once its two same-day real-sale rows got summed). So instead of summing,
+// the worse (higher-ACOS) of the two real-sale variants wins outright, same as the single-winner case
+// above — the day ACOS this report shows is always one product's own raw row, never an average of two.
+// Two variants that both spent with zero sales sum to (spend, 0), preserving the existing
 // "spend with zero attributed sales" sentinel behavior in computeAcos for a product that earned
 // nothing anywhere that day.
 const mergeDayAttributed = (
@@ -212,7 +219,9 @@ const mergeDayAttributed = (
   if (existingSales === undefined && newSales === undefined) return { spend: undefined, sales: undefined };
   const exSpend = existingSpend ?? 0, exSales = existingSales ?? 0;
   const nwSpend = newSpend ?? 0, nwSales = newSales ?? 0;
-  if (exSales > 0 && nwSales > 0) return { spend: exSpend + nwSpend, sales: exSales + nwSales };
+  if (exSales > 0 && nwSales > 0) {
+    return exSpend / exSales >= nwSpend / nwSales ? { spend: exSpend, sales: exSales } : { spend: nwSpend, sales: nwSales };
+  }
   if (exSales > 0) return { spend: exSpend, sales: exSales };
   if (nwSales > 0) return { spend: nwSpend, sales: nwSales };
   return { spend: exSpend + nwSpend, sales: 0 };

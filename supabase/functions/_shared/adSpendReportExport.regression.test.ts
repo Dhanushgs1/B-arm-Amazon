@@ -208,8 +208,12 @@ Deno.test("groupProductsByName's DAY ad-attributed merge keeps the sale-bearing 
   assertEquals(rows[0].range.adAttributedSpend, 1150.58 + 220.0);
   assertEquals(rows[0].range.adAttributedSales, 10355.19);
 
-  // Two variants that BOTH landed a sale the same day genuinely sum — that's an honest combined
-  // ratio, not a blend against dead spend.
+  // Two variants that BOTH landed a sale the same day do NOT get summed, even though that would be
+  // an honest combined ratio mathematically — it still wouldn't match either raw row (real case:
+  // "Bulb Syringe IUI applicator (10.5 cm)(Pack of 5)"'s SKU ran under two different campaigns the
+  // same day, each with its own sale; summing dropped it from the raw sheet's rank 5 at its own
+  // 97.83% down to rank 7 at a blended 56.71%). The worse (higher-ACOS) of the two wins outright —
+  // here SKU-A is 100/200=50% and SKU-B is 50/80=62.5%, so SKU-B's own pair carries through untouched.
   const bothConverted = groupProductsByName([
     {
       platform: "Amazon" as const, sku: "SKU-A", name: "Two-Winner Product", price: 100,
@@ -222,8 +226,8 @@ Deno.test("groupProductsByName's DAY ad-attributed merge keeps the sale-bearing 
       range: { spend: 50, units: 1 },
     },
   ]);
-  assertEquals(bothConverted[0].day.adAttributedSpend, 150);
-  assertEquals(bothConverted[0].day.adAttributedSales, 280);
+  assertEquals(bothConverted[0].day.adAttributedSpend, 50);
+  assertEquals(bothConverted[0].day.adAttributedSales, 80);
 
   // Two variants that BOTH spent with zero sales still sum to (spend, 0) — the existing
   // ACOS_UNDEFINED_SENTINEL behavior for a product that earned nothing anywhere that day.
