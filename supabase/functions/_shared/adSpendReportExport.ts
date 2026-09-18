@@ -116,7 +116,11 @@ function num(v: unknown): number {
 // case — unlike adAttributedSpend/Sales, real order revenue from two different real SKUs of one
 // product is honestly combinable). Left undefined for Meesho, which still uses the flat
 // Price x units estimate everywhere (Summary sheet, SKU Wise Report) per the seller's choice.
-export interface WindowAgg { spend: number; units: number; gstMultiplier?: number; adAttributedSpend?: number; adAttributedSales?: number; revenue?: number; }
+// adOrders: Meesho-only — "Orders by ad" straight off its own ad report (barm_meesho_ads),
+// i.e. ad-attributed order count (Meesho's ad export has no ₹ sales figure the way Amazon's
+// does, only this count). Summary's "Ad Sales" column for Meesho multiplies this by price.
+// Plainly additive across a merged product's SKU variants, same reasoning as revenue above.
+export interface WindowAgg { spend: number; units: number; gstMultiplier?: number; adAttributedSpend?: number; adAttributedSales?: number; revenue?: number; adOrders?: number; }
 const emptyAgg = (): WindowAgg => ({ spend: 0, units: 0 });
 export const spendTax = (a: WindowAgg): number => a.spend * (a.gstMultiplier ?? DEFAULT_GST_MULTIPLIER);
 export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) / a.units : spendTax(a));
@@ -268,6 +272,7 @@ export function groupProductsByName(
     existing.day.spend += p.day.spend;
     existing.day.units += p.day.units;
     existing.day.revenue = sumOptional(existing.day.revenue, p.day.revenue);
+    existing.day.adOrders = sumOptional(existing.day.adOrders, p.day.adOrders);
     {
       const merged = mergeDayAttributed(existing.day.adAttributedSpend, existing.day.adAttributedSales, p.day.adAttributedSpend, p.day.adAttributedSales);
       existing.day.adAttributedSpend = merged.spend;
@@ -276,6 +281,7 @@ export function groupProductsByName(
     existing.range.spend += p.range.spend;
     existing.range.units += p.range.units;
     existing.range.revenue = sumOptional(existing.range.revenue, p.range.revenue);
+    existing.range.adOrders = sumOptional(existing.range.adOrders, p.range.adOrders);
     existing.range.adAttributedSpend = sumOptional(existing.range.adAttributedSpend, p.range.adAttributedSpend);
     existing.range.adAttributedSales = sumOptional(existing.range.adAttributedSales, p.range.adAttributedSales);
     if (!existing.price && p.price) existing.price = p.price;
@@ -347,6 +353,7 @@ export function groupProductsByName(
     existing.day.spend += group.day.spend;
     existing.day.units += group.day.units;
     existing.day.revenue = sumOptional(existing.day.revenue, group.day.revenue);
+    existing.day.adOrders = sumOptional(existing.day.adOrders, group.day.adOrders);
     {
       const merged = mergeDayAttributed(existing.day.adAttributedSpend, existing.day.adAttributedSales, group.day.adAttributedSpend, group.day.adAttributedSales);
       existing.day.adAttributedSpend = merged.spend;
@@ -355,6 +362,7 @@ export function groupProductsByName(
     existing.range.spend += group.range.spend;
     existing.range.units += group.range.units;
     existing.range.revenue = sumOptional(existing.range.revenue, group.range.revenue);
+    existing.range.adOrders = sumOptional(existing.range.adOrders, group.range.adOrders);
     existing.range.adAttributedSpend = sumOptional(existing.range.adAttributedSpend, group.range.adAttributedSpend);
     existing.range.adAttributedSales = sumOptional(existing.range.adAttributedSales, group.range.adAttributedSales);
     if (!existing.price && group.price) existing.price = group.price;
@@ -977,14 +985,22 @@ export async function fetchMeeshoProducts(
     if (!a) { a = emptyAgg(); spendBySku.set(sku, a); }
     return a;
   };
+  // Summary sheet's "Ad Sales" column for Meesho, per the seller's explicit request: "Orders by
+  // ad" straight off Meesho's own ad report (its export has no ₹ sales figure the way Amazon's
+  // does), multiplied by price when the Summary sheet is built below.
+  const adOrdersRangeBySku = new Map<string, number>();
+  const adOrdersDayBySku = new Map<string, number>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   adsRows.forEach((r: any) => {
     if (!r.sku) return;
     const spend = num(r.spend);
     ensureSpend(r.sku).spend += spend;
+    const adOrders = num(r.orders_by_ad);
+    adOrdersRangeBySku.set(r.sku, (adOrdersRangeBySku.get(r.sku) || 0) + adOrders);
     if (r.report_date === endDate) {
       spendBySkuDay.set(r.sku, (spendBySkuDay.get(r.sku) || 0) + spend);
       if (spend > 0) campaignSpendDay.set(r.campaign_name || "", (campaignSpendDay.get(r.campaign_name || "") || 0) + spend);
+      adOrdersDayBySku.set(r.sku, (adOrdersDayBySku.get(r.sku) || 0) + adOrders);
     }
   });
 
@@ -1035,8 +1051,8 @@ export async function fetchMeeshoProducts(
       sku,
       name: resolveProductName(nameBySku.get(sku), sku) || nameBySku.get(sku) || sku,
       price: priceBySku.get(sku) || 0,
-      day: { spend: spendBySkuDay.get(sku) || 0, units: 0 },
-      range: { spend: spendBySku.get(sku)?.spend || 0, units: unitsBySku.get(sku)?.units || 0 },
+      day: { spend: spendBySkuDay.get(sku) || 0, units: 0, adOrders: adOrdersDayBySku.get(sku) || 0 },
+      range: { spend: spendBySku.get(sku)?.spend || 0, units: unitsBySku.get(sku)?.units || 0, adOrders: adOrdersRangeBySku.get(sku) || 0 },
     });
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1866,10 +1882,20 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
         // once for the range's, so each block gets its own Total Sales next to its own Orders count.
         const dayTotalSales = platform === "Meesho" ? round2(p.price * p.day.units) : round2(p.day.revenue || 0);
         const rangeTotalSales = platform === "Meesho" ? round2(p.price * p.range.units) : round2(p.range.revenue || 0);
-        // Ad Sales — Amazon's own ad-attributed Sales figure (the same adAttributedSales
-        // computeAcos uses for Amazon's ACOS), blank for Flipkart/Meesho, which have no such data.
-        const dayAdSales = p.day.adAttributedSales !== undefined ? round2(p.day.adAttributedSales) : null;
-        const rangeAdSales = p.range.adAttributedSales !== undefined ? round2(p.range.adAttributedSales) : null;
+        // Ad Sales, per the seller's explicit request: Amazon uses its own ad-attributed Sales
+        // figure (the same adAttributedSales computeAcos uses for Amazon's ACOS); Flipkart uses
+        // the same real per-order revenue as its Total Sales above (SUM(Invoice Amount) — FK ord
+        // has no separate ad-attribution figure, so this is the closest analog); Meesho uses its
+        // own ad report's "Orders by ad" count x Price (Meesho's ad export has no ₹ sales figure
+        // the way Amazon's does, only an ad-attributed order count).
+        const dayAdSales =
+          platform === "Amazon" ? (p.day.adAttributedSales !== undefined ? round2(p.day.adAttributedSales) : null)
+          : platform === "Flipkart" ? round2(p.day.revenue || 0)
+          : round2((p.day.adOrders || 0) * p.price);
+        const rangeAdSales =
+          platform === "Amazon" ? (p.range.adAttributedSales !== undefined ? round2(p.range.adAttributedSales) : null)
+          : platform === "Flipkart" ? round2(p.range.revenue || 0)
+          : round2((p.range.adOrders || 0) * p.price);
         sumAoa.push([
           // "Ad spend (without/with tax)" here is the SINGLE-DAY total, matching
           // the seller's own manual workbook's Summary sheet convention — the
