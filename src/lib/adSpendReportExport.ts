@@ -180,8 +180,43 @@ const isLiveSku = (sku: string): boolean => sku.trim().toLowerCase() === stripLe
 // "undefined = no Sponsored Products row on file" distinction from computeAcos intact: only
 // when both sides are undefined does the merged value stay undefined (falls back to the
 // real-order ACOS formula), otherwise a missing side counts as 0 spend/sales contributed.
+// Used for the range/week window, which is untouched by the day-only fix below.
 const sumOptional = (a?: number, b?: number): number | undefined =>
   a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0);
+
+// Same merge as sumOptional, but for the single reporting DAY only, and deliberately not a
+// plain sum. A product with 2+ SKU/ad-group variants often has ad spend running on more than one
+// that day while only one of them actually gets an Amazon-attributed sale — summing spend from a
+// zero-sale variant into a sale-bearing variant's total produces a blended ratio that doesn't match
+// ANY row of Amazon's own raw Sponsored Products export, which defeats the seller's explicit
+// "match Amazon's raw export number-for-number" requirement for ACOS (see computeAcos above) once
+// a product spans more than one SKU/ad-group. Verified directly against the raw export: sorting it
+// by its own ACOS column and sorting this report's day-window Amazon "Worst ACOS" list must produce
+// the same top-N, in the same order — this is what makes that hold once a product groups multiple
+// same-day rows together.
+// Rule: a variant with a genuine attributed sale that day (sales > 0) wins outright, carrying its
+// own (spend, sales) pair forward untouched — exactly reproducing that one row's own raw ACOS. Spend
+// from every other same-day variant (including a real Sponsored Products row that spent but got zero
+// attributed sales) is dropped from the DAY ACOS pair entirely; it still counts in WindowAgg.spend for
+// CPC/Orders, just not here. Two variants both landing a sale on the same day is rare but real — then
+// both are kept and genuinely summed, since that's an honest combined ratio, not a blend against dead
+// spend. Two variants that both spent with zero sales sum to (spend, 0), preserving the existing
+// "spend with zero attributed sales" sentinel behavior in computeAcos for a product that earned
+// nothing anywhere that day.
+const mergeDayAttributed = (
+  existingSpend: number | undefined,
+  existingSales: number | undefined,
+  newSpend: number | undefined,
+  newSales: number | undefined
+): { spend?: number; sales?: number } => {
+  if (existingSales === undefined && newSales === undefined) return { spend: undefined, sales: undefined };
+  const exSpend = existingSpend ?? 0, exSales = existingSales ?? 0;
+  const nwSpend = newSpend ?? 0, nwSales = newSales ?? 0;
+  if (exSales > 0 && nwSales > 0) return { spend: exSpend + nwSpend, sales: exSales + nwSales };
+  if (exSales > 0) return { spend: exSpend, sales: exSales };
+  if (nwSales > 0) return { spend: nwSpend, sales: nwSales };
+  return { spend: exSpend + nwSpend, sales: 0 };
+};
 
 export function groupProductsByName(
   products: ProductRow[],
@@ -213,8 +248,11 @@ export function groupProductsByName(
     }
     existing.day.spend += p.day.spend;
     existing.day.units += p.day.units;
-    existing.day.adAttributedSpend = sumOptional(existing.day.adAttributedSpend, p.day.adAttributedSpend);
-    existing.day.adAttributedSales = sumOptional(existing.day.adAttributedSales, p.day.adAttributedSales);
+    {
+      const merged = mergeDayAttributed(existing.day.adAttributedSpend, existing.day.adAttributedSales, p.day.adAttributedSpend, p.day.adAttributedSales);
+      existing.day.adAttributedSpend = merged.spend;
+      existing.day.adAttributedSales = merged.sales;
+    }
     existing.range.spend += p.range.spend;
     existing.range.units += p.range.units;
     existing.range.adAttributedSpend = sumOptional(existing.range.adAttributedSpend, p.range.adAttributedSpend);
@@ -287,8 +325,11 @@ export function groupProductsByName(
     }
     existing.day.spend += group.day.spend;
     existing.day.units += group.day.units;
-    existing.day.adAttributedSpend = sumOptional(existing.day.adAttributedSpend, group.day.adAttributedSpend);
-    existing.day.adAttributedSales = sumOptional(existing.day.adAttributedSales, group.day.adAttributedSales);
+    {
+      const merged = mergeDayAttributed(existing.day.adAttributedSpend, existing.day.adAttributedSales, group.day.adAttributedSpend, group.day.adAttributedSales);
+      existing.day.adAttributedSpend = merged.spend;
+      existing.day.adAttributedSales = merged.sales;
+    }
     existing.range.spend += group.range.spend;
     existing.range.units += group.range.units;
     existing.range.adAttributedSpend = sumOptional(existing.range.adAttributedSpend, group.range.adAttributedSpend);

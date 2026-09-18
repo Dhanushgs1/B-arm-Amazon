@@ -177,3 +177,68 @@ Deno.test("groupProductsByName sums adAttributedSpend/Sales across merged SKU va
   ]);
   assertEquals(noAdData[0].day.adAttributedSales, undefined);
 });
+
+Deno.test("groupProductsByName's DAY ad-attributed merge keeps the sale-bearing variant's own ratio instead of blending in a zero-sale variant's dead spend, matching the raw Sponsored Products export row-for-row; RANGE keeps summing as before", () => {
+  // Real case: "Chewy tube (Green - Spiral model)" ran two SKU variants on 16-09-2026 —
+  // B-CT-G-8 actually sold (spend 195.19 / sales 189.52 -> raw ACOS 102.99%, matches the export
+  // row exactly) while B-CT-G-1 spent 38.77 with zero attributed sales that day. Summing both
+  // spends against B-CT-G-8's lone sales figure produced 233.96 / 189.52 = 123.46% — a number
+  // that appears on no row of Amazon's own export and outranks products the seller had verified
+  // as genuinely worse that day.
+  const rows = groupProductsByName([
+    {
+      platform: "Amazon" as const, sku: "B-CT-G-8", name: "Chewy tube (Green - Spiral model)", price: 239,
+      day: { spend: 195.19, units: 1, adAttributedSpend: 195.19, adAttributedSales: 189.52 },
+      range: { spend: 1150.58, units: 45, adAttributedSpend: 1150.58, adAttributedSales: 10355.19 },
+    },
+    {
+      platform: "Amazon" as const, sku: "B-CT-G-1", name: "Chewy tube (Green - Spiral model)", price: 239,
+      day: { spend: 38.77, units: 0, adAttributedSpend: 38.77, adAttributedSales: 0 },
+      range: { spend: 220.0, units: 0, adAttributedSpend: 220.0, adAttributedSales: 0 },
+    },
+  ]);
+  assertEquals(rows.length, 1);
+  // DAY: the zero-sale variant's spend is dropped from the ACOS pair entirely (still counted in
+  // WindowAgg.spend for CPC/Orders — untouched, see rows[0].day.spend below).
+  assertEquals(rows[0].day.adAttributedSpend, 195.19);
+  assertEquals(rows[0].day.adAttributedSales, 189.52);
+  assertEquals(computeAcos(rows[0].day, rows[0].price), 195.19 / 189.52);
+  assertEquals(rows[0].day.spend, 195.19 + 38.77);
+  // RANGE: unaffected by this fix, keeps the plain sum it always had.
+  assertEquals(rows[0].range.adAttributedSpend, 1150.58 + 220.0);
+  assertEquals(rows[0].range.adAttributedSales, 10355.19);
+
+  // Two variants that BOTH landed a sale the same day genuinely sum — that's an honest combined
+  // ratio, not a blend against dead spend.
+  const bothConverted = groupProductsByName([
+    {
+      platform: "Amazon" as const, sku: "SKU-A", name: "Two-Winner Product", price: 100,
+      day: { spend: 100, units: 1, adAttributedSpend: 100, adAttributedSales: 200 },
+      range: { spend: 100, units: 1 },
+    },
+    {
+      platform: "Amazon" as const, sku: "SKU-B", name: "Two-Winner Product", price: 100,
+      day: { spend: 50, units: 1, adAttributedSpend: 50, adAttributedSales: 80 },
+      range: { spend: 50, units: 1 },
+    },
+  ]);
+  assertEquals(bothConverted[0].day.adAttributedSpend, 150);
+  assertEquals(bothConverted[0].day.adAttributedSales, 280);
+
+  // Two variants that BOTH spent with zero sales still sum to (spend, 0) — the existing
+  // ACOS_UNDEFINED_SENTINEL behavior for a product that earned nothing anywhere that day.
+  const bothZero = groupProductsByName([
+    {
+      platform: "Amazon" as const, sku: "SKU-C", name: "No-Winner Product", price: 100,
+      day: { spend: 20, units: 0, adAttributedSpend: 20, adAttributedSales: 0 },
+      range: { spend: 20, units: 0 },
+    },
+    {
+      platform: "Amazon" as const, sku: "SKU-D", name: "No-Winner Product", price: 100,
+      day: { spend: 30, units: 0, adAttributedSpend: 30, adAttributedSales: 0 },
+      range: { spend: 30, units: 0 },
+    },
+  ]);
+  assertEquals(bothZero[0].day.adAttributedSpend, 50);
+  assertEquals(bothZero[0].day.adAttributedSales, 0);
+});
