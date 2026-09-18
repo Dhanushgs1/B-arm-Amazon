@@ -561,8 +561,19 @@ export async function fetchAmazonProducts(
     adSpendRangeBySku.set(sku, (adSpendRangeBySku.get(sku) || 0) + spend);
     adSalesRangeBySku.set(sku, (adSalesRangeBySku.get(sku) || 0) + sales7d);
     if (r.report_date === endDate) {
-      adSpendDayBySku.set(sku, (adSpendDayBySku.get(sku) || 0) + spend);
-      adSalesDayBySku.set(sku, (adSalesDayBySku.get(sku) || 0) + sales7d);
+      // Same dead-spend-vs-live-sale problem as groupProductsByName's cross-SKU merge (see
+      // mergeDayAttributed above), one level deeper: a single SKU can itself carry 2+
+      // Sponsored Products rows for the exact same day (seen in practice as a second,
+      // otherwise-blank row — no campaign/ad-group/sales columns — sitting alongside the
+      // real one). Blindly summing both rows' spend against only the real row's sales
+      // produced the same inflated, no-such-row-in-the-raw-export ACOS this file exists to
+      // avoid (e.g. "Chewy tube (Green - Spiral model)"'s B-CT-G-8 read 129.73% from summing
+      // its real row's 195.19 spend with a second, sale-less 50.68 row against just the first
+      // row's 189.52 sales, when B-CT-G-8's own real row is 102.99%). mergeDayAttributed
+      // applies the identical rule here: a same-day row with a genuine sale wins outright.
+      const merged = mergeDayAttributed(adSpendDayBySku.get(sku), adSalesDayBySku.get(sku), spend, sales7d);
+      if (merged.spend !== undefined) adSpendDayBySku.set(sku, merged.spend);
+      if (merged.sales !== undefined) adSalesDayBySku.set(sku, merged.sales);
     }
   });
   [...sbRows, ...sdRows].forEach((r: { campaign_name?: string; spend?: number; report_date?: string }) => {
