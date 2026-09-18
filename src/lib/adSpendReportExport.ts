@@ -1513,6 +1513,17 @@ export function acosCell(a: WindowAgg, price: number): number | null {
   const v = computeAcos(a, price);
   return v === ACOS_UNDEFINED_SENTINEL ? null : pct(v);
 }
+// Summary sheet ACOS for Flipkart/Meesho only, per the seller's explicit request: instead of
+// the CPC/Price fallback computeAcos falls back to for these two platforms everywhere else
+// (Ad spend report, SKU Wise Report), the Summary sheet computes their ACOS directly as
+// Ad Spend / Ad Sales — the same Ad Sales figure already shown in Summary's own Ad Sales
+// column — for both the day and range blocks. Amazon needs no separate path here since
+// computeAcos already resolves to this same Spend/AdSales ratio for Amazon via its
+// adAttributedSales branch. Same blanking convention as acosCell: zero Ad Sales with real
+// spend is a genuinely undefined ratio (blank cell), zero Ad Sales with zero spend is 0%.
+function summaryAcosCell(spend: number, adSales: number): number | null {
+  return adSales > 0 ? pct(spend / adSales) : spend > 0 ? null : 0;
+}
 // "Worst ACOS first" sort ordering only (the Summary sheet's per-platform shortlist, the
 // email's top-3 table, and the full Ad spend report tab's row order) — a known, finite
 // ACOS ranks ABOVE the sentinel here, not below. A blank "Amazon attributed zero sales"
@@ -1916,6 +1927,13 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           platform === "Amazon" ? (p.range.adAttributedSales !== undefined ? round2(p.range.adAttributedSales) : null)
           : platform === "Flipkart" ? round2(p.range.adSales || 0)
           : round2((p.range.adOrders || 0) * p.price);
+        // Summary sheet's own ACOS cells: Amazon keeps computeAcos's existing
+        // adAttributedSales-based ratio (acosCell); Flipkart/Meesho use Spend/Ad Sales directly
+        // here (summaryAcosCell), overriding the CPC/Price fallback acosCell would otherwise
+        // fall back to for them — Summary-sheet-only, the Ad spend report and SKU Wise Report
+        // sheets' ACOS columns for Flipkart/Meesho are untouched.
+        const daySummaryAcos = platform === "Amazon" ? acosCell(p.day, p.price) : summaryAcosCell(round2(p.day.spend), dayAdSales as number);
+        const rangeSummaryAcos = platform === "Amazon" ? acosCell(p.range, p.price) : summaryAcosCell(round2(p.range.spend), rangeAdSales as number);
         sumAoa.push([
           // "Ad spend (without/with tax)" here is the SINGLE-DAY total, matching
           // the seller's own manual workbook's Summary sheet convention — the
@@ -1924,8 +1942,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           // post-generate toast on the Download page.
           i === 0 ? platform : "", i === 0 ? round2(daySpendRaw) : "", i === 0 ? round2(daySpendTaxTotal) : "",
           p.name, p.price,
-          round2(p.day.spend), round2(spendTax(p.day)), p.day.units, dayTotalSales, round2(computeCpc(p.day)), acosCell(p.day, p.price), dayAdSales,
-          round2(p.range.spend), round2(spendTax(p.range)), p.range.units, rangeTotalSales, round2(computeCpc(p.range)), acosCell(p.range, p.price), rangeAdSales,
+          round2(p.day.spend), round2(spendTax(p.day)), p.day.units, dayTotalSales, round2(computeCpc(p.day)), daySummaryAcos, dayAdSales,
+          round2(p.range.spend), round2(spendTax(p.range)), p.range.units, rangeTotalSales, round2(computeCpc(p.range)), rangeSummaryAcos, rangeAdSales,
           // Overall sales QTS/Value is the SINGLE reporting day's total (matches
           // the dayLabel header above), not the 7-day range — the seller's own
           // manual workbook tracks this figure daily, not as a weekly rollup.
