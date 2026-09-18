@@ -104,7 +104,13 @@ function num(v: unknown): number {
 // Left undefined for a SKU with no Sponsored Products row at all (e.g.
 // SB/SD-only spend, or Flipkart/Meesho), so computeAcos falls back to the
 // real-order-based formula for it instead of reading as a false 0% ACOS.
-export interface WindowAgg { spend: number; units: number; gstMultiplier?: number; adAttributedSpend?: number; adAttributedSales?: number; }
+// revenue: real per-order revenue for this SKU/window — SUM(item-price x quantity) for Amazon,
+// SUM(Invoice Amount) for Flipkart, over non-cancelled order rows. Plainly additive across a
+// merged product's SKU variants (groupProductsByName just sums it, no dead-spend-style special
+// case — unlike adAttributedSpend/Sales, real order revenue from two different real SKUs of one
+// product is honestly combinable). Left undefined for Meesho, which still uses the flat
+// Price x units estimate everywhere (Summary sheet, SKU Wise Report) per the seller's choice.
+export interface WindowAgg { spend: number; units: number; gstMultiplier?: number; adAttributedSpend?: number; adAttributedSales?: number; revenue?: number; }
 const emptyAgg = (): WindowAgg => ({ spend: 0, units: 0 });
 export const spendTax = (a: WindowAgg): number => a.spend * (a.gstMultiplier ?? DEFAULT_GST_MULTIPLIER);
 export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) / a.units : spendTax(a));
@@ -257,6 +263,7 @@ export function groupProductsByName(
     }
     existing.day.spend += p.day.spend;
     existing.day.units += p.day.units;
+    existing.day.revenue = sumOptional(existing.day.revenue, p.day.revenue);
     {
       const merged = mergeDayAttributed(existing.day.adAttributedSpend, existing.day.adAttributedSales, p.day.adAttributedSpend, p.day.adAttributedSales);
       existing.day.adAttributedSpend = merged.spend;
@@ -264,6 +271,7 @@ export function groupProductsByName(
     }
     existing.range.spend += p.range.spend;
     existing.range.units += p.range.units;
+    existing.range.revenue = sumOptional(existing.range.revenue, p.range.revenue);
     existing.range.adAttributedSpend = sumOptional(existing.range.adAttributedSpend, p.range.adAttributedSpend);
     existing.range.adAttributedSales = sumOptional(existing.range.adAttributedSales, p.range.adAttributedSales);
     if (!existing.price && p.price) existing.price = p.price;
@@ -334,6 +342,7 @@ export function groupProductsByName(
     }
     existing.day.spend += group.day.spend;
     existing.day.units += group.day.units;
+    existing.day.revenue = sumOptional(existing.day.revenue, group.day.revenue);
     {
       const merged = mergeDayAttributed(existing.day.adAttributedSpend, existing.day.adAttributedSales, group.day.adAttributedSpend, group.day.adAttributedSales);
       existing.day.adAttributedSpend = merged.spend;
@@ -341,6 +350,7 @@ export function groupProductsByName(
     }
     existing.range.spend += group.range.spend;
     existing.range.units += group.range.units;
+    existing.range.revenue = sumOptional(existing.range.revenue, group.range.revenue);
     existing.range.adAttributedSpend = sumOptional(existing.range.adAttributedSpend, group.range.adAttributedSpend);
     existing.range.adAttributedSales = sumOptional(existing.range.adAttributedSales, group.range.adAttributedSales);
     if (!existing.price && group.price) existing.price = group.price;
@@ -673,23 +683,28 @@ export async function fetchAmazonProducts(
       day: {
         spend: daySpend,
         units: 0,
+        revenue: 0,
         ...(hasSpRow ? { adAttributedSpend: adSpendDayBySku.get(sku) || 0, adAttributedSales: adSalesDayBySku.get(sku) || 0 } : {}),
       },
       range: {
         spend: rangeSpend,
         units: rangeUnits,
+        revenue: revenueBySku.get(sku) || 0,
         ...(hasSpRow ? { adAttributedSpend: adSpendRangeBySku.get(sku) || 0, adAttributedSales: adSalesRangeBySku.get(sku) || 0 } : {}),
       },
     });
   });
-  // Fill in day units per SKU (separate pass — keeps the loop above simple).
+  // Fill in day units/revenue per SKU (separate pass — keeps the loop above simple).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows.forEach((r: any) => {
     if (!r.sku || isCancelledOrder(r) || !isStandardOrderId(r.amazon_order_id)) return;
     const ts = Date.parse(String(r.purchase_datetime || ""));
     if (!(Number.isFinite(ts) && ts >= dayGte && ts < dayLt)) return;
     const p = products.get(r.sku);
-    if (p) p.day.units += num(r.quantity);
+    if (!p) return;
+    const qty = num(r.quantity);
+    p.day.units += qty;
+    p.day.revenue = (p.day.revenue || 0) + num(r.item_price) * qty;
   });
 
   const campaigns: CampaignSpendRow[] = [...campaignSpendByDay.entries()]
@@ -853,8 +868,8 @@ export async function fetchFlipkartProducts(
       sku,
       name: resolveProductName(nameBySku.get(sku), sku) || nameBySku.get(sku) || sku,
       price,
-      day: { spend: spendBySkuDay.get(sku) || 0, units: 0 },
-      range: { spend: spendBySku.get(sku)?.spend || 0, units: unitsBySku.get(sku)?.units || 0 },
+      day: { spend: spendBySkuDay.get(sku) || 0, units: 0, revenue: 0 },
+      range: { spend: spendBySku.get(sku)?.spend || 0, units: unitsBySku.get(sku)?.units || 0, revenue: inv?.amount || 0 },
     });
   });
   orderRows.forEach((r) => {
@@ -862,7 +877,9 @@ export async function fetchFlipkartProducts(
     const status = String(r.order_item_status || "").toUpperCase();
     if (status.startsWith("CANCEL")) return;
     const p = products.get(r.sku);
-    if (p) p.day.units += num(r.quantity);
+    if (!p) return;
+    p.day.units += num(r.quantity);
+    p.day.revenue = (p.day.revenue || 0) + num((r as { raw?: Record<string, unknown> }).raw?.["Invoice Amount"]);
   });
 
   const campaigns: CampaignSpendRow[] = [...campaignSpendDay.entries()]
@@ -1697,33 +1714,35 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const METRIC_NAMES = ["Spend", "Spend(with tax)", "Orders", "CPC", "ACOS"];
 
   // ── Summary sheet ──
-  // 19 columns: A Platform, B/C Ad spend without/with tax (range total), D/E
-  // Product/price, F-K day metrics, L-Q range metrics — both blocks now
-  // Spend, Spend(with tax), Orders, Orders x Price = Total Sales, CPC, ACOS
-  // (the "Total Sales" column is a per-product-row figure, not ad-spend-
-  // derived, added at the seller's request so a product's implied revenue
-  // sits right next to its Orders count, in both the day and range blocks),
-  // R/S Overall sales QTS/Value (single reporting day, matching the dayLabel
-  // header — NOT the 7-day range, see the day-vs-range note where these
-  // cells are written below) — A,B,C,R,S merge down across however many
-  // product rows that platform gets.
-  const SUM_COLS = 19;
-  // Both the day and range blocks get the extra "Total Sales" column here — the "Ad spend
-  // report" sheet's day/range blocks still use the shared METRIC_NAMES/productAoaRow below,
-  // unchanged, so that sheet's layout isn't affected by this Summary-only addition.
-  const SUMMARY_METRIC_NAMES = ["Spend", "Spend(with tax)", "Orders", "Orders x Price = Total Sales", "CPC", "ACOS"];
+  // 21 columns: A Platform, B/C Ad spend without/with tax (range total), D/E
+  // Product/price, F-L day metrics, M-S range metrics — both blocks now
+  // Spend, Spend(with tax), Total Orders, Total Sales, CPC, ACOS, Ad Sales
+  // (Total Sales is real per-order revenue for Amazon/Flipkart (see
+  // WindowAgg.revenue), the flat Price x Total Orders estimate for Meesho
+  // per the seller's choice; Ad Sales is Amazon's own ad-attributed Sales
+  // figure — computeAcos's adAttributedSales — blank for Flipkart/Meesho,
+  // which have no such data; both added at the seller's explicit request,
+  // in both the day and range blocks), T/U Overall sales QTS/Value (single
+  // reporting day, matching the dayLabel header — NOT the 7-day range, see
+  // the day-vs-range note where these cells are written below) —
+  // A,B,C,T,U merge down across however many product rows that platform gets.
+  const SUM_COLS = 21;
+  // Both the day and range blocks get the extra Total Sales/Ad Sales columns here — the "Ad
+  // spend report" sheet's day/range blocks still use the shared METRIC_NAMES/productAoaRow
+  // below, unchanged, so that sheet's layout isn't affected by this Summary-only addition.
+  const SUMMARY_METRIC_NAMES = ["Spend", "Spend(with tax)", "Total Orders", "Total Sales", "CPC", "ACOS", "Ad Sales"];
   const sumAoa: (string | number | null)[][] = [
     Array(SUM_COLS).fill(""),
     ["Summary", ...Array(SUM_COLS - 1).fill("")],
     Array(SUM_COLS).fill(""),
-    ["Platform", "Ad spend (without tax)", "Ad spend (with tax)", "Worst ACOS product", "", dayLabel, "", "", "", "", "", rangeLabel, "", "", "", "", "", `Overall sales (${dayLabel})`, ""],
+    ["Platform", "Ad spend (without tax)", "Ad spend (with tax)", "Worst ACOS product", "", dayLabel, "", "", "", "", "", "", rangeLabel, "", "", "", "", "", "", `Overall sales (${dayLabel})`, ""],
     ["", "", "", "Product", "price", ...SUMMARY_METRIC_NAMES, ...SUMMARY_METRIC_NAMES, "QTS", "Value"],
   ];
   const sumMerges: XLSX.Range[] = [
     { s: { r: 1, c: 0 }, e: { r: 1, c: SUM_COLS - 1 } },
     { s: { r: 3, c: 0 }, e: { r: 4, c: 0 } }, { s: { r: 3, c: 1 }, e: { r: 4, c: 1 } }, { s: { r: 3, c: 2 }, e: { r: 4, c: 2 } },
-    { s: { r: 3, c: 3 }, e: { r: 3, c: 4 } }, { s: { r: 3, c: 5 }, e: { r: 3, c: 10 } }, { s: { r: 3, c: 11 }, e: { r: 3, c: 16 } },
-    { s: { r: 3, c: 17 }, e: { r: 3, c: 18 } },
+    { s: { r: 3, c: 3 }, e: { r: 3, c: 4 } }, { s: { r: 3, c: 5 }, e: { r: 3, c: 11 } }, { s: { r: 3, c: 12 }, e: { r: 3, c: 18 } },
+    { s: { r: 3, c: 19 }, e: { r: 3, c: 20 } },
   ];
   const sumHeaderRowsStyled = [3, 4];
   const sumLabelCells: { row: number; platform: Platform }[] = [];
@@ -1835,13 +1854,18 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     sumLabelCells.push({ row: blockStart, platform });
     if (shortlist.length) {
       shortlist.forEach((p, i) => {
-        // Total Sales = that product's own Orders x its Price — same "Sales"
-        // formula the B Arm orders / Meesho leaderboard sheets already use
-        // (price x units), computed once for the day's Orders and once for
-        // the range's, so each block gets its own Total Sales next to its
-        // own Orders count.
-        const dayTotalSales = round2(p.price * p.day.units);
-        const rangeTotalSales = round2(p.price * p.range.units);
+        // Total Sales, per the seller's explicit request: Amazon/Flipkart use real per-order
+        // revenue (WindowAgg.revenue — see fetchAmazonProducts/fetchFlipkartProducts and
+        // groupProductsByName's plain sum of it across a product's SKU variants); Meesho stays
+        // on the flat Price x Orders(units) estimate, same as the B Arm orders / Meesho
+        // leaderboard sheets elsewhere in this workbook. Computed once for the day's Orders and
+        // once for the range's, so each block gets its own Total Sales next to its own Orders count.
+        const dayTotalSales = platform === "Meesho" ? round2(p.price * p.day.units) : round2(p.day.revenue || 0);
+        const rangeTotalSales = platform === "Meesho" ? round2(p.price * p.range.units) : round2(p.range.revenue || 0);
+        // Ad Sales — Amazon's own ad-attributed Sales figure (the same adAttributedSales
+        // computeAcos uses for Amazon's ACOS), blank for Flipkart/Meesho, which have no such data.
+        const dayAdSales = p.day.adAttributedSales !== undefined ? round2(p.day.adAttributedSales) : null;
+        const rangeAdSales = p.range.adAttributedSales !== undefined ? round2(p.range.adAttributedSales) : null;
         sumAoa.push([
           // "Ad spend (without/with tax)" here is the SINGLE-DAY total, matching
           // the seller's own manual workbook's Summary sheet convention — the
@@ -1850,8 +1874,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           // post-generate toast on the Download page.
           i === 0 ? platform : "", i === 0 ? round2(daySpendRaw) : "", i === 0 ? round2(daySpendTaxTotal) : "",
           p.name, p.price,
-          round2(p.day.spend), round2(spendTax(p.day)), p.day.units, dayTotalSales, round2(computeCpc(p.day)), acosCell(p.day, p.price),
-          round2(p.range.spend), round2(spendTax(p.range)), p.range.units, rangeTotalSales, round2(computeCpc(p.range)), acosCell(p.range, p.price),
+          round2(p.day.spend), round2(spendTax(p.day)), p.day.units, dayTotalSales, round2(computeCpc(p.day)), acosCell(p.day, p.price), dayAdSales,
+          round2(p.range.spend), round2(spendTax(p.range)), p.range.units, rangeTotalSales, round2(computeCpc(p.range)), acosCell(p.range, p.price), rangeAdSales,
           // Overall sales QTS/Value is the SINGLE reporting day's total (matches
           // the dayLabel header above), not the 7-day range — the seller's own
           // manual workbook tracks this figure daily, not as a weekly rollup.
@@ -1861,10 +1885,10 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
         ]);
       });
     } else {
-      sumAoa.push([platform, 0, 0, "(no ad spend in range)", "", "", "", "", "", "", "", "", "", "", "", "", "", overallDay.units, round2(overallDay.value)]);
+      sumAoa.push([platform, 0, 0, "(no ad spend in range)", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", overallDay.units, round2(overallDay.value)]);
     }
     if (blockRows > 1) {
-      [0, 1, 2, 17, 18].forEach((c) => sumMerges.push({ s: { r: blockStart, c }, e: { r: blockStart + blockRows - 1, c } }));
+      [0, 1, 2, 19, 20].forEach((c) => sumMerges.push({ s: { r: blockStart, c }, e: { r: blockStart + blockRows - 1, c } }));
     }
   });
 
@@ -1890,8 +1914,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       "Social Media",
       round2(socialMedia.daySpend), round2(spendTax(dayAgg)),
       socialProduct?.name ?? SOCIAL_MEDIA_PRODUCT_NAME, price,
-      round2(dayAgg.spend), round2(spendTax(dayAgg)), dayAgg.units, round2(price * dayAgg.units), round2(computeCpc(dayAgg)), acosCell(dayAgg, price),
-      round2(rangeAgg.spend), round2(spendTax(rangeAgg)), rangeAgg.units, round2(price * rangeAgg.units), round2(computeCpc(rangeAgg)), acosCell(rangeAgg, price),
+      round2(dayAgg.spend), round2(spendTax(dayAgg)), dayAgg.units, round2(price * dayAgg.units), round2(computeCpc(dayAgg)), acosCell(dayAgg, price), null,
+      round2(rangeAgg.spend), round2(spendTax(rangeAgg)), rangeAgg.units, round2(price * rangeAgg.units), round2(computeCpc(rangeAgg)), acosCell(rangeAgg, price), null,
       "", "",
     ]);
     // Same figures as the Summary-sheet row above, reshaped for the emailed daily digest (see
@@ -1936,14 +1960,15 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   if (socialMediaRow !== null) styleLabel(wsSummary, XLSX.utils.encode_cell({ r: socialMediaRow, c: 0 }), "1877F2");
   wsSummary["!cols"] = [
     { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 60 }, { wch: 10 },
-    { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 24 }, { wch: 13 }, { wch: 13 }, // day block: Spend, Spend(with tax), Orders, Total Sales (wider header), CPC, ACOS
-    { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 24 }, { wch: 13 }, { wch: 13 }, // range block: same shape
+    { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 24 }, { wch: 13 }, { wch: 13 }, { wch: 13 }, // day block: Spend, Spend(with tax), Total Orders, Total Sales (wider header), CPC, ACOS, Ad Sales
+    { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 24 }, { wch: 13 }, { wch: 13 }, { wch: 13 }, // range block: same shape
     { wch: 10 }, { wch: 14 },
   ];
   applyNumberFormats(wsSummary, 5, sumAoa.length, {
     1: CURRENCY_FMT, 2: CURRENCY_FMT, 4: CURRENCY_FMT, 5: CURRENCY_FMT, 6: CURRENCY_FMT,
-    8: CURRENCY_FMT, 9: CURRENCY_FMT, 10: PERCENT_FMT, 11: CURRENCY_FMT, 12: CURRENCY_FMT,
-    14: CURRENCY_FMT, 15: CURRENCY_FMT, 16: PERCENT_FMT, 18: CURRENCY_FMT,
+    8: CURRENCY_FMT, 9: CURRENCY_FMT, 10: PERCENT_FMT, 11: CURRENCY_FMT,
+    12: CURRENCY_FMT, 13: CURRENCY_FMT, 15: CURRENCY_FMT, 16: CURRENCY_FMT, 17: PERCENT_FMT, 18: CURRENCY_FMT,
+    20: CURRENCY_FMT,
   });
   // Long titles (a SKU with no product-master entry falls back to the raw
   // marketing title) need to wrap within the column instead of overflowing
