@@ -27,22 +27,23 @@ Deno.test("computeAcos with no Sponsored Products row falls back to Spend (no ta
   assertEquals(computeAcos({ spend: 0, units: 10 }, 0), 0);
 });
 
-Deno.test("computeAcos ignores Flipkart's adSales / Meesho's adOrders and always uses Total Sales, so it doesn't blank out on a day with real orders but zero ad-attributed sales", () => {
-  // Regression for commit 6f32888, which briefly made computeAcos prefer Flipkart's adSales /
-  // Meesho's adOrders x price over the Total Sales estimate (to match the Summary sheet's own
-  // summaryAcosCell) — reverted: a SKU's ad-attributed revenue is legitimately zero for a given
-  // SKU/day far more often than its real per-order Total Sales is, and that branch blanked ACOS on
-  // the majority of Ad spend report / SKU Wise Report rows in a live generated report (61-71% of
-  // Amazon/Flipkart/Meesho day rows), a client-visible regression and a scope violation of the
-  // seller's own explicit "Summary alone" instruction for the Spend/Ad-Sales formula.
-  // adSales present but 0 (real spend, zero ad-attributed sales, but a real Total Sales/revenue on
-  // file from organic or other-day-attributed orders) must NOT blank — must use Total Sales.
-  assertEquals(computeAcos({ spend: 120.7, units: 1, revenue: 373, adSales: 0 }, 365.89), 120.7 / 373);
-  // adSales present and nonzero is still ignored in favor of Total Sales/revenue.
-  assertEquals(computeAcos({ spend: 120.7, units: 1, revenue: 373, adSales: 363 }, 365.89), 120.7 / 373);
-  // Meesho's adOrders is likewise ignored.
-  assertEquals(computeAcos({ spend: 50, units: 5, revenue: 500, adOrders: 2 }, 100), 50 / 500);
-  // Amazon is unaffected — its adAttributedSales branch still takes priority over Total Sales.
+Deno.test("computeAcos prefers Flipkart's adSales / Meesho's adOrders x price over Total Sales, per the seller's final explicit instruction", () => {
+  // Final answer, verified against a real example: "Chewy tube (Green - Spiral model)", Flipkart,
+  // 11-to-17-09-2026 — Spend 1,504.01 / Ad Sales 7,587 = 19.8%, matching the seller's own manual
+  // math exactly (real per-order Total Sales for that same window was a different, larger 12,182,
+  // which is what this branch deliberately does NOT divide by).
+  assertEquals(Math.round(computeAcos({ spend: 1504.01, units: 53, revenue: 12182, adSales: 7587 }, 229.27) * 10000) / 10000, 0.1982);
+  // adSales present but exactly 0 (real spend, zero ad-attributed sales this window, even with a
+  // real Total Sales/revenue on file) is the same "genuinely unknown ratio" sentinel as Amazon's
+  // adAttributedSales branch — a deliberate blank, not a silent fall-through to Total Sales.
+  assertEquals(computeAcos({ spend: 120.7, units: 1, revenue: 373, adSales: 0 }, 365.89), ACOS_UNDEFINED_SENTINEL);
+  // Meesho's adOrders x price is used the same way, since Meesho's ad export has no currency sales
+  // figure directly.
+  assertEquals(computeAcos({ spend: 50, units: 5, revenue: 500, adOrders: 2 }, 100), 50 / 200);
+  // No adSales/adOrders field at all (undefined, not 0) is the true "no ad-attribution data of any
+  // kind" case, and still falls back to Total Sales/revenue.
+  assertEquals(computeAcos({ spend: 50, units: 5, revenue: 500 }, 100), 50 / 500);
+  // Amazon is unaffected — its adAttributedSales branch still takes priority over everything else.
   assertEquals(computeAcos({ spend: 100, units: 10, adAttributedSpend: 100, adAttributedSales: 200 }, 20), 0.5);
 });
 
