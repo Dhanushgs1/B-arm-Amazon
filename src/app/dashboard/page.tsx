@@ -250,9 +250,9 @@ export default function DashboardOverview() {
   // ready-made substitute in the summary — get_orders_report's aggregate is order
   // COUNT, not item units. Real units live on each raw order's numberOfItemsShipped
   // + numberOfItemsUnshipped, so only pull those (heavier than the summary call
-  // above) once retailData has actually loaded and confirmed its unit count is
+  // above) once retailRows has actually loaded and confirmed its unit count is
   // missing, rather than on every render.
-  const retailUnitsMissing = retailData !== undefined && !rs.totalUnitsOrdered;
+  const retailUnitsMissing = retailRows !== undefined && !rs.totalUnitsOrdered;
   const { data: ordersUnitsFallback } = useQuery({
     queryKey: ["orders_units_fallback", keySlot, account?.id, startDate, ordersEndDateExclusive],
     queryFn: async () => {
