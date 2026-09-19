@@ -1571,16 +1571,39 @@ function rawRowsToSheet(
   // cell. Confirmed against this exact bug: 46276/46282 parse to 2026-09-11/2026-09-17, this
   // report's own date window, not some unrelated number that happens to share a "date" header.
   const DATE_HEADER_RE = /date/i;
-  const excelSerialToDmy = (v: number): string | null => {
+  // Flipkart's "Invoice Date (mm/dd/yy)" column is a special case within that: whenever the
+  // seller's uploaded file had that cell typed as a genuine Excel date (rather than left as plain
+  // text like "09/13/26"), day and month come out swapped — proven by cross-checking against the
+  // same row's "Dispatch by date": every single numeric-typed cell in this column, 234/234 in one
+  // report, has its month matching Dispatch's DAY instead of its month once mapped this way, e.g.
+  // a real 11-Sep dispatch stores as the serial for 9-Nov (day 11/month 9 read back as day 9/month
+  // 11). That happens upstream, in whatever tool auto-converted the seller's ambiguous "9/11/26"
+  // text into a real Date cell using day-first instead of month-first — not in our upload code,
+  // which never reinterprets an already-numeric cell's value. Swapping day/month back on read (and
+  // reformatting the still-plain-text cells the same way, since they're already correct as
+  // stored) keeps this one column internally consistent instead of half dash-DD-MM/half
+  // slash-MM-DD.
+  const SWAPPED_DM_HEADER_RE = /\(mm\/dd\/yy\)/i;
+  const excelSerialToDmy = (v: number, swapDayMonth: boolean): string | null => {
     // Guarded, not called blind: a formatting nicety must never crash report generation over it —
     // worse than leaving the original bare-number cell in place, which is what a null return does.
     try {
       const d = XLSX.SSF?.parse_date_code(v);
       if (!d || !d.y) return null;
-      return `${String(d.d).padStart(2, "0")}-${String(d.m).padStart(2, "0")}-${d.y}`;
+      const day = swapDayMonth ? d.m : d.d;
+      const month = swapDayMonth ? d.d : d.m;
+      return `${String(day).padStart(2, "0")}-${String(month).padStart(2, "0")}-${d.y}`;
     } catch {
       return null;
     }
+  };
+  // "9/13/26" -> "13-09-2026" (already correct day/month order per this column's own MM/DD/YY
+  // convention, just reformatted to match the numeric cells above and the rest of this report).
+  const mdyTextToDmy = (v: string): string | null => {
+    const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2})$/.exec(v.trim());
+    if (!m) return null;
+    const [, mm, dd, yy] = m;
+    return `${dd.padStart(2, "0")}-${mm.padStart(2, "0")}-20${yy}`;
   };
 
   const aoa: (string | number | null)[][] = [cols];
@@ -1590,7 +1613,11 @@ function rawRowsToSheet(
         const v = r[c];
         if (v === null || v === undefined) return "";
         if (typeof v === "number" && DATE_HEADER_RE.test(c)) {
-          const formatted = excelSerialToDmy(v);
+          const formatted = excelSerialToDmy(v, SWAPPED_DM_HEADER_RE.test(c));
+          if (formatted) return formatted;
+        }
+        if (typeof v === "string" && SWAPPED_DM_HEADER_RE.test(c)) {
+          const formatted = mdyTextToDmy(v);
           if (formatted) return formatted;
         }
         return typeof v === "number" || typeof v === "string" ? v : String(v);
