@@ -9,7 +9,7 @@ import { supabasePublic } from "@/lib/amazonReportUpload";
 // parse) and its own file carries no date column — just a flat list of order
 // lines (S no, Invoice, Product, Qty, Price) for whatever period the seller
 // last compiled it over. Run scripts/google_orders_table.sql once in the
-// Supabase SQL Editor before the first upload — barm_google_orders doesn't
+// Supabase SQL Editor before the first upload — barm_daily_google_orders doesn't
 // exist otherwise.
 //
 // Feeds the Ad Spend Report's "Google" Summary row and Ad spend report
@@ -131,7 +131,7 @@ export async function uploadGoogleOrdersFile(file: File): Promise<GoogleOrdersUp
     return { totalRows: rawRows.length, savedRows: 0, skippedRows: rawRows.length };
   }
 
-  await upsertInChunks("barm_google_orders", valid, "invoice");
+  await upsertInChunks("barm_daily_google_orders", valid, "invoice");
 
   return { totalRows: rawRows.length, savedRows: valid.length, skippedRows: rawRows.length - valid.length };
 }
@@ -148,7 +148,7 @@ export interface GoogleOrdersDataInfo {
 // convention as the Price/FBA Inventory snapshot cards in amazonReportUpload.ts.
 export async function fetchGoogleOrdersDataInfo(): Promise<GoogleOrdersDataInfo> {
   const { data, error, count } = await supabasePublic
-    .from("barm_google_orders")
+    .from("barm_daily_google_orders")
     .select("quantity, price", { count: "exact" });
   if (error) return { rowCount: 0, totalUnits: 0, totalValue: 0, error: error.message };
   const rows = (data || []) as { quantity: number | null; price: number | null }[];

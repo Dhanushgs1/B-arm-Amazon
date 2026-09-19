@@ -1168,7 +1168,7 @@ async function fetchSocialMediaAdSpend(
 // hand-kept "B-Arm Orders" workbook (see googleOrdersUpload.ts). Its rows
 // carry no date column at all, so unlike every other platform there is no
 // day/range window to scope by — the totals here are a running cumulative
-// total across every barm_google_orders upload so far, not "this window's"
+// total across every barm_daily_google_orders upload so far, not "this window's"
 // figure. Feeds one extra Summary-sheet row and a small Product/Quantity/
 // Price/Sales section at the end of the "Ad spend report" sheet — never the
 // SKU Wise Report, Ad Status Report, Action Sheet or Low Spend Campaigns,
@@ -1180,7 +1180,7 @@ async function fetchGoogleOrders(): Promise<{
   totalValue: number;
 }> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const rows = (await fetchAllRows("barm_google_orders", (q) => q).catch(() => [])) as any[];
+  const rows = (await fetchAllRows("barm_daily_google_orders", (q) => q).catch(() => [])) as any[];
   const byProduct = new Map<string, { quantity: number; priceSum: number; priceCount: number }>();
   let totalUnits = 0;
   let totalValue = 0;
@@ -2057,7 +2057,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // Google (direct/website) orders — one extra Summary row, same lightweight treatment as Social
   // Media above, added only when there's actually data on file. Ad spend/CPC/ACOS columns are left
   // at 0/blank throughout (this channel has no ad campaign data at all — see fetchGoogleOrders);
-  // QTS/Value are the running CUMULATIVE total across every barm_google_orders upload so far, not
+  // QTS/Value are the running CUMULATIVE total across every barm_daily_google_orders upload so far, not
   // "this day's" figure like every other platform's Overall Sales — there is no date column on this
   // channel's own data to scope a single day or a 7-day range by.
   let googleRow: number | null = null;
@@ -2176,7 +2176,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // this workbook, rather than forced into the ad-spend column layout above: Spend/CPC/ACOS don't
   // exist for this channel, and every platform block above is filtered to spend > 0 (every Google
   // row would fail that and print as "no advertised products with activity"). Cumulative totals
-  // across every barm_google_orders upload so far, not scoped to the day/range window — see
+  // across every barm_daily_google_orders upload so far, not scoped to the day/range window — see
   // fetchGoogleOrders's own comment for why this channel has no date to scope by at all.
   let googleDetailLabelRow: number | null = null;
   let googleDetailHeaderRow: number | null = null;
