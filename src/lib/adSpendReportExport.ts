@@ -126,31 +126,35 @@ export interface WindowAgg { spend: number; units: number; gstMultiplier?: numbe
 const emptyAgg = (): WindowAgg => ({ spend: 0, units: 0 });
 export const spendTax = (a: WindowAgg): number => a.spend * (a.gstMultiplier ?? DEFAULT_GST_MULTIPLIER);
 export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) / a.units : spendTax(a));
-// ACOS: when Amazon's own ad-attributed spend/sales are on file for this
-// window, use those directly (matches the raw Sponsored Products export
-// exactly, no GST added — same convention the rest of this file uses for a
-// spend/revenue ratio it can't compute, e.g. OPT_ACOS_THRESHOLD's acosOf
-// below: a sentinel for "spend with zero attributed sales" rather than
-// Infinity). Otherwise (Amazon SB/SD-only spend with no Sponsored Products
-// row on file at all, or Flipkart/Meesho, neither of which carry an
-// ad-attributed sales figure here) falls back to an ESTIMATED/PROXY ACOS:
-// raw spend, no GST — matching the branch above's own convention, and never
-// the tax-inclusive spendTax() CPC is built from — over this window's own
-// Total Sales figure (real per-order revenue where it's tracked, i.e.
-// Amazon/Flipkart's `revenue`; the flat Price x units estimate otherwise,
-// i.e. Meesho, which never populates `revenue` on its WindowAgg — see the
-// Meesho fetch function above). This sentinel is deliberately reused (not
-// Infinity/NaN) for internal comparisons — sorting "worst ACOS first" and
-// the Action Sheet's >14% threshold both still want a very-high-but-finite
-// number here, since ad spend with zero/unknown sales in a window is exactly
-// the kind of row those should surface. Only the user-visible cell/JSON
-// writers (acosCell below) treat it specially, blanking it out instead of
-// showing "999%".
+// ACOS: prefers each platform's own ad-attributed sales figure when one is on file for this
+// window — Amazon's raw Sponsored Products spend/sales (adAttributedSpend/adAttributedSales, no
+// GST added, matching the raw export exactly), Flipkart's ads-export "Total Revenue"
+// (adSales), or Meesho's ad-attributed order count x price (adOrders x price — Meesho's ad
+// export has no currency sales figure directly). This is the same figure the Summary sheet's own
+// summaryAcosCell already uses for Flipkart/Meesho — previously only Summary did, and this file's
+// other consumers (Ad spend report, SKU Wise Report) ignored it and always fell back to the
+// Total Sales estimate below even when this better, genuinely ad-attributed number already
+// existed, which understated ACOS for any product with meaningful organic sales alongside its ad
+// spend. Only when NONE of these are on file at all (Amazon SB/SD-only spend with no Sponsored
+// Products row, e.g.) does it fall back to an ESTIMATED/PROXY ACOS: raw spend, no GST — matching
+// every branch above's own convention, and never the tax-inclusive spendTax() CPC is built from —
+// over this window's own Total Sales figure (real per-order revenue where it's tracked, i.e.
+// Amazon/Flipkart's `revenue`; the flat Price x units estimate otherwise, i.e. Meesho, which
+// never populates `revenue` on its WindowAgg — see the Meesho fetch function above). The sentinel
+// below is deliberately reused (not Infinity/NaN) for internal comparisons — sorting "worst ACOS
+// first" and the Action Sheet's >14% threshold both still want a very-high-but-finite number
+// here, since ad spend with zero/unknown sales in a window is exactly the kind of row those
+// should surface. Only the user-visible cell/JSON writers (acosCell below) treat it specially,
+// blanking it out instead of showing "999%".
 export const ACOS_UNDEFINED_SENTINEL = 9.99;
 export const computeAcos = (a: WindowAgg, price: number): number => {
   if (a.adAttributedSales !== undefined) {
     const spend = a.adAttributedSpend ?? 0;
     return a.adAttributedSales > 0 ? spend / a.adAttributedSales : spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
+  }
+  const adSalesFigure = a.adSales !== undefined ? a.adSales : a.adOrders !== undefined ? a.adOrders * price : undefined;
+  if (adSalesFigure !== undefined) {
+    return adSalesFigure > 0 ? a.spend / adSalesFigure : a.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
   }
   const totalSales = a.revenue ?? a.units * price;
   if (totalSales > 0) return a.spend / totalSales;
