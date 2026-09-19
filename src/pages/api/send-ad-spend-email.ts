@@ -8,16 +8,19 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { supabase } from "@/lib/supabaseClient";
 import { findJob } from "@/lib/adSpendJobs";
 
-const DEFAULT_TO = "kaviyapriyabarm@gmail.com";
+// Temporarily restricted to dhanush@stratai.io only while the date-serial
+// fix is verified against a freshly regenerated report — the real
+// client/team recipients are commented out below, restore them once the
+// fix is confirmed correct in an actual sent copy.
+const DEFAULT_TO = "dhanush@stratai.io"; // was: "kaviyapriyabarm@gmail.com"
 const DEFAULT_CC = [
-  "jayaprakashbarm@gmail.com",
-  "dangibbs@b-arm.com",
-  "nivetha@b-arm.com",
-  "prinesh@b-arm.com",
-  "akshaya.v@b-arm.com",
-  "ceo@barmenterprises.com",
-  "sriram@b-arm.com",
-  "dhanush@stratai.io",
+  // "jayaprakashbarm@gmail.com",
+  // "dangibbs@b-arm.com",
+  // "nivetha@b-arm.com",
+  // "prinesh@b-arm.com",
+  // "akshaya.v@b-arm.com",
+  // "ceo@barmenterprises.com",
+  // "sriram@b-arm.com",
 ].join(",");
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
