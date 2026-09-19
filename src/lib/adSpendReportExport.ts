@@ -32,15 +32,17 @@ import { SITE_URL } from "@/lib/siteUrl";
 //                      every report assumed before this was wired in); a SKU with
 //                      no Tax on file falls back to DEFAULT_GST_MULTIPLIER (18%).
 //   CPC  = Spend(with tax) / Orders        (Orders = 0 -> CPC = Spend(with tax))
-//   ACOS = CPC / Price, EXCEPT for Amazon, where it is instead raw Sponsored
-//          Products Spend / "7 Day Total Sales" straight off the ad platform's
-//          own export (no GST added) whenever that SKU has a Sponsored
-//          Products row on file — per the seller's explicit request that
-//          ACOS match Amazon's own raw export number-for-number, even though
-//          that can disagree sharply with the Orders/CPC columns beside it
-//          (see computeAcos's adAttributedSales branch). Falls back to CPC /
-//          Price for Flipkart/Meesho and for any Amazon SKU with no
-//          Sponsored Products row at all (SB/SD-only spend).
+//   ACOS = Spend (WITHOUT tax) / that SKU's own ad-attributed sales figure, when one is on
+//          file for this window — Amazon's raw Sponsored Products Spend / "7 Day Total Sales"
+//          straight off the ad platform's own export whenever that SKU has a Sponsored Products
+//          row on file (per the seller's explicit request that ACOS match Amazon's own raw
+//          export number-for-number, even though that can disagree sharply with the Orders/CPC
+//          columns beside it), or Flipkart's ads-export "Total Revenue" / Meesho's ad-attributed
+//          order count x price otherwise (see computeAcos's adAttributedSales/adSales/adOrders
+//          branches). Falls back to Spend (WITHOUT tax) / Total Sales — real per-order revenue,
+//          NOT CPC/Price, which is tax-inclusive — only when none of the above is on file at all
+//          (an Amazon SKU with no Sponsored Products row, i.e. SB/SD-only spend; or a Flipkart/
+//          Meesho product with no ad-attributed sales data of its own).
 // "Orders" here means units sold of that product in the window (order-report
 // quantity, cancelled orders excluded) — not ad-click-attributed units and not
 // order records. This is a deliberate choice (see the Notes sheet) so the
@@ -1560,12 +1562,37 @@ function rawRowsToSheet(
   const seen = new Set<string>();
   rawRows.forEach((r) => Object.keys(r).forEach((k) => { if (!seen.has(k)) { seen.add(k); cols.push(k); } }));
 
+  // A column named e.g. "Date"/"Order Date"/"Start Date" whose raw value is a plain number is an
+  // Excel date SERIAL (the sheet cell was typed as a date when the seller's file was uploaded,
+  // and the upload parser stored that serial number as-is into this row's `raw` JSONB rather than
+  // converting it) — written straight into a new cell with no date number format, it displays as
+  // a bare integer like "46276" instead of a date. Amazon's own "purchase-date" is unaffected
+  // (already an ISO string in `raw`, not a number) — this only fires for a genuinely numeric date
+  // cell. Confirmed against this exact bug: 46276/46282 parse to 2026-09-11/2026-09-17, this
+  // report's own date window, not some unrelated number that happens to share a "date" header.
+  const DATE_HEADER_RE = /date/i;
+  const excelSerialToDmy = (v: number): string | null => {
+    // Guarded, not called blind: a formatting nicety must never crash report generation over it —
+    // worse than leaving the original bare-number cell in place, which is what a null return does.
+    try {
+      const d = XLSX.SSF?.parse_date_code(v);
+      if (!d || !d.y) return null;
+      return `${String(d.d).padStart(2, "0")}-${String(d.m).padStart(2, "0")}-${d.y}`;
+    } catch {
+      return null;
+    }
+  };
+
   const aoa: (string | number | null)[][] = [cols];
   rawRows.forEach((r) => {
     aoa.push(
       cols.map((c) => {
         const v = r[c];
         if (v === null || v === undefined) return "";
+        if (typeof v === "number" && DATE_HEADER_RE.test(c)) {
+          const formatted = excelSerialToDmy(v);
+          if (formatted) return formatted;
+        }
         return typeof v === "number" || typeof v === "string" ? v : String(v);
       })
     );
@@ -2460,7 +2487,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       : []),
     ["Spend (with tax) = raw ad spend x (1 + that product's GST rate), applied once after summing — never a per-row multiply. Rate comes from the product master's Tax column per SKU (18% used when a SKU has none on file)."],
     ["CPC = Spend(with tax) / Orders. When Orders = 0, CPC = Spend(with tax) (undefined ratio, shown as the spend itself rather than blank)."],
-    ["ACOS = CPC / Price, EXCEPT for Amazon: whenever a SKU has a Sponsored Products row on file, ACOS instead uses Amazon's own raw Sponsored Products Spend / \"7 Day Total Sales\" directly from the ad export (no GST added) — matching Amazon's own report number-for-number rather than this sheet's real-order-based Orders/CPC. Falls back to CPC / Price for Flipkart, Meesho, and any Amazon SKU with no Sponsored Products row (SB/SD-only spend)."],
+    ["ACOS = Spend (without tax) / that SKU's own ad-attributed sales, when on file for this window: for Amazon, whenever a SKU has a Sponsored Products row on file, that's Amazon's own raw Sponsored Products Spend / \"7 Day Total Sales\" directly from the ad export (no GST added) — matching Amazon's own report number-for-number rather than this sheet's real-order-based Orders/CPC; for Flipkart, its ads-export \"Total Revenue\"; for Meesho, its ad-attributed order count x price. Falls back to Spend (without tax) / Total Sales — real per-order revenue, never CPC/Price, which is tax-inclusive — only when none of the above is on file at all (an Amazon SKU with no Sponsored Products row, i.e. SB/SD-only spend; or a Flipkart/Meesho product with no ad-attributed sales data of its own)."],
     ["\"Orders\" = units sold of that product in the window, from the Orders/Order report, cancelled orders excluded. This is NOT ad-click-attributed units."],
     ["\"Day\" = the single reporting day above. \"Range\" = that day and the", rangeDays - 1, "days before it, inclusive."],
     [""],
