@@ -157,6 +157,30 @@ export const computeAcos = (a: WindowAgg, price: number): number => {
   return a.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
 };
 
+// Action Sheet only. computeAcos's Sponsored Products branch deliberately keeps a real SP row
+// with exactly zero attributed sales this window as the ACOS_UNDEFINED_SENTINEL (a genuinely
+// unknown ratio, blanked by acosCell) — correct for Summary/Ad spend report/SKU Wise Report, which
+// show it as an honest blank rather than guess. The Action Sheet is different: it's a worksheet
+// built to be ACTED on, and per the seller's explicit report against a real export (a Suture
+// thread-KT row: Orders 1, Spend without tax ₹436.86, Price ₹721, Total Sales ₹721 — a fully
+// computable 60.59% — still rendered as the sentinel's literal "999%"), a SKU with real
+// Orders/Spend/Price/Total Sales on file should never show that raw sentinel: it reads as a data
+// error, not a signal to act on, and (via actionFor below) was also corrupting the recommended
+// bid-cut text with a fabricated "7-day ACOS 999%". So here, ANY non-positive Sponsored Products
+// attribution (undefined OR present-but-zero) falls back to the same Spend(no tax)/Total Sales
+// proxy computeAcos's own SB/SD-only branch already uses — only when that fallback's own
+// denominator (Total Sales) is itself 0 does this still return the sentinel, exactly the
+// "genuinely nothing to compute from" case the existing >14% threshold check was written to keep
+// surfacing (see its own comment below).
+export function actionSheetAcos(a: WindowAgg, price: number): number {
+  if (a.adAttributedSales !== undefined && a.adAttributedSales > 0) {
+    return (a.adAttributedSpend ?? 0) / a.adAttributedSales;
+  }
+  const totalSales = a.revenue ?? a.units * price;
+  if (totalSales > 0) return a.spend / totalSales;
+  return a.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
+}
+
 // Platform-wide "Overall sales" figures (units sold + realised sale value) —
 // unrelated to ad spend, so kept as its own shape rather than overloading
 // WindowAgg.spend to mean two different things depending on context.
@@ -1870,9 +1894,16 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // per the seller's own request that every row carry a number.
   const bidCutPct = (acosPct: number): number => (acosPct >= 90 ? 50 : acosPct >= 60 ? 35 : 20);
   const actionFor = (acosFrac: number): string => {
+    const note = "No matching campaign found in the uploaded ad data to confirm which ad group/keyword to open.";
+    // The residual sentinel — actionSheetAcos still returns it, but only when even the Spend/Total
+    // Sales fallback's own denominator is 0 (no order data at all this window to estimate from) —
+    // gets an honest "ACOS unavailable" instead of a fabricated "(7-day ACOS 999%)"; the row still
+    // clears the >14% threshold and needs a bid cut, so the highest tier still applies.
+    if (acosFrac === ACOS_UNDEFINED_SENTINEL) {
+      return `Reduce bid urgently — cut bids ~50% (7-day ACOS unavailable — real ad spend with no order data to estimate sales from this window). ${note}`;
+    }
     const acosPct = Math.round(acosFrac * 100);
     const cut = bidCutPct(acosPct);
-    const note = "No matching campaign found in the uploaded ad data to confirm which ad group/keyword to open.";
     if (acosPct > 50) return `Reduce bid urgently — cut bids ~${cut}% (7-day ACOS ${acosPct}%). ${note}`;
     if (acosPct > 25) return `Reduce bid ~${cut}% (7-day ACOS ${acosPct}%). ${note}`;
     return `Monitor / review keywords — trim bids ~${cut}% (7-day ACOS ${acosPct}%). ${note}`;
@@ -1885,7 +1916,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     // one row instead of showing up as separate near-duplicate rows.
     const rows = groupProductsByName([...products.values()], undefined, skuToMasterSkuidName).filter((p) => spendTax(p.range) > 0);
     rows.forEach((p) => {
-      const rangeAcos = computeAcos(p.range, p.price);
+      const rangeAcos = actionSheetAcos(p.range, p.price);
       if (rangeAcos > ACTION_ACOS_THRESHOLD) {
         actionRows.push({
           platform,
@@ -2302,7 +2333,13 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   ];
   [...actionRows]
     .sort((a, b) => b.acos - a.acos)
-    .forEach((r) => actionAoa.push([r.platform, r.campaign || "-", r.sku, r.price, r.spend, r.spendTax, r.orders, r.acos, r.action]));
+    .forEach((r) => actionAoa.push([
+      r.platform, r.campaign || "-", r.sku, r.price, r.spend, r.spendTax, r.orders,
+      // The residual sentinel (see actionSheetAcos) blanks here instead of rendering as a literal
+      // "999%" — same convention acosCell uses everywhere else in this workbook.
+      r.acos === pct(ACOS_UNDEFINED_SENTINEL) ? "" : r.acos,
+      r.action,
+    ]));
   if (!actionRows.length) actionAoa.push(["(no products over the 14% 7-day ACOS threshold)", "", "", "", "", "", "", "", ""]);
   const wsAction = XLSX.utils.aoa_to_sheet(actionAoa);
   styleHeader(wsAction, 0, 9, "B91C1C");

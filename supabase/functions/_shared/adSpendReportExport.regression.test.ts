@@ -1,5 +1,5 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/testing/asserts.ts";
-import { spendTax, computeCpc, computeAcos, ACOS_UNDEFINED_SENTINEL, acosCell, acosSortRank, getDateWindow, groupProductsByName } from "./adSpendReportExport.ts";
+import { spendTax, computeCpc, computeAcos, actionSheetAcos, ACOS_UNDEFINED_SENTINEL, acosCell, acosSortRank, getDateWindow, groupProductsByName } from "./adSpendReportExport.ts";
 
 Deno.test("spendTax applies the flat 1.18 GST multiplier when none is tagged", () => {
   assertEquals(spendTax({ spend: 100, units: 5 }), 118);
@@ -39,6 +39,31 @@ Deno.test("computeAcos: an Amazon SKU with spend + price + orders but no Sponsor
   assertEquals(v, 379.97 / 23936.01);
   assertEquals(v === ACOS_UNDEFINED_SENTINEL, false);
   assertEquals(acosCell({ spend: 379.97, units: 4, revenue: 23936.01 }, 5671), Math.round((379.97 / 23936.01) * 10000) / 10000);
+});
+
+Deno.test("actionSheetAcos: a real Sponsored Products row with zero attributed sales this window still falls back to Spend/Total Sales, unlike computeAcos", () => {
+  // Regression for the bug reported against a live Ad Spend Report export's Action Sheet: a
+  // Suture thread-KT row — Orders 1, Spend (no tax) 436.86, Spend (with tax) 515.49, Price 721,
+  // Total Sales 721 — rendered as a literal "999%" because it HAS a Sponsored Products row on file
+  // for this window, just with adAttributedSales === 0 (computeAcos's own branch correctly treats
+  // that as a genuinely-unknown ratio for every other sheet). The Action Sheet is meant to be
+  // acted on, so it uses a real, computable number here instead: Spend(no tax)/Total Sales, exactly
+  // like a SKU with no Sponsored Products row at all.
+  const suturethreadKT = { spend: 436.86, units: 1, revenue: 721, adAttributedSpend: 436.86, adAttributedSales: 0 };
+  // computeAcos (every other sheet): correctly stays the sentinel — has an SP row, attributed 0.
+  assertEquals(computeAcos(suturethreadKT, 721), ACOS_UNDEFINED_SENTINEL);
+  // actionSheetAcos (Action Sheet only): the real 60.59%, not 999%.
+  const v = actionSheetAcos(suturethreadKT, 721);
+  assertEquals(Math.round(v * 10000) / 100, 60.59);
+  assertEquals(v === ACOS_UNDEFINED_SENTINEL, false);
+  // A genuine positive Sponsored Products attribution is untouched — same number as computeAcos.
+  const attributed = { spend: 999, units: 999, adAttributedSpend: 516.18, adAttributedSales: 379.04 };
+  assertEquals(actionSheetAcos(attributed, 999), computeAcos(attributed, 999));
+  // No Sponsored Products row at all (undefined, not 0) — same fallback as computeAcos's own.
+  assertEquals(actionSheetAcos({ spend: 436.86, units: 1, revenue: 721 }, 721), 436.86 / 721);
+  // Genuinely nothing to compute from at all (no orders, no revenue, no attribution) — still the
+  // sentinel, so the >14% threshold check still surfaces a real-spend/zero-signal row.
+  assertEquals(actionSheetAcos({ spend: 100, units: 0 }, 721), ACOS_UNDEFINED_SENTINEL);
 });
 
 Deno.test("computeAcos prefers Amazon's own ad-attributed spend/sales when on file, ignoring GST and real-order units/price entirely", () => {
