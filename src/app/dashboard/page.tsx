@@ -186,10 +186,25 @@ export default function DashboardOverview() {
     enabled: !!account,
   });
 
+  // get_orders_report treats end_date as an EXCLUSIVE upper bound (createdBefore at
+  // midnight of end_date) — unlike every other tool called on this page, which is
+  // inclusive. Passing the same start_date/end_date for a single selected day (e.g.
+  // "17 Sept 2026", where startDate === endDate) produced a zero-width window and
+  // always came back with totalOrders: 0 / totalValue: 0, even on days with real
+  // sales — confirmed live against production. Push the boundary out one day so the
+  // selected end date is actually included.
+  const ordersEndDateExclusive = useMemo(() => {
+    if (!endDate) return endDate;
+    const d = new Date(`${endDate}T00:00:00`);
+    if (Number.isNaN(d.getTime())) return endDate;
+    d.setDate(d.getDate() + 1);
+    return isoDate(d);
+  }, [endDate]);
+
   // Fetch state-wise order breakdown
   const { data: ordersReportData } = useQuery({
     queryKey: ["orders_report_states", keySlot, account?.id, startDate, endDate],
-    queryFn: () => mcp("get_orders_report", { ...baseArgs, top_states: 100 }, keySlot),
+    queryFn: () => mcp("get_orders_report", { ...baseArgs, end_date: ordersEndDateExclusive, top_states: 100 }, keySlot),
     enabled: !!account,
   });
 
