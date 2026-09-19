@@ -244,8 +244,38 @@ export default function DashboardOverview() {
   const totalSales = rs.totalSales || ordersReportData?.summary?.totalValue || 0;
   const adSales = rs.totalAdSales || s.totalSales || 0;
   const organicSales = Math.max(0, totalSales - adSales);
-  const totalUnits = rs.totalUnitsOrdered || 0;
   const tacos = rs.overallTacos || 0;
+
+  // Same staleness problem as Total Sales, but retail's totalUnitsOrdered has no
+  // ready-made substitute in the summary — get_orders_report's aggregate is order
+  // COUNT, not item units. Real units live on each raw order's numberOfItemsShipped
+  // + numberOfItemsUnshipped, so only pull those (heavier than the summary call
+  // above) once retailData has actually loaded and confirmed its unit count is
+  // missing, rather than on every render.
+  const retailUnitsMissing = retailData !== undefined && !rs.totalUnitsOrdered;
+  const { data: ordersUnitsFallback } = useQuery({
+    queryKey: ["orders_units_fallback", keySlot, account?.id, startDate, ordersEndDateExclusive],
+    queryFn: async () => {
+      let total = 0;
+      for (let page = 0; page < 40; page++) {
+        const res = await mcp("get_orders_report", {
+          amazon_account_id: account?.id,
+          workspace_id: account?.workspace_id,
+          start_date: startDate,
+          end_date: ordersEndDateExclusive,
+          include_orders: true,
+          page,
+          page_size: 500,
+        }, keySlot);
+        const rows = res.orders || [];
+        total += rows.reduce((sum: number, o: any) => sum + (o.numberOfItemsShipped || 0) + (o.numberOfItemsUnshipped || 0), 0);
+        if (!res.pagination?.hasMore || rows.length === 0) break;
+      }
+      return total;
+    },
+    enabled: !!account && retailUnitsMissing,
+  });
+  const totalUnits = rs.totalUnitsOrdered || ordersUnitsFallback || 0;
 
   // Same derivations against the previous window, so every trend badge compares
   // like with like. While these queries are in flight the values are 0 and
