@@ -148,6 +148,24 @@ export default function ReportsPage() {
     return j.job as { status: string; error_message: string | null; email_status: string } | null;
   };
 
+  // Sync jobStatus with the server whenever the selected date or account changes — without this,
+  // jobStatus starts as null on every page load/date change (React state, not server truth), so
+  // the button's onClick={() => handleGenerateAdSpendJob(jobStatus === "failed" || jobStatus ===
+  // "completed")} computes force from a stale default instead of reality. The FIRST click on a
+  // date that already has a completed job (e.g. right after an Edge Function redeploy, or just
+  // reopening this page) silently sent force=false — findOrCreateJob then returned the existing
+  // completed job as-is, re-sending the OLD report, even though the button read "Generate Report"
+  // and looked like it should build a fresh one. The button only relabelled to "Regenerate Report"
+  // afterwards, so a second click would have forced it — but the first one silently didn't.
+  useEffect(() => {
+    if (!endDate) return;
+    let cancelled = false;
+    pollJobStatus(endDate, account?.name)
+      .then((job) => { if (!cancelled) setJobStatus(job?.status ?? null); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [endDate, account?.name]);
+
   const handleGenerateAdSpendJob = async (force = false) => {
     if (!endDate) { alert("Pick a date at the top of the dashboard first."); return; }
     setJobGenerating(true); setJobMsg(null);
