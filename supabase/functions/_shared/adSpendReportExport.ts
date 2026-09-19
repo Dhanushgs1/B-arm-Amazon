@@ -1576,6 +1576,7 @@ function rawRowsToSheet(
   // (already an ISO string in `raw`, not a number) — this only fires for a genuinely numeric date
   // cell. Confirmed against this exact bug: 46276/46282 parse to 2026-09-11/2026-09-17, this
   // report's own date window, not some unrelated number that happens to share a "date" header.
+  const DATE_HEADER_RE = /date/i;
   // Flipkart's "Invoice Date (mm/dd/yy)" column is a special case within that: whenever the
   // seller's uploaded file had that cell typed as a genuine Excel date (rather than left as plain
   // text like "09/13/26"), day and month come out swapped — proven by cross-checking against the
