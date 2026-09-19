@@ -1157,6 +1157,46 @@ async function fetchSocialMediaAdSpend(
   return { daySpend: round2(daySpend), rangeSpend: round2(rangeSpend) };
 }
 
+// ── Google (direct/website) orders ──────────────────────────────────────────
+// Like Social Media above, a lightweight add-on, NOT a real `Platform` — this
+// channel has no ad campaign export of any kind (no Spend/CPC/ACOS to show),
+// only realised Orders and Sales (Quantity x Price), from the seller's own
+// hand-kept "B-Arm Orders" workbook (see googleOrdersUpload.ts). Its rows
+// carry no date column at all, so unlike every other platform there is no
+// day/range window to scope by — the totals here are a running cumulative
+// total across every barm_google_orders upload so far, not "this window's"
+// figure. Feeds one extra Summary-sheet row and a small Product/Quantity/
+// Price/Sales section at the end of the "Ad spend report" sheet — never the
+// SKU Wise Report, Ad Status Report, Action Sheet or Low Spend Campaigns,
+// none of which have anything meaningful to add for a channel with no ad
+// spend and no per-day data.
+async function fetchGoogleOrders(): Promise<{
+  perProduct: { name: string; quantity: number; price: number }[];
+  totalUnits: number;
+  totalValue: number;
+}> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = (await fetchAllRows("barm_google_orders", (q) => q).catch(() => [])) as any[];
+  const byProduct = new Map<string, { quantity: number; priceSum: number; priceCount: number }>();
+  let totalUnits = 0;
+  let totalValue = 0;
+  rows.forEach((r) => {
+    const name = r.product_name || "(no product name)";
+    const qty = num(r.quantity);
+    const price = num(r.price);
+    totalUnits += qty;
+    totalValue += qty * price;
+    const acc = byProduct.get(name) || { quantity: 0, priceSum: 0, priceCount: 0 };
+    acc.quantity += qty;
+    if (price > 0) { acc.priceSum += price; acc.priceCount += 1; }
+    byProduct.set(name, acc);
+  });
+  const perProduct = [...byProduct.entries()]
+    .map(([name, acc]) => ({ name, quantity: acc.quantity, price: acc.priceCount ? acc.priceSum / acc.priceCount : 0 }))
+    .sort((a, b) => b.quantity * b.price - a.quantity * a.price);
+  return { perProduct, totalUnits, totalValue: Math.round(totalValue * 100) / 100 };
+}
+
 // ── workbook ─────────────────────────────────────────────────────────────────
 
 function styleHeader(ws: XLSX.WorkSheet, row: number, cols: number, fill: string, colStart = 0): void {
@@ -1677,7 +1717,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // Fetched once and shared across all three platforms — the seller's own
   // approved SKU -> product name list, checked first before falling back to
   // whatever name shows up on an order/price-listing row (see resolveName).
-  const [master, masterSkuid, masterSkuidCatalog, masterSkuidsByName, productMarketing, amz, fk, ms, socialMedia] = await Promise.all([
+  const [master, masterSkuid, masterSkuidCatalog, masterSkuidsByName, productMarketing, amz, fk, ms, socialMedia, googleOrders] = await Promise.all([
     fetchProductMasterMap(),
     fetchMasterSkuidMap(),
     fetchMasterSkuidAmazonCatalog(),
@@ -1687,6 +1727,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     fetchFlipkartProducts(range, endDate),
     fetchMeeshoProducts(range, endDate),
     fetchSocialMediaAdSpend(range, endDate),
+    fetchGoogleOrders(),
   ]);
   // The master lists one SKU spelling per product (e.g. "B-BULB-...-PK5(FK)"),
   // but ad/order data carries whatever variant spelling that platform export
@@ -2009,6 +2050,25 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     };
   }
 
+  // Google (direct/website) orders — one extra Summary row, same lightweight treatment as Social
+  // Media above, added only when there's actually data on file. Ad spend/CPC/ACOS columns are left
+  // at 0/blank throughout (this channel has no ad campaign data at all — see fetchGoogleOrders);
+  // QTS/Value are the running CUMULATIVE total across every barm_google_orders upload so far, not
+  // "this day's" figure like every other platform's Overall Sales — there is no date column on this
+  // channel's own data to scope a single day or a 7-day range by.
+  let googleRow: number | null = null;
+  if (googleOrders.totalUnits > 0 || googleOrders.totalValue > 0) {
+    googleRow = sumAoa.length;
+    sumAoa.push([
+      "Google",
+      0, 0,
+      "(Orders/Sales only — cumulative total, no ad spend data)", "",
+      0, 0, "", "", "", "", "",
+      0, 0, "", "", "", "", "",
+      googleOrders.totalUnits, googleOrders.totalValue,
+    ]);
+  }
+
   // Optimization suggestions (Gemini) — replaces the Action Sheet's generic tiered text with a
   // real per-campaign bid-cut/negative-keyword recommendation, for both Amazon and Flipkart rows,
   // matching the seller's own request. One Gemini call per platform covers every flagged campaign
@@ -2036,6 +2096,10 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // styled directly here instead of through sumLabelCells/PLATFORM_FILL — same bold-label
   // treatment, a Meta-blue fill, no dashboard hyperlink (there's no dedicated Social Media page).
   if (socialMediaRow !== null) styleLabel(wsSummary, XLSX.utils.encode_cell({ r: socialMediaRow, c: 0 }), "1877F2");
+  // Google isn't a real `Platform` either (see the comment where googleRow is built) — same
+  // treatment as Social Media above, Google's own brand blue, no dashboard hyperlink (there's no
+  // dedicated Google analytics page, just the /dashboard/google/upload upload page).
+  if (googleRow !== null) styleLabel(wsSummary, XLSX.utils.encode_cell({ r: googleRow, c: 0 }), "4285F4");
   wsSummary["!cols"] = [
     { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 60 }, { wch: 10 },
     { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 24 }, { wch: 13 }, { wch: 13 }, { wch: 13 }, // day block: Spend, Spend(with tax), Total Orders, Total Sales (wider header), CPC, ACOS, Ad Sales
@@ -2102,10 +2166,31 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     if (!rows.length) detailAoa.push(["(no advertised products with activity in range)", ...Array(DETAIL_COLS - 1).fill("")]);
     detailAoa.push([]);
   });
+
+  // Google (direct/website) orders — appended as its own small Product/Quantity/Price/Sales
+  // section, same shape as the "B Arm orders"/"Meesho (B Arm) orders" leaderboards elsewhere in
+  // this workbook, rather than forced into the ad-spend column layout above: Spend/CPC/ACOS don't
+  // exist for this channel, and every platform block above is filtered to spend > 0 (every Google
+  // row would fail that and print as "no advertised products with activity"). Cumulative totals
+  // across every barm_google_orders upload so far, not scoped to the day/range window — see
+  // fetchGoogleOrders's own comment for why this channel has no date to scope by at all.
+  let googleDetailLabelRow: number | null = null;
+  let googleDetailHeaderRow: number | null = null;
+  if (googleOrders.perProduct.length) {
+    googleDetailLabelRow = detailAoa.length;
+    detailAoa.push(["Google"]);
+    googleDetailHeaderRow = detailAoa.length;
+    detailAoa.push(["Product", "Quantity", "Price", "Sales"]);
+    googleOrders.perProduct.forEach((p) => detailAoa.push([p.name, p.quantity, round2(p.price), round2(p.quantity * p.price)]));
+    detailAoa.push([]);
+  }
+
   const wsDetail = XLSX.utils.aoa_to_sheet(detailAoa);
   wsDetail["!merges"] = detailMerges;
   detailLabelCells.forEach(({ addr, platform }) => styleLabel(wsDetail, addr, PLATFORM_FILL[platform]));
   detailHeaderRows.forEach((row) => { styleHeader(wsDetail, row, DETAIL_COLS, "312E81"); styleHeader(wsDetail, row + 1, DETAIL_COLS, "312E81"); });
+  if (googleDetailLabelRow !== null) styleLabel(wsDetail, XLSX.utils.encode_cell({ r: googleDetailLabelRow, c: 0 }), "4285F4");
+  if (googleDetailHeaderRow !== null) styleHeader(wsDetail, googleDetailHeaderRow, 4, "312E81");
   wsDetail["!cols"] = [{ wch: 30 }, { wch: 60 }, { wch: 10 }, ...Array.from({ length: DETAIL_COLS - 3 }, () => ({ wch: 13 }))];
   applyNumberFormats(wsDetail, 0, detailAoa.length, {
     2: CURRENCY_FMT, 3: CURRENCY_FMT, 4: CURRENCY_FMT, 6: CURRENCY_FMT, 7: PERCENT_FMT,

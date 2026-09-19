@@ -598,8 +598,11 @@ export default function ReportsPage() {
           Status Report and a Low Spend Campaigns list. Built from the data uploaded on the Amazon, Flipkart, and{" "}
           <a href="/dashboard/meesho/upload" className="underline hover:text-foreground">Meesho</a>{" "}
           Upload pages (Meesho needs scripts/meesho_tables.sql run once in Supabase first), plus a Social Media
-          (Meta Ads) Summary row from the Upload page&apos;s &quot;Social Media Ad Spend&quot; card. Google Ads spend
-          still isn&apos;t included — no sample export has been seen for it yet.
+          (Meta Ads) Summary row from the Upload page&apos;s &quot;Social Media Ad Spend&quot; card, and a Google
+          Summary row (Orders/Sales only — no ad spend data exists for this channel) from the{" "}
+          <a href="/dashboard/google/upload" className="underline hover:text-foreground">Google</a>{" "}
+          Upload page (needs scripts/google_orders_table.sql run once in Supabase first). Google Ads campaign spend
+          itself still isn&apos;t included — no sample export has been seen for it yet.
         </p>
         <div className="flex flex-wrap gap-2">
           <button
