@@ -244,52 +244,18 @@ const isLiveSku = (sku: string): boolean => sku.trim().toLowerCase() === stripLe
 // "undefined = no Sponsored Products row on file" distinction from computeAcos intact: only
 // when both sides are undefined does the merged value stay undefined (falls back to the
 // real-order ACOS formula), otherwise a missing side counts as 0 spend/sales contributed.
-// Used for the range/week window, which is untouched by the day-only fix below.
+// Used for BOTH the single reporting day and the range/week window — a product with 2+ SKU/
+// ad-group variants gets its day ACOS from the plain total of every variant's own attributed
+// spend and sales that day, exactly like the range window already worked and exactly like Spend/
+// Orders/CPC already do elsewhere on this same row. (An earlier version of this function picked a
+// single "worst" raw row instead of summing, to make day ACOS match one exact row of Amazon's raw
+// per-campaign export — reverted per the seller's explicit request: summing is the "obviously
+// correct" reading of a merged row's own displayed Spend total, and a displayed Spend that's a sum
+// across every variant next to an ACOS computed from only one of them read as self-contradictory,
+// which mattered more than preserving an exact single-row match once a product spans more than one
+// SKU/ad-group that day.)
 const sumOptional = (a?: number, b?: number): number | undefined =>
   a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0);
-
-// Same merge as sumOptional, but for the single reporting DAY only, and deliberately not a
-// plain sum. A product with 2+ SKU/ad-group variants often has ad spend running on more than one
-// that day while only one of them actually gets an Amazon-attributed sale — summing spend from a
-// zero-sale variant into a sale-bearing variant's total produces a blended ratio that doesn't match
-// ANY row of Amazon's own raw Sponsored Products export, which defeats the seller's explicit
-// "match Amazon's raw export number-for-number" requirement for ACOS (see computeAcos above) once
-// a product spans more than one SKU/ad-group. Verified directly against the raw export: sorting it
-// by its own ACOS column and sorting this report's day-window Amazon "Worst ACOS" list must produce
-// the same top-N, in the same order — this is what makes that hold once a product groups multiple
-// same-day rows together.
-// Rule: a variant with a genuine attributed sale that day (sales > 0) wins outright, carrying its
-// own (spend, sales) pair forward untouched — exactly reproducing that one row's own raw ACOS. Spend
-// from every other same-day variant (including a real Sponsored Products row that spent but got zero
-// attributed sales) is dropped from the DAY ACOS pair entirely; it still counts in WindowAgg.spend for
-// CPC/Orders, just not here. Two variants both landing a sale on the same day is rare but real (seen
-// in practice: the same SKU running under two different campaigns, each with its own conversion) —
-// summing those two would be an honest combined ratio mathematically, but it's still a NUMBER THAT
-// MATCHES NO ROW of the raw export, which is exactly what this function exists to avoid; it also
-// reorders the product out of the position its own raw row would sort into (verified: "Bulb Syringe
-// IUI applicator (10.5 cm)(Pack of 5)" dropped from the raw sheet's rank 5, at its own 97.83%, to
-// rank 7 at a blended 56.71%, once its two same-day real-sale rows got summed). So instead of summing,
-// the worse (higher-ACOS) of the two real-sale variants wins outright, same as the single-winner case
-// above — the day ACOS this report shows is always one product's own raw row, never an average of two.
-// Two variants that both spent with zero sales sum to (spend, 0), preserving the existing
-// "spend with zero attributed sales" sentinel behavior in computeAcos for a product that earned
-// nothing anywhere that day.
-const mergeDayAttributed = (
-  existingSpend: number | undefined,
-  existingSales: number | undefined,
-  newSpend: number | undefined,
-  newSales: number | undefined
-): { spend?: number; sales?: number } => {
-  if (existingSales === undefined && newSales === undefined) return { spend: undefined, sales: undefined };
-  const exSpend = existingSpend ?? 0, exSales = existingSales ?? 0;
-  const nwSpend = newSpend ?? 0, nwSales = newSales ?? 0;
-  if (exSales > 0 && nwSales > 0) {
-    return exSpend / exSales >= nwSpend / nwSales ? { spend: exSpend, sales: exSales } : { spend: nwSpend, sales: nwSales };
-  }
-  if (exSales > 0) return { spend: exSpend, sales: exSales };
-  if (nwSales > 0) return { spend: nwSpend, sales: nwSales };
-  return { spend: exSpend + nwSpend, sales: 0 };
-};
 
 export function groupProductsByName(
   products: ProductRow[],
@@ -324,11 +290,8 @@ export function groupProductsByName(
     existing.day.revenue = sumOptional(existing.day.revenue, p.day.revenue);
     existing.day.adOrders = sumOptional(existing.day.adOrders, p.day.adOrders);
     existing.day.adSales = sumOptional(existing.day.adSales, p.day.adSales);
-    {
-      const merged = mergeDayAttributed(existing.day.adAttributedSpend, existing.day.adAttributedSales, p.day.adAttributedSpend, p.day.adAttributedSales);
-      existing.day.adAttributedSpend = merged.spend;
-      existing.day.adAttributedSales = merged.sales;
-    }
+    existing.day.adAttributedSpend = sumOptional(existing.day.adAttributedSpend, p.day.adAttributedSpend);
+    existing.day.adAttributedSales = sumOptional(existing.day.adAttributedSales, p.day.adAttributedSales);
     existing.range.spend += p.range.spend;
     existing.range.units += p.range.units;
     existing.range.revenue = sumOptional(existing.range.revenue, p.range.revenue);
@@ -407,11 +370,8 @@ export function groupProductsByName(
     existing.day.revenue = sumOptional(existing.day.revenue, group.day.revenue);
     existing.day.adOrders = sumOptional(existing.day.adOrders, group.day.adOrders);
     existing.day.adSales = sumOptional(existing.day.adSales, group.day.adSales);
-    {
-      const merged = mergeDayAttributed(existing.day.adAttributedSpend, existing.day.adAttributedSales, group.day.adAttributedSpend, group.day.adAttributedSales);
-      existing.day.adAttributedSpend = merged.spend;
-      existing.day.adAttributedSales = merged.sales;
-    }
+    existing.day.adAttributedSpend = sumOptional(existing.day.adAttributedSpend, group.day.adAttributedSpend);
+    existing.day.adAttributedSales = sumOptional(existing.day.adAttributedSales, group.day.adAttributedSales);
     existing.range.spend += group.range.spend;
     existing.range.units += group.range.units;
     existing.range.revenue = sumOptional(existing.range.revenue, group.range.revenue);
@@ -643,19 +603,13 @@ export async function fetchAmazonProducts(
     adSpendRangeBySku.set(sku, (adSpendRangeBySku.get(sku) || 0) + spend);
     adSalesRangeBySku.set(sku, (adSalesRangeBySku.get(sku) || 0) + sales7d);
     if (r.report_date === endDate) {
-      // Same dead-spend-vs-live-sale problem as groupProductsByName's cross-SKU merge (see
-      // mergeDayAttributed above), one level deeper: a single SKU can itself carry 2+
-      // Sponsored Products rows for the exact same day (seen in practice as a second,
-      // otherwise-blank row — no campaign/ad-group/sales columns — sitting alongside the
-      // real one). Blindly summing both rows' spend against only the real row's sales
-      // produced the same inflated, no-such-row-in-the-raw-export ACOS this file exists to
-      // avoid (e.g. "Chewy tube (Green - Spiral model)"'s B-CT-G-8 read 129.73% from summing
-      // its real row's 195.19 spend with a second, sale-less 50.68 row against just the first
-      // row's 189.52 sales, when B-CT-G-8's own real row is 102.99%). mergeDayAttributed
-      // applies the identical rule here: a same-day row with a genuine sale wins outright.
-      const merged = mergeDayAttributed(adSpendDayBySku.get(sku), adSalesDayBySku.get(sku), spend, sales7d);
-      if (merged.spend !== undefined) adSpendDayBySku.set(sku, merged.spend);
-      if (merged.sales !== undefined) adSalesDayBySku.set(sku, merged.sales);
+      // A single SKU can itself carry 2+ Sponsored Products rows for the exact same day (seen in
+      // practice as a second, otherwise-blank row — no campaign/ad-group/sales columns — sitting
+      // alongside the real one). Summed here exactly like the range-window maps two lines above —
+      // per the seller's explicit request, day ACOS for a SKU/product is the plain total of every
+      // one of its rows' spend and sales that day, matching its own displayed (summed) Spend cell.
+      adSpendDayBySku.set(sku, (adSpendDayBySku.get(sku) || 0) + spend);
+      adSalesDayBySku.set(sku, (adSalesDayBySku.get(sku) || 0) + sales7d);
     }
   });
   [...sbRows, ...sdRows].forEach((r: { campaign_name?: string; spend?: number; report_date?: string }) => {
