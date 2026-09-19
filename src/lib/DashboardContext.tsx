@@ -33,6 +33,18 @@ type DashboardState = {
 
 const DashboardContext = createContext<DashboardState | undefined>(undefined);
 
+// Presets whose label describes a window relative to now ("Last 7 Days") rather
+// than a fixed one ("1 Aug 2026 – 7 Aug 2026", written by the custom picker).
+// Only these get re-anchored on restore; a custom range means what it says.
+// Keep in sync with PRESETS in components/DateRangePicker.tsx.
+const RELATIVE_PRESET_DAYS: Record<string, number> = {
+  "Last 7 Days": 7,
+  "Last 14 Days": 14,
+  "Last 30 Days": 30,
+  "Last 60 Days": 60,
+  "Last 90 Days": 90,
+};
+
 export function DashboardProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -109,6 +121,34 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
       localStorage.removeItem('ppc_dateLabel');
     }
   }, []);
+
+  // The effect above restores the saved *absolute* dates together with the saved
+  // label. For a relative label that goes stale: pick "Last 7 Days" today, come
+  // back in a fortnight, and the header still reads "Last 7 Days" over a window
+  // that ended two weeks ago. Re-anchor it once per mount, using the same rule
+  // the picker itself uses (end at the last date that actually has data, which
+  // trails today by Amazon's reporting lag). Guarded by a ref because changing
+  // the range refetches the trend, which is what produces lastDataDate.
+  const reanchoredRef = useRef(false);
+  useEffect(() => {
+    if (reanchoredRef.current || !lastDataDate) return;
+    const days = RELATIVE_PRESET_DAYS[dateLabel];
+    if (!days) return;
+    reanchoredRef.current = true;
+
+    const [y, m, d] = lastDataDate.split("-").map(Number);
+    const end = new Date(y, m - 1, d);
+    const start = new Date(end);
+    start.setDate(end.getDate() - (days - 1));
+    const nextStart = getLocalDateStr(start);
+    const nextEnd = getLocalDateStr(end);
+    if (nextStart === startDate && nextEnd === endDate) return;
+
+    setStartDate(nextStart);
+    setEndDate(nextEnd);
+    localStorage.setItem('ppc_startDate', nextStart);
+    localStorage.setItem('ppc_endDate', nextEnd);
+  }, [lastDataDate, dateLabel, startDate, endDate]);
 
   // Load user context (workspace + account IDs) for a given slot
   const loadContext = async (slot: "A" | "B") => {

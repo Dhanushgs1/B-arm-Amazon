@@ -161,7 +161,6 @@ tbody tr:hover{background:var(--chip)}
   </aside>
   <div id="main">
     <header>
-      <select class="hsel" id="keySel" title="SellerMate Account"><option value="A">Account A</option><option value="B">Account B</option></select>
       <select class="hsel" id="mktSel" title="Marketplace"></select>
       <input id="gsearch" placeholder="Search current page…">
       <select class="hsel" id="portSel" title="Portfolio"><option value="">All Portfolios</option></select>
@@ -195,7 +194,7 @@ tbody tr:hover{background:var(--chip)}
 'use strict';
 /* ================= CORE ================= */
 const cache=new Map();
-const S={ws:null,accounts:[],acct:null,user:null,start:null,end:null,label:'Last 30 Days',page:'overview',campFilter:'',portFilter:'',campaignsMeta:null,charts:[],alerts:[],keySlot:localStorage.getItem('ppcKeySlot')||'A'};
+const S={ws:null,accounts:[],acct:null,user:null,start:null,end:null,label:'Last 30 Days',page:'overview',campFilter:'',portFilter:'',campaignsMeta:null,charts:[],alerts:[],keySlot:'A'};
 const MKT_NAMES={IN:'Amazon India',US:'Amazon US',CA:'Amazon Canada',MX:'Amazon Mexico',AE:'Amazon UAE',UK:'Amazon UK',GB:'Amazon UK'};
 function el(id){return document.getElementById(id)}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
@@ -936,7 +935,7 @@ function toggleTheme(){
   killCharts();route();
 }
 async function connect(){
-  el('content').innerHTML=`<div class="card"><h3>Connecting to SellerMate — Account ${S.keySlot}…</h3>${skel(6)}</div>`;
+  el('content').innerHTML=`<div class="card"><h3>Connecting to SellerMate…</h3>${skel(6)}</div>`;
   try{
     const u=await mcp('get_user_context',{});
     S.user=u.user;S.accounts=u.accounts||[];
@@ -946,22 +945,15 @@ async function connect(){
     S.ws=S.acct.workspace_id;S.wsName=S.acct.workspace_name;
     el('mktSel').innerHTML=S.accounts.map(a=>`<option value="${a.id}" ${a.id===S.acct.id?'selected':''}>${MKT_NAMES[a.country]||('Amazon '+a.country)} — ${esc(a.name)}</option>`).join('');
     el('profileBtn').textContent=(S.user?.name||'?').slice(0,1).toUpperCase();
-    el('profileInfo').innerHTML=`<b>${esc(S.user?.name)}</b><div style="color:var(--muted);font-size:11.5px">${esc(S.user?.email)}</div><div style="margin-top:8px;font-size:11.5px">SellerMate Account: <b>${S.keySlot}</b><br>Workspace: <b>${esc(S.wsName)}</b><br>Accounts: <b>${S.accounts.length}</b></div>`;
-    el('acctFoot').innerHTML=`● Live · Account ${S.keySlot}<br>${esc(S.acct.name)}<br>${esc(S.wsName)}`;
+    el('profileInfo').innerHTML=`<b>${esc(S.user?.name)}</b><div style="color:var(--muted);font-size:11.5px">${esc(S.user?.email)}</div><div style="margin-top:8px;font-size:11.5px">Workspace: <b>${esc(S.wsName)}</b><br>Accounts: <b>${S.accounts.length}</b></div>`;
+    el('acctFoot').innerHTML=`● Live<br>${esc(S.acct.name)}<br>${esc(S.wsName)}`;
     getCampaignsMeta().catch(()=>{});
     route();
     console.log('PPC dashboard initialized OK — account',S.acct.name,S.acct.country);
   }catch(e){
     console.error('connect failed',e);
-    el('content').innerHTML=errState('Could not connect to SellerMate (Account '+S.keySlot+'): '+e.message,connect);
+    el('content').innerHTML=errState('Could not connect to SellerMate: '+e.message,connect);
   }
-}
-function switchKeySlot(slot){
-  S.keySlot=slot;localStorage.setItem('ppcKeySlot',slot);
-  cache.clear();S.accounts=[];S.acct=null;S.campaignsMeta=null;S.campFilter='';S.portFilter='';
-  el('campSel').innerHTML='<option value="">All Campaigns</option>';
-  el('portSel').innerHTML='<option value="">All Portfolios</option>';
-  connect();
 }
 async function init(){
   if(localStorage.getItem('ppcTheme')==='dark'){document.documentElement.dataset.theme='dark';el('themeBtn').textContent='☀️'}
@@ -969,13 +961,11 @@ async function init(){
   const[s,e]=quickRange(defR);S.start=s;S.end=e;S.label=defR;
   el('datelabel').textContent=defR;el('dpStart').value=s;el('dpEnd').value=e;
   buildDatePicker();buildNav();
-  el('keySel').value=S.keySlot;
   el('datebtn').onclick=()=>togglePop('datepop');
   el('notifBtn').onclick=()=>togglePop('notifpop');
   el('profileBtn').onclick=()=>togglePop('profilepop');
   el('themeBtn').onclick=toggleTheme;
   el('gsearch').addEventListener('input',()=>{clearTimeout(S._gs);S._gs=setTimeout(()=>{const active=el('content').querySelector('.tbl-top input');if(active){/* tables read gsearch on redraw */}route()},400)});
-  el('keySel').onchange=e=>switchKeySlot(e.target.value);
   el('mktSel').onchange=e=>{S.acct=S.accounts.find(a=>a.id===e.target.value);S.campaignsMeta=null;S.campFilter='';S.portFilter='';cache.clear();route()};
   el('campSel').onchange=e=>{S.campFilter=e.target.value;route()};
   el('portSel').onchange=e=>{S.portFilter=e.target.value;route()};

@@ -21,12 +21,23 @@ interface KPICardProps {
   subtitle?: string;
   trend?: number;
   inverseTrend?: boolean;
+  /**
+   * What `trend` is measured against, e.g. "vs 2026-08-08 – 2026-08-14".
+   * Shown as the badge tooltip. Passing this also marks the card as one that
+   * *expects* a comparison, so a missing `trend` reads as "No prior data"
+   * rather than falling back to the generic "Real-time" chip.
+   */
+  trendBasis?: string;
   delay?: number;
   accent?: "purple" | "blue" | "green" | "cyan" | "orange" | "pink";
   onClick?: () => void;
 }
 
-export function KPICard({ title, value, subtitle, trend, inverseTrend, delay = 0, accent, onClick }: KPICardProps) {
+export function KPICard({ title, value, subtitle, trend, inverseTrend, trendBasis, delay = 0, accent, onClick }: KPICardProps) {
+  // Real period-over-period figures can land on exactly no change, which the
+  // badge rounds to "0.0%". Treating that as negative (trend > 0 === false)
+  // would paint a flat metric red with a down arrow, so call it out as flat.
+  const isFlat = trend != null && Math.abs(trend) < 0.05;
   const isPositive = trend != null ? trend > 0 : true;
   const isGood = trend != null ? (isPositive === !inverseTrend) : true;
 
@@ -93,15 +104,29 @@ export function KPICard({ title, value, subtitle, trend, inverseTrend, delay = 0
 
         {trend != null ? (
           <div
+            title={trendBasis}
             className={cn(
               "flex items-center gap-0.5 text-[10px] font-extrabold px-1.5 py-0.5 rounded-full border",
-              isGood
-                ? "bg-emerald-500/8 text-emerald-600 dark:text-emerald-400 border-emerald-500/15"
-                : "bg-red-500/8 text-red-600 dark:text-red-400 border-red-500/15"
+              isFlat
+                ? "bg-slate-500/8 text-slate-500 dark:text-slate-400 border-slate-500/15"
+                : isGood
+                  ? "bg-emerald-500/8 text-emerald-600 dark:text-emerald-400 border-emerald-500/15"
+                  : "bg-red-500/8 text-red-600 dark:text-red-400 border-red-500/15"
             )}
           >
-            {isPositive ? <ArrowUpRight className="w-2.5 h-2.5" /> : <ArrowDownRight className="w-2.5 h-2.5" />}
-            {Math.abs(trend).toFixed(1)}%
+            {isFlat
+              ? "0.0%"
+              : <>
+                  {isPositive ? <ArrowUpRight className="w-2.5 h-2.5" /> : <ArrowDownRight className="w-2.5 h-2.5" />}
+                  {Math.abs(trend).toFixed(1)}%
+                </>}
+          </div>
+        ) : trendBasis ? (
+          <div
+            title={trendBasis}
+            className="text-[9px] font-extrabold text-slate-400 dark:text-slate-500 bg-slate-500/8 px-1.5 py-0.5 rounded-full border border-slate-500/15"
+          >
+            No prior data
           </div>
         ) : (
           <div className="text-[9px] font-extrabold text-indigo-500/70 bg-indigo-500/8 px-1.5 py-0.5 rounded-full border border-indigo-500/15 flex items-center gap-1">
