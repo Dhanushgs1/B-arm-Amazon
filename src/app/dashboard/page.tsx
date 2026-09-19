@@ -199,7 +199,12 @@ export default function DashboardOverview() {
   const cpc = s.totalClicks ? s.totalSpend / s.totalClicks : 0;
   const cvr = s.totalClicks ? (s.totalOrders / s.totalClicks) * 100 : 0;
 
-  const totalSales = rs.totalSales || 0;
+  // retailData (get_retail_product_performance, Seller Central SP-API feed) is the
+  // primary source, but that feed can go stale for days at a time while orders stay
+  // current — get_orders_report is already fetched below for the state breakdown, so
+  // fall back to its totalValue (real order revenue) rather than showing ₹0 when the
+  // retail feed hasn't synced yet.
+  const totalSales = rs.totalSales || ordersReportData?.summary?.totalValue || 0;
   const adSales = rs.totalAdSales || s.totalSales || 0;
   const organicSales = Math.max(0, totalSales - adSales);
   const totalUnits = rs.totalUnitsOrdered || 0;
