@@ -136,19 +136,29 @@ export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) /
 // window, use those directly (matches the raw Sponsored Products export
 // exactly, no GST added — same convention this file uses elsewhere for a
 // spend/revenue ratio it can't compute: a sentinel for "spend with zero
-// attributed sales" rather than Infinity). Otherwise falls back to the
-// real-order-based CPC/Price formula. This sentinel is deliberately reused
-// (not Infinity/NaN) for internal comparisons — sorting "worst ACOS first"
-// and the Action Sheet's >14% threshold both still want a very-high-but-
-// finite number here. Only the user-visible cell/JSON writers (acosCell
-// below) treat it specially, blanking it out instead of showing "999%".
+// attributed sales" rather than Infinity). Otherwise (Amazon SB/SD-only
+// spend with no Sponsored Products row on file at all, or Flipkart/Meesho,
+// neither of which carry an ad-attributed sales figure here) falls back to
+// an ESTIMATED/PROXY ACOS: raw spend, no GST — matching the branch above's
+// own convention, and never the tax-inclusive spendTax() CPC is built from —
+// over this window's own Total Sales figure (real per-order revenue where
+// it's tracked, i.e. Amazon/Flipkart's `revenue`; the flat Price x units
+// estimate otherwise, i.e. Meesho, which never populates `revenue` on its
+// WindowAgg). This sentinel is deliberately reused (not Infinity/NaN) for
+// internal comparisons — sorting "worst ACOS first" and the Action Sheet's
+// >14% threshold both still want a very-high-but-finite number here, since ad
+// spend with zero/unknown sales in a window is exactly the kind of row those
+// should surface. Only the user-visible cell/JSON writers (acosCell below)
+// treat it specially, blanking it out instead of showing "999%".
 export const ACOS_UNDEFINED_SENTINEL = 9.99;
 export const computeAcos = (a: WindowAgg, price: number): number => {
   if (a.adAttributedSales !== undefined) {
     const spend = a.adAttributedSpend ?? 0;
     return a.adAttributedSales > 0 ? spend / a.adAttributedSales : spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
   }
-  return price > 0 ? computeCpc(a) / price : 0;
+  const totalSales = a.revenue ?? a.units * price;
+  if (totalSales > 0) return a.spend / totalSales;
+  return a.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
 };
 
 // Platform-wide "Overall sales" figures (units sold + realised sale value) —

@@ -1,5 +1,5 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/testing/asserts.ts";
-import { spendTax, computeCpc, computeAcos, acosCell, acosSortRank, getDateWindow, groupProductsByName } from "./adSpendReportExport.ts";
+import { spendTax, computeCpc, computeAcos, ACOS_UNDEFINED_SENTINEL, acosCell, acosSortRank, getDateWindow, groupProductsByName } from "./adSpendReportExport.ts";
 
 Deno.test("spendTax applies the flat 1.18 GST multiplier when none is tagged", () => {
   assertEquals(spendTax({ spend: 100, units: 5 }), 118);
@@ -9,9 +9,36 @@ Deno.test("computeCpc falls back to spendTax when units is 0", () => {
   assertEquals(computeCpc({ spend: 100, units: 0 }), 118);
 });
 
-Deno.test("computeAcos is CPC / price, and 0 when price is 0", () => {
-  assertEquals(computeAcos({ spend: 100, units: 10 }, 20), 118 / 10 / 20);
-  assertEquals(computeAcos({ spend: 100, units: 10 }, 0), 0);
+Deno.test("computeAcos with no Sponsored Products row falls back to Spend (no tax) / Total Sales, never CPC/Price (which is tax-inclusive)", () => {
+  // No `revenue` tracked on the aggregate (a bare WindowAgg) -> Total Sales is
+  // estimated as units x price (the Meesho case, which never sets `revenue`).
+  // Deliberately NOT 118 / 10 / 20 (the old CPC/Price formula) — that divides
+  // by spendTax(), which double-counts GST against a proxy ACOS.
+  assertEquals(computeAcos({ spend: 100, units: 10 }, 20), 100 / 200);
+  // `revenue` (real per-order sales for the window), when tracked, is the
+  // real Total Sales figure — Amazon/Flipkart's own real-order revenue, which
+  // can legitimately differ from units x price when price moved mid-window.
+  assertEquals(computeAcos({ spend: 100, units: 10, revenue: 150 }, 20), 100 / 150);
+  // Total Sales 0 (price 0, so nothing to divide by) with real spend on file
+  // is a genuinely unknown ratio, not literal 0% — the sentinel, blanked by
+  // acosCell, same convention as the Sponsored Products branch below.
+  assertEquals(computeAcos({ spend: 100, units: 10 }, 0), ACOS_UNDEFINED_SENTINEL);
+  // Total Sales 0 AND no spend at all -> 0, nothing to report.
+  assertEquals(computeAcos({ spend: 0, units: 10 }, 0), 0);
+});
+
+Deno.test("computeAcos: an Amazon SKU with spend + price + orders but no Sponsored Products row gets a real percentage, never blank", () => {
+  // Regression for the bug reported against a live Ad Spend Report export:
+  // SB/SD-only Amazon SKUs (e.g. Therapressure Brush (Green), Polyglycolic
+  // suture thread) had valid Spend/CPC/Price but ACOS rendered as a blank
+  // cell — the old CPC/Price fallback could never itself return exactly the
+  // 9.99 sentinel, but real production data hit this seam another way; this
+  // pins the fix's actual contract instead: any SKU with real spend, price,
+  // and Total Sales > 0 always resolves to a finite, non-sentinel number.
+  const v = computeAcos({ spend: 379.97, units: 4, revenue: 23936.01 }, 5671);
+  assertEquals(v, 379.97 / 23936.01);
+  assertEquals(v === ACOS_UNDEFINED_SENTINEL, false);
+  assertEquals(acosCell({ spend: 379.97, units: 4, revenue: 23936.01 }, 5671), Math.round((379.97 / 23936.01) * 10000) / 10000);
 });
 
 Deno.test("computeAcos prefers Amazon's own ad-attributed spend/sales when on file, ignoring GST and real-order units/price entirely", () => {
@@ -29,8 +56,9 @@ Deno.test("computeAcos prefers Amazon's own ad-attributed spend/sales when on fi
   // No spend and no attributed sales at all -> 0, not the sentinel.
   assertEquals(computeAcos({ spend: 0, units: 0, adAttributedSpend: 0, adAttributedSales: 0 }, 100), 0);
   // adAttributedSales undefined (no Sponsored Products row for this SKU at all, e.g. SB/SD-only
-  // spend) falls back to the real-order-based formula instead of reading as a false 0% ACOS.
-  assertEquals(computeAcos({ spend: 100, units: 10 }, 20), 118 / 10 / 20);
+  // spend) falls back to the Spend(no tax)/Total Sales proxy formula instead of reading as a
+  // false 0% ACOS.
+  assertEquals(computeAcos({ spend: 100, units: 10 }, 20), 100 / 200);
 });
 
 Deno.test("acosCell blanks out the ACOS_UNDEFINED_SENTINEL to null instead of showing a literal 999% cell", () => {
