@@ -1373,7 +1373,12 @@ async function enrichOptimizationActionRows(
   platformLabel: string,
   searchTermTool: string
 ): Promise<void> {
-  const acosOf = (c: OptCampaignAgg) => (c.revenue > 0 ? c.spend / c.revenue : c.spend > 0 ? 9.99 : 0);
+  // Same sentinel convention as computeAcos/actionSheetAcos above: a real campaign/ad-group with
+  // spend but zero attributed revenue is a genuinely unknown ratio, not a literal 999% — see
+  // acosLabel below, which is what actually reaches the seller-visible suggestion text and the
+  // Gemini prompt (an AI asked to reason about a fabricated "999%" tends to echo it back verbatim).
+  const acosOf = (c: OptCampaignAgg) => (c.revenue > 0 ? c.spend / c.revenue : c.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0);
+  const acosLabel = (frac: number): string => (frac === ACOS_UNDEFINED_SENTINEL ? "unavailable" : `${Math.round(frac * 100)}%`);
   const flagged = [...campaigns.values()]
     .filter((c) => c.spend >= OPT_MIN_SPEND && acosOf(c) >= OPT_ACOS_THRESHOLD)
     .sort((a, b) => b.spend - a.spend)
@@ -1385,31 +1390,32 @@ async function enrichOptimizationActionRows(
   // flagged campaign with no suggestion at all.
   flagged.forEach((c) => {
     const worst = [...c.adGroups.values()].sort((a, b) => b.spend - a.spend)[0];
-    const acosPct = Math.round(acosOf(c) * 100);
-    const cut = acosPct >= 90 ? 50 : acosPct >= 60 ? 35 : 20;
+    const acosFrac = acosOf(c);
+    // The bid-cut tier still treats "unknown" as the worst case (real spend, no signal at all) —
+    // only the DISPLAYED number changes; Math.round(9.99 * 100) already clears the 90 bar below.
+    const cut = Math.round(acosFrac * 100) >= 90 ? 50 : Math.round(acosFrac * 100) >= 60 ? 35 : 20;
     // Zero units sold on real spend is the worst case — call for the maximum bid cut rather than
     // saying "pause", per the seller's explicit instruction that this sheet always give a concrete
     // % to act on, never a blanket pause instruction.
     const pauseNote = worst && worst.units === 0 ? ` Cut this ad group's bids as close to 80% as the platform allows — zero units sold on ₹${round2(worst.spend)} spend.` : "";
     suggestionByCampaign.set(
       c.name,
-      `Cut bids ${cut}% on ad group "${worst?.name || c.name}" (ACOS ${acosPct}%, ₹${round2(worst?.spend ?? c.spend)} spend).${pauseNote} Open that ad group's search-term report in ${searchTermTool} first to add negative keywords for zero-conversion terms.`
+      `Cut bids ${cut}% on ad group "${worst?.name || c.name}" (ACOS ${acosLabel(acosFrac)}, ₹${round2(worst?.spend ?? c.spend)} spend).${pauseNote} Open that ad group's search-term report in ${searchTermTool} first to add negative keywords for zero-conversion terms.`
     );
   });
 
   if (flagged.length) {
     const promptLines = flagged
       .map((c) => {
-        const acosPct = Math.round(acosOf(c) * 100);
         const topAdGroups = [...c.adGroups.values()].sort((a, b) => b.spend - a.spend).slice(0, 5);
         const agLines = topAdGroups
           .map((ag) => {
-            const agAcosPct = Math.round((ag.revenue > 0 ? ag.spend / ag.revenue : ag.spend > 0 ? 9.99 : 0) * 100);
+            const agAcosFrac = ag.revenue > 0 ? ag.spend / ag.revenue : ag.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
             const topSkus = [...ag.skus.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([sku]) => sku);
-            return `    - Ad group "${ag.name}" (top SKUs: ${topSkus.join(", ") || "n/a"}): spend ₹${round2(ag.spend)}, revenue ₹${round2(ag.revenue)}, ACOS ${agAcosPct}%, units sold ${ag.units}`;
+            return `    - Ad group "${ag.name}" (top SKUs: ${topSkus.join(", ") || "n/a"}): spend ₹${round2(ag.spend)}, revenue ₹${round2(ag.revenue)}, ACOS ${acosLabel(agAcosFrac)}, units sold ${ag.units}`;
           })
           .join("\n");
-        return `- Campaign "${c.name}": spend ₹${round2(c.spend)}, revenue ₹${round2(c.revenue)}, ACOS ${acosPct}%, units sold ${c.units}\n  Ad groups within this campaign:\n${agLines}`;
+        return `- Campaign "${c.name}": spend ₹${round2(c.spend)}, revenue ₹${round2(c.revenue)}, ACOS ${acosLabel(acosOf(c))}, units sold ${c.units}\n  Ad groups within this campaign:\n${agLines}`;
       })
       .join("\n");
     const prompt =
@@ -1449,9 +1455,11 @@ async function enrichOptimizationActionRows(
     }
     // Campaign identified, but its own aggregate spend/ACOS didn't clear the analysis threshold
     // (or fell outside the top-15 prompt cap) — name it rather than claim no match was found.
+    // r.acos is already actionSheetAcos's own value (real fallback wherever one's computable) —
+    // acosLabel only still matters for the rare residual case where even that's unavailable.
     const acosPct = Math.round(r.acos * 100);
     const cut = acosPct >= 90 ? 50 : acosPct >= 60 ? 35 : 20;
-    r.action = `Cut bids ~${cut}% on campaign "${bestCampaign}" (this SKU's 7-day ACOS ${acosPct}%). Open ${searchTermTool}'s search-term report for this campaign to add negative keywords for zero-conversion terms.`;
+    r.action = `Cut bids ~${cut}% on campaign "${bestCampaign}" (this SKU's 7-day ACOS ${acosLabel(r.acos)}). Open ${searchTermTool}'s search-term report for this campaign to add negative keywords for zero-conversion terms.`;
   });
 }
 
@@ -1660,6 +1668,14 @@ export interface SocialMediaEmailSummary {
   range: ProductMetricBlock;
 }
 
+// Google (direct/website) orders — no day/range split (see fetchGoogleOrders: this channel's own
+// data carries no date column at all), so unlike Social Media this is just the two cumulative
+// totals the Summary sheet's Google row shows in its QTS/Value columns.
+export interface GoogleEmailSummary {
+  totalUnits: number;
+  totalValue: number;
+}
+
 export interface AdSpendReportResult {
   wb: XLSX.WorkBook;
   filename: string;
@@ -1671,6 +1687,9 @@ export interface AdSpendReportResult {
   // null when there's no Social Media spend for this window — same condition that skips the
   // Summary sheet's own "Social Media" row.
   socialMediaSummary: SocialMediaEmailSummary | null;
+  // null when there's no Google Orders data on file at all — same condition that skips the
+  // Summary sheet's own "Google" row.
+  googleSummary: GoogleEmailSummary | null;
   unmappedAmazonSpend: number;
   lowSpendCampaignCount: number;
   historyRowsSaved: number;
@@ -2088,6 +2107,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // "this day's" figure like every other platform's Overall Sales — there is no date column on this
   // channel's own data to scope a single day or a 7-day range by.
   let googleRow: number | null = null;
+  let googleSummary: GoogleEmailSummary | null = null;
   if (googleOrders.totalUnits > 0 || googleOrders.totalValue > 0) {
     googleRow = sumAoa.length;
     sumAoa.push([
@@ -2098,6 +2118,10 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       0, 0, "", "", "", "", "",
       googleOrders.totalUnits, googleOrders.totalValue,
     ]);
+    // Same figures, reshaped for the emailed daily digest (see buildAdSpendDailyHtml in
+    // supabase/functions/send-ad-spend-email/index.ts), which renders this as one more row
+    // directly below Social Media's, per the same pattern.
+    googleSummary = { totalUnits: googleOrders.totalUnits, totalValue: googleOrders.totalValue };
   }
 
   // Optimization suggestions (Gemini) — replaces the Action Sheet's generic tiered text with a
@@ -2461,6 +2485,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     platformTotals,
     platformSummaries,
     socialMediaSummary,
+    googleSummary,
     unmappedAmazonSpend: round2(amz.unmappedSpend),
     lowSpendCampaignCount: lowSpend.length,
     historyRowsSaved,

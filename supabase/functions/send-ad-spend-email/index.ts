@@ -159,6 +159,35 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
         </tr>`
     : "";
 
+  // Google (direct/website) orders — same bespoke-extra-row treatment as Social Media above, but
+  // this channel has no ad spend/CPC/ACOS data of any kind and no day/range split at all (see
+  // GoogleEmailSummary/fetchGoogleOrders in adSpendReportExport.ts — its own data carries no date
+  // column), so every ad-spend column is a dash and only the QTS/Value columns carry a real,
+  // CUMULATIVE (not "this day's") number.
+  const google = data.googleSummary;
+  const googleRowHtml = google
+    ? `
+        <tr>
+          <td ${td} style="font-weight:800;border-left:3px solid #4285F4;">Google</td>
+          <td ${td}>${money(0)}</td>
+          <td ${td}>${money(0)}</td>
+          <td ${tdName}>(Orders/Sales only — cumulative total, no ad spend data)</td>
+          <td ${td}>-</td>
+          <td ${td}>-</td>
+          <td ${td}>-</td>
+          <td ${td}>-</td>
+          <td ${td}>-</td>
+          <td ${td}>-</td>
+          <td ${td}>-</td>
+          <td ${td}>-</td>
+          <td ${td}>-</td>
+          <td ${td}>-</td>
+          <td ${td}>-</td>
+          <td ${td}>${google.totalUnits}</td>
+          <td ${td}>${money(google.totalValue)}</td>
+        </tr>`
+    : "";
+
   const platformRows = platforms.map((p) => {
     const products = p.topProducts.length
       ? p.topProducts
@@ -303,7 +332,7 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
                 <th ${th}>Value</th>
               </tr>
             </thead>
-            <tbody>${platformRows}${socialMediaRowHtml}</tbody>
+            <tbody>${platformRows}${socialMediaRowHtml}${googleRowHtml}</tbody>
           </table>
           </div>
         </td></tr>
@@ -366,7 +395,7 @@ Deno.serve(async (req: Request) => {
 
       const result = reportRow.result_json as {
         endDate: string; rangeStart: string; filename: string; productCount: number;
-        platformTotals: unknown; platformSummaries: unknown; socialMediaSummary: unknown; lowSpendCampaignCount: number;
+        platformTotals: unknown; platformSummaries: unknown; socialMediaSummary: unknown; googleSummary: unknown; lowSpendCampaignCount: number;
         incompleteDates: unknown;
       };
       // dmy(): 'YYYY-MM-DD' -> 'DD-MM-YYYY' — same as adSpendReportExport.ts's
@@ -382,6 +411,7 @@ Deno.serve(async (req: Request) => {
         dayLabel, rangeLabel, currency: "INR",
         platformSummaries: result.platformSummaries,
         socialMediaSummary: result.socialMediaSummary,
+        googleSummary: result.googleSummary,
         productCount: result.productCount,
         lowSpendCampaignCount: result.lowSpendCampaignCount,
         incompleteDates: result.incompleteDates,
