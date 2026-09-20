@@ -1806,7 +1806,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // master_product_marketing is the marketing team's freshest, most current master — checked
   // first; master_product_skuid and barm_product_master only fill in a SKU it doesn't have.
   const { resolveName: resolveBarmName } = buildProductMasterResolver(master);
-  const { resolveName: resolveSkuidName, resolveTax: resolveSkuidTax } = buildMasterSkuidResolver(masterSkuid);
+  const { resolveName: resolveSkuidName } = buildMasterSkuidResolver(masterSkuid);
   const { resolveName: resolveMarketingName } = buildProductMarketingResolver(productMarketing);
   const resolveName = (sku: string, fallback: string) =>
     resolveMarketingName(sku, resolveSkuidName(sku, resolveBarmName(sku, fallback)));
@@ -1819,9 +1819,9 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     products.forEach((p) => {
       p.name = resolveName(p.sku, p.name);
       // Tagged onto both windows here, once per product, rather than looked up
-      // inside spendTax on every call — the same SKU's rate never changes
-      // within a single report run.
-      const gst = gstMultiplierFromTax(resolveSkuidTax(p.sku));
+      // inside spendTax on every call — flat 18% for every product, see
+      // gstMultiplierFromTax's own comment.
+      const gst = gstMultiplierFromTax();
       p.day.gstMultiplier = gst;
       p.range.gstMultiplier = gst;
     });
@@ -1840,8 +1840,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       sku: entry.sku,
       name: resolveName(entry.sku, entry.name),
       price: 0,
-      day: { spend: 0, units: 0, gstMultiplier: gstMultiplierFromTax(resolveSkuidTax(entry.sku)) },
-      range: { spend: 0, units: 0, gstMultiplier: gstMultiplierFromTax(resolveSkuidTax(entry.sku)) },
+      day: { spend: 0, units: 0, gstMultiplier: gstMultiplierFromTax() },
+      range: { spend: 0, units: 0, gstMultiplier: gstMultiplierFromTax() },
     });
   });
 

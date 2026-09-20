@@ -89,7 +89,7 @@ export async function buildFlipkartWeeklySalesWorkbook(opts: {
     fetchMasterSkuidMap(),
     fetchProductMarketingMap(),
   ]);
-  const { resolveTax: resolveSkuidTax, resolveName: resolveSkuidNameRaw } = buildMasterSkuidResolver(masterSkuid);
+  const { resolveName: resolveSkuidNameRaw } = buildMasterSkuidResolver(masterSkuid);
   const { resolveName: resolveMarketingName } = buildProductMarketingResolver(productMarketing);
   // master_product_marketing is the marketing team's freshest, most current master — checked
   // first; master_product_skuid only fills in a SKU it doesn't have.
@@ -187,7 +187,7 @@ export async function buildFlipkartWeeklySalesWorkbook(opts: {
     if (!sku || !r.report_date) return;
     const pd = periodForDate(String(r.report_date).slice(0, 10));
     if (!pd) return;
-    ensureStat(sku, pd.label).adSpendTax += num(r.ad_spend) * gstMultiplierFromTax(resolveSkuidTax(sku));
+    ensureStat(sku, pd.label).adSpendTax += num(r.ad_spend) * gstMultiplierFromTax();
   });
   // Clicks per SKU per week, from the same FSN report — used only by the Growth
   // Summary/CEO Decision Center "Campaign Performance" diagnosis (Executive

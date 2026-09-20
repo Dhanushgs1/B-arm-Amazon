@@ -204,7 +204,7 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
     fetchMasterSkuidMap(),
     fetchProductMarketingMap(),
   ]);
-  const { resolveTax: resolveSkuidTax, resolveName: resolveSkuidNameRaw } = buildMasterSkuidResolver(masterSkuid);
+  const { resolveName: resolveSkuidNameRaw } = buildMasterSkuidResolver(masterSkuid);
   const { resolveName: resolveMarketingName } = buildProductMarketingResolver(productMarketing);
   // master_product_marketing is the marketing team's freshest, most current master — checked
   // first; master_product_skuid only fills in a SKU it doesn't have.
@@ -355,7 +355,7 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
       skusWithAds.add(r.sku_id);
       const units = num(r.direct_units_sold) + num(r.indirect_units_sold);
       const spend = num(r.ad_spend);
-      const taxed = spend * gstMultiplierFromTax(resolveSkuidTax(r.sku_id));
+      const taxed = spend * gstMultiplierFromTax();
       p.spendTax += taxed;
       p.spend += spend;
       p.adUnits += units;
@@ -666,9 +666,7 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
     for (let r = 1; r < grandRowIdx; r++) {
       const n = r + 1; // 1 header row, so aoa row 1 is Excel row 2
       const set = (col: string, f: string) => { if (ws[`${col}${n}`]) ws[`${col}${n}`].f = f };
-      // aoa row r === rows[r-1] (built 1:1 by rows.forEach above) — that row's
-      // own SKU decides its GST rate, not one flat rate for the whole sheet.
-      const gst = gstMultiplierFromTax(resolveSkuidTax(rows[r - 1]?.sku ?? ""));
+      const gst = gstMultiplierFromTax();
       set(spendTaxCol, `${adSpendCol}${n}*${gst}`);
       set(finalCol, `${ordersCol}${n}-${returnsCol}${n}`);
       set(cpcCol, `IF(${byAdCol}${n}=0,${spendTaxCol}${n},${spendTaxCol}${n}/${byAdCol}${n})`);

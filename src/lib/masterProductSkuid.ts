@@ -178,7 +178,6 @@ export function buildMasterSkuidResolver(master: Map<string, MasterSkuidEntry>) 
   return {
     resolveName: (sku: string, fallback: string): string => lookup(sku)?.name || fallback,
     resolveCategory: (sku: string, fallback: string): string => lookup(sku)?.category || fallback,
-    resolveTax: (sku: string): number | null => lookup(sku)?.tax ?? null,
     resolveCostPrice: (sku: string): number | null => lookup(sku)?.costPrice ?? null,
   };
 }
@@ -194,10 +193,9 @@ export const DEFAULT_GST_MULTIPLIER = 1.18;
 // accurate to the actual invoiced tax, but it made every report disagree with the seller's own
 // manual "Ad spend report" workbook, which has always assumed a flat 18% across every product.
 // Per the seller's explicit choice (reconciling Ad_Spend_Report_2026-08-31 (3).xlsx against
-// their manual file on 2026-09-02), every report now matches the manual file's flat-18%
-// assumption instead — the `tax` argument is intentionally ignored so this only has to change
-// in one place if that decision is ever revisited; the resolveTax plumbing that feeds it is left
-// in place rather than ripped out everywhere it's called.
-export function gstMultiplierFromTax(_tax: number | null | undefined): number {
+// their manual file on 2026-09-02, reaffirmed 2026-09-20), every report matches the manual
+// file's flat-18% assumption instead — no per-SKU tax lookup happens anywhere any more; this is
+// the single source of the GST multiplier for every product, full stop.
+export function gstMultiplierFromTax(): number {
   return DEFAULT_GST_MULTIPLIER;
 }

@@ -421,7 +421,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   // Amazon Sales report. A SKU the master doesn't have (not yet uploaded, or a campaign-only
   // SKU with no product row) keeps whatever name was already resolved above.
   const { resolveName: resolveBarmName } = buildProductMasterResolver(productMaster);
-  const { resolveName: resolveSkuidName, resolveTax: resolveSkuidTax } = buildMasterSkuidResolver(masterSkuid);
+  const { resolveName: resolveSkuidName } = buildMasterSkuidResolver(masterSkuid);
   const { resolveName: resolveMarketingName } = buildProductMarketingResolver(productMarketing);
   // master_product_marketing is the marketing team's freshest, most current master — checked
   // first; master_product_skuid and barm_product_master only fill in a SKU it doesn't have.
@@ -488,7 +488,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     };
     /** Ad spend + ad-attributed units land on BOTH grains at once. */
     const addAd = (campaign: string, sku: string, spend: number, units: number) => {
-      const taxed = spend * gstMultiplierFromTax(resolveSkuidTax(sku));
+      const taxed = spend * gstMultiplierFromTax();
       const p = ensurePair(campaign, sku);
       p.spendTax += taxed;
       p.spend += spend;
@@ -1260,11 +1260,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     const put = (groupIdx: number, present: readonly [string, number, ...number[]] | undefined) => {
       if (!present) return;
       const spendCol = colLetter(lbStarts[groupIdx] + 1);
-      // groupIdx 0/1 key on "campaign*sku" (see campaignSpendMap); 2/3 key on
-      // a bare sku (see topAdspendBySku) — either way the SKU is what its own
-      // GST rate is looked up by.
-      const sku = groupIdx < 2 ? present[0].split("*").pop() || "" : present[0];
-      const gst = gstMultiplierFromTax(resolveSkuidTax(sku));
+      const gst = gstMultiplierFromTax();
       // Cached value as well as the formula — xlsx-js-style drops a formula
       // cell with no `v`, which silently blanked this whole column. present[1]
       // is the pre-tax spend, so this is the same arithmetic the formula shows.

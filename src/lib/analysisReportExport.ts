@@ -304,8 +304,7 @@ function aggregateWindow(
   pick: (p: ProductRow) => WindowStats,
   adRows: any[],
   retailRows: any[],
-  returnRows: any[],
-  resolveTax: (sku: string) => number | null
+  returnRows: any[]
 ) {
   // Ad spend / ad sales / advertised orders per ASIN.
   adRows.forEach((r: any) => {
@@ -313,7 +312,7 @@ function aggregateWindow(
     const p = ensure(r.adAsin);
     if (p.name === p.asin && r.adProductName) p.name = r.adProductName;
     const w = pick(p);
-    w.spendTax += (r.spend || 0) * gstMultiplierFromTax(resolveTax(r.adSku || ""));
+    w.spendTax += (r.spend || 0) * gstMultiplierFromTax();
     w.adSales += r.sales || 0;
     w.advUnits += r.orders || 0; // purchases — closest per-ASIN unit proxy the API exposes
   });
@@ -413,7 +412,7 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
     fetchMasterSkuidMap(),
     fetchProductMarketingMap(),
   ]);
-  const { resolveTax: resolveSkuidTax, resolveName: resolveSkuidNameRaw } = buildMasterSkuidResolver(masterSkuid);
+  const { resolveName: resolveSkuidNameRaw } = buildMasterSkuidResolver(masterSkuid);
   const { resolveName: resolveMarketingName } = buildProductMarketingResolver(productMarketing);
   // master_product_marketing is the marketing team's freshest, most current master — checked
   // first; master_product_skuid only fills in a SKU it doesn't have.
@@ -459,8 +458,8 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
   const fbaReturnRows7 = fbaReturnRows30.filter((r: any) => r.return_date >= win7Ist.gte);
   const sfReturnRows7 = sfReturnRows30.filter((r: any) => r.pickup_date >= start7);
 
-  aggregateWindow(products, ensure, (p) => p.w30, spRowsToAdRows(spRows30), ordersToRetailRows(orderRows30), returnsToReturnRows(amReturnRows30, fbaReturnRows30, sfReturnRows30), resolveSkuidTax);
-  aggregateWindow(products, ensure, (p) => p.w7, spRowsToAdRows(spRows7), ordersToRetailRows(orderRows7), returnsToReturnRows(amReturnRows7, fbaReturnRows7, sfReturnRows7), resolveSkuidTax);
+  aggregateWindow(products, ensure, (p) => p.w30, spRowsToAdRows(spRows30), ordersToRetailRows(orderRows30), returnsToReturnRows(amReturnRows30, fbaReturnRows30, sfReturnRows30));
+  aggregateWindow(products, ensure, (p) => p.w7, spRowsToAdRows(spRows7), ordersToRetailRows(orderRows7), returnsToReturnRows(amReturnRows7, fbaReturnRows7, sfReturnRows7));
 
   // Inventory (per-location): FBA warehouse balance per FC → aggregate by state,
   // keyed to the specific SKU each location row carries.
