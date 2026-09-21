@@ -10,7 +10,7 @@ import { upsertInChunks } from "./deps/amazonReportUpload.ts";
 import { toDate as parseFlexibleDate } from "./deps/meeshoReportUpload.ts";
 import { resolveProductName } from "./deps/categoryMap.ts";
 import { fetchProductMasterMap, buildProductMasterResolver } from "./deps/productMasterUpload.ts";
-import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog, fetchMasterSkuidsByName, gstMultiplierFromTax, DEFAULT_GST_MULTIPLIER } from "./deps/masterProductSkuid.ts";
+import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidsByName, gstMultiplierFromTax, DEFAULT_GST_MULTIPLIER } from "./deps/masterProductSkuid.ts";
 import { fetchProductMarketingMap, buildProductMarketingResolver } from "./deps/productMarketingUpload.ts";
 import { SITE_URL } from "./deps/siteUrl.ts";
 
@@ -1831,10 +1831,9 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // Fetched once and shared across all three platforms — the seller's own
   // approved SKU -> product name list, checked first before falling back to
   // whatever name shows up on an order/price-listing row (see resolveName).
-  const [master, masterSkuid, masterSkuidCatalog, masterSkuidsByName, productMarketing, amz, fk, ms, socialMedia, googleOrders] = await Promise.all([
+  const [master, masterSkuid, masterSkuidsByName, productMarketing, amz, fk, ms, socialMedia, googleOrders] = await Promise.all([
     fetchProductMasterMap(),
     fetchMasterSkuidMap(),
-    fetchMasterSkuidAmazonCatalog(),
     fetchMasterSkuidsByName(),
     fetchProductMarketingMap(),
     fetchAmazonProducts(range, endDate),
@@ -1870,24 +1869,6 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       const gst = gstMultiplierFromTax();
       p.day.gstMultiplier = gst;
       p.range.gstMultiplier = gst;
-    });
-  });
-
-  // Seed a zero-activity row for every known Amazon catalog SKU with no spend/order data at all
-  // this window, so "B Arm orders" (the one sheet here that isn't ad-spend-scoped — see its own
-  // comment) can show what ISN'T selling, at the bottom. Flipkart/Meesho aren't seeded — there's
-  // no equivalent full-catalog source for them yet. The ad-spend-scoped sheets (Ad spend report,
-  // Low Spend Campaigns) deliberately still exclude these: they proved a real "purely-organic
-  // rows inflate Orders" bug when zero-spend rows were included, so this doesn't touch them.
-  masterSkuidCatalog.forEach((entry) => {
-    if (amz.products.has(entry.sku)) return;
-    amz.products.set(entry.sku, {
-      platform: "Amazon",
-      sku: entry.sku,
-      name: resolveName(entry.sku, entry.name),
-      price: 0,
-      day: { spend: 0, units: 0, gstMultiplier: gstMultiplierFromTax() },
-      range: { spend: 0, units: 0, gstMultiplier: gstMultiplierFromTax() },
     });
   });
 
@@ -2484,8 +2465,9 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   rawRowsToSheet(wb, "Meesho (B Arm) Spend", ms.adsRows);
   // Meesho orders also gets a Product/Quantity/Price/Sales leaderboard next to
   // the raw dump — same shape and formula (Sales = Price x range Quantity) as
-  // the cross-platform "B Arm orders" sheet below, scoped to just Meesho here,
-  // matching the seller's own hand-built workbook's Meesho orders tab.
+  // the "B Arm orders" sheet used before it became Google-only (see its own
+  // comment below), scoped to just Meesho here, matching the seller's own
+  // hand-built workbook's Meesho orders tab.
   const meeshoLeaderboardRows = groupProductsByName([...ms.products.values()], undefined, skuToMasterSkuidName)
     .filter((p) => p.range.units > 0)
     .sort((a, b) => b.range.units * b.price - a.range.units * a.price)
@@ -2496,27 +2478,18 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     currencyCols: [2, 3],
   });
 
-  // ── B Arm orders — cross-platform Product/Quantity/Price/Sales leaderboard,
-  // matching the hand-built workbook's own (empty, in every sample seen)
-  // "B Arm orders" tab, but actually populated here from the range window's
-  // order data already computed above rather than left blank.
+  // ── B Arm orders — Google (direct/website) orders leaderboard, per the seller's explicit
+  // request: this sheet used to be a cross-platform Amazon+Flipkart+Meesho leaderboard matching
+  // the hand-built workbook's own "B Arm orders" tab name; it now shows ONLY Google's
+  // Product/Quantity/Price/Sales instead — that cross-platform data is untouched elsewhere (still
+  // computed per-product on every ProductRow, just no longer collected into this sheet). Same
+  // per-product rows as the small Google section still appended at the bottom of the "Ad spend
+  // report" sheet (fetchGoogleOrders already sorts perProduct by quantity x price, descending).
+  // Cumulative totals across every barm_daily_google_orders upload so far, not scoped to the
+  // day/range window — see fetchGoogleOrders's own comment for why this channel has no date to
+  // scope by at all.
   const bArmAoa: (string | number)[][] = [["Product", "Quantity", "Price", "Sales"]];
-  const bArmZeroRows: (string | number)[][] = [];
-  platforms.forEach(({ products }) => {
-    const grouped = groupProductsByName([...products.values()], undefined, skuToMasterSkuidName);
-    grouped
-      .filter((p) => p.range.units > 0)
-      .sort((a, b) => b.range.units * b.price - a.range.units * a.price)
-      .forEach((p) => bArmAoa.push([p.name, p.range.units, p.price, round2(p.price * p.range.units)]));
-    // Amazon catalog SKUs seeded above with zero orders this window — held back from the main
-    // leaderboard and appended after every platform's real activity below, so a reader sees "who's
-    // actually selling" first and "not selling at all" as a distinct trailing block, not mixed in.
-    grouped
-      .filter((p) => p.range.units === 0)
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .forEach((p) => bArmZeroRows.push([p.name, p.range.units, p.price, round2(p.price * p.range.units)]));
-  });
-  bArmAoa.push(...bArmZeroRows);
+  googleOrders.perProduct.forEach((p) => bArmAoa.push([p.name, p.quantity, round2(p.price), round2(p.quantity * p.price)]));
   const wsBArm = XLSX.utils.aoa_to_sheet(bArmAoa);
   styleHeader(wsBArm, 0, 4, "6B7280");
   wsBArm["!cols"] = [{ wch: 60 }, { wch: 10 }, { wch: 10 }, { wch: 14 }];
