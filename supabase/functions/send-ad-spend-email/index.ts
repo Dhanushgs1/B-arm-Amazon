@@ -91,7 +91,7 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
   // Reproduces the exact table layout of the manual daily mail Aparna has sent by hand
   // (Platform | Ad spend without/with tax | High spending product [Product, price] |
   // <day> Spend/Spend(with tax)/Orders/CPC/ACOS | <range> Spend/Spend(with tax)/Orders/CPC/ACOS |
-  // Overall sales QTS/Value), one merged row-group per platform covering its up-to-3
+  // Overall sales Orders/QTS/Value), one merged row-group per platform covering its up-to-3
   // top-spend products, rather than the card layout previously used here — so recipients
   // used to Aparna's format see the same shape, not a redesign.
   // data: { dayLabel, rangeLabel, currency, platformSummaries: PlatformEmailSummary[],
@@ -156,6 +156,7 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
           <td class="aspd-td ${acosClass(socialMedia.range.acos)}">${acosPct(socialMedia.range.acos)}</td>
           <td ${td}>-</td>
           <td ${td}>-</td>
+          <td ${td}>-</td>
         </tr>`
     : "";
 
@@ -183,6 +184,7 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
           <td ${td}>-</td>
           <td ${td}>-</td>
           <td ${td}>-</td>
+          <td ${td}>${google.totalOrders}</td>
           <td ${td}>${google.totalUnits}</td>
           <td ${td}>${money(google.totalValue)}</td>
         </tr>`
@@ -213,6 +215,7 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
           <td ${td}>${num(prod.range.cpc)}</td>
           <td class="aspd-td ${acosClass(prod.range.acos)}">${acosPct(prod.range.acos)}</td>
           ${i === 0 ? `
+          <td rowspan="${n}" ${td}>${p.overallDayOrders}</td>
           <td rowspan="${n}" ${td}>${p.overallDayUnits}</td>
           <td rowspan="${n}" ${td}>${money(p.overallDayValue)}</td>` : ""}
         </tr>`).join("");
@@ -313,7 +316,7 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
                 <th colspan="2" ${th}>High spending product</th>
                 <th colspan="5" ${th}>${data.dayLabel || "Day"}</th>
                 <th colspan="5" ${th}>${data.rangeLabel || "Range"}</th>
-                <th colspan="2" ${th}>Overall sales</th>
+                <th colspan="3" ${th}>Overall sales</th>
               </tr>
               <tr>
                 <th ${th}>Product</th>
@@ -328,6 +331,7 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
                 <th ${th}>Orders</th>
                 <th ${th}>CPC</th>
                 <th ${th}>ACOS</th>
+                <th ${th}>Orders</th>
                 <th ${th}>QTS</th>
                 <th ${th}>Value</th>
               </tr>
