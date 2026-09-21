@@ -757,6 +757,7 @@ export async function fetchFlipkartProducts(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows: any[];
   revenueRangeBySku: Map<string, number>;
+  unmappedSpend: number;
 }> {
   const [fsnRows, orderRowsRaw, earnRows, listingRows, priceListRows] = await Promise.all([
     fetchAllRows("barm_flipkart_fsn_report", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
@@ -821,9 +822,16 @@ export async function fetchFlipkartProducts(
   // revenue, not the real per-order revenue used for Total Sales (see revenueBySku below).
   const adSalesRangeBySku = new Map<string, number>();
   const adSalesDayBySku = new Map<string, number>();
+  // A campaign row with no SKU at all (seen in practice, e.g. an FSN report row missing
+  // its sku_id) can't be attributed to any product — tracked separately, like Amazon's
+  // unmapped SB/SD spend, so it's disclosed on the Notes sheet instead of silently vanishing.
+  let unmappedSpend = 0;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   fsnRows.forEach((r: any) => {
-    if (!r.sku_id) return;
+    if (!r.sku_id) {
+      unmappedSpend += num(r.ad_spend);
+      return;
+    }
     const spend = num(r.ad_spend);
     ensureSpend(r.sku_id).spend += spend;
     const adSales = num(r.total_revenue);
@@ -927,7 +935,7 @@ export async function fetchFlipkartProducts(
   // Amount across its own non-cancelled order rows in this window (see above, where it also
   // feeds this SKU's own price) — reused directly here rather than re-summing orderRows.
   const revenueRangeBySku = new Map<string, number>([...invoiceAcc].map(([sku, acc]) => [sku, acc.amount]));
-  return { products, overallDay, overallRange, campaigns, reportDates, fsnRows, orderRows, revenueRangeBySku };
+  return { products, overallDay, overallRange, campaigns, reportDates, fsnRows, orderRows, revenueRangeBySku, unmappedSpend };
 }
 
 // ── Meesho ───────────────────────────────────────────────────────────────────
@@ -1710,6 +1718,7 @@ export interface AdSpendReportResult {
   // Summary sheet's own "Google" row.
   googleSummary: GoogleEmailSummary | null;
   unmappedAmazonSpend: number;
+  unmappedFlipkartSpend: number;
   lowSpendCampaignCount: number;
   historyRowsSaved: number;
   // Every platform's own ad-spend export lags ~1 day (today's spend isn't
@@ -2480,7 +2489,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     ["\"Day\" = the single reporting day above. \"Range\" = that day and the", rangeDays - 1, "days before it, inclusive."],
     [""],
     ["Amazon: Sponsored Products spend is per-SKU (barm_amazon_sp_advertised_product). Sponsored Brands/Display spend has no SKU column and is split across the SKUs mapped to that campaign on the Upload page, in proportion to their weight. Unmapped SB/SD spend for the range window: ₹" + round2(amz.unmappedSpend) + " — not attributed to any product below."],
-    ["Flipkart: FSN report spend is per-SKU for every campaign type, so no apportioning is needed. Price prefers the Listings snapshot; where a SKU has no listing row, price falls back to the window's realised average selling price (Earn more report)."],
+    ["Flipkart: FSN report spend is per-SKU for every campaign type, so no apportioning is needed. Price prefers the Listings snapshot; where a SKU has no listing row, price falls back to the window's realised average selling price (Earn more report). A campaign row with no SKU at all can't be attributed to any product either — unmapped spend for the range window: ₹" + round2(fk.unmappedSpend) + " — not attributed to any product below."],
     ["Meesho: Ads report spend is per-SKU. Price prefers meesho_price_marketing's live scraped Meesho listing price; a SKU not in that table yet (or out of stock there) falls back to the Orders report's Supplier Discounted Price (else Supplier Listed Price). Overall sales QTS/Value uses that same price (Orders x price, per SKU), matching the seller's own manual workbook. Column names come from the seller's own workbook, not a native Meesho export seen directly — see src/lib/meeshoReportUpload.ts if a real export's headers turn out to differ."],
     ["Google Ads and social-media (Meta) spend are not included — no sample export has been seen for either, so there's no confirmed column layout to parse."],
     [""],
@@ -2506,6 +2515,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     socialMediaSummary,
     googleSummary,
     unmappedAmazonSpend: round2(amz.unmappedSpend),
+    unmappedFlipkartSpend: round2(fk.unmappedSpend),
     lowSpendCampaignCount: lowSpend.length,
     historyRowsSaved,
     incompleteDates,
