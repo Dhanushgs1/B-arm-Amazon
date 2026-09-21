@@ -2392,7 +2392,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // still what the B Arm orders / Meesho leaderboard sheets elsewhere in
   // this workbook use, untouched by this change).
   const SKU_WISE_COLS = 9;
-  const skuWiseHeader = ["SKU ID", "Platform", "Price", "Spend (without tax)", "Spend (with tax)", "Orders", "Total Sales", "CPC", "ACOS"];
+  const skuWiseHeader = ["SKU ID", "Platform", "Price", "Spend (without tax)", "Spend (with tax)", "Orders (7 days)", "Total Sales", "CPC", "ACOS"];
   const skuWiseRows: (string | number | null)[][] = [];
   platforms.forEach(({ platform, products, revenueRangeBySku }) => {
     [...products.values()]
