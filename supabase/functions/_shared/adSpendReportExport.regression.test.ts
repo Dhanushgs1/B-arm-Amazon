@@ -120,6 +120,20 @@ Deno.test("actionSheetAcos: a real Sponsored Products row with zero attributed s
   assertEquals(actionSheetAcos({ spend: 100, units: 0 }, 721), ACOS_UNDEFINED_SENTINEL);
 });
 
+Deno.test("actionSheetAcos also uses Flipkart's adUnits and Meesho's adOrders tiers now, matching computeAcos", () => {
+  // Regression for a real seller-uploaded report where the Action Sheet's own >14% threshold check
+  // used to skip these two tiers and fall straight to Spend(no tax)/Total Sales instead: 17
+  // Flipkart/Meesho products with real ACOS well over 14% elsewhere in the workbook (Ad spend
+  // report/Summary/SKU Wise Report, all of which use computeAcos) never appeared on the Action
+  // Sheet at all, while 5 different products with real ACOS comfortably under 14% got wrongly
+  // flagged there instead — because a SKU group's own Total Sales figure can differ sharply from
+  // its ad-attributed units x price. actionSheetAcos is now just computeAcos, so this can't recur.
+  const flipkartUnits = { spend: 1504.01, units: 53, revenue: 12182, adUnits: 20 };
+  assertEquals(actionSheetAcos(flipkartUnits, 229.25714285714287), computeAcos(flipkartUnits, 229.25714285714287));
+  const meeshoOrders = { spend: 745.2, units: 40, adOrders: 7 };
+  assertEquals(actionSheetAcos(meeshoOrders, 183), computeAcos(meeshoOrders, 183));
+});
+
 Deno.test("computeAcos prefers Amazon's own ad-attributed spend/sales when on file, ignoring GST and real-order units/price entirely", () => {
   // Matches the raw Sponsored Products Advertised Product export's own ACOS
   // (Spend / 7 Day Total Sales, no GST) rather than this report's usual
