@@ -130,7 +130,7 @@ function num(v: unknown): number {
 // revenue (real per-order revenue from FK ord) — the two can legitimately differ, same as
 // Amazon's attributed sales vs. its real order revenue can. Plainly additive across a merged
 // product's SKU variants, same reasoning as revenue/adOrders above.
-export interface WindowAgg { spend: number; units: number; gstMultiplier?: number; adAttributedSpend?: number; adAttributedSales?: number; revenue?: number; adOrders?: number; adSales?: number; }
+export interface WindowAgg { spend: number; units: number; gstMultiplier?: number; adAttributedSpend?: number; adAttributedSales?: number; revenue?: number; adOrders?: number; adSales?: number; adUnits?: number; }
 const emptyAgg = (): WindowAgg => ({ spend: 0, units: 0 });
 export const spendTax = (a: WindowAgg): number => a.spend * (a.gstMultiplier ?? DEFAULT_GST_MULTIPLIER);
 export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) / a.units : spendTax(a));
@@ -139,22 +139,36 @@ export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) /
 // Flipkart, 11-to-17-09-2026: Spend 1,504.01 / Ad Sales 7,587 = 19.8%, matching the seller's own
 // manual math exactly). Every platform prefers its own ad-attributed sales figure whenever one is
 // on file: Amazon's raw Sponsored Products spend/sales (adAttributedSpend/adAttributedSales, no
-// GST added, matching the raw export exactly), Flipkart's ads-export "Total Revenue" (adSales), or
-// Meesho's ad-attributed order count x price (adOrders x price — Meesho's ad export has no
-// currency sales figure directly, only that count, same convention the Summary sheet's own
-// summaryAcosCell already used for Flipkart/Meesho). Only when NONE of these are on file at all
-// (Amazon SB/SD-only spend with no Sponsored Products row, e.g.) does it fall back to an
-// ESTIMATED/PROXY ACOS: raw spend, no GST, over this window's own Total Sales figure (real
-// per-order revenue where it's tracked, i.e. Amazon/Flipkart's `revenue`; the flat Price x units
-// estimate otherwise, i.e. Meesho, which never populates `revenue` on its WindowAgg).
+// GST added, matching the raw export exactly), Flipkart's own ad-attributed Direct+Indirect Units
+// Sold x Price (adUnits — see below), or Meesho's ad-attributed order count x price (adOrders x
+// price — Meesho's ad export has no currency sales figure directly, only that count, same
+// convention the Summary sheet's own summaryAcosCell still uses for Meesho). Only when NONE of
+// these are on file at all (Amazon SB/SD-only spend with no Sponsored Products row, e.g.) does it
+// fall back to an ESTIMATED/PROXY ACOS: raw spend, no GST, over this window's own Total Sales
+// figure (real per-order revenue where it's tracked, i.e. Amazon/Flipkart's `revenue`; the flat
+// Price x units estimate otherwise, i.e. Meesho, which never populates `revenue` on its WindowAgg).
 //
-// History: this same ad-attributed-sales branch was added (6f32888), reverted (cd333b5, on the
+// Flipkart's `adUnits` branch (Spend WITH tax / (Direct+Indirect Units Sold x Price)) replaces an
+// earlier Flipkart formula that used `adSales` (the FK ads export's own "Total Revenue" column,
+// Spend without tax / Total Revenue) — per the seller's own reference workbook: their FK ads sheet
+// carries a hand-built "ACOSS" column (CPC/Price, where CPC = Spend-with-tax / Direct+Indirect
+// Units Sold) that they confirmed is the correct ACOS, replacing an equally hand-built but flawed
+// "ACOS" column (Spend/Total Revenue) that shows #DIV/0! on the majority of rows — Total Revenue is
+// legitimately zero far more often than a real ad-attributed unit count is, since a row can have ad
+// spend and a tracked conversion (Direct/Indirect Units Sold > 0) on a day FK ads never populated a
+// revenue figure for. `adUnits` is additive across a merged product's SKU variants, same reasoning
+// as `adOrders`/`adSales` above. `adSales` itself is untouched — still Total Revenue, still used
+// as-is for the Summary sheet's separate "Ad Sales" column display.
+//
+// History: the previous ad-attributed-sales branch was added (6f32888), reverted (cd333b5, on the
 // grounds that Flipkart/Meesho's ad-attributed revenue is legitimately zero far more often than
 // real per-order revenue is, and folding it into this shared function blanked the ACOS column on
-// the majority of Ad spend report/SKU Wise Report rows), and is now restored here as the seller's
-// own final, explicit call once they'd seen exactly that trade-off spelled out: a SKU with real
-// orders but zero ad-attributed sales that window WILL show a blank ACOS here — that is the
-// intended reading of "ad spend / ad-attributed sales", not a defect.
+// the majority of Ad spend report/SKU Wise Report rows), and was restored as the seller's own final,
+// explicit call once they'd seen exactly that trade-off spelled out. The `adUnits` branch above is
+// the seller's own later refinement of that same call, specifically for Flipkart, once they showed
+// their own reference workbook's ACOSS formula sidestepping that exact zero-Total-Revenue problem —
+// a SKU with real ad-attributed units this window but zero Total Revenue on file no longer reads as
+// a blank ACOS the way the old `adSales` branch left it.
 //
 // The sentinel below is deliberately reused (not Infinity/NaN) for internal comparisons — sorting
 // "worst ACOS first" and the Action Sheet's >14% threshold both still want a very-high-but-finite
@@ -166,6 +180,11 @@ export const computeAcos = (a: WindowAgg, price: number): number => {
   if (a.adAttributedSales !== undefined) {
     const spend = a.adAttributedSpend ?? 0;
     return a.adAttributedSales > 0 ? spend / a.adAttributedSales : spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
+  }
+  if (a.adUnits !== undefined) {
+    const spend = spendTax(a);
+    const adSalesEstimate = a.adUnits * price;
+    return adSalesEstimate > 0 ? spend / adSalesEstimate : spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
   }
   const adSalesFigure = a.adSales !== undefined ? a.adSales : a.adOrders !== undefined ? a.adOrders * price : undefined;
   if (adSalesFigure !== undefined) {
@@ -308,6 +327,7 @@ export function groupProductsByName(
     existing.day.revenue = sumOptional(existing.day.revenue, p.day.revenue);
     existing.day.adOrders = sumOptional(existing.day.adOrders, p.day.adOrders);
     existing.day.adSales = sumOptional(existing.day.adSales, p.day.adSales);
+    existing.day.adUnits = sumOptional(existing.day.adUnits, p.day.adUnits);
     existing.day.adAttributedSpend = sumOptional(existing.day.adAttributedSpend, p.day.adAttributedSpend);
     existing.day.adAttributedSales = sumOptional(existing.day.adAttributedSales, p.day.adAttributedSales);
     existing.range.spend += p.range.spend;
@@ -315,6 +335,7 @@ export function groupProductsByName(
     existing.range.revenue = sumOptional(existing.range.revenue, p.range.revenue);
     existing.range.adOrders = sumOptional(existing.range.adOrders, p.range.adOrders);
     existing.range.adSales = sumOptional(existing.range.adSales, p.range.adSales);
+    existing.range.adUnits = sumOptional(existing.range.adUnits, p.range.adUnits);
     existing.range.adAttributedSpend = sumOptional(existing.range.adAttributedSpend, p.range.adAttributedSpend);
     existing.range.adAttributedSales = sumOptional(existing.range.adAttributedSales, p.range.adAttributedSales);
     if (!existing.price && p.price) existing.price = p.price;
@@ -388,6 +409,7 @@ export function groupProductsByName(
     existing.day.revenue = sumOptional(existing.day.revenue, group.day.revenue);
     existing.day.adOrders = sumOptional(existing.day.adOrders, group.day.adOrders);
     existing.day.adSales = sumOptional(existing.day.adSales, group.day.adSales);
+    existing.day.adUnits = sumOptional(existing.day.adUnits, group.day.adUnits);
     existing.day.adAttributedSpend = sumOptional(existing.day.adAttributedSpend, group.day.adAttributedSpend);
     existing.day.adAttributedSales = sumOptional(existing.day.adAttributedSales, group.day.adAttributedSales);
     existing.range.spend += group.range.spend;
@@ -395,6 +417,7 @@ export function groupProductsByName(
     existing.range.revenue = sumOptional(existing.range.revenue, group.range.revenue);
     existing.range.adOrders = sumOptional(existing.range.adOrders, group.range.adOrders);
     existing.range.adSales = sumOptional(existing.range.adSales, group.range.adSales);
+    existing.range.adUnits = sumOptional(existing.range.adUnits, group.range.adUnits);
     existing.range.adAttributedSpend = sumOptional(existing.range.adAttributedSpend, group.range.adAttributedSpend);
     existing.range.adAttributedSales = sumOptional(existing.range.adAttributedSales, group.range.adAttributedSales);
     if (!existing.price && group.price) existing.price = group.price;
@@ -844,9 +867,15 @@ export async function fetchFlipkartProducts(
   };
   // Summary sheet's "Ad Sales" column for Flipkart, per the seller's explicit request: the ads
   // export's own "Total Revenue" figure (fsnRows.total_revenue) — the ad platform's own reported
-  // revenue, not the real per-order revenue used for Total Sales (see revenueBySku below).
+  // revenue, not the real per-order revenue used for Total Sales (see revenueBySku below). Kept
+  // as-is for that display column — NOT used for ACOS any more, see adUnits below.
   const adSalesRangeBySku = new Map<string, number>();
   const adSalesDayBySku = new Map<string, number>();
+  // ACOS's real denominator for Flipkart (see computeAcos's own comment): Direct + Indirect Units
+  // Sold, the ads export's own ad-attributed conversion count — matches the seller's own reference
+  // workbook's ACOSS formula (CPC/Price, where CPC's own denominator is this same Units Sold sum).
+  const adUnitsRangeBySku = new Map<string, number>();
+  const adUnitsDayBySku = new Map<string, number>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   fsnRows.forEach((r: any) => {
     if (!r.sku_id) return;
@@ -854,10 +883,13 @@ export async function fetchFlipkartProducts(
     ensureSpend(r.sku_id).spend += spend;
     const adSales = num(r.total_revenue);
     adSalesRangeBySku.set(r.sku_id, (adSalesRangeBySku.get(r.sku_id) || 0) + adSales);
+    const adUnits = num(r.direct_units_sold) + num(r.indirect_units_sold);
+    adUnitsRangeBySku.set(r.sku_id, (adUnitsRangeBySku.get(r.sku_id) || 0) + adUnits);
     if (r.report_date === endDate) {
       spendBySkuDay.set(r.sku_id, (spendBySkuDay.get(r.sku_id) || 0) + spend);
       if (spend > 0) campaignSpendDay.set(r.campaign_name || "", (campaignSpendDay.get(r.campaign_name || "") || 0) + spend);
       adSalesDayBySku.set(r.sku_id, (adSalesDayBySku.get(r.sku_id) || 0) + adSales);
+      adUnitsDayBySku.set(r.sku_id, (adUnitsDayBySku.get(r.sku_id) || 0) + adUnits);
     }
   });
 
@@ -935,8 +967,8 @@ export async function fetchFlipkartProducts(
       sku,
       name: resolveProductName(nameBySku.get(sku), sku) || nameBySku.get(sku) || sku,
       price,
-      day: { spend: spendBySkuDay.get(sku) || 0, units: 0, revenue: 0, adSales: adSalesDayBySku.get(sku) || 0 },
-      range: { spend: spendBySku.get(sku)?.spend || 0, units: unitsBySku.get(sku)?.units || 0, revenue: inv?.amount || 0, adSales: adSalesRangeBySku.get(sku) || 0 },
+      day: { spend: spendBySkuDay.get(sku) || 0, units: 0, revenue: 0, adSales: adSalesDayBySku.get(sku) || 0, adUnits: adUnitsDayBySku.get(sku) || 0 },
+      range: { spend: spendBySku.get(sku)?.spend || 0, units: unitsBySku.get(sku)?.units || 0, revenue: inv?.amount || 0, adSales: adSalesRangeBySku.get(sku) || 0, adUnits: adUnitsRangeBySku.get(sku) || 0 },
     });
   });
   orderRows.forEach((r) => {
@@ -2093,13 +2125,14 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           platform === "Amazon" ? (p.range.adAttributedSales !== undefined ? round2(p.range.adAttributedSales) : null)
           : platform === "Flipkart" ? round2(p.range.adSales || 0)
           : round2((p.range.adOrders || 0) * p.price);
-        // Summary sheet's own ACOS cells: Amazon keeps computeAcos's existing
-        // adAttributedSales-based ratio (acosCell); Flipkart/Meesho use Spend/Ad Sales directly
-        // here (summaryAcosCell), overriding the CPC/Price fallback acosCell would otherwise
-        // fall back to for them — Summary-sheet-only, the Ad spend report and SKU Wise Report
-        // sheets' ACOS columns for Flipkart/Meesho are untouched.
-        const daySummaryAcos = platform === "Amazon" ? acosCell(p.day, p.price) : summaryAcosCell(round2(p.day.spend), dayAdSales as number);
-        const rangeSummaryAcos = platform === "Amazon" ? acosCell(p.range, p.price) : summaryAcosCell(round2(p.range.spend), rangeAdSales as number);
+        // Summary sheet's own ACOS cells: Amazon and Flipkart both go through computeAcos's own
+        // ratio (acosCell) — Amazon via adAttributedSales, Flipkart via adUnits (see computeAcos's
+        // own comment), the same computation the Ad spend report/SKU Wise Report sheets already use
+        // for them, so all three sheets agree. Meesho alone still uses Spend/Ad Sales directly here
+        // (summaryAcosCell), overriding the CPC/Price fallback acosCell would otherwise fall back to
+        // for it — Summary-sheet-only, Meesho's Ad spend report/SKU Wise Report ACOS is untouched.
+        const daySummaryAcos = platform === "Meesho" ? summaryAcosCell(round2(p.day.spend), dayAdSales as number) : acosCell(p.day, p.price);
+        const rangeSummaryAcos = platform === "Meesho" ? summaryAcosCell(round2(p.range.spend), rangeAdSales as number) : acosCell(p.range, p.price);
         sumAoa.push([
           // "Ad spend (without/with tax)" here is the SINGLE-DAY total, matching
           // the seller's own manual workbook's Summary sheet convention — the
@@ -2515,7 +2548,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       : []),
     ["Spend (with tax) = raw ad spend x (1 + that product's GST rate), applied once after summing — never a per-row multiply. Rate comes from the product master's Tax column per SKU (18% used when a SKU has none on file)."],
     ["CPC = Spend(with tax) / Orders. When Orders = 0, CPC = Spend(with tax) (undefined ratio, shown as the spend itself rather than blank)."],
-    ["ACOS = Spend (without tax) / that SKU's own ad-attributed sales, when on file for this window: for Amazon, whenever a SKU has a Sponsored Products row on file, that's Amazon's own raw Sponsored Products Spend / \"7 Day Total Sales\" directly from the ad export (no GST added) — matching Amazon's own report number-for-number rather than this sheet's real-order-based Orders/CPC; for Flipkart, its ads-export \"Total Revenue\"; for Meesho, its ad-attributed order count x price. Falls back to Spend (without tax) / Total Sales — real per-order revenue, never CPC/Price, which is tax-inclusive — only when none of the above is on file at all (an Amazon SKU with no Sponsored Products row, i.e. SB/SD-only spend; or a Flipkart/Meesho product with no ad-attributed sales data of its own)."],
+    ["ACOS: for Amazon, whenever a SKU has a Sponsored Products row on file, that's Amazon's own raw Sponsored Products Spend / \"7 Day Total Sales\" directly from the ad export (no GST added) — matching Amazon's own report number-for-number rather than this sheet's real-order-based Orders/CPC. For Flipkart, Spend WITH tax / (Direct+Indirect Units Sold x Price) — the ads export's own ad-attributed conversion count times the SKU's real selling price, matching the seller's own reference workbook's \"ACOSS\" formula; replaces an earlier Spend(without tax)/ads-export-\"Total Revenue\" formula that read #DIV/0! whenever a row had ad-attributed units but no revenue figure on file. For Meesho, Spend (without tax) / that SKU's ad-attributed order count x Price. Falls back to Spend (without tax) / Total Sales — real per-order revenue, never CPC/Price — only when none of the above is on file at all (an Amazon SKU with no Sponsored Products row, i.e. SB/SD-only spend)."],
     ["\"Orders\" = units sold of that product in the window, from the Orders/Order report, cancelled orders excluded. This is NOT ad-click-attributed units."],
     ["Summary sheet's Overall sales Orders/QTS/Value (single reporting day) is scoped to the SAME SKUs as the \"Ad spend report\" sheet's day block below (ad spend somewhere in the 7-day range, non-cancelled orders only) — so it reconciles with a plain SUM() of that sheet's own day Orders (=Quantity) and per-order revenue for this platform. Orders and QTS are the same number here for that reason."],
     ["\"Day\" = the single reporting day above. \"Range\" = that day and the", rangeDays - 1, "days before it, inclusive."],
