@@ -112,10 +112,18 @@ function num(v: unknown): number {
 // case — unlike adAttributedSpend/Sales, real order revenue from two different real SKUs of one
 // product is honestly combinable). Left undefined for Meesho, which still uses the flat
 // Price x units estimate everywhere (Summary sheet, SKU Wise Report) per the seller's choice.
-// adOrders: Meesho-only — "Orders by ad" straight off its own ad report (barm_meesho_ads),
-// i.e. ad-attributed order count (Meesho's ad export has no ₹ sales figure the way Amazon's
-// does, only this count). Summary's "Ad Sales" column for Meesho multiplies this by price.
-// Plainly additive across a merged product's SKU variants, same reasoning as revenue above.
+// adOrders: ad-attributed order/unit count, for the SKU Wise Report's "Total Ad Orders" column —
+// Meesho: "Orders by ad" straight off its own ad report (barm_meesho_ads), i.e. ad-attributed
+// order count (Meesho's ad export has no ₹ sales figure the way Amazon's does, only this count) —
+// also what Summary's "Ad Sales" column for Meesho multiplies by price, and computeAcos's real
+// fallback denominator for Meesho, since Meesho never sets adSales. Amazon: Sponsored Products'
+// own "7 Day Total Orders (#)" (orders_7d), gated behind the same hasSpRow check as
+// adAttributedSpend/Sales (left undefined for an SB/SD-only SKU, same reasoning as those two) —
+// inert for ACOS itself, since computeAcos's adAttributedSales branch already resolves Amazon's
+// ACOS first. Flipkart: ads-export direct_units_sold + indirect_units_sold, always defined (never
+// gated) since Flipkart's own adSales is always defined too and always wins computeAcos's
+// adSalesFigure ternary — also purely a display figure here, inert for ACOS. Plainly additive
+// across a merged product's SKU variants, same reasoning as revenue above.
 // adSales: Flipkart-only — "Total Revenue" straight off its own ads export (fsnRows,
 // barm_flipkart_fsn_report), i.e. the ad platform's own reported revenue for that SKU/window.
 // Deliberately separate from adAttributedSpend/adAttributedSales (which drive Amazon's ACOS
@@ -591,6 +599,11 @@ export async function fetchAmazonProducts(
   const adSalesRangeBySku = new Map<string, number>();
   const adSpendDayBySku = new Map<string, number>();
   const adSalesDayBySku = new Map<string, number>();
+  // SKU Wise Report's "Total Ad Orders" column: Amazon's own raw Sponsored Products "7 Day Total
+  // Orders (#)" (orders_7d), already stored per-row on barm_amazon_sp_advertised_product but never
+  // read anywhere in this function before — summed the same way as adSpend/adSalesRangeBySku above.
+  const adOrdersRangeBySku = new Map<string, number>();
+  const adOrdersDayBySku = new Map<string, number>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   spRows.forEach((r: any) => {
     if (!r.advertised_sku) return;
@@ -601,8 +614,10 @@ export async function fetchAmazonProducts(
 
     const sku = r.advertised_sku;
     const sales7d = num(r.sales_7d);
+    const orders7d = num(r.orders_7d);
     adSpendRangeBySku.set(sku, (adSpendRangeBySku.get(sku) || 0) + spend);
     adSalesRangeBySku.set(sku, (adSalesRangeBySku.get(sku) || 0) + sales7d);
+    adOrdersRangeBySku.set(sku, (adOrdersRangeBySku.get(sku) || 0) + orders7d);
     if (r.report_date === endDate) {
       // A single SKU can itself carry 2+ Sponsored Products rows for the exact same day (seen in
       // practice as a second, otherwise-blank row — no campaign/ad-group/sales columns — sitting
@@ -611,6 +626,7 @@ export async function fetchAmazonProducts(
       // one of its rows' spend and sales that day, matching its own displayed (summed) Spend cell.
       adSpendDayBySku.set(sku, (adSpendDayBySku.get(sku) || 0) + spend);
       adSalesDayBySku.set(sku, (adSalesDayBySku.get(sku) || 0) + sales7d);
+      adOrdersDayBySku.set(sku, (adOrdersDayBySku.get(sku) || 0) + orders7d);
     }
   });
   [...sbRows, ...sdRows].forEach((r: { campaign_name?: string; spend?: number; report_date?: string }) => {
@@ -707,13 +723,19 @@ export async function fetchAmazonProducts(
         spend: daySpend,
         units: 0,
         revenue: 0,
-        ...(hasSpRow ? { adAttributedSpend: adSpendDayBySku.get(sku) || 0, adAttributedSales: adSalesDayBySku.get(sku) || 0 } : {}),
+        // adOrders (Sponsored Products' own "7 Day Total Orders") is gated behind the same hasSpRow
+        // check as adAttributedSpend/Sales below, not set unconditionally: computeAcos's Amazon
+        // branch (adAttributedSales !== undefined) already short-circuits before ever inspecting
+        // adOrders whenever hasSpRow is true, so this only matters for an SB/SD-only SKU (no SP
+        // row) — there it MUST stay undefined so computeAcos falls through to its real-revenue
+        // fallback, not a false adOrders=0-driven blank.
+        ...(hasSpRow ? { adAttributedSpend: adSpendDayBySku.get(sku) || 0, adAttributedSales: adSalesDayBySku.get(sku) || 0, adOrders: adOrdersDayBySku.get(sku) || 0 } : {}),
       },
       range: {
         spend: rangeSpend,
         units: rangeUnits,
         revenue: revenueBySku.get(sku) || 0,
-        ...(hasSpRow ? { adAttributedSpend: adSpendRangeBySku.get(sku) || 0, adAttributedSales: adSalesRangeBySku.get(sku) || 0 } : {}),
+        ...(hasSpRow ? { adAttributedSpend: adSpendRangeBySku.get(sku) || 0, adAttributedSales: adSalesRangeBySku.get(sku) || 0, adOrders: adOrdersRangeBySku.get(sku) || 0 } : {}),
       },
     });
   });
@@ -821,17 +843,28 @@ export async function fetchFlipkartProducts(
   // revenue, not the real per-order revenue used for Total Sales (see revenueBySku below).
   const adSalesRangeBySku = new Map<string, number>();
   const adSalesDayBySku = new Map<string, number>();
+  // SKU Wise Report's "Total Ad Orders" column: Flipkart's own ads-export ad-attributed unit
+  // count — direct_units_sold + indirect_units_sold, already stored per-row on
+  // barm_flipkart_fsn_report but never read anywhere in this function before. Always defined
+  // (never gated like Amazon's adOrders above) since Flipkart's WindowAgg always sets adSales too,
+  // which computeAcos's adSalesFigure ternary already prefers over adOrders unconditionally — this
+  // is purely a display figure here, inert for ACOS.
+  const adOrdersRangeBySku = new Map<string, number>();
+  const adOrdersDayBySku = new Map<string, number>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   fsnRows.forEach((r: any) => {
     if (!r.sku_id) return;
     const spend = num(r.ad_spend);
     ensureSpend(r.sku_id).spend += spend;
     const adSales = num(r.total_revenue);
+    const adOrders = num(r.direct_units_sold) + num(r.indirect_units_sold);
     adSalesRangeBySku.set(r.sku_id, (adSalesRangeBySku.get(r.sku_id) || 0) + adSales);
+    adOrdersRangeBySku.set(r.sku_id, (adOrdersRangeBySku.get(r.sku_id) || 0) + adOrders);
     if (r.report_date === endDate) {
       spendBySkuDay.set(r.sku_id, (spendBySkuDay.get(r.sku_id) || 0) + spend);
       if (spend > 0) campaignSpendDay.set(r.campaign_name || "", (campaignSpendDay.get(r.campaign_name || "") || 0) + spend);
       adSalesDayBySku.set(r.sku_id, (adSalesDayBySku.get(r.sku_id) || 0) + adSales);
+      adOrdersDayBySku.set(r.sku_id, (adOrdersDayBySku.get(r.sku_id) || 0) + adOrders);
     }
   });
 
@@ -900,8 +933,8 @@ export async function fetchFlipkartProducts(
       sku,
       name: resolveProductName(nameBySku.get(sku), sku) || nameBySku.get(sku) || sku,
       price,
-      day: { spend: spendBySkuDay.get(sku) || 0, units: 0, revenue: 0, adSales: adSalesDayBySku.get(sku) || 0 },
-      range: { spend: spendBySku.get(sku)?.spend || 0, units: unitsBySku.get(sku)?.units || 0, revenue: inv?.amount || 0, adSales: adSalesRangeBySku.get(sku) || 0 },
+      day: { spend: spendBySkuDay.get(sku) || 0, units: 0, revenue: 0, adSales: adSalesDayBySku.get(sku) || 0, adOrders: adOrdersDayBySku.get(sku) || 0 },
+      range: { spend: spendBySku.get(sku)?.spend || 0, units: unitsBySku.get(sku)?.units || 0, revenue: inv?.amount || 0, adSales: adSalesRangeBySku.get(sku) || 0, adOrders: adOrdersRangeBySku.get(sku) || 0 },
     });
   });
   orderRows.forEach((r) => {
@@ -2283,49 +2316,90 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   XLSX.utils.book_append_sheet(wb, wsDetail, "Ad spend report");
 
   // ── SKU Wise Report — flat, per-SKU (ungrouped) listing across all platforms ──
-  // Unlike "Ad spend report" above (which merges every SKU variant of a product
-  // into one row via groupProductsByName), this sheet keeps one row per actual
-  // SKU — added alongside it at the seller's request, not replacing it, so a
-  // SKU's own individual numbers can be sorted/filtered directly by Platform or
-  // Price. Range-window (7-day) figures throughout. Total Sales, per the
-  // seller's explicit request: Amazon and Flipkart use real per-order revenue
-  // — SUM(item-price x quantity) across this SKU's own non-cancelled order
-  // rows in the range window (revenueRangeBySku, built alongside each
-  // platform's per-SKU Orders count) — replacing the flat Price x
-  // range-Orders estimate this sheet used before. Meesho stays on that flat
-  // Price x range-Orders estimate, at the seller's explicit choice (also
-  // still what the B Arm orders / Meesho leaderboard sheets elsewhere in
-  // this workbook use, untouched by this change).
-  const SKU_WISE_COLS = 9;
-  const skuWiseHeader = ["SKU ID", "Platform", "Price", "Spend (without tax)", "Spend (with tax)", "Orders", "Total Sales", "CPC", "ACOS"];
+  // Unlike "Ad spend report" above (which merges every SKU variant of a product into one row via
+  // groupProductsByName), this sheet keeps one row per actual SKU — added alongside it at the
+  // seller's request, not replacing it, so a SKU's own individual numbers can be sorted/filtered
+  // directly by Platform or Price. Every metric is split into its own single-day and 7-day-range
+  // pair of columns (same dayLabel/rangeLabel two-row header pattern as the Ad spend report sheet
+  // above), per the seller's explicit request that this sheet stop being range-only. Total Sales:
+  // Amazon/Flipkart use real per-order revenue (WindowAgg.revenue — SUM(item-price x quantity) /
+  // SUM(Invoice Amount) across this SKU's own non-cancelled order rows); Meesho stays on the flat
+  // Price x Orders(units) estimate, at the seller's explicit choice (also still what the B Arm
+  // orders / Meesho leaderboard sheets elsewhere in this workbook use). ACOS uses the same
+  // computeAcos as every other sheet (Ad Spend / Ad-Attributed Sales when on file, falling back to
+  // Total Sales otherwise — see computeAcos's own comment). Total Ad Sales / Total Ad Orders are
+  // each platform's own ad-attributed sales/orders figures — the same ones ACOS is computed from —
+  // surfaced here directly so a reader can see the ACOS denominator, not just the ratio: Amazon's
+  // Sponsored Products "7 Day Total Sales"/"7 Day Total Orders" (blank when a SKU has no Sponsored
+  // Products row at all, i.e. SB/SD-only spend, matching Amazon's own raw export convention);
+  // Flipkart's ads-export "Total Revenue"/direct+indirect Units Sold; Meesho's ad report's own
+  // "Orders by ad" count, and that count x Price for Ad Sales (Meesho's ad export has no ₹ sales
+  // figure directly).
+  const SKU_WISE_METRIC_NAMES = ["Spend (without tax)", "Spend (with tax)", "Orders", "Total Sales", "CPC", "ACOS", "Total Ad Sales", "Total Ad Orders"];
+  const SKU_WISE_COLS = 3 + SKU_WISE_METRIC_NAMES.length * 2;
   const skuWiseRows: (string | number | null)[][] = [];
   platforms.forEach(({ platform, products, revenueRangeBySku }) => {
     [...products.values()]
       .filter((p) => spendTax(p.range) > 0)
       .forEach((p) => {
         // Meesho stays on the old flat Price x range-Orders estimate, per the seller's explicit
-        // choice — only Amazon/Flipkart use the real per-order revenue sum above.
-        const totalSales = platform === "Meesho" ? p.price * p.range.units : revenueRangeBySku.get(p.sku) || 0;
+        // choice — only Amazon/Flipkart use the real per-order revenue sum above. Day uses
+        // p.day.revenue directly (Amazon/Flipkart) — the same field revenueRangeBySku's range
+        // figure is itself sourced from, just not exposed as its own returned Map for the day window.
+        const dayTotalSales = platform === "Meesho" ? p.price * p.day.units : p.day.revenue || 0;
+        const rangeTotalSales = platform === "Meesho" ? p.price * p.range.units : revenueRangeBySku.get(p.sku) || 0;
+        const dayAdSales =
+          platform === "Amazon" ? (p.day.adAttributedSales !== undefined ? round2(p.day.adAttributedSales) : null)
+          : platform === "Flipkart" ? round2(p.day.adSales || 0)
+          : round2((p.day.adOrders || 0) * p.price);
+        const rangeAdSales =
+          platform === "Amazon" ? (p.range.adAttributedSales !== undefined ? round2(p.range.adAttributedSales) : null)
+          : platform === "Flipkart" ? round2(p.range.adSales || 0)
+          : round2((p.range.adOrders || 0) * p.price);
+        const dayAdOrders = platform === "Amazon" ? (p.day.adOrders !== undefined ? p.day.adOrders : null) : p.day.adOrders || 0;
+        const rangeAdOrders = platform === "Amazon" ? (p.range.adOrders !== undefined ? p.range.adOrders : null) : p.range.adOrders || 0;
         skuWiseRows.push([
           p.sku, platform, p.price,
-          round2(p.range.spend), round2(spendTax(p.range)), p.range.units,
-          round2(totalSales), round2(computeCpc(p.range)), acosCell(p.range, p.price),
+          round2(p.day.spend), round2(spendTax(p.day)), p.day.units, round2(dayTotalSales), round2(computeCpc(p.day)), acosCell(p.day, p.price), dayAdSales, dayAdOrders,
+          round2(p.range.spend), round2(spendTax(p.range)), p.range.units, round2(rangeTotalSales), round2(computeCpc(p.range)), acosCell(p.range, p.price), rangeAdSales, rangeAdOrders,
         ]);
       });
   });
-  // Highest Total Sales first, across every platform — the point of a flat,
-  // per-SKU sheet is to see top sellers regardless of which platform they're on.
-  skuWiseRows.sort((a, b) => Number(b[6]) - Number(a[6]));
-  const wsSkuWise = XLSX.utils.aoa_to_sheet([skuWiseHeader, ...skuWiseRows]);
-  styleHeader(wsSkuWise, 0, SKU_WISE_COLS, "312E81");
-  wsSkuWise["!views"] = [{ state: "frozen", ySplit: 1 }];
-  wsSkuWise["!cols"] = [
-    { wch: 24 }, { wch: 10 }, { wch: 10 }, { wch: 16 }, { wch: 16 }, { wch: 10 }, { wch: 14 }, { wch: 12 }, { wch: 10 },
+  // Highest range Total Sales first, across every platform — the point of a flat, per-SKU sheet is
+  // to see top sellers regardless of which platform they're on. Index 14 = range Total Sales,
+  // per SKU_WISE_METRIC_NAMES's position in the range block (cols 11-18, Total Sales is 4th).
+  const SKU_WISE_RANGE_TOTAL_SALES_COL = 3 + SKU_WISE_METRIC_NAMES.length + SKU_WISE_METRIC_NAMES.indexOf("Total Sales");
+  skuWiseRows.sort((a, b) => Number(b[SKU_WISE_RANGE_TOTAL_SALES_COL]) - Number(a[SKU_WISE_RANGE_TOTAL_SALES_COL]));
+  const skuWiseAoa: (string | number | null)[][] = [
+    ["", "", "", dayLabel, "", "", "", "", "", "", "", rangeLabel, "", "", "", "", "", "", ""],
+    ["SKU ID", "Platform", "Price", ...SKU_WISE_METRIC_NAMES, ...SKU_WISE_METRIC_NAMES],
+    ...skuWiseRows,
   ];
-  applyNumberFormats(wsSkuWise, 1, skuWiseRows.length + 1, {
-    2: CURRENCY_FMT, 3: CURRENCY_FMT, 4: CURRENCY_FMT, 6: CURRENCY_FMT, 7: CURRENCY_FMT, 8: PERCENT_FMT,
+  const wsSkuWise = XLSX.utils.aoa_to_sheet(skuWiseAoa);
+  wsSkuWise["!merges"] = [
+    { s: { r: 0, c: 0 }, e: { r: 1, c: 0 } },
+    { s: { r: 0, c: 1 }, e: { r: 1, c: 1 } },
+    { s: { r: 0, c: 2 }, e: { r: 1, c: 2 } },
+    { s: { r: 0, c: 3 }, e: { r: 0, c: 2 + SKU_WISE_METRIC_NAMES.length } },
+    { s: { r: 0, c: 3 + SKU_WISE_METRIC_NAMES.length }, e: { r: 0, c: 2 + SKU_WISE_METRIC_NAMES.length * 2 } },
+  ];
+  styleHeader(wsSkuWise, 0, SKU_WISE_COLS, "312E81");
+  styleHeader(wsSkuWise, 1, SKU_WISE_COLS, "312E81");
+  wsSkuWise["!views"] = [{ state: "frozen", ySplit: 2 }];
+  wsSkuWise["!cols"] = [
+    { wch: 24 }, { wch: 10 }, { wch: 10 },
+    ...Array.from({ length: SKU_WISE_METRIC_NAMES.length * 2 }, () => ({ wch: 14 })),
+  ];
+  const dayBlockStart = 3;
+  const rangeBlockStart = 3 + SKU_WISE_METRIC_NAMES.length;
+  applyNumberFormats(wsSkuWise, 2, skuWiseAoa.length, {
+    2: CURRENCY_FMT,
+    [dayBlockStart]: CURRENCY_FMT, [dayBlockStart + 1]: CURRENCY_FMT, [dayBlockStart + 3]: CURRENCY_FMT,
+    [dayBlockStart + 4]: CURRENCY_FMT, [dayBlockStart + 5]: PERCENT_FMT, [dayBlockStart + 6]: CURRENCY_FMT,
+    [rangeBlockStart]: CURRENCY_FMT, [rangeBlockStart + 1]: CURRENCY_FMT, [rangeBlockStart + 3]: CURRENCY_FMT,
+    [rangeBlockStart + 4]: CURRENCY_FMT, [rangeBlockStart + 5]: PERCENT_FMT, [rangeBlockStart + 6]: CURRENCY_FMT,
   });
-  if (!skuWiseRows.length) XLSX.utils.sheet_add_aoa(wsSkuWise, [["(no advertised SKUs with activity in range)"]], { origin: { r: 1, c: 0 } });
+  if (!skuWiseRows.length) XLSX.utils.sheet_add_aoa(wsSkuWise, [["(no advertised SKUs with activity in range)"]], { origin: { r: 2, c: 0 } });
   XLSX.utils.book_append_sheet(wb, wsSkuWise, "SKU Wise Report");
 
   // ── Ad Status Report — product name x platform, best-effort name match ──
