@@ -36,10 +36,11 @@ Deno.test("computeAcos prefers Meesho's adOrders x price over Total Sales, and s
   // the seller's own manual math exactly at the time (real per-order Total Sales for that same window was a
   // different, larger 12,182, which this branch deliberately does NOT divide by).
   assertEquals(Math.round(computeAcos({ spend: 1504.01, units: 53, revenue: 12182, adSales: 7587 }, 229.27) * 10000) / 10000, 0.1982);
-  // adSales present but exactly 0 (real spend, zero ad-attributed sales this window, even with a
-  // real Total Sales/revenue on file) is the same "genuinely unknown ratio" sentinel as Amazon's
-  // adAttributedSales branch — a deliberate blank, not a silent fall-through to Total Sales.
-  assertEquals(computeAcos({ spend: 120.7, units: 1, revenue: 373, adSales: 0 }, 365.89), ACOS_UNDEFINED_SENTINEL);
+  // adSales present but exactly 0 (real spend, zero ad-attributed sales this window) now CASCADES
+  // to Total Sales/revenue instead of the old deliberate-blank sentinel — per the seller's later,
+  // explicit instruction that a SKU with real Total Sales on file should never show a blank ACOS
+  // just because that window's ad-attribution happened to be zero (see computeAcos's own comment).
+  assertEquals(computeAcos({ spend: 120.7, units: 1, revenue: 373, adSales: 0 }, 365.89), 120.7 / 373);
   // Meesho's adOrders x price is used the same way, since Meesho's ad export has no currency sales
   // figure directly. Meesho is untouched by the adUnits branch below (fetchMeeshoProducts never sets it).
   assertEquals(computeAcos({ spend: 50, units: 5, revenue: 500, adOrders: 2 }, 100), 50 / 200);
@@ -58,17 +59,22 @@ Deno.test("computeAcos: Flipkart's adUnits branch (Spend WITH tax / (Direct+Indi
   const b_vd_plas_tpe = { spend: 455.54, units: 0, adUnits: 1 };
   assertEquals(Math.round(computeAcos(b_vd_plas_tpe, 1439) * 10000) / 10000, 0.3735);
   // adUnits present but exactly 0 (real spend, a tracked ad row, but zero ad-attributed conversions
-  // this window) is the sentinel — this is the exact case that used to render as a literal #DIV/0!
-  // in the seller's own reference workbook's naive Spend/Total Revenue "ACOS" column, which their
-  // own "ACOSS" (this formula) fixes by dividing by Units x Price instead.
+  // this window), and no `revenue`/`units` to cascade to either — still the sentinel, the genuinely
+  // "nothing on file at all" case computeAcos's cascade still ends at (see its own comment).
   assertEquals(computeAcos({ spend: 3.8, units: 0, adUnits: 0 }, 100), ACOS_UNDEFINED_SENTINEL);
-  // adUnits set but price is 0 (denominator 0 either way) — still the sentinel, not a crash.
+  // adUnits present but exactly 0, with a real Total Sales/revenue to cascade to — the exact case
+  // that used to render as a literal #DIV/0! in the seller's own reference workbook's naive
+  // Spend/Total Revenue "ACOS" column, and used to render as a deliberate blank here too before the
+  // cascade was added; now falls through to Spend(no tax)/Total Sales like any other missing tier.
+  assertEquals(computeAcos({ spend: 3.8, units: 1, revenue: 200, adUnits: 0 }, 100), 3.8 / 200);
+  // adUnits set but price is 0 (denominator 0 either way), no revenue to cascade to — still the
+  // sentinel, not a crash.
   assertEquals(computeAcos({ spend: 10, units: 0, adUnits: 5 }, 0), ACOS_UNDEFINED_SENTINEL);
   // Zero spend and zero adUnits -> 0, nothing to report.
   assertEquals(computeAcos({ spend: 0, units: 0, adUnits: 0 }, 100), 0);
-  // adUnits takes priority over adSales when both are present — this is the real shape
+  // adUnits takes priority over adSales when both are real — this is the real shape
   // fetchFlipkartProducts now produces (adSales is kept only for the Summary sheet's separate
-  // "Ad Sales" display column, no longer read for ACOS at all once adUnits is set).
+  // "Ad Sales" display column, no longer read for ACOS at all once adUnits is positive).
   assertEquals(computeAcos({ spend: 455.54, units: 0, adUnits: 1, adSales: 1439 }, 1439), computeAcos(b_vd_plas_tpe, 1439));
 });
 
@@ -86,21 +92,24 @@ Deno.test("computeAcos: an Amazon SKU with spend + price + orders but no Sponsor
   assertEquals(acosCell({ spend: 379.97, units: 4, revenue: 23936.01 }, 5671), Math.round((379.97 / 23936.01) * 10000) / 10000);
 });
 
-Deno.test("actionSheetAcos: a real Sponsored Products row with zero attributed sales this window still falls back to Spend/Total Sales, unlike computeAcos", () => {
+Deno.test("actionSheetAcos: a real Sponsored Products row with zero attributed sales this window falls back to Spend/Total Sales, now the same as computeAcos", () => {
   // Regression for the bug reported against a live Ad Spend Report export's Action Sheet: a
   // Suture thread-KT row — Orders 1, Spend (no tax) 436.86, Spend (with tax) 515.49, Price 721,
   // Total Sales 721 — rendered as a literal "999%" because it HAS a Sponsored Products row on file
-  // for this window, just with adAttributedSales === 0 (computeAcos's own branch correctly treats
-  // that as a genuinely-unknown ratio for every other sheet). The Action Sheet is meant to be
-  // acted on, so it uses a real, computable number here instead: Spend(no tax)/Total Sales, exactly
-  // like a SKU with no Sponsored Products row at all.
+  // for this window, just with adAttributedSales === 0. This is the exact case Action Sheet's own
+  // cascade-to-Total-Sales fix was written for first; computeAcos was later given the same cascade
+  // (per the seller's own later instruction that Ad spend report/SKU Wise Report/Summary showing a
+  // blank ACOS for a SKU with real Total Sales on file reads as broken, not honest — see
+  // computeAcos's own comment) — so both functions now agree on this row.
   const suturethreadKT = { spend: 436.86, units: 1, revenue: 721, adAttributedSpend: 436.86, adAttributedSales: 0 };
-  // computeAcos (every other sheet): correctly stays the sentinel — has an SP row, attributed 0.
-  assertEquals(computeAcos(suturethreadKT, 721), ACOS_UNDEFINED_SENTINEL);
-  // actionSheetAcos (Action Sheet only): the real 60.59%, not 999%.
+  // computeAcos now ALSO cascades to Spend(no tax)/Total Sales here, same real 60.59% — no longer
+  // the sentinel it used to be for this exact case.
+  assertEquals(computeAcos(suturethreadKT, 721), 436.86 / 721);
+  // actionSheetAcos: the same real 60.59%, not 999%.
   const v = actionSheetAcos(suturethreadKT, 721);
   assertEquals(Math.round(v * 10000) / 100, 60.59);
   assertEquals(v === ACOS_UNDEFINED_SENTINEL, false);
+  assertEquals(v, computeAcos(suturethreadKT, 721));
   // A genuine positive Sponsored Products attribution is untouched — same number as computeAcos.
   const attributed = { spend: 999, units: 999, adAttributedSpend: 516.18, adAttributedSales: 379.04 };
   assertEquals(actionSheetAcos(attributed, 999), computeAcos(attributed, 999));
@@ -120,9 +129,11 @@ Deno.test("computeAcos prefers Amazon's own ad-attributed spend/sales when on fi
     computeAcos({ spend: 999, units: 999, adAttributedSpend: 516.18, adAttributedSales: 379.04 }, 999),
     516.18 / 379.04
   );
-  // Ad spend with zero attributed sales reads as the same 9.99 "near-infinite"
-  // sentinel this file uses elsewhere for a spend/revenue ratio it can't compute.
-  assertEquals(computeAcos({ spend: 0, units: 0, adAttributedSpend: 50, adAttributedSales: 0 }, 100), 9.99);
+  // Zero attributed sales now cascades past this branch instead of committing to the sentinel here
+  // (see computeAcos's own comment) — with the row's own overall spend also 0 and nothing else on
+  // file to fall back to (no revenue, no units), it lands on the final "genuinely nothing" case: 0,
+  // not the sentinel, since there's no real spend recorded on the row itself to justify a blank.
+  assertEquals(computeAcos({ spend: 0, units: 0, adAttributedSpend: 50, adAttributedSales: 0 }, 100), 0);
   // No spend and no attributed sales at all -> 0, not the sentinel.
   assertEquals(computeAcos({ spend: 0, units: 0, adAttributedSpend: 0, adAttributedSales: 0 }, 100), 0);
   // adAttributedSales undefined (no Sponsored Products row for this SKU at all, e.g. SB/SD-only
@@ -135,8 +146,11 @@ Deno.test("acosCell blanks out the ACOS_UNDEFINED_SENTINEL to null instead of sh
   // Real bug this was written for: a single day where Amazon attributed zero sales despite real ad
   // spend rendered as a spreadsheet cell showing "999%", read by the seller as a data error. Every
   // xlsx/DB/email ACOS write goes through acosCell instead of pct(computeAcos(...)) directly so this
-  // case renders as a blank cell instead.
-  assertEquals(acosCell({ spend: 0, units: 0, adAttributedSpend: 50, adAttributedSales: 0 }, 100), null);
+  // case renders as a blank cell instead. Real spend (50, matching the row's own adAttributedSpend —
+  // unlike an earlier version of this test with spend: 0, which no longer hits the sentinel at all
+  // now that computeAcos cascades past a zero-but-present attribution instead of committing to it;
+  // see computeAcos's own comment) with genuinely nothing to fall back to (no units, no revenue).
+  assertEquals(acosCell({ spend: 50, units: 0, adAttributedSpend: 50, adAttributedSales: 0 }, 100), null);
   // A real, computable ACOS still comes through as the normal rounded fraction.
   assertEquals(acosCell({ spend: 999, units: 999, adAttributedSpend: 516.18, adAttributedSales: 379.04 }, 999), Math.round((516.18 / 379.04) * 10000) / 10000);
   // No spend, no sales, no ad data at all -> 0, not blank (nothing to report, not "unknown").
@@ -150,7 +164,9 @@ Deno.test("acosSortRank puts a known, finite ACOS above the sentinel in a worst-
   // pushed Chewy tube bump's concrete, known 136% ACOS entirely off the visible top-3 list.
   // acosSortRank must rank the sentinel LAST, not first, so a real number always wins.
   const knownHigh = { spend: 999, units: 999, adAttributedSpend: 516.18, adAttributedSales: 379.04 }; // 136.18%
-  const sentinelBlank = { spend: 0, units: 0, adAttributedSpend: 185.72, adAttributedSales: 0 }; // real spend, zero attribution
+  // Real spend on the row itself (not just adAttributedSpend), zero attribution, and nothing to
+  // cascade to (no units, no revenue) — genuinely still the sentinel under the newer cascade too.
+  const sentinelBlank = { spend: 185.72, units: 0, adAttributedSpend: 185.72, adAttributedSales: 0 };
   const rows = [{ label: "blank", agg: sentinelBlank }, { label: "known", agg: knownHigh }]
     .sort((a, b) => acosSortRank(b.agg, 199) - acosSortRank(a.agg, 199));
   assertEquals(rows[0].label, "known");

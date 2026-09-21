@@ -134,19 +134,24 @@ export interface WindowAgg { spend: number; units: number; gstMultiplier?: numbe
 const emptyAgg = (): WindowAgg => ({ spend: 0, units: 0 });
 export const spendTax = (a: WindowAgg): number => a.spend * (a.gstMultiplier ?? DEFAULT_GST_MULTIPLIER);
 export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) / a.units : spendTax(a));
-// ACOS = Ad Spend / Ad-Attributed Sales, final answer, per the seller's explicit instruction
-// after reconciling a real example against raw data ("Chewy tube (Green - Spiral model)",
-// Flipkart, 11-to-17-09-2026: Spend 1,504.01 / Ad Sales 7,587 = 19.8%, matching the seller's own
-// manual math exactly). Every platform prefers its own ad-attributed sales figure whenever one is
-// on file: Amazon's raw Sponsored Products spend/sales (adAttributedSpend/adAttributedSales, no
-// GST added, matching the raw export exactly), Flipkart's own ad-attributed Direct+Indirect Units
-// Sold x Price (adUnits — see below), or Meesho's ad-attributed order count x price (adOrders x
-// price — Meesho's ad export has no currency sales figure directly, only that count, same
-// convention the Summary sheet's own summaryAcosCell still uses for Meesho). Only when NONE of
-// these are on file at all (Amazon SB/SD-only spend with no Sponsored Products row, e.g.) does it
-// fall back to an ESTIMATED/PROXY ACOS: raw spend, no GST, over this window's own Total Sales
-// figure (real per-order revenue where it's tracked, i.e. Amazon/Flipkart's `revenue`; the flat
-// Price x units estimate otherwise, i.e. Meesho, which never populates `revenue` on its WindowAgg).
+// ACOS = Ad Spend / Ad-Attributed Sales, per the seller's explicit instruction after reconciling a
+// real example against raw data ("Chewy tube (Green - Spiral model)", Flipkart, 11-to-17-09-2026:
+// Spend 1,504.01 / Ad Sales 7,587 = 19.8%, matching the seller's own manual math exactly). Every
+// platform prefers its own ad-attributed sales figure whenever it's REAL (a positive number, not
+// just present-but-zero): Amazon's raw Sponsored Products spend/sales (adAttributedSpend/
+// adAttributedSales, no GST added, matching the raw export exactly), Flipkart's own ad-attributed
+// Direct+Indirect Units Sold x Price (adUnits — see below), or Meesho's ad-attributed order count x
+// price (adOrders x price — Meesho's ad export has no currency sales figure directly, only that
+// count, same convention the Summary sheet's own summaryAcosCell still uses for Meesho). Whenever a
+// tier is present but computes to exactly 0 (a real ad campaign that tracked spend but zero
+// attributed sales/units/orders this window) — or isn't on file at all (Amazon SB/SD-only spend
+// with no Sponsored Products row, e.g.) — this CASCADES to the next tier down, ending at an
+// ESTIMATED/PROXY ACOS: raw spend, no GST, over this window's own Total Sales figure (real
+// per-order revenue where it's tracked, i.e. Amazon/Flipkart's `revenue`; the flat Price x units
+// estimate otherwise, i.e. Meesho, which never populates `revenue` on its WindowAgg). Only when
+// EVERY tier, ad-attribution and Total Sales alike, computes to 0 does this return the
+// ACOS_UNDEFINED_SENTINEL (blanked by acosCell) — genuinely nothing on file to compute an ACOS
+// from, not just an ad campaign that didn't convert this window.
 //
 // Flipkart's `adUnits` branch (Spend WITH tax / (Direct+Indirect Units Sold x Price)) replaces an
 // earlier Flipkart formula that used `adSales` (the FK ads export's own "Total Revenue" column,
@@ -160,15 +165,21 @@ export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) /
 // as `adOrders`/`adSales` above. `adSales` itself is untouched — still Total Revenue, still used
 // as-is for the Summary sheet's separate "Ad Sales" column display.
 //
-// History: the previous ad-attributed-sales branch was added (6f32888), reverted (cd333b5, on the
+// History: an earlier ad-attributed-sales branch was added (6f32888), reverted (cd333b5, on the
 // grounds that Flipkart/Meesho's ad-attributed revenue is legitimately zero far more often than
 // real per-order revenue is, and folding it into this shared function blanked the ACOS column on
-// the majority of Ad spend report/SKU Wise Report rows), and was restored as the seller's own final,
-// explicit call once they'd seen exactly that trade-off spelled out. The `adUnits` branch above is
-// the seller's own later refinement of that same call, specifically for Flipkart, once they showed
-// their own reference workbook's ACOSS formula sidestepping that exact zero-Total-Revenue problem —
-// a SKU with real ad-attributed units this window but zero Total Revenue on file no longer reads as
-// a blank ACOS the way the old `adSales` branch left it.
+// the majority of Ad spend report/SKU Wise Report rows), and was restored as a then-final call: an
+// ad campaign with real spend but zero attributed sales this window would show a deliberate blank
+// rather than guess. The `adUnits` branch was a later Flipkart-specific refinement of that same
+// call, once the seller showed their own reference workbook's ACOSS formula sidestepping the
+// zero-Total-Revenue case specifically. Per the seller's own later, explicit instruction — a SKU
+// Wise Report full of blank ACOS cells for SKUs that plainly have real Total Sales on file read as
+// broken, not honest — that "deliberate blank on zero attribution" call is now itself superseded:
+// every tier below only commits to a real ratio (or the sentinel) once it's confirmed no tier
+// further down the list has anything better to offer, cascading all the way to Total Sales before
+// giving up. A real ad campaign that spent money but tracked zero attributed sales/units/orders
+// this window now shows its real-order-based ACOS instead of a blank, same as it always did for any
+// SKU with no ad-attribution data on file at all.
 //
 // The sentinel below is deliberately reused (not Infinity/NaN) for internal comparisons — sorting
 // "worst ACOS first" and the Action Sheet's >14% threshold both still want a very-high-but-finite
@@ -177,36 +188,32 @@ export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) /
 // blanking it out instead of showing "999%".
 export const ACOS_UNDEFINED_SENTINEL = 9.99;
 export const computeAcos = (a: WindowAgg, price: number): number => {
-  if (a.adAttributedSales !== undefined) {
-    const spend = a.adAttributedSpend ?? 0;
-    return a.adAttributedSales > 0 ? spend / a.adAttributedSales : spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
+  if (a.adAttributedSales !== undefined && a.adAttributedSales > 0) {
+    return (a.adAttributedSpend ?? 0) / a.adAttributedSales;
   }
-  if (a.adUnits !== undefined) {
-    const spend = spendTax(a);
-    const adSalesEstimate = a.adUnits * price;
-    return adSalesEstimate > 0 ? spend / adSalesEstimate : spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
+  if (a.adUnits !== undefined && a.adUnits * price > 0) {
+    return spendTax(a) / (a.adUnits * price);
   }
-  const adSalesFigure = a.adSales !== undefined ? a.adSales : a.adOrders !== undefined ? a.adOrders * price : undefined;
+  const adSalesFigure =
+    a.adSales !== undefined && a.adSales > 0 ? a.adSales
+    : a.adOrders !== undefined && a.adOrders * price > 0 ? a.adOrders * price
+    : undefined;
   if (adSalesFigure !== undefined) {
-    return adSalesFigure > 0 ? a.spend / adSalesFigure : a.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
+    return a.spend / adSalesFigure;
   }
   const totalSales = a.revenue ?? a.units * price;
   if (totalSales > 0) return a.spend / totalSales;
   return a.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
 };
 
-// Action Sheet only. computeAcos's Sponsored Products branch deliberately keeps a real SP row
-// with exactly zero attributed sales this window as the ACOS_UNDEFINED_SENTINEL (a genuinely
-// unknown ratio, blanked by acosCell) — correct for Summary/Ad spend report/SKU Wise Report, which
-// show it as an honest blank rather than guess. The Action Sheet is different: it's a worksheet
-// built to be ACTED on, and per the seller's explicit report against a real export (a Suture
-// thread-KT row: Orders 1, Spend without tax ₹436.86, Price ₹721, Total Sales ₹721 — a fully
-// computable 60.59% — still rendered as the sentinel's literal "999%"), a SKU with real
-// Orders/Spend/Price/Total Sales on file should never show that raw sentinel: it reads as a data
-// error, not a signal to act on, and (via actionFor below) was also corrupting the recommended
-// bid-cut text with a fabricated "7-day ACOS 999%". So here, ANY non-positive Sponsored Products
-// attribution (undefined OR present-but-zero) falls back to the same Spend(no tax)/Total Sales
-// proxy computeAcos's own SB/SD-only branch already uses — only when that fallback's own
+// Action Sheet only. Same cascade-to-Total-Sales-before-blanking philosophy computeAcos itself now
+// uses (see its own comment — a Suture thread-KT row, Orders 1, Spend without tax ₹436.86, Price
+// ₹721, Total Sales ₹721, a fully computable 60.59%, used to render as the sentinel's literal
+// "999%" and corrupt the recommended bid-cut text via actionFor below with a fabricated "7-day ACOS
+// 999%", before this same fallback fixed it here first). The one remaining difference from
+// computeAcos: this Action Sheet version only ever tries Amazon's Sponsored Products attribution
+// before falling to Spend(no tax)/Total Sales — it doesn't also try Flipkart's adUnits or Meesho's
+// adOrders tiers, going straight to real per-order revenue for both. Only when that final
 // denominator (Total Sales) is itself 0 does this still return the sentinel, exactly the
 // "genuinely nothing to compute from" case the existing >14% threshold check was written to keep
 // surfacing (see its own comment below).
@@ -2569,7 +2576,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       : []),
     ["Spend (with tax) = raw ad spend x (1 + that product's GST rate), applied once after summing — never a per-row multiply. Rate comes from the product master's Tax column per SKU (18% used when a SKU has none on file)."],
     ["CPC = Spend(with tax) / Orders. When Orders = 0, CPC = Spend(with tax) (undefined ratio, shown as the spend itself rather than blank)."],
-    ["ACOS: for Amazon, whenever a SKU has a Sponsored Products row on file, that's Amazon's own raw Sponsored Products Spend / \"7 Day Total Sales\" directly from the ad export (no GST added) — matching Amazon's own report number-for-number rather than this sheet's real-order-based Orders/CPC. For Flipkart, Spend WITH tax / (Direct+Indirect Units Sold x Price) — the ads export's own ad-attributed conversion count times the SKU's real selling price, matching the seller's own reference workbook's \"ACOSS\" formula; replaces an earlier Spend(without tax)/ads-export-\"Total Revenue\" formula that read #DIV/0! whenever a row had ad-attributed units but no revenue figure on file. For Meesho, Spend (without tax) / that SKU's ad-attributed order count x Price. Falls back to Spend (without tax) / Total Sales — real per-order revenue, never CPC/Price — only when none of the above is on file at all (an Amazon SKU with no Sponsored Products row, i.e. SB/SD-only spend)."],
+    ["ACOS: for Amazon, whenever a SKU has a Sponsored Products row on file with a real (nonzero) attributed sale, that's Amazon's own raw Sponsored Products Spend / \"7 Day Total Sales\" directly from the ad export (no GST added) — matching Amazon's own report number-for-number rather than this sheet's real-order-based Orders/CPC. For Flipkart, Spend WITH tax / (Direct+Indirect Units Sold x Price), when that Units Sold figure is real — the ads export's own ad-attributed conversion count times the SKU's real selling price, matching the seller's own reference workbook's \"ACOSS\" formula; replaces an earlier Spend(without tax)/ads-export-\"Total Revenue\" formula that read #DIV/0! whenever a row had ad-attributed units but no revenue figure on file. For Meesho, Spend (without tax) / that SKU's ad-attributed order count x Price, when that count is real. Whenever a platform's own ad-attribution figure is present but exactly 0 (real ad spend, zero attributed sales/units/orders this window) — or not on file at all (an Amazon SKU with no Sponsored Products row, i.e. SB/SD-only spend) — this falls back to Spend (without tax) / Total Sales, real per-order revenue, never CPC/Price. Only shows blank when even that fallback has nothing to divide by (zero Total Sales too)."],
     ["\"Orders\" = units sold of that product in the window, from the Orders/Order report, cancelled orders excluded. This is NOT ad-click-attributed units."],
     ["Summary sheet's Overall sales Orders/Value (single reporting day) is scoped to the SAME SKUs as the \"Ad spend report\" sheet's day block below (ad spend somewhere in the 7-day range, non-cancelled orders only) — so it reconciles with a plain SUM() of that sheet's own day Orders (=Quantity) and per-order revenue for this platform."],
     ["\"Day\" = the single reporting day above. \"Range\" = that day and the", rangeDays - 1, "days before it, inclusive."],
