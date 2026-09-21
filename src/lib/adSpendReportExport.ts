@@ -2010,6 +2010,11 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     return `Monitor / review keywords — trim bids ~${cut}% (7-day ACOS ${acosPct}%). ${note}`;
   };
   const TOP_N = 3; // shortlist length — worst (highest) DAY ACOS first, matching the visible ACOS column, not range ACOS or spend
+  // Grand total across every row of the Summary sheet's Overall sales Orders/Value block (Amazon +
+  // Flipkart + Meesho below, Google further down — Social Media is deliberately excluded, its own
+  // Overall sales cells are always blank to avoid double-counting the Amazon SKU it promotes).
+  let overallOrdersTotal = 0;
+  let overallValueTotal = 0;
   platforms.forEach(({ platform, products, overallRange }) => {
     // All products with any spend at all — totals must include every rupee,
     // not just the ones that clear the shortlist bar below. Grouped by
@@ -2027,6 +2032,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     // since the two were then always the identical number.
     const summaryDayUnits = rows.reduce((s, p) => s + p.day.units, 0);
     const summaryDayValue = rows.reduce((s, p) => s + (platform === "Meesho" ? p.price * p.day.units : (p.day.revenue || 0)), 0);
+    overallOrdersTotal += summaryDayUnits;
+    overallValueTotal += summaryDayValue;
     rows.forEach((p) => {
       const rangeAcos = actionSheetAcos(p.range, p.price);
       if (rangeAcos > ACTION_ACOS_THRESHOLD) {
@@ -2219,7 +2226,15 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     // supabase/functions/send-ad-spend-email/index.ts), which renders this as one more row
     // directly below Social Media's, per the same pattern.
     googleSummary = { totalUnits: googleOrders.totalUnits, totalValue: googleOrders.totalValue, totalOrders: googleOrders.totalOrders };
+    overallOrdersTotal += googleOrders.totalUnits;
+    overallValueTotal += googleOrders.totalValue;
   }
+
+  // Grand total row, per the seller's explicit request: a plain SUM() of every row's Overall sales
+  // Orders/Value above (Amazon + Flipkart + Meesho + Google — Social Media excluded, see the
+  // comment where overallOrdersTotal/overallValueTotal are declared).
+  const overallTotalRow = sumAoa.length;
+  sumAoa.push(["Total", ...Array(18).fill(""), overallOrdersTotal, round2(overallValueTotal)]);
 
   // Optimization suggestions (Gemini) — replaces the Action Sheet's generic tiered text with a
   // real per-campaign bid-cut/negative-keyword recommendation, for both Amazon and Flipkart rows,
@@ -2252,6 +2267,9 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // treatment as Social Media above, Google's own brand blue, no dashboard hyperlink (there's no
   // dedicated Google analytics page, just the /dashboard/google/upload upload page).
   if (googleRow !== null) styleLabel(wsSummary, XLSX.utils.encode_cell({ r: googleRow, c: 0 }), "4285F4");
+  // Grand total row (see overallOrdersTotal/overallValueTotal above) — a full-width bold bar,
+  // same treatment as the header rows, so it reads as a closing total rather than another product.
+  styleHeader(wsSummary, overallTotalRow, SUM_COLS, "111827");
   wsSummary["!cols"] = [
     { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 60 }, { wch: 10 },
     { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 24 }, { wch: 13 }, { wch: 13 }, { wch: 13 }, // day block: Spend, Spend(with tax), Total Orders, Total Sales (wider header), CPC, ACOS, Ad Sales
