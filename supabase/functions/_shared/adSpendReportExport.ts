@@ -206,24 +206,22 @@ export const computeAcos = (a: WindowAgg, price: number): number => {
   return a.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
 };
 
-// Action Sheet only. Same cascade-to-Total-Sales-before-blanking philosophy computeAcos itself now
-// uses (see its own comment — a Suture thread-KT row, Orders 1, Spend without tax ₹436.86, Price
-// ₹721, Total Sales ₹721, a fully computable 60.59%, used to render as the sentinel's literal
-// "999%" and corrupt the recommended bid-cut text via actionFor below with a fabricated "7-day ACOS
-// 999%", before this same fallback fixed it here first). The one remaining difference from
-// computeAcos: this Action Sheet version only ever tries Amazon's Sponsored Products attribution
-// before falling to Spend(no tax)/Total Sales — it doesn't also try Flipkart's adUnits or Meesho's
-// adOrders tiers, going straight to real per-order revenue for both. Only when that final
-// denominator (Total Sales) is itself 0 does this still return the sentinel, exactly the
-// "genuinely nothing to compute from" case the existing >14% threshold check was written to keep
-// surfacing (see its own comment below).
+// Action Sheet only — now a thin alias for computeAcos. Used to be its own separate cascade that
+// skipped Flipkart's adUnits and Meesho's adOrders ad-attribution tiers, going straight from
+// Amazon's Sponsored Products check to Spend(no tax)/Total Sales for the other two platforms. That
+// meant the Action Sheet's own 14% threshold check (and its displayed ACOS column) could silently
+// diverge from the ACOS the seller sees for the exact same product on every other sheet: a real
+// example from a seller-uploaded report had 17 Flipkart/Meesho products showing real ACOS well over
+// 14% (up to ~48%) on Ad spend report/Summary/SKU Wise Report that never appeared on the Action
+// Sheet at all — no bid-cut warning — while 5 different products with real ACOS comfortably under
+// 14% elsewhere got flagged here, some at the worst "cut bids 50%, ACOS unavailable" tier, because
+// their Flipkart adUnits/Meesho adOrders ad-attribution tier was skipped in favor of a real-revenue
+// fallback with a much smaller Total Sales figure for that specific SKU group. Per the seller's
+// explicit instruction, this now just calls computeAcos directly so a product's Action Sheet
+// inclusion/recommendation can never disagree with the ACOS number printed next to it everywhere
+// else in the workbook.
 export function actionSheetAcos(a: WindowAgg, price: number): number {
-  if (a.adAttributedSales !== undefined && a.adAttributedSales > 0) {
-    return (a.adAttributedSpend ?? 0) / a.adAttributedSales;
-  }
-  const totalSales = a.revenue ?? a.units * price;
-  if (totalSales > 0) return a.spend / totalSales;
-  return a.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
+  return computeAcos(a, price);
 }
 
 // Platform-wide "Overall sales" figures (units sold + realised sale value) —
@@ -2546,7 +2544,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     ["Meesho: Ads report spend is per-SKU. Price prefers meesho_price_marketing's live scraped Meesho listing price; a SKU not in that table yet (or out of stock there) falls back to the Orders report's Supplier Discounted Price (else Supplier Listed Price). Overall sales Orders/Value uses that same price (Orders x price, per SKU), matching the seller's own manual workbook. Column names come from the seller's own workbook, not a native Meesho export seen directly — see src/lib/meeshoReportUpload.ts if a real export's headers turn out to differ."],
     ["Google Ads and social-media (Meta) spend are not included — no sample export has been seen for either, so there's no confirmed column layout to parse."],
     [""],
-    ["Action Sheet lists every SKU whose trailing 7-day ACOS is above 14%, worst first (identified by Campaign Name + SKU ID, not product name; Spend/Spend with tax/Orders/ACOS are all the 7-day range here, unlike every other sheet's single-day figures). Every row carries a concrete bid-cut %: rows matched to a real campaign in the uploaded Amazon/Flipkart ad data get one sized to that campaign's own ad-group/SKU performance (AI-assisted); unmatched rows (e.g. Meesho, which has no campaign data in this app, or a SKU that matched no campaign) get one computed from the SKU's own 7-day ACOS instead (20%/35%/50% cut for 14-60%/60-90%/90%+ ACOS). No specific search-term/keyword name is ever invented — that data isn't captured anywhere in this app; only a live SellerMate pull (Amazon only, on request) has real keyword-level detail."],
+    ["Action Sheet lists every SKU whose trailing 7-day ACOS is above 14%, worst first (identified by Campaign Name + SKU ID, not product name; Spend/Spend with tax/Orders/ACOS are all the 7-day range here, unlike every other sheet's single-day figures). This ACOS is the exact same figure shown on Ad spend report/Summary/SKU Wise Report for the same SKU — a product can't silently disagree between sheets on whether it needs a bid cut. Every row carries a concrete bid-cut %: rows matched to a real campaign in the uploaded Amazon/Flipkart ad data get one sized to that campaign's own ad-group/SKU performance (AI-assisted); unmatched rows (e.g. Meesho, which has no campaign data in this app, or a SKU that matched no campaign) get one computed from the SKU's own 7-day ACOS instead (20%/35%/50% cut for 14-60%/60-90%/90%+ ACOS). No specific search-term/keyword name is ever invented — that data isn't captured anywhere in this app; only a live SellerMate pull (Amazon only, on request) has real keyword-level detail."],
     [`Low Spend Campaigns lists every campaign spending ₹${LOW_SPEND_THRESHOLD} or less on the single reporting day above, across all platforms, ascending by spend.`],
     [""],
     [`Every product with activity in the range window above was also upserted into the barm_ad_spend_history table (Spend/Orders/CPC/ACOS, day and range) — a running history independent of this file, keyed on (report_date, platform, sku). Rows saved this run: ${historyRowsSaved}.`],
