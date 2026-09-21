@@ -895,8 +895,8 @@ export async function fetchFlipkartProducts(
   skus.forEach((sku) => {
     const inv = invoiceAcc.get(sku);
     let price = inv && inv.units > 0 ? inv.amount / inv.units : 0;
-    if (price <= 0) price = priceBySku.get(sku) || 0;
     if (price <= 0) price = priceListBySku.get(sku) || 0;
+    if (price <= 0) price = priceBySku.get(sku) || 0;
     if (price <= 0) {
       const a = aspAcc.get(sku);
       if (a && a.units > 0) price = a.amount / a.units;
