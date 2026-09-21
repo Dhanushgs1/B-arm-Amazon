@@ -142,7 +142,7 @@ export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) /
 // adAttributedSales, no GST added, matching the raw export exactly), Flipkart's own ad-attributed
 // Direct+Indirect Units Sold x Price (adUnits — see below), or Meesho's ad-attributed order count x
 // price (adOrders x price — Meesho's ad export has no currency sales figure directly, only that
-// count, same convention the Summary sheet's own summaryAcosCell still uses for Meesho). Whenever a
+// count — the Summary sheet's ACOS cells use this exact same function for every platform). Whenever a
 // tier is present but computes to exactly 0 (a real ad campaign that tracked spend but zero
 // attributed sales/units/orders this window) — or isn't on file at all (Amazon SB/SD-only spend
 // with no Sponsored Products row, e.g.) — this CASCADES to the next tier down, ending at an
@@ -1702,17 +1702,6 @@ export function acosCell(a: WindowAgg, price: number): number | null {
   const v = computeAcos(a, price);
   return v === ACOS_UNDEFINED_SENTINEL ? null : pct(v);
 }
-// Summary sheet ACOS for Flipkart/Meesho only, per the seller's explicit request: instead of
-// the CPC/Price fallback computeAcos falls back to for these two platforms everywhere else
-// (Ad spend report, SKU Wise Report), the Summary sheet computes their ACOS directly as
-// Ad Spend / Ad Sales — the same Ad Sales figure already shown in Summary's own Ad Sales
-// column — for both the day and range blocks. Amazon needs no separate path here since
-// computeAcos already resolves to this same Spend/AdSales ratio for Amazon via its
-// adAttributedSales branch. Same blanking convention as acosCell: zero Ad Sales with real
-// spend is a genuinely undefined ratio (blank cell), zero Ad Sales with zero spend is 0%.
-function summaryAcosCell(spend: number, adSales: number): number | null {
-  return adSales > 0 ? pct(spend / adSales) : spend > 0 ? null : 0;
-}
 // "Worst ACOS first" sort ordering only (the Summary sheet's per-platform shortlist, the
 // email's top-3 table, and the full Ad spend report tab's row order) — a known, finite
 // ACOS ranks ABOVE the sentinel here, not below. A blank "Amazon attributed zero sales"
@@ -2143,14 +2132,17 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           platform === "Amazon" ? (p.range.adAttributedSales !== undefined ? round2(p.range.adAttributedSales) : null)
           : platform === "Flipkart" ? round2(p.range.adSales || 0)
           : round2((p.range.adOrders || 0) * p.price);
-        // Summary sheet's own ACOS cells: Amazon and Flipkart both go through computeAcos's own
-        // ratio (acosCell) — Amazon via adAttributedSales, Flipkart via adUnits (see computeAcos's
-        // own comment), the same computation the Ad spend report/SKU Wise Report sheets already use
-        // for them, so all three sheets agree. Meesho alone still uses Spend/Ad Sales directly here
-        // (summaryAcosCell), overriding the CPC/Price fallback acosCell would otherwise fall back to
-        // for it — Summary-sheet-only, Meesho's Ad spend report/SKU Wise Report ACOS is untouched.
-        const daySummaryAcos = platform === "Meesho" ? summaryAcosCell(round2(p.day.spend), dayAdSales as number) : acosCell(p.day, p.price);
-        const rangeSummaryAcos = platform === "Meesho" ? summaryAcosCell(round2(p.range.spend), rangeAdSales as number) : acosCell(p.range, p.price);
+        // Summary sheet's own ACOS cells: all three platforms now go through computeAcos's own
+        // cascading ratio (acosCell) — Amazon via adAttributedSales, Flipkart via adUnits, Meesho
+        // via adOrders, each falling through to Spend/Total Sales when its own tier is zero (see
+        // computeAcos's own comment) — the same computation the Ad spend report/SKU Wise Report
+        // sheets already use for them, so every sheet agrees. Meesho used to go through a separate
+        // Spend/Ad Sales-only summaryAcosCell here instead, which (unlike acosCell) never fell
+        // through to Total Sales — a real Meesho ad campaign with spend but zero ad-attributed
+        // orders that window blanked out here even with real Total Sales on file elsewhere on the
+        // same row; removed once computeAcos's own cascade made that special case redundant.
+        const daySummaryAcos = acosCell(p.day, p.price);
+        const rangeSummaryAcos = acosCell(p.range, p.price);
         sumAoa.push([
           // "Ad spend (without/with tax)" here is the SINGLE-DAY total, matching
           // the seller's own manual workbook's Summary sheet convention — the
