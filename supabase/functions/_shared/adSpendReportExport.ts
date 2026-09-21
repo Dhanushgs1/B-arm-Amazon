@@ -206,6 +206,14 @@ export function actionSheetAcos(a: WindowAgg, price: number): number {
 // is the distinct order-ID count (one customer purchase, however many line
 // items/units it carries) — a different number from `units`, which is the
 // summed Quantity across every line.
+// NOTE: each fetch*Products function below still computes overallDay this
+// way (unscoped, every order regardless of ad spend), but the Summary
+// sheet's single-day Orders/QTS/Value no longer reads overallDay directly —
+// per the seller's explicit request that it reconcile with the "Ad spend
+// report" sheet, the main builder (buildAdSpendReportWorkbook) recomputes
+// its own summaryDayUnits/summaryDayValue from the SAME ad-spend-scoped
+// `rows` that sheet uses, right where the Summary sheet is assembled.
+// overallRange is unaffected and still feeds overallRangeUnits/-Value/-Orders as before.
 interface SalesAgg { units: number; value: number; orders: number; }
 const emptySales = (): SalesAgg => ({ units: 0, value: 0, orders: 0 });
 
@@ -1992,12 +2000,22 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     return `Monitor / review keywords — trim bids ~${cut}% (7-day ACOS ${acosPct}%). ${note}`;
   };
   const TOP_N = 3; // shortlist length — worst (highest) DAY ACOS first, matching the visible ACOS column, not range ACOS or spend
-  platforms.forEach(({ platform, products, overallDay, overallRange }) => {
+  platforms.forEach(({ platform, products, overallRange }) => {
     // All products with any spend at all — totals must include every rupee,
     // not just the ones that clear the shortlist bar below. Grouped by
     // resolved product name first, so a product's 4-5 SKU variants sum into
     // one row instead of showing up as separate near-duplicate rows.
     const rows = groupProductsByName([...products.values()], undefined, skuToMasterSkuidName).filter((p) => spendTax(p.range) > 0);
+    // Summary sheet's Overall sales Orders/QTS/Value (single day), per the seller's explicit
+    // request: scoped down to the SAME population as the "Ad spend report" sheet's day block
+    // below (only SKUs with ad spend somewhere in the 7-day range, real non-cancelled orders
+    // only) instead of every order platform-wide — so these numbers reconcile against a plain
+    // SUM() of that sheet's own Orders/Total Sales columns rather than being a separate,
+    // differently-scoped figure. Orders and QTS are therefore always equal here (both are the
+    // summed Quantity across `rows`) — kept as two columns anyway so "Orders" still reads
+    // consistently next to Spend/CPC/ACOS the way it does on every other sheet.
+    const summaryDayUnits = rows.reduce((s, p) => s + p.day.units, 0);
+    const summaryDayValue = rows.reduce((s, p) => s + (platform === "Meesho" ? p.price * p.day.units : (p.day.revenue || 0)), 0);
     rows.forEach((p) => {
       const rangeAcos = actionSheetAcos(p.range, p.price);
       if (rangeAcos > ACTION_ACOS_THRESHOLD) {
@@ -2044,9 +2062,9 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       daySpendTax: round2(daySpendTaxTotal),
       rangeSpend: round2(rangeSpendRaw),
       rangeSpendTax: round2(rangeSpendTaxTotal),
-      overallDayUnits: overallDay.units,
-      overallDayValue: round2(overallDay.value),
-      overallDayOrders: overallDay.orders,
+      overallDayUnits: summaryDayUnits,
+      overallDayValue: round2(summaryDayValue),
+      overallDayOrders: summaryDayUnits,
       overallRangeUnits: overallRange.units,
       overallRangeValue: round2(overallRange.value),
       overallRangeOrders: overallRange.orders,
@@ -2111,16 +2129,18 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           p.name, p.price,
           round2(p.day.spend), round2(spendTax(p.day)), p.day.units, dayTotalSales, round2(computeCpc(p.day)), daySummaryAcos, dayAdSales,
           round2(p.range.spend), round2(spendTax(p.range)), p.range.units, rangeTotalSales, round2(computeCpc(p.range)), rangeSummaryAcos, rangeAdSales,
-          // Overall sales Orders/QTS/Value is the SINGLE reporting day's total (matches
-          // the dayLabel header above), not the 7-day range — the seller's own
-          // manual workbook tracks this figure daily, not as a weekly rollup.
-          // The range total is still available per-platform in platformTotals /
-          // platformSummaries.overallRangeOrders/-Units/-Value for the emailed summary.
-          i === 0 ? overallDay.orders : "", i === 0 ? overallDay.units : "", i === 0 ? round2(overallDay.value) : "",
+          // Overall sales Orders/QTS/Value is the SINGLE reporting day's total, scoped down to
+          // this same `rows` population (SKUs with ad spend this range, non-cancelled orders
+          // only) so it reconciles with a plain SUM() of this sheet's own day Orders column —
+          // per the seller's explicit request that the two numbers match. Orders and QTS are
+          // therefore the same number (summaryDayUnits) here. NOT the 7-day range — the range
+          // total is still available per-platform in platformSummaries.overallRangeOrders/-Units/-Value
+          // for the emailed summary (unscoped, unlike this day figure).
+          i === 0 ? summaryDayUnits : "", i === 0 ? summaryDayUnits : "", i === 0 ? round2(summaryDayValue) : "",
         ]);
       });
     } else {
-      sumAoa.push([platform, 0, 0, "(no ad spend in range)", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", overallDay.orders, overallDay.units, round2(overallDay.value)]);
+      sumAoa.push([platform, 0, 0, "(no ad spend in range)", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", summaryDayUnits, summaryDayUnits, round2(summaryDayValue)]);
     }
     if (blockRows > 1) {
       [0, 1, 2, 19, 20, 21].forEach((c) => sumMerges.push({ s: { r: blockStart, c }, e: { r: blockStart + blockRows - 1, c } }));
@@ -2524,7 +2544,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     ["CPC = Spend(with tax) / Orders. When Orders = 0, CPC = Spend(with tax) (undefined ratio, shown as the spend itself rather than blank)."],
     ["ACOS = Spend (without tax) / that SKU's own ad-attributed sales, when on file for this window: for Amazon, whenever a SKU has a Sponsored Products row on file, that's Amazon's own raw Sponsored Products Spend / \"7 Day Total Sales\" directly from the ad export (no GST added) — matching Amazon's own report number-for-number rather than this sheet's real-order-based Orders/CPC; for Flipkart, its ads-export \"Total Revenue\"; for Meesho, its ad-attributed order count x price. Falls back to Spend (without tax) / Total Sales — real per-order revenue, never CPC/Price, which is tax-inclusive — only when none of the above is on file at all (an Amazon SKU with no Sponsored Products row, i.e. SB/SD-only spend; or a Flipkart/Meesho product with no ad-attributed sales data of its own)."],
     ["\"Orders\" = units sold of that product in the window, from the Orders/Order report, cancelled orders excluded. This is NOT ad-click-attributed units."],
-    ["Summary sheet's \"Orders\" column (next to Overall sales QTS/Value) is different: it's the distinct order-ID count for that platform that day (one customer purchase, however many line items/units it carries) — not summed Quantity like every other \"Orders\"/\"Total Orders\" column in this workbook, and with no cancelled-order exclusion, matching QTS/Value's own no-status-filter scope."],
+    ["Summary sheet's Overall sales Orders/QTS/Value (single reporting day) is scoped to the SAME SKUs as the \"Ad spend report\" sheet's day block below (ad spend somewhere in the 7-day range, non-cancelled orders only) — so it reconciles with a plain SUM() of that sheet's own day Orders (=Quantity) and per-order revenue for this platform. Orders and QTS are the same number here for that reason."],
     ["\"Day\" = the single reporting day above. \"Range\" = that day and the", rangeDays - 1, "days before it, inclusive."],
     [""],
     ["Amazon: Sponsored Products spend is per-SKU (barm_amazon_sp_advertised_product). Sponsored Brands/Display spend has no SKU column and is split across the SKUs mapped to that campaign on the Upload page, in proportion to their weight. Unmapped SB/SD spend for the range window: ₹" + round2(amz.unmappedSpend) + " — not attributed to any product below."],
