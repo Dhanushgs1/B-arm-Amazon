@@ -7,6 +7,7 @@ import { mcp, mcpAllPages, mcpAllInventory } from "@/lib/api";
 import { exportAmazonSalesReport, SalesReportGranularity } from "@/lib/amazonSalesExport";
 import { exportAnalysisReport } from "@/lib/analysisReportExport";
 import { exportHistoricalAnalysisReport } from "@/lib/historicalAnalysisReportExport";
+import { exportAdSpendReport } from "@/lib/adSpendReportExport";
 import { exportWeeklySalesReport } from "@/lib/weeklySalesExport";
 import { fetchUploadedDateRange } from "@/lib/amazonReportUpload";
 import { resolveProductName } from "@/lib/categoryMap";
@@ -108,56 +109,13 @@ export default function ReportsPage() {
     } finally { setHistSending(false); }
   };
 
-  // Goes through the exact same async job (generate-ad-spend-report Edge Function) that
-  // "Regenerate Report" and the emailed workbook already use, instead of recomputing the report
-  // a second time in the browser — per the seller's explicit request, so a downloaded copy and an
-  // emailed copy of the same date can never disagree (they used to be two independent
-  // computations: this button ran src/lib/adSpendReportExport.ts's exportAdSpendReport() live in
-  // the browser, while email/"Regenerate Report" ran the Supabase Edge Function's own mirrored
-  // copy of that same file — any drift between the two deployments, or between the browser's
-  // build and the Edge Function's, showed up as two different numbers for the same date).
   const handleGenerateAdSpend = async () => {
     if (!endDate) { alert("Pick a date at the top of the dashboard first."); return; }
     setAdSpendGenerating(true); setAdSpendMsg(null);
     try {
-      const startRes = await fetch("/api/generate-ad-spend-report", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ endDate, accountName: account?.name, force: jobStatus === "completed" || jobStatus === "failed" }),
-      });
-      const startJson = await startRes.json();
-      if (!startRes.ok && startRes.status !== 202) throw new Error(startJson.error || "Failed to start report generation");
-      setJobStatus(startJson.status ?? "processing");
-
-      // Poll until the job leaves pending/processing — same cadence as handleGenerateAdSpendJob's
-      // own poll loop, just awaited inline here instead of firing a background setTimeout chain,
-      // since this handler needs to know exactly when to move on to the download step.
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-        const job = await pollJobStatus(endDate, account?.name);
-        if (!job) throw new Error("Lost track of the report's status — please try again.");
-        setJobStatus(job.status);
-        if (job.status === "failed") throw new Error(job.error_message || "Report generation failed");
-        if (job.status === "completed") break;
-      }
-
-      const dlRes = await fetch(`/api/download-ad-spend-report?${new URLSearchParams({ endDate, ...(account?.name ? { accountName: account.name } : {}) })}`);
-      const dl = await dlRes.json();
-      if (!dlRes.ok) throw new Error(dl.error || "Failed to fetch the generated workbook");
-
-      // Trigger the browser download from the signed Storage URL — same pattern as any other
-      // direct-link download, no blob fetch/re-upload needed.
-      const a = document.createElement("a");
-      a.href = dl.downloadUrl;
-      a.download = dl.filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const parts = (dl.platformTotals || []).map((p: any) => `${p.platform} ₹${p.rangeSpendTax.toFixed(0)}`).join(", ");
-      setAdSpendMsg(`Downloaded ${dl.filename} — ${dl.productCount} products, range spend ${parts}${dl.lowSpendCampaignCount ? `, ${dl.lowSpendCampaignCount} low-spend campaigns flagged` : ""}${dl.historyRowsSaved ? ` · ${dl.historyRowsSaved} rows saved to history` : ""}.`);
+      const res = await exportAdSpendReport({ endDate, accountName: account?.name });
+      const parts = res.platformTotals.map((p) => `${p.platform} ₹${p.rangeSpendTax.toFixed(0)}`).join(", ");
+      setAdSpendMsg(`Downloaded ${res.filename} — ${res.productCount} products, range spend ${parts}${res.lowSpendCampaignCount ? `, ${res.lowSpendCampaignCount} low-spend campaigns flagged` : ""}${res.historyRowsSaved ? ` · ${res.historyRowsSaved} rows saved to history` : " · history not saved (run scripts/ad_spend_history_table.sql?)"}.`);
     } catch (err) {
       setAdSpendMsg("Failed: " + (err instanceof Error ? err.message : String(err)));
     } finally { setAdSpendGenerating(false); }

@@ -182,61 +182,6 @@ export function buildMasterSkuidResolver(master: Map<string, MasterSkuidEntry>) 
   };
 }
 
-/** Same rows as fetchMasterSkuidMap, but keyed sku -> Platform -> entry instead of collapsing
- *  every platform onto one first-row-wins entry. A SKU code can be reused across platforms for
- *  two genuinely different listings (e.g. "B-CT-Y-1" is Flipkart's "Chewy tube (Yellow)" AND
- *  Amazon's "Chewy tube (Yellow) - Spiral model") — fetchMasterSkuidMap's plain sku -> entry map
- *  then resolves to whichever platform's row happens to have the lower `id`, regardless of which
- *  platform is actually being reported on, silently renaming (and mis-grouping) that SKU's spend
- *  under the wrong product for every OTHER platform. Use this + buildMasterSkuidPlatformResolver
- *  wherever the caller knows which platform's SKU it's resolving a name for. */
-export async function fetchMasterSkuidMapByPlatform(): Promise<Map<string, Map<string, MasterSkuidEntry>>> {
-  try {
-    const data = await fetchAllRows(TABLE, (q) => q);
-    const out = new Map<string, Map<string, MasterSkuidEntry>>();
-    (data as Record<string, unknown>[]).forEach((r) => {
-      const sku = String(r["SKU ID"] ?? "").trim();
-      const name = String(r["Product Name"] ?? "").trim();
-      const platform = String(r["Platform"] ?? "").trim();
-      if (!sku || !name || !platform) return;
-      let byPlatform = out.get(sku);
-      if (!byPlatform) { byPlatform = new Map(); out.set(sku, byPlatform); }
-      if (byPlatform.has(platform)) return; // first row for this (sku, platform) pair wins
-      byPlatform.set(platform, {
-        name,
-        category: normalizeCategory(String(r["Category"] ?? "")),
-        tax: toNullableNumber(r["Tax"]),
-        costPrice: toNullableNumber(r["Cost Price"]),
-      });
-    });
-    return out;
-  } catch {
-    return new Map();
-  }
-}
-
-/** Platform-aware counterpart to buildMasterSkuidResolver — resolveName/resolveCategory take the
- *  SKU's own platform and prefer that platform's row; a SKU with only one platform's row still
- *  resolves normally (falls through to whichever platform IS on file) so this only changes
- *  behavior for the genuinely ambiguous, SKU-reused-across-platforms case. */
-export function buildMasterSkuidPlatformResolver(masterByPlatform: Map<string, Map<string, MasterSkuidEntry>>) {
-  const byBase = new Map<string, Map<string, MasterSkuidEntry>>();
-  masterByPlatform.forEach((byPlatform, sku) => {
-    const base = skuBase(sku);
-    if (!byBase.has(base)) byBase.set(base, byPlatform);
-  });
-  const lookup = (sku: string, platform: string): MasterSkuidEntry | undefined => {
-    const byPlatform = masterByPlatform.get(sku) || byBase.get(skuBase(sku));
-    if (!byPlatform) return undefined;
-    return byPlatform.get(platform) ?? byPlatform.values().next().value;
-  };
-  return {
-    resolveName: (sku: string, platform: string, fallback: string): string => lookup(sku, platform)?.name || fallback,
-    resolveCategory: (sku: string, platform: string, fallback: string): string => lookup(sku, platform)?.category || fallback,
-    resolveCostPrice: (sku: string, platform: string): number | null => lookup(sku, platform)?.costPrice ?? null,
-  };
-}
-
 // Every report used a single flat 18% GST assumption for every product before per-product tax
 // was wired in — kept as the fallback for a SKU with nothing in master_product_skuid's Tax
 // column (or the 2 rows observed with it NULL), so an unresolved SKU's Spend(with tax) doesn't
