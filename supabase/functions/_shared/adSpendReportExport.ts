@@ -1136,7 +1136,7 @@ export async function fetchMeeshoProducts(
 // Lightweight add-on, NOT a full `Platform` — Meta ad spend only feeds one
 // extra Summary-sheet row (see the "Social Media" row built in
 // buildAdSpendReportWorkbook below), not its own Ad spend report / SKU Wise
-// Report / Action Sheet / Low Spend Campaigns entries —
+// Report / Ad Status Report / Action Sheet / Low Spend Campaigns entries —
 // there's exactly one product running Meta ads today and no per-SKU campaign
 // breakdown the way the three real platforms above have, so those sheets
 // don't have anything meaningful to add for it (per the seller's own choice).
@@ -1197,7 +1197,7 @@ async function fetchSocialMediaAdSpend(
 // total across every barm_daily_google_orders upload so far, not "this window's"
 // figure. Feeds one extra Summary-sheet row and a small Product/Quantity/
 // Price/Sales section at the end of the "Ad spend report" sheet — never the
-// SKU Wise Report, Action Sheet or Low Spend Campaigns,
+// SKU Wise Report, Ad Status Report, Action Sheet or Low Spend Campaigns,
 // none of which have anything meaningful to add for a channel with no ad
 // spend and no per-day data.
 async function fetchGoogleOrders(): Promise<{
@@ -2408,6 +2408,41 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   if (!skuWiseRows.length) XLSX.utils.sheet_add_aoa(wsSkuWise, [["(no advertised SKUs with activity in range)"]], { origin: { r: 2, c: 0 } });
   XLSX.utils.book_append_sheet(wb, wsSkuWise, "SKU Wise Report");
 
+  // ── Ad Status Report — product name x platform, best-effort name match ──
+  // No cross-platform SKU/product mapping exists in this dashboard, so a
+  // product is matched across Amazon and Flipkart purely by its (lowercased,
+  // trimmed) product name. Two listings with slightly different titles on the
+  // two platforms will show as two separate rows rather than one. 1/0 per
+  // platform means "this platform has range spend on this product", not raw
+  // Impressions — a product with clicks/impressions but zero spend, or one
+  // this platform simply doesn't sell, both read as 0 here.
+  const statusKey = (name: string) => name.trim().toLowerCase();
+  const statusNames = new Map<string, string>(); // key -> display name
+  const statusHasSpend: Record<Platform, Set<string>> = { Amazon: new Set(), Flipkart: new Set(), Meesho: new Set() };
+  platforms.forEach(({ platform, products }) => {
+    products.forEach((p) => {
+      const key = statusKey(p.name);
+      if (!statusNames.has(key)) statusNames.set(key, p.name);
+      if (spendTax(p.range) > 0) statusHasSpend[platform].add(key);
+    });
+  });
+  const statusAoa: (string | number)[][] = [["Product", "Amazon", "Flipkart", "Meesho"]];
+  // Live-everywhere products first (3 platforms → 2 → 1 → 0), alphabetical within each
+  // count so a reader scans down to find where a product with fewer live platforms sits,
+  // rather than hunting alphabetically through all 273 rows for the ones running nowhere.
+  const liveCount = (key: string) =>
+    (statusHasSpend.Amazon.has(key) ? 1 : 0) + (statusHasSpend.Flipkart.has(key) ? 1 : 0) + (statusHasSpend.Meesho.has(key) ? 1 : 0);
+  [...statusNames.entries()]
+    .sort((a, b) => liveCount(b[0]) - liveCount(a[0]) || a[1].localeCompare(b[1]))
+    .forEach(([key, name]) => {
+      statusAoa.push([name, statusHasSpend.Amazon.has(key) ? 1 : 0, statusHasSpend.Flipkart.has(key) ? 1 : 0, statusHasSpend.Meesho.has(key) ? 1 : 0]);
+    });
+  const wsStatus = XLSX.utils.aoa_to_sheet(statusAoa);
+  styleHeader(wsStatus, 0, 4, "312E81");
+  wsStatus["!cols"] = [{ wch: 60 }, { wch: 10 }, { wch: 10 }, { wch: 10 }];
+  wsStatus["!views"] = [{ state: "frozen", ySplit: 1 }];
+  XLSX.utils.book_append_sheet(wb, wsStatus, "Ad Status Report");
+
   // ── Action Sheet — products over the 14% trailing-7-day ACOS threshold, worst first.
   // Spend/Orders/ACOS are ALL the 7-day range window here (unlike every other sheet's "Spend
   // (date)" columns, which are the single reporting day) — showing the single day's spend/orders
@@ -2532,6 +2567,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     ["Meesho: Ads report spend is per-SKU. Price prefers meesho_price_marketing's live scraped Meesho listing price; a SKU not in that table yet (or out of stock there) falls back to the Orders report's Supplier Discounted Price (else Supplier Listed Price). Overall sales QTS/Value uses that same price (Orders x price, per SKU), matching the seller's own manual workbook. Column names come from the seller's own workbook, not a native Meesho export seen directly — see src/lib/meeshoReportUpload.ts if a real export's headers turn out to differ."],
     ["Google Ads and social-media (Meta) spend are not included — no sample export has been seen for either, so there's no confirmed column layout to parse."],
     [""],
+    ["Ad Status Report matches products across Amazon, Flipkart and Meesho by product NAME only (no cross-platform SKU mapping exists) — two listings with different titles for the same physical product will show as separate rows."],
     ["Action Sheet lists every SKU whose trailing 7-day ACOS is above 14%, worst first (identified by Campaign Name + SKU ID, not product name; Spend/Spend with tax/Orders/ACOS are all the 7-day range here, unlike every other sheet's single-day figures). Every row carries a concrete bid-cut %: rows matched to a real campaign in the uploaded Amazon/Flipkart ad data get one sized to that campaign's own ad-group/SKU performance (AI-assisted); unmatched rows (e.g. Meesho, which has no campaign data in this app, or a SKU that matched no campaign) get one computed from the SKU's own 7-day ACOS instead (20%/35%/50% cut for 14-60%/60-90%/90%+ ACOS). No specific search-term/keyword name is ever invented — that data isn't captured anywhere in this app; only a live SellerMate pull (Amazon only, on request) has real keyword-level detail."],
     [`Low Spend Campaigns lists every campaign spending ₹${LOW_SPEND_THRESHOLD} or less on the single reporting day above, across all platforms, ascending by spend.`],
     [""],

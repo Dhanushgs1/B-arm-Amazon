@@ -297,7 +297,7 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
           <h2 style="margin:0;color:#111;font-size:20px;font-weight:800;">&#128200; Daily Ad Spend Report</h2>
           <p style="margin:10px 0 0;color:#374151;font-size:13px;line-height:1.7;">
             Hi Team,<br/><br/>
-            Below is the Ad spend report for all platforms. The table shows platform-wise ad spend including each platform's top spending products with their past 7 days ACOS, so you can see which products were promoted. The Action Sheet (products over 14% 7-day ACOS with a recommended action) and Low Spend Campaigns list are in the attached workbook.<br/><br/>
+            Below is the Ad spend report for all platforms. The table shows platform-wise ad spend including each platform's top spending products with their past 7 days ACOS, so you can see which products were promoted. The Ad Status Report, Action Sheet (products over 14% 7-day ACOS with a recommended action) and Low Spend Campaigns list are in the attached workbook.<br/><br/>
             Here is the summary of the ad spend report.
           </p>
         </td></tr>
@@ -340,7 +340,7 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
         <tr><td>
           <p style="margin:16px 0 0;color:#9ca3af;font-size:11px;line-height:1.6;">
             ${data.productCount || 0} advertised products across platforms${data.lowSpendCampaignCount ? ` &#183; ${data.lowSpendCampaignCount} low-spend campaigns flagged` : ""}.
-            Full per-product breakdown, Action Sheet and Low Spend Campaigns are in the attached workbook.
+            Full per-product breakdown, Ad Status Report, Action Sheet and Low Spend Campaigns are in the attached workbook.
           </p>
         </td></tr>
         <tr><td align="center" style="padding-top:24px;">
