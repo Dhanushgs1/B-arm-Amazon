@@ -1185,22 +1185,25 @@ async function fetchSocialMediaAdSpend(
 // Like Social Media above, a lightweight add-on, NOT a real `Platform` — this
 // channel has no ad campaign export of any kind (no Spend/CPC/ACOS to show),
 // only realised Orders and Sales (Quantity x Price), from the seller's own
-// hand-kept "B-Arm Orders" workbook (see googleOrdersUpload.ts). Its rows
-// carry no date column at all, so unlike every other platform there is no
-// day/range window to scope by — the totals here are a running cumulative
-// total across every barm_daily_google_orders upload so far, not "this window's"
-// figure. Feeds one extra Summary-sheet row and a small Product/Quantity/
-// Price/Sales section at the end of the "Ad spend report" sheet — never the
-// SKU Wise Report, Ad Status Report, Action Sheet or Low Spend Campaigns,
-// none of which have anything meaningful to add for a channel with no ad
-// spend and no per-day data.
-async function fetchGoogleOrders(): Promise<{
+// hand-kept "B-Arm Orders" workbook (see googleOrdersUpload.ts). Scoped to
+// [range.start, range.end] by order_date, same as every other platform's
+// order data — this used to be a running cumulative total across every
+// upload because the source workbook carried no date column at all; it now
+// does (google_orders_table.sql / googleOrdersUpload.ts), so this channel no
+// longer needs the "no day/range window to scope by" exception. Feeds one
+// extra Summary-sheet row and a small Product/Quantity/Price/Sales section
+// at the end of the "Ad spend report" sheet — never the SKU Wise Report, Ad
+// Status Report, Action Sheet or Low Spend Campaigns, none of which have
+// anything meaningful to add for a channel with no ad spend.
+async function fetchGoogleOrders(range: { start: string; end: string }): Promise<{
   perProduct: { name: string; quantity: number; price: number }[];
   totalUnits: number;
   totalValue: number;
 }> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const rows = (await fetchAllRows("barm_daily_google_orders", (q) => q).catch(() => [])) as any[];
+  const rows = (await fetchAllRows("barm_daily_google_orders", (q) =>
+    q.gte("order_date", range.start).lte("order_date", range.end)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ).catch(() => [])) as any[];
   const byProduct = new Map<string, { quantity: number; priceSum: number; priceCount: number }>();
   let totalUnits = 0;
   let totalValue = 0;
@@ -1720,9 +1723,10 @@ export interface SocialMediaEmailSummary {
   range: ProductMetricBlock;
 }
 
-// Google (direct/website) orders — no day/range split (see fetchGoogleOrders: this channel's own
-// data carries no date column at all), so unlike Social Media this is just the two cumulative
-// totals the Summary sheet's Google row shows in its QTS/Value columns.
+// Google (direct/website) orders — no day/range split (unlike Social Media): the source workbook
+// only compiles as one batch per upload, so this is just the two totals, already scoped to the
+// report's date range by fetchGoogleOrders, that the Summary sheet's Google row shows in its
+// QTS/Value columns.
 export interface GoogleEmailSummary {
   totalUnits: number;
   totalValue: number;
@@ -1822,7 +1826,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     fetchFlipkartProducts(range, endDate),
     fetchMeeshoProducts(range, endDate),
     fetchSocialMediaAdSpend(range, endDate),
-    fetchGoogleOrders(),
+    fetchGoogleOrders(range),
   ]);
   // The master lists one SKU spelling per product (e.g. "B-BULB-...-PK5(FK)"),
   // but ad/order data carries whatever variant spelling that platform export
@@ -2155,9 +2159,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // Google (direct/website) orders — one extra Summary row, same lightweight treatment as Social
   // Media above, added only when there's actually data on file. Ad spend/CPC/ACOS columns are left
   // at 0/blank throughout (this channel has no ad campaign data at all — see fetchGoogleOrders);
-  // QTS/Value are the running CUMULATIVE total across every barm_daily_google_orders upload so far, not
-  // "this day's" figure like every other platform's Overall Sales — there is no date column on this
-  // channel's own data to scope a single day or a 7-day range by.
+  // QTS/Value are scoped to this report's date range by order_date, same as every other platform's
+  // Overall Sales.
   let googleRow: number | null = null;
   let googleSummary: GoogleEmailSummary | null = null;
   if (googleOrders.totalUnits > 0 || googleOrders.totalValue > 0) {
@@ -2165,7 +2168,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     sumAoa.push([
       "Google",
       0, 0,
-      "(Orders/Sales only — cumulative total, no ad spend data)", "",
+      "(Orders/Sales only — no ad spend data)", "",
       0, 0, "", "", "", "", "",
       0, 0, "", "", "", "", "",
       googleOrders.totalUnits, googleOrders.totalValue,
@@ -2278,9 +2281,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // section, same shape as the "B Arm orders"/"Meesho (B Arm) orders" leaderboards elsewhere in
   // this workbook, rather than forced into the ad-spend column layout above: Spend/CPC/ACOS don't
   // exist for this channel, and every platform block above is filtered to spend > 0 (every Google
-  // row would fail that and print as "no advertised products with activity"). Cumulative totals
-  // across every barm_daily_google_orders upload so far, not scoped to the day/range window — see
-  // fetchGoogleOrders's own comment for why this channel has no date to scope by at all.
+  // row would fail that and print as "no advertised products with activity"). Scoped to this
+  // report's date/range window by order_date, same as fetchGoogleOrders's Summary-row figures.
   let googleDetailLabelRow: number | null = null;
   let googleDetailHeaderRow: number | null = null;
   if (googleOrders.perProduct.length) {

@@ -483,7 +483,7 @@ function GoogleOrdersUploadCard({ onUploaded, dataInfo }: { onUploaded: () => vo
           {dataInfo.error
             ? `Table not ready — ${dataInfo.error}`
             : dataInfo.rowCount > 0
-              ? `Data: ${dataInfo.totalUnits.toLocaleString("en-IN")} units, ₹${dataInfo.totalValue.toLocaleString("en-IN")} (${dataInfo.rowCount} rows)`
+              ? `Data: ${dataInfo.minDate ?? "?"} to ${dataInfo.maxDate ?? "?"} · ${dataInfo.totalUnits.toLocaleString("en-IN")} units, ₹${dataInfo.totalValue.toLocaleString("en-IN")} (${dataInfo.rowCount} rows)`
               : "No data"}
         </p>
       )}

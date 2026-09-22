@@ -89,7 +89,10 @@ export function toDate(v: unknown): string | null {
   if (!s) return null;
   const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
   if (iso) return iso[0];
-  const dmy = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/.exec(s);
+  // "/" or "-" as always, plus "." — the B-Arm Orders workbook's own title line
+  // ("B-arm order19.09.2026") shows the seller writing dates dot-separated, so
+  // a hand-typed Date column in that same file is likely to use it too.
+  const dmy = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})/.exec(s);
   if (dmy) return `${dmy[3]}-${dmy[2].padStart(2, "0")}-${dmy[1].padStart(2, "0")}`;
   const dMonY = /^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/.exec(s);
   if (dMonY) {

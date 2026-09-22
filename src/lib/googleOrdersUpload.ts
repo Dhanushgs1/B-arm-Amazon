@@ -1,19 +1,22 @@
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { supabasePublic } from "@/lib/amazonReportUpload";
+import { toDate as parseFlexibleDate } from "@/lib/meeshoReportUpload";
 
 // Google (direct/website) orders upload — the seller's own hand-kept "B-Arm
 // Orders" workbook for direct/Google-driven sales that don't come through
 // Amazon, Flipkart or Meesho at all. Unlike every other upload in this app,
 // this channel has no ad campaign export of any kind (no Spend/CPC/ACOS to
-// parse) and its own file carries no date column — just a flat list of order
-// lines (S no, Invoice, Product, Qty, Price) for whatever period the seller
-// last compiled it over. Run scripts/google_orders_table.sql once in the
-// Supabase SQL Editor before the first upload — barm_daily_google_orders doesn't
-// exist otherwise.
+// parse) — just a flat list of order lines (S no, Date, Invoice, Sku, Qty,
+// Price). Every row needs a Date now (see google_orders_table.sql) so the Ad
+// Spend Report can scope this channel's Orders/Sales to its date range the
+// same way it already does for Amazon/Flipkart/Meesho, instead of the old
+// dateless behaviour of showing a running cumulative total on every report.
+// Run scripts/google_orders_table.sql once in the Supabase SQL Editor before
+// the first upload — barm_daily_google_orders doesn't exist otherwise.
 //
 // Feeds the Ad Spend Report's "Google" Summary row and Ad spend report
-// sheet's Google section (see fetchGoogleOrdersSummary in adSpendReportExport.ts)
+// sheet's Google section (see fetchGoogleOrders in adSpendReportExport.ts)
 // with Orders (Quantity) and Sales (Quantity x Price) only — there is no
 // Spend/CPC/ACOS for this channel.
 
@@ -99,15 +102,20 @@ function mapOrderRow(row: RawRow) {
   const p = makePicker(row);
   return {
     serial_no: int(p("S no", "S No", "SNo")),
+    order_date: parseFlexibleDate(p("Date", "Order Date")),
     invoice: str(p("Invoice")),
-    product_name: str(p("Product")),
+    // The seller's column here is headed "Sku" (a SKU code, e.g.
+    // "B-BRESHE-SNOW"), not a human product name — there's no separate
+    // "Product" column in this workbook at all. "Product" is tried first
+    // only in case a future version of the sheet adds a real name column.
+    product_name: str(p("Product", "Sku", "SKU")),
     quantity: int(p("Qty", "Quantity")),
     price: num(p("Price")),
     raw: row,
   };
 }
 
-const REQUIRED_FIELDS = ["invoice"];
+const REQUIRED_FIELDS = ["invoice", "order_date"];
 
 async function upsertInChunks(table: string, rows: Record<string, unknown>[], onConflict: string, chunkSize = 300): Promise<void> {
   for (let i = 0; i < rows.length; i += chunkSize) {
@@ -140,19 +148,31 @@ export interface GoogleOrdersDataInfo {
   rowCount: number;
   totalUnits: number;
   totalValue: number;
+  minDate: string | null;
+  maxDate: string | null;
   error?: string;
 }
 
-// No date column on this table (see the file-level comment) — "data on file"
-// is a running total across every upload so far, not a date range, same
-// convention as the Price/FBA Inventory snapshot cards in amazonReportUpload.ts.
+// "Data on file" is still a running total across every upload so far (not
+// scoped to whatever date range the Ad Spend Report is currently generated
+// for), same convention as the Price/FBA Inventory snapshot cards in
+// amazonReportUpload.ts — but now that order_date exists, its min/max is
+// shown alongside the total so it's visible which dates are actually on
+// file, same as the combined "Ad Spend Report" upload card above it.
 export async function fetchGoogleOrdersDataInfo(): Promise<GoogleOrdersDataInfo> {
   const { data, error, count } = await supabasePublic
     .from("barm_daily_google_orders")
-    .select("quantity, price", { count: "exact" });
-  if (error) return { rowCount: 0, totalUnits: 0, totalValue: 0, error: error.message };
-  const rows = (data || []) as { quantity: number | null; price: number | null }[];
+    .select("quantity, price, order_date", { count: "exact" });
+  if (error) return { rowCount: 0, totalUnits: 0, totalValue: 0, minDate: null, maxDate: null, error: error.message };
+  const rows = (data || []) as { quantity: number | null; price: number | null; order_date: string | null }[];
   const totalUnits = rows.reduce((s, r) => s + (r.quantity || 0), 0);
   const totalValue = rows.reduce((s, r) => s + (r.quantity || 0) * (r.price || 0), 0);
-  return { rowCount: count || 0, totalUnits, totalValue: Math.round(totalValue * 100) / 100 };
+  const dates = rows.map((r) => r.order_date).filter((d): d is string => !!d).sort();
+  return {
+    rowCount: count || 0,
+    totalUnits,
+    totalValue: Math.round(totalValue * 100) / 100,
+    minDate: dates[0] || null,
+    maxDate: dates[dates.length - 1] || null,
+  };
 }
