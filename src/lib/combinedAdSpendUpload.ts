@@ -202,20 +202,23 @@ const MIRROR_FK_ORD: DailyMirrorSpec = {
   table: "barm_daily_fk_orders",
   buildRow: (r) => {
     const p = makePicker(r);
-    const order_item_id = str(p("ORDER ITEM ID", "Order Item ID"));
-    const orderedOn = p("Ordered On");
+    // Same old-header/new-header fallback as FK_ORD_SPEC below (REPORT_TARGETS)
+    // — Flipkart's raw export moved from Title Case to snake_case headers,
+    // and this mirror parses the same "FK ord" sheet independently.
+    const order_item_id = str(p("ORDER ITEM ID", "Order Item ID", "order_item_id"));
+    const orderedOn = p("Ordered On", "order_date");
     if (!order_item_id) return null;
     return {
       order_item_id,
-      order_id: str(p("Order Id", "Order ID")),
+      order_id: str(p("Order Id", "Order ID", "order_id")),
       report_date: parseFlexibleDate(orderedOn),
       order_datetime: str(orderedOn) || null,
-      order_status: str(p("Order State")),
+      order_status: str(p("Order State", "order_item_status")),
       sku: str(p("SKU")),
       fsn: str(p("FSN")),
-      product_name: str(p("Product")),
+      product_name: str(p("Product", "product_title")),
       quantity: intOf(p("Quantity")),
-      tracking_id: str(p("Tracking ID")),
+      tracking_id: str(p("Tracking ID", "delivery_tracking_id")),
       raw: r,
     };
   },
