@@ -483,21 +483,28 @@ const REPORT_TARGETS: Record<string, ReportTableSpec> = {
     strategy: "replaceRange",
     buildRow: (r) => {
       const p = makePicker(r);
-      const order_item_id = str(p("ORDER ITEM ID", "Order Item ID"));
-      const orderedOn = p("Ordered On");
+      // Flipkart switched this report's headers from Title Case ("ORDER ITEM
+      // ID", "Ordered On") to snake_case matching our own DB column names
+      // ("order_item_id", "order_date") at some point — every candidate here
+      // tries the old header first, the new one second, so either export era
+      // uploads cleanly. "order_date" in the new format already carries a
+      // full ISO timestamp ("2026-09-15 00:03:45"), which parseFlexibleDate's
+      // ISO regex handles the same as it always has.
+      const order_item_id = str(p("ORDER ITEM ID", "Order Item ID", "order_item_id"));
+      const orderedOn = p("Ordered On", "order_date");
       const order_date = parseFlexibleDate(orderedOn);
       if (!order_item_id || !order_date) return null;
       return {
         order_item_id,
-        order_id: str(p("Order Id", "Order ID")),
+        order_id: str(p("Order Id", "Order ID", "order_id")),
         order_date,
         order_datetime: str(orderedOn) || null,
-        order_item_status: str(p("Order State")),
+        order_item_status: str(p("Order State", "order_item_status")),
         sku: str(p("SKU")),
         fsn: str(p("FSN")),
-        product_title: str(p("Product")),
+        product_title: str(p("Product", "product_title")),
         quantity: intOf(p("Quantity")),
-        delivery_tracking_id: str(p("Tracking ID")),
+        delivery_tracking_id: str(p("Tracking ID", "delivery_tracking_id")),
         raw: r,
       };
     },
