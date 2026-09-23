@@ -136,6 +136,10 @@ export interface WindowAgg { spend: number; units: number; gstMultiplier?: numbe
 const emptyAgg = (): WindowAgg => ({ spend: 0, units: 0 });
 export const spendTax = (a: WindowAgg): number => a.spend * (a.gstMultiplier ?? DEFAULT_GST_MULTIPLIER);
 export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) / a.units : spendTax(a));
+// Ad Status Report's per-platform 1/0 indicator: real Sales/Orders (a.units) only — per the
+// seller's explicit instruction, ad Spend alone must never mark a platform "live" here. A product
+// can have real ad spend with zero orders that window; this must read as 0, not 1.
+export const adStatusHasSales = (a: WindowAgg): boolean => a.units > 0;
 // ACOS = Ad Spend / Ad-Attributed Sales, final answer, per the seller's explicit instruction
 // after reconciling a real example against raw data ("Chewy tube (Green - Spiral model)",
 // Flipkart, 11-to-17-09-2026: Spend 1,504.01 / Ad Sales 7,587 = 19.8%, matching the seller's own
@@ -164,31 +168,30 @@ export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) /
 // should surface. Only the user-visible cell/JSON writers (acosCell below) treat it specially,
 // blanking it out instead of showing "999%".
 export const ACOS_UNDEFINED_SENTINEL = 9.99;
-// "Total Ad Orders" gate (added per the seller's explicit instruction, confirmed twice over), with
-// a platform-aware restructuring after a real gap was caught in review: a naive "check adOrders
-// before everything else" gate (an earlier version of this comment/function) meant a genuine
-// Amazon Sponsored Products row — a real adAttributedSales figure on file — with adOrders===0 that
-// window (a real, if unusual, combination: Amazon's own "7 Day Total Sales"/"7 Day Total Orders"
-// are independently reported fields) would incorrectly fall through to the CPC/Price rule below
-// instead of keeping its own Ad Spend/Ad-Attributed Sales ratio. Fixed by checking Amazon's
-// adAttributedSales FIRST, unconditionally — it alone (hasSpRow-gated, see fetchAmazonProducts) can
-// reliably tell "a real Sponsored Products row exists" apart from "no ad data at all" for Amazon.
-// Flipkart/Meesho can't use that same "defined means real" test — fetchFlipkartProducts always sets
-// adSales/adOrders on every WindowAgg, even as literal 0 for a SKU with no ad-attributed sales/
-// orders that window — so for them, "genuinely has ad-attribution data" instead means adOrders > 0
-// (Flipkart's direct+indirect units sold; Meesho's "Orders by ad" count), checked second. Only when
-// NEITHER of those two checks found real ad-attribution data does the SKU/window fall to the last
-// resort: CPC/Price using the live listing-table price (barm_amazon_price_listing/
-// barm_flipkart_listings, looked up by the caller and passed in as listingPrice — see
-// fetchAmazonListingPriceMap/fetchFlipkartListingPriceMap below) instead of the old blank-sentinel/
-// real-revenue-proxy fallback that used to run for this case. CPC is computeCpc(a) (Spend WITH tax/
-// Orders, the same figure already shown in the CPC column beside this one — confirmed with the
-// seller that using the tax-inclusive figure here, rather than raw a.spend, is intentional).
-// listingPrice not on file for this SKU (Meesho, which has no listing table at all, or an Amazon/
-// Flipkart SKU the listing table doesn't cover yet) falls back to the `price` parameter instead, so
-// the formula never simply breaks.
+// Real-Orders gate (a.units, the same denominator computeCpc itself uses — NOT Total Ad Orders/
+// a.adOrders), per the seller's explicit, later instruction, confirmed a second time after being
+// shown it overrides the earlier Amazon exception on purpose: whenever a SKU/window's real Orders
+// are 0, ACOS is ALWAYS CPC/Price — never the blank sentinel, and never the Ad Spend/Ad-Attributed
+// Sales ratio, even for a genuine Amazon Sponsored Products row or real Flipkart/Meesho ad-order
+// data on file for that same SKU/window. This deliberately supersedes the "Amazon's own SP-row
+// check always wins" rule from the previous version of this function — confirmed directly with the
+// seller (a real SP row with adOrders===0 used to correctly stay blank; it now computes CPC/Price
+// instead, on purpose). CPC here is exactly computeCpc(a) — when a.units===0, that's already just
+// spendTax(a) (Spend WITH tax), so "CPC = Spend(with tax)" for a zero-Orders row falls out of the
+// existing computeCpc definition rather than needing a second formula. Spend=0 (and therefore
+// CPC=0) correctly reads as ACOS=0%, not the sentinel — only genuinely unpriced (no listingPrice
+// and no price) rows with real spend still fall back to the sentinel, since there's truly nothing
+// to divide by. Only when real Orders ARE > 0 does the ad-attribution-preferred logic below run,
+// completely unchanged from before this instruction.
 export const computeAcos = (a: WindowAgg, price: number, listingPrice?: number): number => {
-  // Amazon: same branch as before this feature, completely unaffected by adOrders' value.
+  if (a.units === 0) {
+    const p = listingPrice && listingPrice > 0 ? listingPrice : price;
+    if (!p || p <= 0) return a.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
+    const cpc = computeCpc(a);
+    return cpc > 0 ? cpc / p : 0;
+  }
+  // Orders > 0 below this point — completely unchanged from before this instruction.
+  // Amazon: a real Sponsored Products row always wins.
   if (a.adAttributedSales !== undefined) {
     const spend = a.adAttributedSpend ?? 0;
     return a.adAttributedSales > 0 ? spend / a.adAttributedSales : spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
@@ -198,7 +201,7 @@ export const computeAcos = (a: WindowAgg, price: number, listingPrice?: number):
     const adSalesFigure = a.adSales !== undefined ? a.adSales : a.adOrders! * price;
     return adSalesFigure > 0 ? a.spend / adSalesFigure : a.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
   }
-  // No ad-attribution data of any kind for this SKU/window -> CPC/Price, per the seller's
+  // Real Orders exist but no ad-attribution data of any kind -> CPC/Price, per the seller's
   // confirmed instruction, replacing the old real-revenue-proxy fallback entirely.
   const p = listingPrice && listingPrice > 0 ? listingPrice : price;
   if (!p || p <= 0) return a.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
@@ -1167,14 +1170,19 @@ export async function fetchMeeshoProducts(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows.forEach((r: any) => {
     const qty = num(r.quantity);
-    // Same price precedence as priceBySku above: meesho_price_marketing
-    // first, else this row's own order-derived price. Confirmed against the
-    // seller's own manual reference workbook (2026-09-02): its Meesho orders
-    // sheet carries a separate per-product "Quantity x Price = Sales" side
-    // table (not a straight per-order-row sum) using each SKU's own current
-    // listing price — the same Orders x price method used everywhere else
-    // in this report, not the raw supplier_listed/discounted price alone.
-    const price = (r.sku && priceBySku.get(r.sku)) || orderPriceOf(r);
+    // Order Value (feeds Overall Sales QTS/Value below and revenueBySku, the
+    // SKU Wise Report's "Total Sales" column) — per the seller's explicit,
+    // later instruction: Quantity x this row's own "Supplier Listed Price
+    // (Incl. GST + Commission)" ONLY. Deliberately NOT priceBySku (which
+    // still prefers meesho_price_marketing's live price, falling back to
+    // orderPriceOf's discounted-then-listed precedence) and NOT Supplier
+    // Discounted Price — the seller confirmed Listed Price is the direct,
+    // primary source for this one calculation, full stop, superseding the
+    // earlier "prefer the live scraped price" rule that priceBySku still
+    // implements for other uses below (the display "Price" column and the
+    // ACOS CPC/Price fallback both still use priceBySku/meesho_price_marketing
+    // as before — only this Order Value figure changed).
+    const price = num(r.supplier_listed_price);
     const value = price * qty;
     overallRange.units += qty;
     overallRange.value += value;
@@ -2572,17 +2580,19 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // product is matched across Amazon and Flipkart purely by its (lowercased,
   // trimmed) product name. Two listings with slightly different titles on the
   // two platforms will show as two separate rows rather than one. 1/0 per
-  // platform means "this platform has range spend on this product", not raw
-  // Impressions — a product with clicks/impressions but zero spend, or one
-  // this platform simply doesn't sell, both read as 0 here.
+  // platform means "this platform has real Sales/Orders on this product this
+  // range" (adStatusHasSales, i.e. a.units > 0) — NOT Spend and not raw
+  // Impressions. A product with real ad spend but zero orders that window
+  // reads as 0 here, per the seller's explicit instruction that spend alone
+  // must never mark a platform "live".
   const statusKey = (name: string) => name.trim().toLowerCase();
   const statusNames = new Map<string, string>(); // key -> display name
-  const statusHasSpend: Record<Platform, Set<string>> = { Amazon: new Set(), Flipkart: new Set(), Meesho: new Set() };
+  const statusHasSales: Record<Platform, Set<string>> = { Amazon: new Set(), Flipkart: new Set(), Meesho: new Set() };
   platforms.forEach(({ platform, products }) => {
     products.forEach((p) => {
       const key = statusKey(p.name);
       if (!statusNames.has(key)) statusNames.set(key, p.name);
-      if (spendTax(p.range) > 0) statusHasSpend[platform].add(key);
+      if (adStatusHasSales(p.range)) statusHasSales[platform].add(key);
     });
   });
   const statusAoa: (string | number)[][] = [["Product", "Amazon", "Flipkart", "Meesho"]];
@@ -2590,11 +2600,11 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // count so a reader scans down to find where a product with fewer live platforms sits,
   // rather than hunting alphabetically through all 273 rows for the ones running nowhere.
   const liveCount = (key: string) =>
-    (statusHasSpend.Amazon.has(key) ? 1 : 0) + (statusHasSpend.Flipkart.has(key) ? 1 : 0) + (statusHasSpend.Meesho.has(key) ? 1 : 0);
+    (statusHasSales.Amazon.has(key) ? 1 : 0) + (statusHasSales.Flipkart.has(key) ? 1 : 0) + (statusHasSales.Meesho.has(key) ? 1 : 0);
   [...statusNames.entries()]
     .sort((a, b) => liveCount(b[0]) - liveCount(a[0]) || a[1].localeCompare(b[1]))
     .forEach(([key, name]) => {
-      statusAoa.push([name, statusHasSpend.Amazon.has(key) ? 1 : 0, statusHasSpend.Flipkart.has(key) ? 1 : 0, statusHasSpend.Meesho.has(key) ? 1 : 0]);
+      statusAoa.push([name, statusHasSales.Amazon.has(key) ? 1 : 0, statusHasSales.Flipkart.has(key) ? 1 : 0, statusHasSales.Meesho.has(key) ? 1 : 0]);
     });
   const wsStatus = XLSX.utils.aoa_to_sheet(statusAoa);
   styleHeader(wsStatus, 0, 4, "312E81");
