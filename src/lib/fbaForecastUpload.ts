@@ -21,8 +21,6 @@ import {
   cleanStockSnapshotRow,
   selectStockSnapshotDate,
   parseUsSlashDate,
-  parseManualPlanGrid,
-  type ManualPlanRow,
   type FbfRawRow,
   type DailySalesRejectReason,
   type StockSnapshotRejectReason,
@@ -553,74 +551,6 @@ export async function commitFbaFbfDetails(fileName: string, parsed: ParsedFbfDet
     await logFailure(message);
     throw err;
   }
-}
-
-// ── 4. Manual FBA_forecast sheet (barm_fba_manual_plan) ──────────────────
-
-export interface ParsedManualPlan {
-  rows: ManualPlanRow[];
-  skuCount: number;
-  withStockToSend: number;
-  skippedNoZone: number;
-}
-
-/**
- * Phase 1: read the seller's own "FBA_forecast sheet(30 days)" workbook —
- * only its "FBA analysis" sheet is parsed (the file is ~14 MB) — into the
- * SKU × zone list and column X. No DB write. Not date-dependent.
- */
-export async function parseAndCleanFbaManualPlan(file: File): Promise<ParsedManualPlan> {
-  assertFileExtension(file, [".xlsx", ".xlsm", ".xls"]);
-  const buf = await file.arrayBuffer();
-  const wb = XLSX.read(buf, { type: "array", sheets: ["FBA analysis"] });
-  const ws = wb.Sheets["FBA analysis"];
-  if (!ws) throw new Error(`"${file.name}" has no "FBA analysis" sheet — upload the manual FBA_forecast sheet workbook.`);
-  const grid = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: "", raw: true });
-  const { rows, skippedNoZone } = parseManualPlanGrid(grid);
-  if (rows.length === 0) throw new Error('No SKU rows with a zone were found in the "FBA analysis" sheet.');
-  return {
-    rows,
-    skuCount: new Set(rows.map((r) => r.sku)).size,
-    withStockToSend: rows.filter((r) => r.stock_to_send !== null).length,
-    skippedNoZone,
-  };
-}
-
-/** Phase 2: atomically replace barm_fba_manual_plan via RPC, then log the audit row. */
-export async function commitFbaManualPlan(fileName: string, parsed: ParsedManualPlan): Promise<{ rowsAccepted: number }> {
-  const targetTable = "barm_fba_manual_plan";
-  const rowsReceived = parsed.rows.length + parsed.skippedNoZone;
-  const rejectionReasons: Record<string, number> = parsed.skippedNoZone ? { no_zone: parsed.skippedNoZone } : {};
-  try {
-    const { data, error } = await supabasePublic.rpc("replace_barm_fba_manual_plan", { rows: parsed.rows });
-    if (error) throw new Error(error.message);
-    if (Number(data) !== parsed.rows.length) throw new Error(`Saved ${data} rows, expected ${parsed.rows.length}.`);
-    await recordUploadHistorySafe({
-      file_name: fileName, target_table: targetTable, rows_received: rowsReceived,
-      rows_accepted: parsed.rows.length, rows_rejected: parsed.skippedNoZone, status: "success", rejection_reasons: rejectionReasons,
-    });
-    return { rowsAccepted: parsed.rows.length };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    await recordUploadHistorySafe({
-      file_name: fileName, target_table: targetTable, rows_received: rowsReceived,
-      rows_accepted: 0, rows_rejected: rowsReceived, status: "failed", rejection_reasons: rejectionReasons, error_message: message,
-    });
-    throw err;
-  }
-}
-
-export interface FbaManualPlanInfo {
-  rowCount: number;
-  uploadedAt: string | null;
-}
-
-export async function fetchFbaManualPlanInfo(): Promise<FbaManualPlanInfo> {
-  const { count, error } = await supabasePublic.from("barm_fba_manual_plan").select("*", { count: "exact", head: true });
-  if (error) return { rowCount: 0, uploadedAt: null };
-  const { data } = await supabasePublic.from("barm_fba_manual_plan").select("created_at").order("created_at", { ascending: false }).limit(1);
-  const uploadedAt = data && data.length > 0 ? String((data[0] as Record<string, unknown>).created_at).slice(0, 10) : null;
-  return { rowCount: count || 0, uploadedAt };
 }
 
 // ── "data on file" info for the upload cards ────────────────────────────
