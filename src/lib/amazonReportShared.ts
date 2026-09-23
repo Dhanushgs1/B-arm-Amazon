@@ -34,9 +34,24 @@ export async function fetchAllRows(table: string, apply: (q: any) => any, orderB
     // 1000-row page boundary.
     let q = apply(supabasePublic.from(table).select("*"));
     for (const col of orderCols) q = q.order(col, { ascending: true });
-    const { data, error } = await q.range(from, from + PAGE - 1);
+    // Same "brief statement timeout blips against this project's DB" this
+    // codebase already retries in emailSettingsStore.ts's readEmailSettings —
+    // without a retry here, one transient blip on any single page throws and
+    // (since every report fetches its tables inside a Promise.all) takes the
+    // ENTIRE report down, exactly as seen in production on amazon_orders for
+    // both the Weekly Sales Report and the Historical Analysis Report.
+    let error: { message: string } | null = null;
+    let rows: unknown[] = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await q.range(from, from + PAGE - 1);
+      error = res.error;
+      if (!error) {
+        rows = res.data || [];
+        break;
+      }
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+    }
     if (error) throw new Error(`Fetch ${table} failed: ${error.message}`);
-    const rows = data || [];
     all.push(...rows);
     if (rows.length < PAGE) break;
     from += PAGE;
