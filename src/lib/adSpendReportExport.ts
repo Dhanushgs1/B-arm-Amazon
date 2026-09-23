@@ -1280,34 +1280,51 @@ async function fetchSocialMediaAdSpend(
 // Like Social Media above, a lightweight add-on, NOT a real `Platform` — this
 // channel has no ad campaign export of any kind (no Spend/CPC/ACOS to show),
 // only realised Orders and Sales (Quantity x Price), from the seller's own
-// hand-kept "B-Arm Orders" workbook (see googleOrdersUpload.ts). Scoped to
-// [range.start, range.end] by order_date, same as every other platform's
-// order data — this used to be a running cumulative total across every
-// upload because the source workbook carried no date column at all; it now
-// does (google_orders_table.sql / googleOrdersUpload.ts), so this channel no
-// longer needs the "no day/range window to scope by" exception. Feeds one
+// hand-kept "B-Arm Orders" workbook (see googleOrdersUpload.ts). Feeds one
 // extra Summary-sheet row and a small Product/Quantity/Price/Sales section
 // at the end of the "Ad spend report" sheet — never the SKU Wise Report, Ad
 // Status Report, Action Sheet or Low Spend Campaigns, none of which have
 // anything meaningful to add for a channel with no ad spend.
-async function fetchGoogleOrders(range: { start: string; end: string }): Promise<{
+//
+// Day + range split (fixed — this channel used to return only a single
+// [range.start, range.end] total with no day/range distinction, and that
+// range total was written straight into the Summary sheet's "Overall sales
+// (<single day>)" column: a real SKU with 7 days of orders printed as if it
+// were one day's sales, exactly the "Overall sales written as the 7-day
+// range instead of the single reporting day" defect class the Ad Spend
+// Report reconciliation skill already documents for the other platforms —
+// Google just never got the same fix). `perProduct` stays scoped to the
+// full range (unchanged) since the Ad spend report sheet's Google detail
+// table is meant to list every product active across the window, not just
+// today's; only the Summary sheet's own Total Orders/Total Sales (both the
+// day block and the range block) and Overall Sales QTS/Value change.
+async function fetchGoogleOrders(range: { start: string; end: string }, endDate: string): Promise<{
   perProduct: { name: string; quantity: number; price: number }[];
-  totalUnits: number;
-  totalValue: number;
+  dayUnits: number;
+  dayValue: number;
+  rangeUnits: number;
+  rangeValue: number;
 }> {
   const rows = (await fetchAllRows("barm_daily_google_orders", (q) =>
     q.gte("order_date", range.start).lte("order_date", range.end)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ).catch(() => [])) as any[];
   const byProduct = new Map<string, { quantity: number; priceSum: number; priceCount: number }>();
-  let totalUnits = 0;
-  let totalValue = 0;
+  let dayUnits = 0;
+  let dayValue = 0;
+  let rangeUnits = 0;
+  let rangeValue = 0;
   rows.forEach((r) => {
     const name = r.product_name || "(no product name)";
     const qty = num(r.quantity);
     const price = num(r.price);
-    totalUnits += qty;
-    totalValue += qty * price;
+    const value = qty * price;
+    rangeUnits += qty;
+    rangeValue += value;
+    if (r.order_date === endDate) {
+      dayUnits += qty;
+      dayValue += value;
+    }
     const acc = byProduct.get(name) || { quantity: 0, priceSum: 0, priceCount: 0 };
     acc.quantity += qty;
     if (price > 0) { acc.priceSum += price; acc.priceCount += 1; }
@@ -1316,7 +1333,11 @@ async function fetchGoogleOrders(range: { start: string; end: string }): Promise
   const perProduct = [...byProduct.entries()]
     .map(([name, acc]) => ({ name, quantity: acc.quantity, price: acc.priceCount ? acc.priceSum / acc.priceCount : 0 }))
     .sort((a, b) => b.quantity * b.price - a.quantity * a.price);
-  return { perProduct, totalUnits, totalValue: Math.round(totalValue * 100) / 100 };
+  return {
+    perProduct,
+    dayUnits, dayValue: Math.round(dayValue * 100) / 100,
+    rangeUnits, rangeValue: Math.round(rangeValue * 100) / 100,
+  };
 }
 
 // ── workbook ─────────────────────────────────────────────────────────────────
@@ -1944,7 +1965,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     fetchFlipkartProducts(range, endDate, flipkartListingPriceMap),
     fetchMeeshoProducts(range, endDate),
     fetchSocialMediaAdSpend(range, endDate),
-    fetchGoogleOrders(range),
+    fetchGoogleOrders(range, endDate),
   ]);
   // Per-platform listing-price lookup for every computeAcos call site below (via acosCell/
   // acosSortRank's own listingPrice parameter) — Meesho has no listing table, so it's omitted
@@ -2294,25 +2315,28 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
 
   // Google (direct/website) orders — one extra Summary row, same lightweight treatment as Social
   // Media above, added only when there's actually data on file. Ad spend/CPC/ACOS columns are left
-  // at 0/blank throughout (this channel has no ad campaign data at all — see fetchGoogleOrders);
-  // QTS/Value are scoped to this report's date range by order_date, same as every other platform's
-  // Overall Sales.
+  // at 0/blank throughout (this channel has no ad campaign data at all — see fetchGoogleOrders).
+  // Total Orders/Total Sales are shown for BOTH the day block and the range block (same shape as
+  // every real platform's row), and Overall Sales QTS/Value are the SINGLE reporting day's total —
+  // fixed from the previous version, which put the 7-day range total in that last column, mislabeled
+  // under the single-day "Overall sales (<date>)" header (see fetchGoogleOrders's own comment).
   let googleRow: number | null = null;
   let googleSummary: GoogleEmailSummary | null = null;
-  if (googleOrders.totalUnits > 0 || googleOrders.totalValue > 0) {
+  if (googleOrders.rangeUnits > 0 || googleOrders.rangeValue > 0) {
     googleRow = sumAoa.length;
     sumAoa.push([
       "Google",
       0, 0,
       "(Orders/Sales only — no ad spend data)", "",
-      0, 0, "", "", "", "", "",
-      0, 0, "", "", "", "", "",
-      googleOrders.totalUnits, googleOrders.totalValue,
+      0, 0, googleOrders.dayUnits, round2(googleOrders.dayValue), "", "", "",
+      0, 0, googleOrders.rangeUnits, round2(googleOrders.rangeValue), "", "", "",
+      googleOrders.dayUnits, round2(googleOrders.dayValue),
     ]);
     // Same figures, reshaped for the emailed daily digest (see buildAdSpendDailyHtml in
     // supabase/functions/send-ad-spend-email/index.ts), which renders this as one more row
-    // directly below Social Media's, per the same pattern.
-    googleSummary = { totalUnits: googleOrders.totalUnits, totalValue: googleOrders.totalValue };
+    // directly below Social Media's, per the same pattern. Day totals, matching the fix above —
+    // the digest is headlined by the single reporting day, same as every other platform's summary.
+    googleSummary = { totalUnits: googleOrders.dayUnits, totalValue: round2(googleOrders.dayValue) };
   }
 
   // Optimization suggestions (Gemini) — replaces the Action Sheet's generic tiered text with a
