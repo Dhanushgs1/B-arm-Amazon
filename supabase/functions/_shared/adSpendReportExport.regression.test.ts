@@ -1,5 +1,5 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/testing/asserts.ts";
-import { spendTax, computeCpc, computeAcos, actionSheetAcos, ACOS_UNDEFINED_SENTINEL, acosCell, acosSortRank, getDateWindow, groupProductsByName, flipkartRowRevenue, adStatusHasSales } from "./adSpendReportExport.ts";
+import { spendTax, computeCpc, computeAcos, actionSheetAcos, ACOS_UNDEFINED_SENTINEL, acosCell, acosSortRank, getDateWindow, groupProductsByName, flipkartRowRevenue, adStatusHasSpend } from "./adSpendReportExport.ts";
 
 Deno.test("spendTax applies the flat 1.18 GST multiplier when none is tagged", () => {
   assertEquals(spendTax({ spend: 100, units: 5 }), 118);
@@ -527,18 +527,22 @@ Deno.test("flipkartRowRevenue: real Invoice Amount wins, falls back to quantity 
   assertEquals(flipkartRowRevenue(0, 2, 0), 0);
 });
 
-Deno.test("adStatusHasSales: the Ad Status Report's per-platform indicator is real Sales/Orders only, never Spend alone", () => {
-  // Bug this was written for: the indicator used to be spendTax(p.range) > 0, so a product with
-  // real ad spend and zero real orders that range window still showed "1" (live) for that
-  // platform. Per the seller's explicit instruction, Spend alone must never make this 1.
-  // 1. Sales = 0 (units: 0), Spend = 0 -> 0 (nothing on file at all).
-  assertEquals(adStatusHasSales({ spend: 0, units: 0 }), false);
-  // 2. Sales = 0 (units: 0), Spend > 0 -> 0, even with a real Amazon Sponsored Products row or
-  // real Flipkart/Meesho ad-attribution data on file for that same window — the exact regression
-  // this fix targets, since spendTax(p.range) > 0 used to read this case as 1.
-  assertEquals(adStatusHasSales({ spend: 100, units: 0 }), false);
-  assertEquals(adStatusHasSales({ spend: 100, units: 0, adAttributedSpend: 100, adAttributedSales: 200, adOrders: 5 }), false);
-  // 3. Sales > 0 (units > 0) -> 1, regardless of spend/price/ad-attribution fields.
-  assertEquals(adStatusHasSales({ spend: 0, units: 1 }), true);
-  assertEquals(adStatusHasSales({ spend: 100, units: 5 }), true);
+Deno.test("adStatusHasSpend: the Ad Status Report's per-platform indicator is real ad Spend only, strictly, never real Orders", () => {
+  // This is a deliberate, confirmed reversal of an earlier version of this same rule (which keyed
+  // on real Orders/Sales, a.units, instead) — the seller's later, explicit instruction: "spend
+  // aakirtha 1, illana 0, avlaotha" (ad spend happened -> 1, otherwise -> 0, nothing else factored
+  // in), confirmed a second time after being shown the earlier Orders-based rule and a real
+  // example (a product with 29 real Amazon orders that window but Rs 0 spend on the specific
+  // Sponsored Products campaign covering it, which the seller wants to read as 0 here now).
+  // 1. Spend = 0 -> 0 (nothing on file at all).
+  assertEquals(adStatusHasSpend({ spend: 0, units: 0 }), false);
+  // 2. Real Orders > 0 but Spend = 0 (organic sales, no ad spend this platform/window) -> 0 now,
+  // the exact case the earlier Orders-based version of this rule read as 1.
+  assertEquals(adStatusHasSpend({ spend: 0, units: 29 }), false);
+  // 3. Spend > 0 -> 1, regardless of real Orders/price/ad-attribution fields — including a product
+  // with real ad spend but zero real orders that window, which the earlier Orders-based rule read
+  // as 0 (the case that rule was originally, separately fixed for).
+  assertEquals(adStatusHasSpend({ spend: 100, units: 0 }), true);
+  assertEquals(adStatusHasSpend({ spend: 100, units: 5 }), true);
+  assertEquals(adStatusHasSpend({ spend: 100, units: 0, adAttributedSpend: 100, adAttributedSales: 200, adOrders: 5 }), true);
 });

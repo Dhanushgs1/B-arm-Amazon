@@ -142,10 +142,14 @@ export interface WindowAgg { spend: number; units: number; gstMultiplier?: numbe
 const emptyAgg = (): WindowAgg => ({ spend: 0, units: 0 });
 export const spendTax = (a: WindowAgg): number => a.spend * (a.gstMultiplier ?? DEFAULT_GST_MULTIPLIER);
 export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) / a.units : spendTax(a));
-// Ad Status Report's per-platform 1/0 indicator: real Sales/Orders (a.units) only — per the
-// seller's explicit instruction, ad Spend alone must never mark a platform "live" here. A product
-// can have real ad spend with zero orders that window; this must read as 0, not 1.
-export const adStatusHasSales = (a: WindowAgg): boolean => a.units > 0;
+// Ad Status Report's per-platform 1/0 indicator: real ad Spend (with tax) this range window,
+// strictly — per the seller's later, explicit instruction, confirmed a second time after review:
+// "spend aakirtha 1, illana 0, avlaotha" (ad spend happened -> 1, otherwise -> 0, nothing else
+// factored in). This deliberately supersedes an earlier, since-reverted version of this same rule
+// that instead keyed on real Orders/Sales (a.units) — a product with real ad spend but zero orders
+// that window now correctly reads as 1 again, and a product with real orders but zero ad spend on
+// a given platform now correctly reads as 0, even though it may genuinely be selling there.
+export const adStatusHasSpend = (a: WindowAgg): boolean => spendTax(a) > 0;
 // ACOS = Ad Spend / Ad-Attributed Sales, final answer, per the seller's explicit instruction
 // after reconciling a real example against raw data ("Chewy tube (Green - Spiral model)",
 // Flipkart, 11-to-17-09-2026: Spend 1,504.01 / Ad Sales 7,587 = 19.8%, matching the seller's own
@@ -2596,19 +2600,20 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // product is matched across Amazon and Flipkart purely by its (lowercased,
   // trimmed) product name. Two listings with slightly different titles on the
   // two platforms will show as two separate rows rather than one. 1/0 per
-  // platform means "this platform has real Sales/Orders on this product this
-  // range" (adStatusHasSales, i.e. a.units > 0) — NOT Spend and not raw
-  // Impressions. A product with real ad spend but zero orders that window
-  // reads as 0 here, per the seller's explicit instruction that spend alone
-  // must never mark a platform "live".
+  // platform means "this platform has real ad Spend (with tax) on this
+  // product this range" (adStatusHasSpend, i.e. spendTax(a) > 0) — strictly
+  // spend, per the seller's later, explicit instruction ("spend aakirtha 1,
+  // illana 0, avlaotha"), NOT real Sales/Orders and not raw Impressions. A
+  // product can have real orders on a platform with zero ad spend there that
+  // window (organic sales) and correctly reads as 0 here now.
   const statusKey = (name: string) => name.trim().toLowerCase();
   const statusNames = new Map<string, string>(); // key -> display name
-  const statusHasSales: Record<Platform, Set<string>> = { Amazon: new Set(), Flipkart: new Set(), Meesho: new Set() };
+  const statusHasSpend: Record<Platform, Set<string>> = { Amazon: new Set(), Flipkart: new Set(), Meesho: new Set() };
   platforms.forEach(({ platform, products }) => {
     products.forEach((p) => {
       const key = statusKey(p.name);
       if (!statusNames.has(key)) statusNames.set(key, p.name);
-      if (adStatusHasSales(p.range)) statusHasSales[platform].add(key);
+      if (adStatusHasSpend(p.range)) statusHasSpend[platform].add(key);
     });
   });
   const statusAoa: (string | number)[][] = [["Product", "Amazon", "Flipkart", "Meesho"]];
@@ -2616,11 +2621,11 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // count so a reader scans down to find where a product with fewer live platforms sits,
   // rather than hunting alphabetically through all 273 rows for the ones running nowhere.
   const liveCount = (key: string) =>
-    (statusHasSales.Amazon.has(key) ? 1 : 0) + (statusHasSales.Flipkart.has(key) ? 1 : 0) + (statusHasSales.Meesho.has(key) ? 1 : 0);
+    (statusHasSpend.Amazon.has(key) ? 1 : 0) + (statusHasSpend.Flipkart.has(key) ? 1 : 0) + (statusHasSpend.Meesho.has(key) ? 1 : 0);
   [...statusNames.entries()]
     .sort((a, b) => liveCount(b[0]) - liveCount(a[0]) || a[1].localeCompare(b[1]))
     .forEach(([key, name]) => {
-      statusAoa.push([name, statusHasSales.Amazon.has(key) ? 1 : 0, statusHasSales.Flipkart.has(key) ? 1 : 0, statusHasSales.Meesho.has(key) ? 1 : 0]);
+      statusAoa.push([name, statusHasSpend.Amazon.has(key) ? 1 : 0, statusHasSpend.Flipkart.has(key) ? 1 : 0, statusHasSpend.Meesho.has(key) ? 1 : 0]);
     });
   const wsStatus = XLSX.utils.aoa_to_sheet(statusAoa);
   styleHeader(wsStatus, 0, 4, "312E81");
