@@ -42,3 +42,8 @@ dump.txt
 page_backup.tsx
 page_modifications.txt
 .superpowers/
+
+# Supabase CLI local link/session cache — contains this project's pooler
+# connection string (supabase/.temp/pooler-url) and other machine-local
+# state, never meant to be committed.
+supabase/.temp/

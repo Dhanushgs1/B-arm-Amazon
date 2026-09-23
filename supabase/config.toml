@@ -1,0 +1,12 @@
+# supabase/config.toml
+# Per-function deploy settings. Without this, `supabase functions deploy`
+# defaults every function to requiring a JWT — this app's Edge Functions are
+# invoked by Vercel API routes using the anon key, never a user JWT, so that
+# default breaks invocation ("Edge Function invocation failed" with no
+# useful error surfaced client-side). generate-ad-spend-report already runs
+# with verify_jwt disabled in production; this makes generate-fba-forecast-
+# report's deploy reproducible the same way instead of depending on someone
+# remembering to pass --no-verify-jwt by hand.
+
+[functions.generate-fba-forecast-report]
+verify_jwt = false

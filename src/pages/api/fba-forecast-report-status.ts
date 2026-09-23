@@ -1,0 +1,17 @@
+// src/pages/api/fba-forecast-report-status.ts
+// GET-only status check for the dashboard's polling — separate from the
+// generate route so polling never accidentally re-triggers generation.
+import type { NextApiRequest, NextApiResponse } from "next";
+import { findFbaForecastJob } from "@/lib/fbaForecastJobs";
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
+  const { reportDate } = req.query;
+  if (!reportDate || typeof reportDate !== "string") return res.status(400).json({ error: "reportDate is required" });
+  try {
+    const job = await findFbaForecastJob(reportDate);
+    return res.status(200).json({ job });
+  } catch (err) {
+    return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+}
