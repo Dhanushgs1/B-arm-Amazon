@@ -35,8 +35,8 @@ import {
 } from "@/lib/fbaForecastUpload";
 import { fetchFbaForecastReportBlob } from "@/lib/fbaForecastJobs";
 import type { BatchedUploadProgress } from "@/lib/batchedUpload";
-import { fetchSkuStockToSend, saveSkuStockToSend, type SkuStockToSendData } from "@/lib/fbaStockToSendStore";
-import { parseStockToSendInput, changedStockToSend, stockToSendStaleness, lastUpdatedLabel, reviewNote } from "@/lib/fbaStockToSend";
+import { fetchSkuStockToSend, saveSkuStockToSend, type SkuStockToSendData, type SkuStockToSendRow } from "@/lib/fbaStockToSendStore";
+import { parseStockToSendInput, changedStockToSend, staleSkuSummary, staleXMessage, lastUpdatedLabel, reviewNote } from "@/lib/fbaStockToSend";
 
 interface PreviewState<T> {
   status: "idle" | "parsing" | "preview" | "committing" | "done" | "error";
@@ -441,15 +441,13 @@ function FbaFbfDetailsCard({
 
 // ── 4. X values: stock ready to send, one per SKU ───────────────────────
 
-function StaleXWarning({ lastSavedAt, lastSavedSource }: { lastSavedAt: string | null; lastSavedSource: string | null }) {
-  const { stale, ageDays } = stockToSendStaleness(lastSavedAt);
-  if (!stale) return null;
+function StaleXWarning({ rows }: { rows: SkuStockToSendRow[] }) {
+  const warning = staleXMessage(staleSkuSummary(rows));
+  if (!warning) return null;
   return (
     <p className="text-[11px] text-amber-600 dark:text-amber-400 font-semibold mb-3 flex items-center gap-1">
       <AlertTriangle size={12} />
-      {ageDays === null
-        ? "X values (stock ready to send) have never been saved — every SKU will send 0."
-        : `X values (stock ready to send) were last updated ${ageDays} days ago (${lastUpdatedLabel(lastSavedAt, lastSavedSource)}) — update them in section 4 if your stock has changed.`}
+      {rows.length === 0 ? warning : `${warning} Update them in section 4 if your stock has changed.`}
     </p>
   );
 }
@@ -575,7 +573,7 @@ function FbaStockToSendPanel({ data, onSaved }: { data: SkuStockToSendData | und
   );
 }
 
-function FbaGenerateDownloadSection({ reportDate, readyToGenerate, xLastSavedAt, xLastSavedSource }: { reportDate: string; readyToGenerate: boolean; xLastSavedAt: string | null | undefined; xLastSavedSource?: string | null }) {
+function FbaGenerateDownloadSection({ reportDate, readyToGenerate, xRows }: { reportDate: string; readyToGenerate: boolean; xRows: SkuStockToSendRow[] | undefined }) {
   const [jobStatus, setJobStatus] = useState<string | null>(null);
   const [jobErrorMessage, setJobErrorMessage] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
@@ -609,13 +607,9 @@ function FbaGenerateDownloadSection({ reportDate, readyToGenerate, xLastSavedAt,
   const handleGenerate = async (force = false) => {
     if (!reportDate) return;
     // Never silently use stale ready-to-send stock: ask first.
-    if (xLastSavedAt !== undefined) {
-      const { stale, ageDays } = stockToSendStaleness(xLastSavedAt);
-      if (stale && !window.confirm(
-        ageDays === null
-          ? "X values (stock ready to send) have never been saved, so every SKU will send 0. Generate anyway?"
-          : `X values (stock ready to send) were last updated ${ageDays} days ago. Generate with these values anyway?`
-      )) return;
+    if (xRows !== undefined) {
+      const warning = staleXMessage(staleSkuSummary(xRows));
+      if (warning && !window.confirm(`${warning} Generate with these values anyway?`)) return;
     }
     setGenerating(true);
     setMsg(null);
@@ -687,7 +681,7 @@ function FbaGenerateDownloadSection({ reportDate, readyToGenerate, xLastSavedAt,
           <AlertTriangle size={12} /> Confirm all 3 uploads above at least once before generating.
         </p>
       )}
-      {xLastSavedAt !== undefined && <StaleXWarning lastSavedAt={xLastSavedAt} lastSavedSource={xLastSavedSource ?? null} />}
+      {xRows !== undefined && <StaleXWarning rows={xRows} />}
       <div className="flex flex-wrap gap-2 items-center">
         <button
           onClick={() => handleGenerate(jobStatus === "failed" || jobStatus === "completed")}
@@ -853,7 +847,7 @@ export default function FbaPage() {
 
       <FbaStockToSendPanel data={xData} onSaved={refreshXData} />
 
-      <FbaGenerateDownloadSection reportDate={endDate} readyToGenerate={readyToGenerate} xLastSavedAt={xData?.lastSavedAt} xLastSavedSource={xData?.lastSavedSource} />
+      <FbaGenerateDownloadSection reportDate={endDate} readyToGenerate={readyToGenerate} xRows={xData?.rows} />
 
       <FbaRecentUploadsPanel refreshKey={historyRefreshKey} />
     </div>

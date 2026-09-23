@@ -37,6 +37,44 @@ export function stockToSendStaleness(lastSavedIso: string | null, nowIso: string
   return { stale: ageDays > X_STALE_DAYS, ageDays };
 }
 
+export interface StaleSkuSummary {
+  total: number;
+  /** SKUs whose own X save is older than X_STALE_DAYS, or was never saved. */
+  staleCount: number;
+  neverSavedCount: number;
+  /** The oldest saved X among the stale SKUs (null if none was ever saved). */
+  oldestAt: string | null;
+  oldestSource: string | null;
+}
+
+/** Staleness judged per SKU, so one fresh save can't hide the rest. Blank X
+ *  (0 to send) counts like any other value: a stale 0 may be wrong too. */
+export function staleSkuSummary(
+  rows: Array<{ updatedAt: string | null; source: string | null }>,
+  nowIso: string = new Date().toISOString()
+): StaleSkuSummary {
+  let staleCount = 0, neverSavedCount = 0;
+  let oldest: { updatedAt: string; source: string | null } | null = null;
+  for (const r of rows) {
+    if (!stockToSendStaleness(r.updatedAt, nowIso).stale) continue;
+    staleCount++;
+    if (!r.updatedAt) { neverSavedCount++; continue; }
+    if (!oldest || Date.parse(r.updatedAt) < Date.parse(oldest.updatedAt)) oldest = { updatedAt: r.updatedAt, source: r.source };
+  }
+  return { total: rows.length, staleCount, neverSavedCount, oldestAt: oldest?.updatedAt ?? null, oldestSource: oldest?.source ?? null };
+}
+
+/** The stale-X warning text for the banner and the Generate confirm, or null
+ *  when every SKU is fresh. No rows at all means nothing was ever saved. */
+export function staleXMessage(s: StaleSkuSummary): string | null {
+  if (s.total === 0) return "X values (stock ready to send) have never been saved — every SKU will send 0.";
+  if (s.staleCount === 0) return null;
+  const details: string[] = [];
+  if (s.oldestAt) details.push(`oldest: ${lastUpdatedLabel(s.oldestAt, null)}${s.oldestSource === "manual_migration" ? ", migrated from manual" : ""}`);
+  if (s.neverSavedCount > 0) details.push(`${s.neverSavedCount} never saved`);
+  return `${s.staleCount} of ${s.total} SKUs have X values (stock ready to send) not updated in more than ${X_STALE_DAYS} days (${details.join("; ")}).`;
+}
+
 export type StockToSendSource = "manual_migration" | "panel";
 
 /** "10 Sep 2026 (migrated from manual)" for values copied from the manual
