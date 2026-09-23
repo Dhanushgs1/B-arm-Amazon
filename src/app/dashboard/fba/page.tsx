@@ -35,6 +35,8 @@ import {
 } from "@/lib/fbaForecastUpload";
 import { fetchFbaForecastReportBlob } from "@/lib/fbaForecastJobs";
 import type { BatchedUploadProgress } from "@/lib/batchedUpload";
+import { fetchSkuStockToSend, saveSkuStockToSend, type SkuStockToSendData } from "@/lib/fbaStockToSendStore";
+import { parseStockToSendInput, changedStockToSend, stockToSendStaleness, lastUpdatedLabel, reviewNote } from "@/lib/fbaStockToSend";
 
 interface PreviewState<T> {
   status: "idle" | "parsing" | "preview" | "committing" | "done" | "error";
@@ -437,7 +439,143 @@ function FbaFbfDetailsCard({
 
 // ── 5. Generate & Download ──────────────────────────────────────────────
 
-function FbaGenerateDownloadSection({ reportDate, readyToGenerate }: { reportDate: string; readyToGenerate: boolean }) {
+// ── 4. X values: stock ready to send, one per SKU ───────────────────────
+
+function StaleXWarning({ lastSavedAt, lastSavedSource }: { lastSavedAt: string | null; lastSavedSource: string | null }) {
+  const { stale, ageDays } = stockToSendStaleness(lastSavedAt);
+  if (!stale) return null;
+  return (
+    <p className="text-[11px] text-amber-600 dark:text-amber-400 font-semibold mb-3 flex items-center gap-1">
+      <AlertTriangle size={12} />
+      {ageDays === null
+        ? "X values (stock ready to send) have never been saved — every SKU will send 0."
+        : `X values (stock ready to send) were last updated ${ageDays} days ago (${lastUpdatedLabel(lastSavedAt, lastSavedSource)}) — update them in section 4 if your stock has changed.`}
+    </p>
+  );
+}
+
+function FbaStockToSendPanel({ data, onSaved }: { data: SkuStockToSendData | undefined; onSaved: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [edits, setEdits] = useState<Map<string, string>>(new Map());
+  const [search, setSearch] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const rows = data?.rows || [];
+  const saved = new Map(rows.map((r) => [r.sku, r.stockToSend]));
+  const textFor = (sku: string) => edits.get(sku) ?? (saved.get(sku) === null || saved.get(sku) === undefined ? "" : String(saved.get(sku)));
+  const invalid = [...edits.entries()].filter(([, t]) => !parseStockToSendInput(t).ok).map(([sku]) => sku);
+  const parsedEdits = new Map<string, number | null>();
+  for (const [sku, t] of edits) {
+    const p = parseStockToSendInput(t);
+    if (p.ok) parsedEdits.set(sku, p.value);
+  }
+  const changes = changedStockToSend(saved, parsedEdits);
+  const q = search.trim().toLowerCase();
+  const visible = q ? rows.filter((r) => r.sku.toLowerCase().includes(q) || r.productName.toLowerCase().includes(q)) : rows;
+
+  const save = async () => {
+    if (invalid.length || changes.length === 0) return;
+    setSaving(true);
+    setMsg(null);
+    try {
+      const n = await saveSkuStockToSend(changes);
+      setEdits(new Map());
+      setMsg({ ok: true, text: `Saved ${n} SKU${n === 1 ? "" : "s"}.` });
+      onSaved();
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="glass rounded-2xl border border-border p-6 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="font-bold text-sm text-foreground">4. X values — stock ready to send</h3>
+          <p className="text-xs text-muted-foreground mt-1">
+            Your manual sheet&apos;s column X, one number per SKU, applied to all 14 of its zones. Blank = 0 to send.
+            Only needed when your ready-to-send stock changes. {data ? `${rows.length} SKUs · last updated ${lastUpdatedLabel(data.lastSavedAt, data.lastSavedSource)}` : "Loading…"}
+          </p>
+        </div>
+        <button onClick={() => setOpen((o) => !o)} className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-border hover:bg-muted/50">
+          {open ? "Hide X values" : "Edit X values"}
+        </button>
+      </div>
+
+      {open && (
+        <div className="mt-4 space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search SKU or product"
+              className="px-3 py-1.5 text-xs rounded-lg border border-border bg-transparent w-64 max-w-full"
+            />
+            <button
+              onClick={save}
+              disabled={saving || invalid.length > 0 || changes.length === 0}
+              className="px-3 py-1.5 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold rounded-lg disabled:opacity-50"
+            >
+              {saving ? "Saving…" : `Save${changes.length ? ` ${changes.length} change${changes.length === 1 ? "" : "s"}` : ""}`}
+            </button>
+            {edits.size > 0 && (
+              <button onClick={() => setEdits(new Map())} className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-border hover:bg-muted/50">Discard</button>
+            )}
+            {invalid.length > 0 && <span className="text-[11px] text-red-600 dark:text-red-400 font-semibold">Fix {invalid.length} invalid value{invalid.length === 1 ? "" : "s"} (whole numbers only)</span>}
+            {msg && <span className={`text-[11px] font-semibold ${msg.ok ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>{msg.text}</span>}
+          </div>
+          <div className="max-h-[28rem] overflow-auto rounded-lg border border-border">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-muted text-muted-foreground">
+                <tr>
+                  <th className="text-left px-3 py-2 font-semibold">SKU</th>
+                  <th className="text-left px-3 py-2 font-semibold">Product</th>
+                  <th className="text-left px-3 py-2 font-semibold w-32">X (stock to send)</th>
+                  <th className="text-left px-3 py-2 font-semibold">Last updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((r) => {
+                  const text = textFor(r.sku);
+                  const bad = edits.has(r.sku) && !parseStockToSendInput(text).ok;
+                  const note = reviewNote(r);
+                  return (
+                    <tr key={r.sku} className="border-t border-border">
+                      <td className="px-3 py-1.5 font-semibold text-foreground whitespace-nowrap align-top">
+                        {r.sku}
+                        {note && (
+                          <span className="mt-0.5 flex items-start gap-1 whitespace-normal text-[10px] font-semibold text-amber-600 dark:text-amber-400 max-w-xs">
+                            <AlertTriangle size={11} className="flex-shrink-0 mt-px" /> {note}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-1.5 text-muted-foreground">{r.productName}</td>
+                      <td className="px-3 py-1">
+                        <input
+                          value={text}
+                          inputMode="numeric"
+                          onChange={(e) => setEdits((m) => new Map(m).set(r.sku, e.target.value))}
+                          className={`w-28 px-2 py-1 rounded border bg-transparent ${bad ? "border-red-500" : edits.has(r.sku) ? "border-primary" : "border-border"}`}
+                          aria-label={`X for ${r.sku}`}
+                        />
+                      </td>
+                      <td className="px-3 py-1.5 text-muted-foreground whitespace-nowrap">{lastUpdatedLabel(r.updatedAt, r.source)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FbaGenerateDownloadSection({ reportDate, readyToGenerate, xLastSavedAt, xLastSavedSource }: { reportDate: string; readyToGenerate: boolean; xLastSavedAt: string | null | undefined; xLastSavedSource?: string | null }) {
   const [jobStatus, setJobStatus] = useState<string | null>(null);
   const [jobErrorMessage, setJobErrorMessage] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
@@ -470,6 +608,15 @@ function FbaGenerateDownloadSection({ reportDate, readyToGenerate }: { reportDat
 
   const handleGenerate = async (force = false) => {
     if (!reportDate) return;
+    // Never silently use stale ready-to-send stock: ask first.
+    if (xLastSavedAt !== undefined) {
+      const { stale, ageDays } = stockToSendStaleness(xLastSavedAt);
+      if (stale && !window.confirm(
+        ageDays === null
+          ? "X values (stock ready to send) have never been saved, so every SKU will send 0. Generate anyway?"
+          : `X values (stock ready to send) were last updated ${ageDays} days ago. Generate with these values anyway?`
+      )) return;
+    }
     setGenerating(true);
     setMsg(null);
     try {
@@ -540,6 +687,7 @@ function FbaGenerateDownloadSection({ reportDate, readyToGenerate }: { reportDat
           <AlertTriangle size={12} /> Confirm all 3 uploads above at least once before generating.
         </p>
       )}
+      {xLastSavedAt !== undefined && <StaleXWarning lastSavedAt={xLastSavedAt} lastSavedSource={xLastSavedSource ?? null} />}
       <div className="flex flex-wrap gap-2 items-center">
         <button
           onClick={() => handleGenerate(jobStatus === "failed" || jobStatus === "completed")}
@@ -655,17 +803,22 @@ export default function FbaPage() {
   const [dailySalesInfo, setDailySalesInfo] = useState<FbaDataInfo | undefined>(undefined);
   const [stockInfo, setStockInfo] = useState<FbaDataInfo | undefined>(undefined);
   const [fbfInfo, setFbfInfo] = useState<FbaFbfDetailsInfo | undefined>(undefined);
+  const [xData, setXData] = useState<SkuStockToSendData | undefined>(undefined);
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
 
   const refreshDailySalesInfo = useCallback(async () => setDailySalesInfo(await fetchFbaDailySalesInfo()), []);
   const refreshStockInfo = useCallback(async () => setStockInfo(await fetchFbaStockSnapshotInfo()), []);
   const refreshFbfInfo = useCallback(async () => setFbfInfo(await fetchFbaFbfDetailsInfo()), []);
+  const refreshXData = useCallback(async () => {
+    try { setXData(await fetchSkuStockToSend()); } catch { setXData({ rows: [], lastSavedAt: null, lastSavedSource: null }); }
+  }, []);
 
   useEffect(() => {
     refreshDailySalesInfo();
     refreshStockInfo();
     refreshFbfInfo();
-  }, [refreshDailySalesInfo, refreshStockInfo, refreshFbfInfo]);
+    refreshXData();
+  }, [refreshDailySalesInfo, refreshStockInfo, refreshFbfInfo, refreshXData]);
 
   const bumpHistory = () => setHistoryRefreshKey((k) => k + 1);
 
@@ -698,7 +851,9 @@ export default function FbaPage() {
       <FbaStockSnapshotCard reportDate={endDate} onCommitted={() => { refreshStockInfo(); bumpHistory(); }} dataInfo={stockInfo} />
       <FbaFbfDetailsCard reportDate={endDate} onCommitted={() => { refreshFbfInfo(); bumpHistory(); }} dataInfo={fbfInfo} />
 
-      <FbaGenerateDownloadSection reportDate={endDate} readyToGenerate={readyToGenerate} />
+      <FbaStockToSendPanel data={xData} onSaved={refreshXData} />
+
+      <FbaGenerateDownloadSection reportDate={endDate} readyToGenerate={readyToGenerate} xLastSavedAt={xData?.lastSavedAt} xLastSavedSource={xData?.lastSavedSource} />
 
       <FbaRecentUploadsPanel refreshKey={historyRefreshKey} />
     </div>
