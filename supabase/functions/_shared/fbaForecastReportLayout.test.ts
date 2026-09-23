@@ -21,9 +21,27 @@ function sampleInput() {
     stock: [{ report_date: "2026-09-20", fnsku: "X", fulfillment_center: "BLR7", asin: "Y", msku: "A", disposition: "SELLABLE", ending_warehouse_balance: 50, zone: "Karnataka_zone" }],
     booked: [{ product: "p", sku: "B", quantity: 2, fc: "DEL5", status_raw: "Booked", zone: "Delhi_zone", booked_date: null, pickup_date: null, source_month: "2026-09" }],
     intransit: [],
-    active: [{ product: "p", sku: "A", quantity: 4, fc: "DEL5", status_raw: "active", zone: "Delhi_zone", booked_date: null, pickup_date: null, source_month: "2026-09", active_date: "2026-09-22" }],
+    active: [
+      { product: "p", sku: "A", quantity: 4, fc: "DEL5", status_raw: "active", zone: "Delhi_zone", booked_date: null, pickup_date: null, source_month: "2026-09", active_date: "2026-09-22" },
+      { product: "p", sku: "A", quantity: 7, fc: "BLR7", status_raw: "active", zone: "Karnataka_zone", booked_date: null, pickup_date: null, source_month: "2026-09", active_date: "2026-09-20" },
+      // Outside the 3-day window, or no date: never in the date columns or recently_act.
+      { product: "p", sku: "A", quantity: 9, fc: "DEL5", status_raw: "active", zone: "Delhi_zone", booked_date: null, pickup_date: null, source_month: "2026-09", active_date: "2026-09-19" },
+      { product: "p", sku: "B", quantity: 2, fc: "DEL5", status_raw: "active", zone: "Delhi_zone", booked_date: null, pickup_date: null, source_month: "2026-08", active_date: null },
+    ],
   };
 }
+
+Deno.test("active date columns are the 3 days ending on the report date, and recently_act holds only those rows", () => {
+  const wb = buildFbaForecastLayout(sampleInput());
+  const ws = wb.Sheets[SHEET.analysis];
+  const headers = (XLSX.utils.sheet_to_json(ws, { header: 1 })[0] as string[]);
+  assertEquals(headers.slice(-3), ["20.09.2026", "21.09.2026", "22.09.2026"]); // a day with no activations still gets its column
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws);
+  // A Karnataka / A Delhi / B Delhi
+  assertEquals(rows.map((r) => [r["20.09.2026"], r["21.09.2026"], r["22.09.2026"]]), [[7, 0, 0], [0, 0, 4], [0, 0, 0]]);
+  const recent = XLSX.utils.sheet_to_json<Record<string, unknown>>(wb.Sheets[SHEET.active]);
+  assertEquals(recent.map((r) => `${r["SKU"]}:${r["Quantity"]}:${r["active date"]}`), ["A:7:20.09.2026", "A:4:22.09.2026"]);
+});
 
 // deno-lint-ignore no-explicit-any
 type Styled = { v?: unknown; s?: any };
@@ -112,4 +130,29 @@ Deno.test("writeXlsxWithViews keeps every sheet and injects frozen panes", () =>
   const idx = (zip.FullPaths as string[]).findIndex((p) => p.endsWith("xl/worksheets/sheet1.xml"));
   const xml = new TextDecoder().decode(zip.FileIndex[idx].content);
   assertEquals(/<pane xSplit="5" ySplit="1" topLeftCell="F2"[^>]*state="frozen"\/>/.test(xml), true);
+});
+
+Deno.test("with a manual plan: rows follow the plan's order and column X is shown like the manual", () => {
+  const input = sampleInput();
+  input.rows = computeFbaAnalysis(
+    [{ sku: "B", zone: "Delhi_zone", quantity: 3 }, { sku: "A", zone: "Delhi_zone", quantity: 9 }],
+    [],
+    [],
+    (sku) => `Product ${sku}`,
+    [
+      { sku: "B", zone: "Delhi_zone", stockToSend: 100, order: 0 },
+      { sku: "B", zone: "Assam_zone", stockToSend: 100, order: 1 },
+      { sku: "A", zone: "Delhi_zone", stockToSend: null, order: 2 },
+    ],
+  );
+  const ws = buildFbaForecastLayout(input).Sheets[SHEET.analysis];
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" });
+  // Plan order, not "top seller first".
+  assertEquals(rows.map((r) => `${r["skuid"]}:${r["zone"]}`), ["B:Delhi_zone", "B:Assam_zone", "A:Delhi_zone"]);
+  const X = "Stock present per SKU ID for FBA - booked";
+  assertEquals(rows.map((r) => r[X]), [100, 100, ""]);
+  assertEquals(fillOf(cellAt(ws, X, 0)), "FFFF00");
+  // B: U = 12 (Delhi) + 5 (Assam) = 17 -> Delhi 12/17*100 capped at 12, Assam 5; A: X blank -> 0.
+  assertEquals(rows.map((r) => r["to be sent (region wise)"]), [12, 5, 0]);
+  assertEquals(rows.map((r) => r["stock to be ordered per SKUID"]), [17 - 100, 17 - 100, 36]);
 });

@@ -120,6 +120,9 @@ export interface FbfRawRow {
   /** ISO 'YYYY-MM-DD', or '' if the cell was blank/unparseable. */
   pickupDate: string;
   statusRaw: string;
+  /** ISO 'YYYY-MM-DD' from the second STATUS column (the date an Active
+   *  shipment went active), or '' if blank/not a date. */
+  activeDate: string;
 }
 
 // Excel's date epoch is 1899-12-30 (day 0), with a well-known off-by-one
@@ -171,8 +174,11 @@ const FBF_REQUIRED_COLUMNS = ["Product", "SKU ID", "Final shipped quantity", "FC
  * position on some sheets, so a fixed-letter read silently misreads data on
  * those sheets. `headers.indexOf("STATUS")` deliberately finds only the
  * FIRST "STATUS" column — every month sheet also has a second, later
- * column literally named "STATUS" that holds a shipment-tracking text blob
- * and must never be read as the actual status.
+ * column literally named "STATUS" that must never be read as the actual
+ * status. On Active rows that second column holds the date the shipment
+ * went active (e.g. "08.09.2026", confirmed against the seller's manual
+ * recently _act sheet), read here as `activeDate`; anything that isn't a
+ * date there comes through as ''.
  */
 export function parseMonthSheetGrid(grid: unknown[][]): FbfRawRow[] {
   if (grid.length === 0) return [];
@@ -186,6 +192,8 @@ export function parseMonthSheetGrid(grid: unknown[][]): FbfRawRow[] {
   const bookedCol = col("Booked date");
   const pickupCol = col("Pickup Date");
   const statusCol = col("STATUS");
+  const secondStatusCol = headers.lastIndexOf("STATUS");
+  const activeDateCol = secondStatusCol > statusCol ? secondStatusCol : -1;
 
   const indices = [productCol, skuCol, qtyCol, fcCol, bookedCol, pickupCol, statusCol];
   if (indices.some((i) => i === -1)) {
@@ -204,6 +212,7 @@ export function parseMonthSheetGrid(grid: unknown[][]): FbfRawRow[] {
       bookedDate: normalizeSheetDate(row[bookedCol]),
       pickupDate: normalizeSheetDate(row[pickupCol]),
       statusRaw: String(row[statusCol] ?? "").trim(),
+      activeDate: activeDateCol === -1 ? "" : normalizeSheetDate(row[activeDateCol]),
     }));
 }
 
@@ -354,4 +363,48 @@ export function parseUsSlashDate(raw: string): string {
     return `${m[3]}-${month}-${day}`;
   }
   return "";
+}
+
+// ── Manual plan (the seller's own "FBA_forecast sheet(30 days)" workbook) ─
+
+export interface ManualPlanRow {
+  sku: string;
+  zone: string;
+  /** Column X "Stock present per SKU ID for FBA - booked"; null when blank
+   *  or not a number (e.g. a typed "-"). */
+  stock_to_send: number | null;
+  /** 0-based position among the kept rows — the manual's own row order. */
+  row_order: number;
+}
+
+/**
+ * Reads the manual "FBA analysis" sheet's grid (row 0 = headers) into its
+ * typed-in SKU × zone list plus column X, located BY HEADER: "skuid",
+ * "zone" and the header starting "Stock present per SKU ID for FBA".
+ * Rows with no zone typed (SKUs added to the bottom of the list without
+ * their 14 zone rows) are skipped and counted, since they can't match any
+ * zone's data.
+ */
+export function parseManualPlanGrid(grid: unknown[][]): { rows: ManualPlanRow[]; skippedNoZone: number } {
+  const headers = ((grid[0] || []) as unknown[]).map((h) => String(h ?? "").trim());
+  const skuCol = headers.indexOf("skuid");
+  const zoneCol = headers.indexOf("zone");
+  const xCol = headers.findIndex((h) => h.toLowerCase().startsWith("stock present per sku id for fba"));
+  const missing = [skuCol === -1 && "skuid", zoneCol === -1 && "zone", xCol === -1 && "Stock present per SKU ID for FBA - booked"].filter(Boolean);
+  if (missing.length) {
+    throw new Error(`This doesn't look like the manual FBA analysis sheet — missing column(s): ${missing.join(", ")}.`);
+  }
+
+  const rows: ManualPlanRow[] = [];
+  let skippedNoZone = 0;
+  for (const row of grid.slice(1)) {
+    const sku = String(row[skuCol] ?? "").trim();
+    if (!sku) continue;
+    const zone = String(row[zoneCol] ?? "").trim();
+    if (!zone) { skippedNoZone++; continue; }
+    const rawX = row[xCol];
+    const x = typeof rawX === "number" ? rawX : String(rawX ?? "").trim() === "" ? NaN : Number(String(rawX).trim());
+    rows.push({ sku, zone, stock_to_send: Number.isFinite(x) ? x : null, row_order: rows.length });
+  }
+  return { rows, skippedNoZone };
 }

@@ -21,6 +21,8 @@ import {
   cleanStockSnapshotRow,
   selectStockSnapshotDate,
   parseUsSlashDate,
+  parseManualPlanGrid,
+  type ManualPlanRow,
   type FbfRawRow,
   type DailySalesRejectReason,
   type StockSnapshotRejectReason,
@@ -393,10 +395,16 @@ export interface FbfCleanedRow {
   status_raw: string;
 }
 
+/** Active rows also carry the date each shipment went active (the sheet's
+ *  second STATUS column), or null when that cell is blank. */
+export interface FbfActiveRow extends FbfCleanedRow {
+  active_date: string | null;
+}
+
 export interface ParsedFbfDetails {
   booked: FbfCleanedRow[];
   intransit: FbfCleanedRow[];
-  recentlyAct: FbfCleanedRow[];
+  recentlyAct: FbfActiveRow[];
   monthsFound: string[];
   totalRows: number;
   rejectionReasons: Record<string, number>;
@@ -465,7 +473,7 @@ export async function parseAndCleanFbaFbfDetails(file: File, reportDate: string)
   return {
     booked: bookedDeduped.map(toRow),
     intransit: intransitDeduped.map(toRow),
-    recentlyAct: activeDeduped.map(toRow),
+    recentlyAct: activeDeduped.map((r) => ({ ...toRow(r), active_date: r.activeDate || null })),
     monthsFound: monthSheets.map((m) => m.sourceMonth),
     totalRows,
     rejectionReasons,
@@ -477,12 +485,10 @@ export async function parseAndCleanFbaFbfDetails(file: File, reportDate: string)
  * barm_fba_intransit, barm_fba_recently_act) via ONE RPC call, then writes 3
  * upload_history rows (one per target table) — a single workbook upload is
  * really 3 independent table writes bundled into one user action.
- * `active_date` is stamped identically on every barm_fba_recently_act row
- * as `reportDate` — the dashboard's own selected date, NOT the server's
- * real "today" and NOT read from the file.
+ * Each barm_fba_recently_act row keeps its own `active_date`, read from the
+ * file (see parseMonthSheetGrid) — not stamped with the report date.
  */
-export async function commitFbaFbfDetails(fileName: string, parsed: ParsedFbfDetails, reportDate: string): Promise<{ rowsAccepted: number }> {
-  const recentlyActWithDate = parsed.recentlyAct.map((r) => ({ ...r, active_date: reportDate }));
+export async function commitFbaFbfDetails(fileName: string, parsed: ParsedFbfDetails): Promise<{ rowsAccepted: number }> {
   const totalAccepted = parsed.booked.length + parsed.intransit.length + parsed.recentlyAct.length;
 
   const logSuccess = () =>
@@ -536,7 +542,7 @@ export async function commitFbaFbfDetails(fileName: string, parsed: ParsedFbfDet
     const { error } = await supabasePublic.rpc("replace_fba_fbf_details", {
       booked: parsed.booked,
       intransit: parsed.intransit,
-      recently_act: recentlyActWithDate,
+      recently_act: parsed.recentlyAct,
     });
     if (error) throw new Error(error.message);
 
@@ -547,6 +553,74 @@ export async function commitFbaFbfDetails(fileName: string, parsed: ParsedFbfDet
     await logFailure(message);
     throw err;
   }
+}
+
+// ── 4. Manual FBA_forecast sheet (barm_fba_manual_plan) ──────────────────
+
+export interface ParsedManualPlan {
+  rows: ManualPlanRow[];
+  skuCount: number;
+  withStockToSend: number;
+  skippedNoZone: number;
+}
+
+/**
+ * Phase 1: read the seller's own "FBA_forecast sheet(30 days)" workbook —
+ * only its "FBA analysis" sheet is parsed (the file is ~14 MB) — into the
+ * SKU × zone list and column X. No DB write. Not date-dependent.
+ */
+export async function parseAndCleanFbaManualPlan(file: File): Promise<ParsedManualPlan> {
+  assertFileExtension(file, [".xlsx", ".xlsm", ".xls"]);
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array", sheets: ["FBA analysis"] });
+  const ws = wb.Sheets["FBA analysis"];
+  if (!ws) throw new Error(`"${file.name}" has no "FBA analysis" sheet — upload the manual FBA_forecast sheet workbook.`);
+  const grid = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: "", raw: true });
+  const { rows, skippedNoZone } = parseManualPlanGrid(grid);
+  if (rows.length === 0) throw new Error('No SKU rows with a zone were found in the "FBA analysis" sheet.');
+  return {
+    rows,
+    skuCount: new Set(rows.map((r) => r.sku)).size,
+    withStockToSend: rows.filter((r) => r.stock_to_send !== null).length,
+    skippedNoZone,
+  };
+}
+
+/** Phase 2: atomically replace barm_fba_manual_plan via RPC, then log the audit row. */
+export async function commitFbaManualPlan(fileName: string, parsed: ParsedManualPlan): Promise<{ rowsAccepted: number }> {
+  const targetTable = "barm_fba_manual_plan";
+  const rowsReceived = parsed.rows.length + parsed.skippedNoZone;
+  const rejectionReasons: Record<string, number> = parsed.skippedNoZone ? { no_zone: parsed.skippedNoZone } : {};
+  try {
+    const { data, error } = await supabasePublic.rpc("replace_barm_fba_manual_plan", { rows: parsed.rows });
+    if (error) throw new Error(error.message);
+    if (Number(data) !== parsed.rows.length) throw new Error(`Saved ${data} rows, expected ${parsed.rows.length}.`);
+    await recordUploadHistorySafe({
+      file_name: fileName, target_table: targetTable, rows_received: rowsReceived,
+      rows_accepted: parsed.rows.length, rows_rejected: parsed.skippedNoZone, status: "success", rejection_reasons: rejectionReasons,
+    });
+    return { rowsAccepted: parsed.rows.length };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await recordUploadHistorySafe({
+      file_name: fileName, target_table: targetTable, rows_received: rowsReceived,
+      rows_accepted: 0, rows_rejected: rowsReceived, status: "failed", rejection_reasons: rejectionReasons, error_message: message,
+    });
+    throw err;
+  }
+}
+
+export interface FbaManualPlanInfo {
+  rowCount: number;
+  uploadedAt: string | null;
+}
+
+export async function fetchFbaManualPlanInfo(): Promise<FbaManualPlanInfo> {
+  const { count, error } = await supabasePublic.from("barm_fba_manual_plan").select("*", { count: "exact", head: true });
+  if (error) return { rowCount: 0, uploadedAt: null };
+  const { data } = await supabasePublic.from("barm_fba_manual_plan").select("created_at").order("created_at", { ascending: false }).limit(1);
+  const uploadedAt = data && data.length > 0 ? String((data[0] as Record<string, unknown>).created_at).slice(0, 10) : null;
+  return { rowCount: count || 0, uploadedAt };
 }
 
 // ── "data on file" info for the upload cards ────────────────────────────

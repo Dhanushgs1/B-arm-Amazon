@@ -24,6 +24,11 @@ import {
   fetchFbaDailySalesInfo,
   fetchFbaStockSnapshotInfo,
   fetchFbaFbfDetailsInfo,
+  fetchFbaManualPlanInfo,
+  parseAndCleanFbaManualPlan,
+  commitFbaManualPlan,
+  type FbaManualPlanInfo,
+  type ParsedManualPlan,
   fetchRecentUploadHistory,
   type FbaDataInfo,
   type FbaFbfDetailsInfo,
@@ -342,7 +347,7 @@ function FbaFbfDetailsCard({
     if (state.status !== "preview" || !state.parsed || !state.fileName) return;
     setState((prev) => ({ ...prev, status: "committing" }));
     try {
-      const res = await commitFbaFbfDetails(state.fileName, state.parsed, reportDate);
+      const res = await commitFbaFbfDetails(state.fileName, state.parsed);
       setState({
         status: "done",
         fileName: state.fileName,
@@ -417,6 +422,114 @@ function FbaFbfDetailsCard({
               {" "}(of {state.parsed.totalRows} rows across those sheets)
             </p>
             <RejectionBreakdown reasons={state.parsed.rejectionReasons} />
+            <div className="flex gap-2 pt-1">
+              <button onClick={confirm} className="px-3 py-1.5 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold rounded-lg">Confirm Upload</button>
+              <button onClick={() => setState({ status: "idle" })} className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-border hover:bg-muted/50">Cancel</button>
+            </div>
+          </div>
+        )}
+        {state.status === "committing" && (
+          <span className="flex items-center gap-1.5 text-muted-foreground"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving to Supabase…</span>
+        )}
+        {state.status === "done" && (
+          <span className="flex items-center gap-1.5 text-green-600 dark:text-green-400 font-semibold"><CheckCircle2 size={14} /> {state.message}</span>
+        )}
+        {state.status === "error" && state.error && <ErrorBanner message={state.error} />}
+      </div>
+    </div>
+  );
+}
+
+// ── 4. Manual FBA_forecast sheet (barm_fba_manual_plan) ─────────────────
+
+function FbaManualPlanCard({ onCommitted, dataInfo }: { onCommitted: () => void; dataInfo: FbaManualPlanInfo | undefined }) {
+  const [state, setState] = useState<PreviewState<ParsedManualPlan>>({ status: "idle" });
+  const [dragOver, setDragOver] = useState(false);
+
+  const handleFile = async (file: File) => {
+    setState({ status: "parsing", fileName: file.name });
+    try {
+      const parsed = await parseAndCleanFbaManualPlan(file);
+      setState({ status: "preview", fileName: file.name, parsed });
+    } catch (err) {
+      setState({ status: "error", fileName: file.name, error: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  const confirm = async () => {
+    if (state.status !== "preview" || !state.parsed || !state.fileName) return;
+    setState((prev) => ({ ...prev, status: "committing" }));
+    try {
+      const res = await commitFbaManualPlan(state.fileName, state.parsed);
+      setState({ status: "done", fileName: state.fileName, message: `${res.rowsAccepted} SKU × zone rows saved (${state.parsed.skuCount} SKUs)` });
+      onCommitted();
+    } catch (err) {
+      setState({ status: "error", fileName: state.fileName, error: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  return (
+    <div className="glass rounded-2xl border-2 border-primary/30 p-6 shadow-sm">
+      <div className="flex items-center gap-3 mb-2">
+        <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary">
+          <FileSpreadsheet size={20} />
+        </div>
+        <div>
+          <h3 className="font-bold text-sm text-foreground">4. Manual FBA Forecast Sheet</h3>
+          <span className="text-[10px] text-muted-foreground uppercase font-black tracking-wider">XLSX · barm_fba_manual_plan</span>
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground mb-4">
+        Your own &quot;FBA_forecast sheet(30 days)&quot; workbook. Only its FBA analysis sheet is read: the SKU list
+        and zones (every row, in your order) and column X &quot;Stock present per SKU ID for FBA - booked&quot;. The
+        report then lists every one of those rows and works out &quot;to be sent&quot; and &quot;stock to be
+        ordered&quot; from X, exactly like your sheet. Upload it again whenever you change the SKU list or X.
+      </p>
+
+      {(state.status === "idle" || state.status === "parsing" || state.status === "error") && (
+        <>
+          <label
+            htmlFor="fba-manual-plan-upload"
+            className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl py-8 transition-colors cursor-pointer ${
+              dragOver ? "border-primary" : "border-border hover:border-primary/50"
+            }`}
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files?.[0]; if (f) handleFile(f); }}
+          >
+            <UploadCloud size={24} className="text-muted-foreground" />
+            <span className="text-xs text-muted-foreground px-2 text-center truncate max-w-full">
+              {state.fileName || "Click or drop the FBA_forecast sheet(30 days) .xlsx here"}
+            </span>
+          </label>
+          <input
+            id="fba-manual-plan-upload"
+            type="file"
+            accept=".xlsx,.xlsm,.xls"
+            className="hidden"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = ""; }}
+          />
+        </>
+      )}
+
+      {dataInfo && (
+        <p className="text-[10px] text-muted-foreground mt-1">
+          {dataInfo.rowCount ? `On file: ${dataInfo.rowCount} SKU × zone rows (uploaded ${dataInfo.uploadedAt})` : "Not uploaded — the report lists only zones that have data, and \"to be sent\" is the full need"}
+        </p>
+      )}
+
+      <div className="mt-3 text-xs min-h-[1.25rem] space-y-2">
+        {state.status === "parsing" && (
+          <span className="flex items-center gap-1.5 text-muted-foreground"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Reading the FBA analysis sheet…</span>
+        )}
+        {state.status === "preview" && state.parsed && (
+          <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-1.5">
+            <p className="font-semibold text-foreground">
+              {state.parsed.rows.length} SKU × zone rows · {state.parsed.skuCount} SKUs · {state.parsed.withStockToSend} rows with an X value
+            </p>
+            {state.parsed.skippedNoZone > 0 && (
+              <p className="text-muted-foreground">{state.parsed.skippedNoZone} rows skipped — SKU typed with no zone</p>
+            )}
             <div className="flex gap-2 pt-1">
               <button onClick={confirm} className="px-3 py-1.5 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold rounded-lg">Confirm Upload</button>
               <button onClick={() => setState({ status: "idle" })} className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-border hover:bg-muted/50">Cancel</button>
@@ -655,17 +768,20 @@ export default function FbaPage() {
   const [dailySalesInfo, setDailySalesInfo] = useState<FbaDataInfo | undefined>(undefined);
   const [stockInfo, setStockInfo] = useState<FbaDataInfo | undefined>(undefined);
   const [fbfInfo, setFbfInfo] = useState<FbaFbfDetailsInfo | undefined>(undefined);
+  const [manualPlanInfo, setManualPlanInfo] = useState<FbaManualPlanInfo | undefined>(undefined);
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
 
   const refreshDailySalesInfo = useCallback(async () => setDailySalesInfo(await fetchFbaDailySalesInfo()), []);
   const refreshStockInfo = useCallback(async () => setStockInfo(await fetchFbaStockSnapshotInfo()), []);
   const refreshFbfInfo = useCallback(async () => setFbfInfo(await fetchFbaFbfDetailsInfo()), []);
+  const refreshManualPlanInfo = useCallback(async () => setManualPlanInfo(await fetchFbaManualPlanInfo()), []);
 
   useEffect(() => {
     refreshDailySalesInfo();
     refreshStockInfo();
     refreshFbfInfo();
-  }, [refreshDailySalesInfo, refreshStockInfo, refreshFbfInfo]);
+    refreshManualPlanInfo();
+  }, [refreshDailySalesInfo, refreshStockInfo, refreshFbfInfo, refreshManualPlanInfo]);
 
   const bumpHistory = () => setHistoryRefreshKey((k) => k + 1);
 
@@ -680,7 +796,7 @@ export default function FbaPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight mb-0.5">FBA Forecast</h1>
         <p className="text-muted-foreground text-sm">
-          Upload the 3 raw FBA reports, then generate a fresh FBA Analysis workbook (zone assignment, 120-day
+          Upload the 3 raw FBA reports (plus, optionally, your manual FBA forecast sheet), then generate a fresh FBA Analysis workbook (zone assignment, 120-day
           forecast, stock needed, days-to-stockout) — computed server-side, never in this browser tab.
         </p>
         <div
@@ -697,6 +813,7 @@ export default function FbaPage() {
       <FbaDailySalesCard reportDate={endDate} onCommitted={() => { refreshDailySalesInfo(); bumpHistory(); }} dataInfo={dailySalesInfo} />
       <FbaStockSnapshotCard reportDate={endDate} onCommitted={() => { refreshStockInfo(); bumpHistory(); }} dataInfo={stockInfo} />
       <FbaFbfDetailsCard reportDate={endDate} onCommitted={() => { refreshFbfInfo(); bumpHistory(); }} dataInfo={fbfInfo} />
+      <FbaManualPlanCard onCommitted={() => { refreshManualPlanInfo(); bumpHistory(); }} dataInfo={manualPlanInfo} />
 
       <FbaGenerateDownloadSection reportDate={endDate} readyToGenerate={readyToGenerate} />
 

@@ -12,6 +12,7 @@ import {
   isWithinTrailingWindow,
   selectStockSnapshotDate,
   parseUsSlashDate,
+  parseManualPlanGrid,
 } from "./fbaForecastRules.ts";
 
 // ── classifyStatus ───────────────────────────────────────────────────────
@@ -93,6 +94,26 @@ test("parseMonthSheetGrid locates columns by header name and takes only the firs
   assert.equal(rows[0].statusRaw, "Booked"); // not the tracking-blob second STATUS column
   assert.equal(rows[0].bookedDate, "2026-09-01"); // DD/MM/YYYY -> ISO
   assert.equal(rows[0].pickupDate, ""); // blank cell stays blank, not "Invalid Date"
+});
+
+test("parseMonthSheetGrid reads the active date from the second STATUS column", () => {
+  const grid = [
+    ["Product", "SKU ID", "Initial booked quantity", "Final shipped quantity", "FC", "Booked date", "Pickup Date", "MRP", "FNSKU IDS", "BOX", "ASIN", "STATUS", "COMMENTS", "STATUS", "FBA Tracking Number"],
+    ["Mucus removal device", "B-MRD-WT-2", 5, 5, "HYD3", "08.08.2026", "29.08.2026", 2999, "X1", "", "A1", "active", "", "08.09.2026", ""],
+    ["Widget", "SKU-9", 5, 5, "HYD3", "08.08.2026", "29.08.2026", 2999, "X1", "", "A1", "active", "", 46291, ""], // Excel serial = 2026-09-26
+    ["Widget", "SKU-8", 5, 5, "HYD3", "08.08.2026", "", 2999, "X1", "", "A1", "Booked", "", "FBA STA (01/09/2026 06:16)-LKO1", ""],
+  ];
+  const rows = parseMonthSheetGrid(grid);
+  assert.equal(rows[0].statusRaw, "active");
+  assert.equal(rows[0].activeDate, "2026-09-08");
+  assert.equal(rows[1].activeDate, "2026-09-26");
+  assert.equal(rows[2].activeDate, ""); // non-date text never becomes a date
+  // A sheet with only one STATUS column has no active date.
+  const single = parseMonthSheetGrid([
+    ["Product", "SKU ID", "Final shipped quantity", "FC", "Booked date", "Pickup Date", "STATUS"],
+    ["Widget", "SKU-1", 1, "BLR", "", "", "active"],
+  ]);
+  assert.equal(single[0].activeDate, "");
 });
 
 test("parseMonthSheetGrid throws when a required column is missing", () => {
@@ -379,4 +400,30 @@ test("stock snapshot pipeline: real CSV shape end to end for reportDate=2026-09-
   assert.equal(results[0].reason, "older_stock_date");
   assert.equal(results[2].reason, "vsnc");
   assert.equal(results[3].reason, "non_sellable");
+});
+
+// ── parseManualPlanGrid ──────────────────────────────────────────────────
+
+test("parseManualPlanGrid reads skuid, zone and column X from the manual FBA analysis sheet, in row order", () => {
+  const grid = [
+    ["S.No", "skuid", "product name", "zone", "id + zone", "Total orders", "Stock needed REGION WISE", " Stock present per SKU ID for FBA - booked - inransit ", "to be send (region wise)"],
+    ["", "B-SENBR-1", "Sensory Brush", "Karnataka_zone", "", 108, 264, 1500, 264],
+    ["", " B-SENBR-1 ", "Sensory Brush", "WestBengal_zone", "", 114, 354, "1500", 224],
+    ["", "B-FOAM-1", "Foam", "Karnataka_zone", "", 0, 5, "-", 0], // text X -> blank
+    ["", "B-FOAM-1", "Foam", "Assam_zone", "", 0, 5, "", 0],
+    ["", "B-BP-MON-5", "", "", "", "", "", "", ""], // no zone typed -> skipped
+    ["", "", "", "", "", "", "", "", ""],
+  ];
+  const { rows, skippedNoZone } = parseManualPlanGrid(grid);
+  assert.deepEqual(rows, [
+    { sku: "B-SENBR-1", zone: "Karnataka_zone", stock_to_send: 1500, row_order: 0 },
+    { sku: "B-SENBR-1", zone: "WestBengal_zone", stock_to_send: 1500, row_order: 1 },
+    { sku: "B-FOAM-1", zone: "Karnataka_zone", stock_to_send: null, row_order: 2 },
+    { sku: "B-FOAM-1", zone: "Assam_zone", stock_to_send: null, row_order: 3 },
+  ]);
+  assert.equal(skippedNoZone, 1);
+});
+
+test("parseManualPlanGrid throws when the sheet isn't the manual FBA analysis layout", () => {
+  assert.throws(() => parseManualPlanGrid([["SKU", "Zone"], ["A", "Z"]]), /skuid|zone|Stock present/);
 });

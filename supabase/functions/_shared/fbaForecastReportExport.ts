@@ -14,29 +14,36 @@
 // the report_date the user uploaded against. Only the GENERATED REPORT
 // itself (this file's caller) is keyed by report_date.
 //
-// There is no manual shipment-cap input anywhere in this pipeline — "To Be
-// Sent" and "Stock To Be Ordered" are the calculation engine's own
-// already-computed need, surfaced directly (see fbaForecastCalc.ts).
+// When the seller's manual FBA analysis sheet has been uploaded
+// (barm_fba_manual_plan), its SKU × zone list and column X drive the row
+// list and the "to be sent" / "stock to be ordered" formulas exactly as in
+// that sheet; without it, those are the uncapped need (see
+// fbaForecastCalc.ts).
 import XLSX from "npm:xlsx-js-style@1.2.0";
 import { fetchAllRows } from "./deps/amazonReportShared.ts";
 import { fetchProductMarketingMap, buildProductMarketingResolver } from "./deps/productMarketingUpload.ts";
 import { shipStateToZone, fcToZone } from "./fbaZones.ts";
-import { computeFbaAnalysis, type SalesRow, type StockRow, type StatusRow, type StatusCategory } from "./fbaForecastCalc.ts";
+import { computeFbaAnalysis, type SalesRow, type StockRow, type StatusRow, type StatusCategory, type PlanRow } from "./fbaForecastCalc.ts";
 import { buildFbaForecastLayout } from "./fbaForecastReportLayout.ts";
 
 interface RawSalesRow { purchase_date: string; fulfillment_channel: string | null; product_name: string; sku: string; quantity: number; ship_state: string; }
 interface RawStockRow { report_date: string; fnsku: string | null; asin: string | null; msku: string; disposition: string | null; ending_warehouse_balance: number; fulfillment_center: string; }
 interface RawStatusRow { product: string | null; sku: string; quantity: number; fc: string; status_raw: string | null; booked_date: string | null; pickup_date: string | null; source_month: string; active_date?: string | null; }
 
+interface RawPlanRow { row_order: number; sku: string; zone: string; stock_to_send: number | string | null; }
+
 async function fetchRawData() {
-  const [salesRaw, stockRaw, bookedRaw, intransitRaw, activeRaw] = await Promise.all([
+  const [salesRaw, stockRaw, bookedRaw, intransitRaw, activeRaw, planRaw] = await Promise.all([
     fetchAllRows("barm_fba_daily_sales", (q) => q) as Promise<RawSalesRow[]>,
     fetchAllRows("barm_fba_stock_snapshot", (q) => q) as Promise<RawStockRow[]>,
     fetchAllRows("barm_fba_booked", (q) => q) as Promise<RawStatusRow[]>,
     fetchAllRows("barm_fba_intransit", (q) => q) as Promise<RawStatusRow[]>,
     fetchAllRows("barm_fba_recently_act", (q) => q) as Promise<RawStatusRow[]>,
+    // The seller's manual FBA analysis sheet (SKU × zone list + column X);
+    // empty until it has been uploaded.
+    fetchAllRows("barm_fba_manual_plan", (q) => q, ["row_order", "id"]) as Promise<RawPlanRow[]>,
   ]);
-  return { salesRaw, stockRaw, bookedRaw, intransitRaw, activeRaw };
+  return { salesRaw, stockRaw, bookedRaw, intransitRaw, activeRaw, planRaw };
 }
 
 export interface FbaForecastReportResult {
@@ -49,7 +56,13 @@ export interface FbaForecastReportResult {
 /** `reportDate` is passed through to the layout only — the raw tables are
  *  never filtered by it (see the file comment above). */
 export async function buildFbaForecastReportWorkbook(reportDate: string | null = null): Promise<FbaForecastReportResult> {
-  const { salesRaw, stockRaw, bookedRaw, intransitRaw, activeRaw } = await fetchRawData();
+  const { salesRaw, stockRaw, bookedRaw, intransitRaw, activeRaw, planRaw } = await fetchRawData();
+  const plan: PlanRow[] | undefined = planRaw.length === 0 ? undefined : planRaw.map((p) => ({
+    sku: p.sku,
+    zone: p.zone,
+    stockToSend: p.stock_to_send === null || p.stock_to_send === "" ? null : Number(p.stock_to_send),
+    order: p.row_order,
+  }));
 
   const salesRows: SalesRow[] = salesRaw.map((r) => ({ sku: r.sku, zone: shipStateToZone(r.ship_state), quantity: r.quantity }));
   const stockRows: StockRow[] = stockRaw.map((r) => ({ sku: r.msku, zone: fcToZone(r.fulfillment_center), quantity: r.ending_warehouse_balance }));
@@ -71,7 +84,7 @@ export async function buildFbaForecastReportWorkbook(reportDate: string | null =
   const marketingResolver = buildProductMarketingResolver(marketingMap);
   const resolveProductName = (sku: string) => marketingResolver.resolveName(sku, productNameBySku.get(sku) || sku);
 
-  const rows = computeFbaAnalysis(salesRows, stockRows, statusRows, resolveProductName);
+  const rows = computeFbaAnalysis(salesRows, stockRows, statusRows, resolveProductName, plan);
 
   const zoneStatus = (r: RawStatusRow) => ({ ...r, zone: fcToZone(r.fc) });
   const wb = buildFbaForecastLayout({

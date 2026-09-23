@@ -5,12 +5,20 @@
 // specs/2026-09-22-fba-forecast-refresh-design.md for the column-by-column
 // derivation). Grain: one output row per (sku, zone). Do NOT modify these
 // formulas — they are reverse-engineered from the user's live workbook, not
-// guessed, and this feature's brief explicitly forbids changing them.
+// guessed, and this feature's brief explicitly forbids changing them. The
+// optional manual plan (the sheet's own SKU × zone list and column X) was
+// verified by feeding the manual workbook's own raw sheets through this
+// function: every G–AA cell matched except where the manual itself errors
+// (a text "-" in X) or drops an unmapped-zone sale.
 
 export interface SalesRow { sku: string; zone: string; quantity: number; }
 export interface StockRow { sku: string; zone: string; quantity: number; }
 export type StatusCategory = "booked" | "picked_up" | "active";
 export interface StatusRow { sku: string; zone: string; quantity: number; category: StatusCategory; }
+/** One row of the seller's own manual "FBA analysis" sheet: its typed-in
+ *  SKU × zone list (column B/D) and column X "Stock present per SKU ID for
+ *  FBA - booked" (null when blank), in the sheet's row order. */
+export interface PlanRow { sku: string; zone: string; stockToSend: number | null; order: number; }
 
 export interface FbaAnalysisRow {
   sku: string;
@@ -32,6 +40,10 @@ export interface FbaAnalysisRow {
   bookedPlusIntransitZone: number;
   stockNeededAfterInboundZone: number;
   totalStockNeededAfterInboundSku: number;
+  /** Manual column X for this row, or null (no plan, or blank in the plan). */
+  stockToSendSku: number | null;
+  /** Position in the manual plan, or null for a row the plan doesn't list. */
+  planOrder: number | null;
   activeZoneAccumulated: number;
   toBeSentZone: number;
   stockToBeOrderedZone: number;
@@ -49,11 +61,26 @@ function sumBy<T>(rows: T[], keyOf: (r: T) => string, valueOf: (r: T) => number)
 
 const rowKey = (sku: string, zone: string) => `${sku} ${zone}`;
 
+// Excel's ROUND(x, 0): halves round away from zero (JS Math.round rounds
+// -2.5 to -2, Excel to -3).
+const excelRound = (x: number) => Math.sign(x) * Math.round(Math.abs(x));
+
+/**
+ * `plan` (optional) is the seller's manual FBA analysis sheet. Without it,
+ * rows exist only where there is data and "to be sent" is the full need.
+ * With it — exactly like the manual — every plan row is listed (in plan
+ * order, empty zones flooring at a forecast of 5), then any data rows the
+ * plan doesn't list, and:
+ *   to be sent          Y = IFERROR(ROUND(MIN(U/V*X, U), 0), 0)
+ *   stock to be ordered Z = V - X
+ * where X is the plan's typed-in stock for that row (blank = 0).
+ */
 export function computeFbaAnalysis(
   salesRows: SalesRow[],
   stockRows: StockRow[],
   statusRows: StatusRow[],
-  resolveProductName: (sku: string) => string
+  resolveProductName: (sku: string) => string,
+  plan?: PlanRow[]
 ): FbaAnalysisRow[] {
   const salesByKey = sumBy(salesRows, (r) => rowKey(r.sku, r.zone), (r) => r.quantity);
   const stockByKey = sumBy(stockRows, (r) => rowKey(r.sku, r.zone), (r) => r.quantity);
@@ -66,7 +93,14 @@ export function computeFbaAnalysis(
   // zero sales, or sales in a zone with zero stock, and both must still
   // appear (this exactly matches PIVOT_30/PIVOT_fba/etc. each being keyed
   // off the union of "id + zone" values encountered anywhere in the sheet).
-  const allKeys = new Set<string>([...salesByKey.keys(), ...stockByKey.keys(), ...bookedByKey.keys(), ...intransitByKey.keys(), ...activeByKey.keys()]);
+  // With a manual plan, its rows come first in its own order (Set keeps
+  // insertion order), then data rows it doesn't list.
+  const planByKey = new Map<string, PlanRow>();
+  for (const p of [...(plan || [])].sort((a, b) => a.order - b.order)) {
+    const key = rowKey(p.sku, p.zone);
+    if (!planByKey.has(key)) planByKey.set(key, p);
+  }
+  const allKeys = new Set<string>([...planByKey.keys(), ...salesByKey.keys(), ...stockByKey.keys(), ...bookedByKey.keys(), ...intransitByKey.keys(), ...activeByKey.keys()]);
 
   interface Zoned { sku: string; zone: string; sales30d: number; forecast120dZone: number; currentStockZone: number; bookedZone: number; intransitZone: number; }
   const zoned: Zoned[] = [];
@@ -126,11 +160,19 @@ export function computeFbaAnalysis(
     const totalStockNeededAfterInboundSku = skuTotalStockNeededAfterInbound.get(r.sku) || 0;
     const stockNeededZone = r.forecast120dZone - r.currentStockZone;
     const stockNeededAfterInbound = stockNeededAfterInboundZone.get(key) || 0;
-    // No manual shipment-cap input anymore — "how much to send" and "how
-    // much to order" are simply "however much is actually needed", i.e.
-    // the already-computed need surfaced directly (no batch-size cap to
-    // ratio against).
-    const toBeSentZone = stockNeededAfterInbound;
+    // Without a plan: "however much is actually needed", surfaced directly.
+    // With a plan: the manual's own Y/Z formulas against its column X.
+    const planRow = planByKey.get(key);
+    const stockToSendSku = planRow ? planRow.stockToSend : null;
+    let toBeSentZone = stockNeededAfterInbound;
+    let stockToBeOrderedZone = totalStockNeededAfterInboundSku;
+    if (plan) {
+      const x = stockToSendSku ?? 0;
+      toBeSentZone = totalStockNeededAfterInboundSku === 0
+        ? 0
+        : excelRound(Math.min((stockNeededAfterInbound / totalStockNeededAfterInboundSku) * x, stockNeededAfterInbound));
+      stockToBeOrderedZone = totalStockNeededAfterInboundSku - x;
+    }
     const daysUntilStockout: number | "--" = r.sales30d === 0
       ? "--"
       : Math.round((r.currentStockZone + r.bookedZone + r.intransitZone) / (r.sales30d / 30));
@@ -155,9 +197,11 @@ export function computeFbaAnalysis(
       bookedPlusIntransitZone: r.bookedZone + r.intransitZone,
       stockNeededAfterInboundZone: stockNeededAfterInbound,
       totalStockNeededAfterInboundSku,
+      stockToSendSku,
+      planOrder: planRow ? planRow.order : null,
       activeZoneAccumulated: activeByKey.get(key) || 0,
       toBeSentZone,
-      stockToBeOrderedZone: totalStockNeededAfterInboundSku,
+      stockToBeOrderedZone,
       daysUntilStockout,
     });
   }

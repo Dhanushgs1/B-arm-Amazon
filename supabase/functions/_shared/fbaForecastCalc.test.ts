@@ -116,3 +116,67 @@ Deno.test("computeFbaAnalysis: zero 30-day sales floors the forecast at 5 and bl
   assertEquals(c.forecast120dZone, 5);
   assertEquals(c.daysUntilStockout, "--");
 });
+
+// ── Manual plan (the seller's own FBA analysis sheet: SKU × zone list + X) ──
+// With a plan, every plan row appears (in plan order) even with no data, and
+// "to be sent" / "stock to be ordered" follow the manual's own formulas:
+// Y = IFERROR(ROUND(MIN(U/V*X, U),0),0) and Z = V - X.
+Deno.test("computeFbaAnalysis with a manual plan: lists every plan row in plan order, empty zones floor at 5", () => {
+  const plan = [
+    { sku: "A", zone: "Z2", stockToSend: 100, order: 0 },
+    { sku: "A", zone: "Z1", stockToSend: 100, order: 1 },
+    { sku: "A", zone: "Z3", stockToSend: 100, order: 2 }, // no data at all
+    { sku: "D", zone: "Z1", stockToSend: null, order: 3 }, // SKU with no data anywhere
+  ];
+  const rows = computeFbaAnalysis(salesRows, stockRows, statusRows, resolveProductName, plan);
+  // Plan rows first, in plan order; data rows missing from the plan (B/Z1) follow.
+  assertEquals(rows.map((r) => `${r.sku}/${r.zone}`), ["A/Z2", "A/Z1", "A/Z3", "D/Z1", "B/Z1"]);
+  const az3 = rowFor(rows, "A", "Z3");
+  assertEquals(az3.sales30d, 0);
+  assertEquals(az3.forecast120dZone, 5);
+  assertEquals(az3.stockNeededAfterInboundZone, 5);
+  // The empty zone's 5 now counts in A's SKU totals (240 + 120 + 5).
+  assertEquals(rowFor(rows, "A", "Z1").totalForecast120dSku, 365);
+  assertEquals(rowFor(rows, "D", "Z1").forecast120dZone, 5);
+  assertEquals(rows.map((r) => r.planOrder), [0, 1, 2, 3, null]);
+});
+
+Deno.test("computeFbaAnalysis with a manual plan: to be sent = ROUND(MIN(U/V*X, U)), stock to be ordered = V - X", () => {
+  const plan = [
+    { sku: "A", zone: "Z1", stockToSend: 100, order: 0 },
+    { sku: "A", zone: "Z2", stockToSend: 100, order: 1 },
+    { sku: "B", zone: "Z1", stockToSend: null, order: 2 },
+  ];
+  const rows = computeFbaAnalysis(salesRows, stockRows, statusRows, resolveProductName, plan);
+  const az1 = rowFor(rows, "A", "Z1"); // U=180, V=288, X=100 -> 180/288*100 = 62.5 -> 63
+  const az2 = rowFor(rows, "A", "Z2"); // U=108 -> 108/288*100 = 37.5 -> 38
+  const bz1 = rowFor(rows, "B", "Z1"); // X blank -> 0
+  assertEquals(az1.stockToSendSku, 100);
+  assertEquals(az1.toBeSentZone, 63);
+  assertEquals(az2.toBeSentZone, 38);
+  assertEquals(az1.stockToBeOrderedZone, 188);
+  assertEquals(bz1.stockToSendSku, null);
+  assertEquals(bz1.toBeSentZone, 0);
+  assertEquals(bz1.stockToBeOrderedZone, 580);
+
+  // X larger than the whole need: capped at the zone's own need U.
+  const big = computeFbaAnalysis(salesRows, stockRows, statusRows, resolveProductName,
+    [{ sku: "A", zone: "Z1", stockToSend: 5000, order: 0 }, { sku: "A", zone: "Z2", stockToSend: 5000, order: 1 }]);
+  assertEquals(rowFor(big, "A", "Z1").toBeSentZone, 180);
+  assertEquals(rowFor(big, "A", "Z1").stockToBeOrderedZone, 288 - 5000);
+});
+
+Deno.test("computeFbaAnalysis with a manual plan: V = 0 gives 0 to send (the manual's IFERROR)", () => {
+  const rows = computeFbaAnalysis([], [{ sku: "E", zone: "Z1", quantity: 50 }], [], () => "E",
+    [{ sku: "E", zone: "Z1", stockToSend: 20, order: 0 }]);
+  const e = rowFor(rows, "E", "Z1"); // forecast 5, stock 50 -> U = 0, V = 0
+  assertEquals(e.totalStockNeededAfterInboundSku, 0);
+  assertEquals(e.toBeSentZone, 0);
+  assertEquals(e.stockToBeOrderedZone, -20);
+});
+
+Deno.test("computeFbaAnalysis without a plan keeps the uncapped behaviour and no X", () => {
+  const rows = computeFbaAnalysis(salesRows, stockRows, statusRows, resolveProductName);
+  assertEquals(rowFor(rows, "A", "Z1").stockToSendSku, null);
+  assertEquals(rowFor(rows, "A", "Z1").planOrder, null);
+});

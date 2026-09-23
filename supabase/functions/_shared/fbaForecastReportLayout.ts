@@ -86,6 +86,19 @@ function isoToDotted(iso: string): string {
   return m ? `${m[3]}.${m[2]}.${m[1]}` : iso;
 }
 
+export const RECENT_ACTIVE_DAYS = 3;
+
+// The RECENT_ACTIVE_DAYS ISO dates ending on the report date, oldest first.
+// Without a report date, falls back to the latest active date on file.
+function recentActiveDates(reportDate: string | null, active: LayoutStatusRow[]): string[] {
+  const latest = active.map((a) => (a.active_date || "").slice(0, 10)).filter(Boolean).sort().pop();
+  const end = /^\d{4}-\d{2}-\d{2}/.test(reportDate || "") ? reportDate!.slice(0, 10) : latest;
+  if (!end) return [];
+  const endMs = Date.parse(`${end}T00:00:00Z`);
+  return Array.from({ length: RECENT_ACTIVE_DAYS }, (_, i) =>
+    new Date(endMs - (RECENT_ACTIVE_DAYS - 1 - i) * 86400000).toISOString().slice(0, 10));
+}
+
 const zoneRank = (zone: string) => {
   const i = ZONE_ORDER.indexOf(zone);
   return i === -1 ? ZONE_ORDER.length : i;
@@ -163,11 +176,19 @@ const rawBody = (bold: boolean): Style => ({ font: calibri({ bold }) });
 // Same left-to-right order and headings as the manual "FBA analysis" sheet.
 // Not carried over: F "Total peak orders (30d) in last 14 months" and W
 // "Current Stock present per SKU ID for FBA" (both blank in the manual
-// sheet), and X "Stock present per SKU ID for FBA - booked" (a typed-in
-// shipment cap this report deliberately doesn't use).
+// sheet). X "Stock present per SKU ID for FBA - booked" comes from the
+// uploaded manual sheet (barm_fba_manual_plan).
+// With a manual plan, its rows keep the manual's own row order and any rows
+// it doesn't list follow; otherwise top seller first, zones in manual order.
 function orderAnalysisRows(rows: FbaAnalysisRow[]): FbaAnalysisRow[] {
-  return [...rows].sort((a, b) =>
-    b.totalOrders30dSku - a.totalOrders30dSku || a.sku.localeCompare(b.sku) || zoneRank(a.zone) - zoneRank(b.zone) || a.zone.localeCompare(b.zone));
+  const byData = (a: FbaAnalysisRow, b: FbaAnalysisRow) =>
+    b.totalOrders30dSku - a.totalOrders30dSku || a.sku.localeCompare(b.sku) || zoneRank(a.zone) - zoneRank(b.zone) || a.zone.localeCompare(b.zone);
+  return [...rows].sort((a, b) => {
+    if (a.planOrder !== null && b.planOrder !== null) return a.planOrder - b.planOrder;
+    if (a.planOrder !== null) return -1;
+    if (b.planOrder !== null) return 1;
+    return byData(a, b);
+  });
 }
 
 function buildAnalysisSheet(ordered: FbaAnalysisRow[], activeDates: string[], activeByKeyDate: Map<string, number>): XLSX.WorkSheet {
@@ -201,19 +222,17 @@ function buildAnalysisSheet(ordered: FbaAnalysisRow[], activeDates: string[], ac
     col("Booked + Intransit to FBA", 10, (r) => r.bookedPlusIntransitZone, { headerFill: C.headerYellow }),
     col("stock needed after intransit", 10, (r) => r.stockNeededAfterInboundZone),
     col("total stock needed after intransit (all regions)", 11, (r) => r.totalStockNeededAfterInboundSku, { bold: true }),
+    // Manual column X, typed per SKU in the uploaded manual sheet (blank without one).
+    col("Stock present per SKU ID for FBA - booked", 12, (r) => r.stockToSendSku ?? "", { headerFill: C.headerYellow }),
     col("to be sent (region wise)", 10, (r) => r.toBeSentZone),
     col("stock to be ordered per SKUID", 10, (r) => r.stockToBeOrderedZone),
     col("STOCK RUNS OUT IN", 10, (r) => r.daysUntilStockout, {
       rule: (_r, v) => (typeof v === "number" && v < STOCKOUT_RED_BELOW_DAYS ? [C.redFill, C.redFont] : null),
     }),
-    // Active quantity split per active date, like the manual sheet's
-    // trailing date columns (from pivot_act); a total only when there is
-    // more than one date.
+    // Recently activated quantity per active date, like the manual sheet's
+    // trailing date columns (from pivot_act).
     ...activeDates.map((d) => col(isoToDotted(d), 11, (r) => activeByKeyDate.get(`${r.sku} ${r.zone} ${d}`) || 0,
       { headerStyle: dateHeader, rule: positive(C.yellowFill, C.yellowFont) })),
-    ...(activeDates.length !== 1
-      ? [col("Active total (last 3 months)", 11, (r) => r.activeZoneAccumulated, { headerStyle: dateHeader, rule: positive(C.yellowFill, C.yellowFont) })]
-      : []),
   ];
 
   return buildTableSheet(ordered, cols, {
@@ -233,11 +252,16 @@ function buildAnalysisSheet(ordered: FbaAnalysisRow[], activeDates: string[], ac
 export function buildFbaForecastLayout(input: FbaForecastLayoutInput): XLSX.WorkBook {
   const ordered = orderAnalysisRows(input.rows);
 
-  const activeDates = [...new Set(input.active.map((a) => a.active_date || "").filter(Boolean))].sort();
+  // Like the manual sheet's recently _act / pivot_act: only shipments that
+  // went active in the last RECENT_ACTIVE_DAYS days ending on the report
+  // date, one column per day (a day with no activations still gets one).
+  const activeDates = recentActiveDates(input.reportDate, input.active);
+  const recentActive = input.active
+    .filter((a) => !!a.active_date && activeDates.includes(a.active_date.slice(0, 10)))
+    .sort((a, b) => a.active_date!.localeCompare(b.active_date!));
   const activeByKeyDate = new Map<string, number>();
-  for (const a of input.active) {
-    if (!a.active_date) continue;
-    const k = `${a.sku} ${a.zone} ${a.active_date}`;
+  for (const a of recentActive) {
+    const k = `${a.sku} ${a.zone} ${a.active_date!.slice(0, 10)}`;
     activeByKeyDate.set(k, (activeByKeyDate.get(k) || 0) + a.quantity);
   }
 
@@ -305,7 +329,7 @@ export function buildFbaForecastLayout(input: FbaForecastLayoutInput): XLSX.Work
   ];
   const statusOpts = { headerStyle: rawHeader(12), body: rawBody };
   add(buildTableSheet(input.intransit, statusCols("SKUID"), statusOpts), SHEET.intransit);
-  add(buildTableSheet(input.active, statusCols("SKU", [
+  add(buildTableSheet(recentActive, statusCols("SKU", [
     { header: "active date", width: 13, value: (r) => (r.active_date ? isoToDotted(r.active_date) : "") },
   ]), statusOpts), SHEET.active);
   add(buildTableSheet(input.booked, statusCols("SKU"), statusOpts), SHEET.booked);
