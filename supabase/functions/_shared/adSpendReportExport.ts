@@ -170,18 +170,45 @@ export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) /
 // should surface. Only the user-visible cell/JSON writers (acosCell below) treat it specially,
 // blanking it out instead of showing "999%".
 export const ACOS_UNDEFINED_SENTINEL = 9.99;
-export const computeAcos = (a: WindowAgg, price: number): number => {
+// "Total Ad Orders" gate (added per the seller's explicit instruction, confirmed twice over), with
+// a platform-aware restructuring after a real gap was caught in review: a naive "check adOrders
+// before everything else" gate (an earlier version of this comment/function) meant a genuine
+// Amazon Sponsored Products row — a real adAttributedSales figure on file — with adOrders===0 that
+// window (a real, if unusual, combination: Amazon's own "7 Day Total Sales"/"7 Day Total Orders"
+// are independently reported fields) would incorrectly fall through to the CPC/Price rule below
+// instead of keeping its own Ad Spend/Ad-Attributed Sales ratio. Fixed by checking Amazon's
+// adAttributedSales FIRST, unconditionally — it alone (hasSpRow-gated, see fetchAmazonProducts) can
+// reliably tell "a real Sponsored Products row exists" apart from "no ad data at all" for Amazon.
+// Flipkart/Meesho can't use that same "defined means real" test — fetchFlipkartProducts always sets
+// adSales/adOrders on every WindowAgg, even as literal 0 for a SKU with no ad-attributed sales/
+// orders that window — so for them, "genuinely has ad-attribution data" instead means adOrders > 0
+// (Flipkart's direct+indirect units sold; Meesho's "Orders by ad" count), checked second. Only when
+// NEITHER of those two checks found real ad-attribution data does the SKU/window fall to the last
+// resort: CPC/Price using the live listing-table price (barm_amazon_price_listing/
+// barm_flipkart_listings, looked up by the caller and passed in as listingPrice — see
+// fetchAmazonListingPriceMap/fetchFlipkartListingPriceMap below) instead of the old blank-sentinel/
+// real-revenue-proxy fallback that used to run for this case. CPC is computeCpc(a) (Spend WITH tax/
+// Orders, the same figure already shown in the CPC column beside this one — confirmed with the
+// seller that using the tax-inclusive figure here, rather than raw a.spend, is intentional).
+// listingPrice not on file for this SKU (Meesho, which has no listing table at all, or an Amazon/
+// Flipkart SKU the listing table doesn't cover yet) falls back to the `price` parameter instead, so
+// the formula never simply breaks.
+export const computeAcos = (a: WindowAgg, price: number, listingPrice?: number): number => {
+  // Amazon: same branch as before this feature, completely unaffected by adOrders' value.
   if (a.adAttributedSales !== undefined) {
     const spend = a.adAttributedSpend ?? 0;
     return a.adAttributedSales > 0 ? spend / a.adAttributedSales : spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
   }
-  const adSalesFigure = a.adSales !== undefined ? a.adSales : a.adOrders !== undefined ? a.adOrders * price : undefined;
-  if (adSalesFigure !== undefined) {
+  // Flipkart/Meesho: only a genuine ad-attributed-orders count this window counts as "has ad data".
+  if ((a.adOrders ?? 0) > 0) {
+    const adSalesFigure = a.adSales !== undefined ? a.adSales : a.adOrders! * price;
     return adSalesFigure > 0 ? a.spend / adSalesFigure : a.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
   }
-  const totalSales = a.revenue ?? a.units * price;
-  if (totalSales > 0) return a.spend / totalSales;
-  return a.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
+  // No ad-attribution data of any kind for this SKU/window -> CPC/Price, per the seller's
+  // confirmed instruction, replacing the old real-revenue-proxy fallback entirely.
+  const p = listingPrice && listingPrice > 0 ? listingPrice : price;
+  if (!p || p <= 0) return a.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
+  return computeCpc(a) / p;
 };
 
 // Action Sheet only. computeAcos's Sponsored Products branch deliberately keeps a real SP row
@@ -770,10 +797,48 @@ export async function fetchAmazonProducts(
   return { products, overallDay, overallRange, campaigns, unmappedSpend, reportDates, spRows, orderRows, revenueRangeBySku: revenueBySku };
 }
 
+// Amazon's current live listing price, straight off barm_amazon_price_listing (scripts/
+// price_listing_tables.sql) — used ONLY as computeAcos's new listingPrice argument for the
+// zero-Total-Ad-Orders ACOS gate (see computeAcos's own comment). Kept as its own fetch/map,
+// separate from fetchAmazonProducts's own priceBySku (which drives ProductRow.price, the display
+// Price column, and can in principle be overridden by a merge/seed step before it reaches a
+// computeAcos call site) — a listing-table miss here must fall back to whatever `price` argument
+// the caller already has, not silently read as 0.
+export async function fetchAmazonListingPriceMap(): Promise<Map<string, number>> {
+  const rows = await fetchAllRows("barm_amazon_price_listing", (q) => q);
+  const map = new Map<string, number>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (rows as any[]).forEach((r) => { if (r.seller_sku && num(r.price) > 0) map.set(r.seller_sku, num(r.price)); });
+  return map;
+}
+
 // ── Flipkart ─────────────────────────────────────────────────────────────────
+// A Flipkart order row's own real revenue for the window, with a fallback for when the uploaded
+// order report has no Invoice Amount at all: some Flipkart "Orders" exports are a logistics/
+// returns-style report (delivery SLAs, dispatch dates, cancellation reasons) with no price/amount
+// column under any name, rather than the report type this was designed against — confirmed directly
+// against Supabase, not a parsing bug (raw genuinely has no such field on those rows). Mirrors the
+// existing Meesho exception's pattern (see fetchMeeshoProducts below / this file's Notes-sheet
+// comment): real order-report data wins when present, a live/current listing-table price fills the
+// gap only for what it doesn't have. Exported as its own pure function — both call sites below run
+// through it so they can't drift, and it's directly unit-testable without a live Supabase fetch.
+export function flipkartRowRevenue(rawInvoiceAmount: number, quantity: number, listingPrice: number | undefined): number {
+  if (rawInvoiceAmount > 0) return rawInvoiceAmount;
+  return quantity * (listingPrice && listingPrice > 0 ? listingPrice : 0);
+}
 export async function fetchFlipkartProducts(
   range: { start: string; end: string },
-  endDate: string
+  endDate: string,
+  // Current live selling price per SKU (barm_flipkart_listings — the same map fetched by
+  // fetchFlipkartListingPriceMap below, which also builds computeAcos's new listingPrice
+  // argument), reused here ONLY as flipkartRowRevenue's fallback for a row with no real Invoice
+  // Amount — never touches this function's own `price` variable (still real-invoice-average first,
+  // falling through to priceBySku/priceListBySku/aspAcc exactly as before), which stays the
+  // separate, existing "display Price" concern. Defaults to an empty map (not required) so an
+  // existing caller that doesn't have this map handy (e.g. the Daily Ad Spend Insights page) still
+  // compiles and behaves exactly as before — an empty map's .get() is always undefined, same as
+  // the fallback never firing.
+  flipkartListingPriceMap: Map<string, number> = new Map()
 ): Promise<{
   products: Map<string, ProductRow>;
   overallDay: SalesAgg;
@@ -890,6 +955,13 @@ export async function fetchFlipkartProducts(
   // price source; the listing price / Earn More average only fill in for a SKU with no
   // real (non-cancelled) orders in this window.
   const invoiceAcc = new Map<string, { amount: number; units: number }>();
+  // Overall Sales Value / Total Sales revenue, WITH the barm_flipkart_listings fallback (see
+  // flipkartRowRevenue above) for a row whose order report has no Invoice Amount at all — kept as
+  // its own accumulator, separate from invoiceAcc just above/below, which must stay real-Invoice-
+  // Amount-only: invoiceAcc alone drives this SKU's own display Price a few lines down, and that
+  // must not absorb this per-row fallback (only Overall Sales Value/Total Sales should) per the
+  // seller's explicit instruction that this fallback stay scoped to the Value/revenue figures.
+  const rangeRevenueBySku = new Map<string, number>();
   orderRows.forEach((r) => {
     const qty = num(r.quantity);
     // Overall sales QTS/Value: a straight SUM of the Order report's own
@@ -901,11 +973,14 @@ export async function fetchFlipkartProducts(
     // column from the upload survives in this row's own `raw` JSONB, so it's
     // read from there instead.
     const invoiceAmount = num((r as { raw?: Record<string, unknown> }).raw?.["Invoice Amount"]);
+    // See flipkartRowRevenue's own comment — falls back to qty x this row's SKU's current
+    // barm_flipkart_listings price only when this row itself has no real Invoice Amount.
+    const revenueAmount = flipkartRowRevenue(invoiceAmount, qty, flipkartListingPriceMap.get(r.sku || ""));
     overallRange.units += qty;
-    overallRange.value += invoiceAmount;
+    overallRange.value += revenueAmount;
     if (r.order_date === endDate) {
       overallDay.units += qty;
-      overallDay.value += invoiceAmount;
+      overallDay.value += revenueAmount;
     }
 
     // Per-SKU Orders (feeds the Ad spend report's per-product Orders/CPC/ACOS
@@ -920,6 +995,9 @@ export async function fetchFlipkartProducts(
       acc.amount += invoiceAmount;
       acc.units += qty;
       invoiceAcc.set(r.sku, acc);
+    }
+    if (qty > 0 && revenueAmount > 0) {
+      rangeRevenueBySku.set(r.sku, (rangeRevenueBySku.get(r.sku) || 0) + revenueAmount);
     }
   });
 
@@ -940,7 +1018,7 @@ export async function fetchFlipkartProducts(
       name: resolveProductName(nameBySku.get(sku), sku) || nameBySku.get(sku) || sku,
       price,
       day: { spend: spendBySkuDay.get(sku) || 0, units: 0, revenue: 0, adSales: adSalesDayBySku.get(sku) || 0, adOrders: adOrdersDayBySku.get(sku) || 0 },
-      range: { spend: spendBySku.get(sku)?.spend || 0, units: unitsBySku.get(sku)?.units || 0, revenue: inv?.amount || 0, adSales: adSalesRangeBySku.get(sku) || 0, adOrders: adOrdersRangeBySku.get(sku) || 0 },
+      range: { spend: spendBySku.get(sku)?.spend || 0, units: unitsBySku.get(sku)?.units || 0, revenue: rangeRevenueBySku.get(sku) || 0, adSales: adSalesRangeBySku.get(sku) || 0, adOrders: adOrdersRangeBySku.get(sku) || 0 },
     });
   });
   orderRows.forEach((r) => {
@@ -949,8 +1027,11 @@ export async function fetchFlipkartProducts(
     if (status.startsWith("CANCEL")) return;
     const p = products.get(r.sku);
     if (!p) return;
-    p.day.units += num(r.quantity);
-    p.day.revenue = (p.day.revenue || 0) + num((r as { raw?: Record<string, unknown> }).raw?.["Invoice Amount"]);
+    const qty = num(r.quantity);
+    p.day.units += qty;
+    // Same Invoice-Amount-missing fallback as the range window above (see flipkartRowRevenue).
+    const invoiceAmount = num((r as { raw?: Record<string, unknown> }).raw?.["Invoice Amount"]);
+    p.day.revenue = (p.day.revenue || 0) + flipkartRowRevenue(invoiceAmount, qty, flipkartListingPriceMap.get(r.sku));
   });
 
   const campaigns: CampaignSpendRow[] = [...campaignSpendDay.entries()]
@@ -962,11 +1043,25 @@ export async function fetchFlipkartProducts(
   fsnRows.forEach((r: any) => { if (r.report_date) reportDates.add(r.report_date); });
 
   // SKU Wise Report's "Total Sales" per the seller's explicit request: real per-order revenue
-  // instead of flat Price x range units. invoiceAcc already sums each SKU's real Invoice
-  // Amount across its own non-cancelled order rows in this window (see above, where it also
-  // feeds this SKU's own price) — reused directly here rather than re-summing orderRows.
-  const revenueRangeBySku = new Map<string, number>([...invoiceAcc].map(([sku, acc]) => [sku, acc.amount]));
+  // (with the barm_flipkart_listings fallback above) instead of flat Price x range units —
+  // rangeRevenueBySku already sums exactly this across each SKU's own non-cancelled order rows in
+  // this window, reused directly here rather than re-summing orderRows.
+  const revenueRangeBySku = rangeRevenueBySku;
   return { products, overallDay, overallRange, campaigns, reportDates, fsnRows, orderRows, revenueRangeBySku };
+}
+
+// Flipkart's current live listing price, straight off barm_flipkart_listings (scripts/
+// price_listing_tables.sql) — used both as computeAcos's new listingPrice argument (the zero-Total-
+// Ad-Orders ACOS gate, see computeAcos's own comment) and as fetchFlipkartProducts's own Invoice-
+// Amount-missing revenue fallback (see flipkartRowRevenue above). Kept as its own fetch/map for the
+// same reason as fetchAmazonListingPriceMap: a miss here must fall back to whatever the caller
+// already has (computeAcos's `price` argument, or 0 for flipkartRowRevenue), not read as 0 outright.
+export async function fetchFlipkartListingPriceMap(): Promise<Map<string, number>> {
+  const rows = await fetchAllRows("barm_flipkart_listings", (q) => q);
+  const map = new Map<string, number>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (rows as any[]).forEach((r) => { if (r.seller_sku_id && num(r.selling_price) > 0) map.set(r.seller_sku_id, num(r.selling_price)); });
+  return map;
 }
 
 // ── Meesho ───────────────────────────────────────────────────────────────────
@@ -1631,15 +1726,28 @@ function rawRowsToSheet(
   styleHeader(ws, 0, cols.length, "6B7280");
   ws["!views"] = [{ state: "frozen", ySplit: 1 }];
   ws["!cols"] = cols.map(() => ({ wch: 16 }));
+  // Amazon's own export has ACOS/Conversion Rate/CTR as a plain fraction (0.15 for 15%), which the
+  // upload parser stores as-is into `raw` — reads back here as a bare "0.15" with no format applied,
+  // instead of the "15.00%" it showed in the seller's original upload. ROAS/ROI are deliberately left
+  // alone: those are genuine ratios (Sales/Spend), not percentages, so "1.58" is already correct.
+  const PERCENT_HEADER_RE = /ACOS|Conversion Rate|Click-?Thru Rate|\bCTR\b/i;
+  const percentCols: Record<number, string> = {};
+  cols.forEach((c, i) => { if (PERCENT_HEADER_RE.test(c)) percentCols[i] = "0.00%"; });
+  if (Object.keys(percentCols).length) applyNumberFormats(ws, 1, aoa.length, percentCols);
   writeSideBlock(ws, cols.length + 1);
   XLSX.utils.book_append_sheet(wb, ws, sheetName);
 }
 
 const PLATFORM_FILL: Record<Platform, string> = { Amazon: "FF9900", Flipkart: "2874F0", Meesho: "9F2089" };
-const productAoaRow = (p: ProductRow): (string | number | null)[] => [
+// listingPrice: this SKU's current live listing-table price (Amazon: barm_amazon_price_listing,
+// Flipkart: barm_flipkart_listings — see fetchAmazonListingPriceMap/fetchFlipkartListingPriceMap),
+// threaded through to computeAcos's own listingPrice parameter untouched. Omitted for Meesho (no
+// listing table exists) and for a merged multi-SKU row whose comma-joined p.sku isn't a key in
+// either map — both cases fall back to computeAcos's own `price` argument automatically.
+const productAoaRow = (p: ProductRow, listingPrice?: number): (string | number | null)[] => [
   p.name, p.price,
-  round2(p.day.spend), round2(spendTax(p.day)), p.day.units, round2(computeCpc(p.day)), acosCell(p.day, p.price),
-  round2(p.range.spend), round2(spendTax(p.range)), p.range.units, round2(computeCpc(p.range)), acosCell(p.range, p.price),
+  round2(p.day.spend), round2(spendTax(p.day)), p.day.units, round2(computeCpc(p.day)), acosCell(p.day, p.price, listingPrice),
+  round2(p.range.spend), round2(spendTax(p.range)), p.range.units, round2(computeCpc(p.range)), acosCell(p.range, p.price, listingPrice),
 ];
 function round2(n: number): number { return Math.round(n * 100) / 100; }
 function pct(n: number): number { return Math.round(n * 10000) / 10000; }
@@ -1652,8 +1760,8 @@ function pct(n: number): number { return Math.round(n * 10000) / 10000; }
 // threshold check still uses computeAcos's raw sentinel value directly (a genuinely
 // unknown ACOS with real spend should still clear that bar) — but see acosSortRank
 // below for every "worst ACOS first" ordering, which treats it differently.
-export function acosCell(a: WindowAgg, price: number): number | null {
-  const v = computeAcos(a, price);
+export function acosCell(a: WindowAgg, price: number, listingPrice?: number): number | null {
+  const v = computeAcos(a, price, listingPrice);
   return v === ACOS_UNDEFINED_SENTINEL ? null : pct(v);
 }
 // Summary sheet ACOS for Flipkart/Meesho only, per the seller's explicit request: instead of
@@ -1674,8 +1782,8 @@ function summaryAcosCell(spend: number, adSales: number): number | null {
 // under a pile of blanks (the sentinel is numerically huge) defeats the point of a
 // worst-first list. The Action Sheet's own threshold check is unaffected — it doesn't
 // sort, it just filters every product against >14% independently of this ranking.
-export function acosSortRank(a: WindowAgg, price: number): number {
-  const v = computeAcos(a, price);
+export function acosSortRank(a: WindowAgg, price: number, listingPrice?: number): number {
+  const v = computeAcos(a, price, listingPrice);
   return v === ACOS_UNDEFINED_SENTINEL ? -1 : v;
 }
 
@@ -1775,12 +1883,14 @@ export interface AdSpendReportResult {
 async function saveAdSpendHistory(
   platforms: { platform: Platform; products: Map<string, ProductRow> }[],
   endDate: string,
-  rangeStart: string
+  rangeStart: string,
+  listingPriceFor: (platform: Platform, sku: string) => number | undefined
 ): Promise<number> {
   const rows: Record<string, unknown>[] = [];
   platforms.forEach(({ platform, products }) => {
     products.forEach((p) => {
       if (spendTax(p.range) <= 0 && p.range.units <= 0) return;
+      const listingPrice = listingPriceFor(platform, p.sku);
       rows.push({
         report_date: endDate,
         range_start: rangeStart,
@@ -1792,12 +1902,12 @@ async function saveAdSpendHistory(
         day_spend_tax: round2(spendTax(p.day)),
         day_orders: p.day.units,
         day_cpc: round2(computeCpc(p.day)),
-        day_acos: acosCell(p.day, p.price),
+        day_acos: acosCell(p.day, p.price, listingPrice),
         range_spend: round2(p.range.spend),
         range_spend_tax: round2(spendTax(p.range)),
         range_orders: p.range.units,
         range_cpc: round2(computeCpc(p.range)),
-        range_acos: acosCell(p.range, p.price),
+        range_acos: acosCell(p.range, p.price, listingPrice),
       });
     });
   });
@@ -1819,6 +1929,14 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const rangeDays = opts.rangeDays && opts.rangeDays > 0 ? opts.rangeDays : 7;
   const range = getDateWindow(endDate, rangeDays);
 
+  // Amazon/Flipkart's current live listing-table prices — fetched ahead of everything else below
+  // since fetchFlipkartProducts itself now needs flipkartListingPriceMap (its Invoice-Amount-
+  // missing revenue fallback, see flipkartRowRevenue's own comment) as an argument, not just this
+  // function's own later computeAcos call sites (the zero-Total-Ad-Orders ACOS gate).
+  const [amazonListingPriceMap, flipkartListingPriceMap] = await Promise.all([
+    fetchAmazonListingPriceMap(),
+    fetchFlipkartListingPriceMap(),
+  ]);
   // Fetched once and shared across all three platforms — the seller's own
   // approved SKU -> product name list, checked first before falling back to
   // whatever name shows up on an order/price-listing row (see resolveName).
@@ -1829,11 +1947,18 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     fetchMasterSkuidsByName(),
     fetchProductMarketingMap(),
     fetchAmazonProducts(range, endDate),
-    fetchFlipkartProducts(range, endDate),
+    fetchFlipkartProducts(range, endDate, flipkartListingPriceMap),
     fetchMeeshoProducts(range, endDate),
     fetchSocialMediaAdSpend(range, endDate),
     fetchGoogleOrders(range),
   ]);
+  // Per-platform listing-price lookup for every computeAcos call site below (via acosCell/
+  // acosSortRank's own listingPrice parameter) — Meesho has no listing table, so it's omitted
+  // there and computeAcos's own gate falls back to its `price` argument, unchanged from before
+  // this feature. A merged multi-SKU row's comma-joined p.sku (see groupProductsByName) is never a
+  // key in either map, so it degrades the same way — falls back to `price`, not a crash or a 0.
+  const listingPriceFor = (platform: Platform, sku: string): number | undefined =>
+    platform === "Amazon" ? amazonListingPriceMap.get(sku) : platform === "Flipkart" ? flipkartListingPriceMap.get(sku) : undefined;
   // The master lists one SKU spelling per product (e.g. "B-BULB-...-PK5(FK)"),
   // but ad/order data carries whatever variant spelling that platform export
   // used (e.g. "B-BULB-...-PK5-1") — a real, different string, not a typo.
@@ -1904,7 +2029,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     .map(({ platform, reportDates }) => ({ platform, missingDates: missingDates(reportDates, range.start, endDate) }))
     .filter(({ missingDates }) => missingDates.length > 0);
 
-  const historyRowsSaved = await saveAdSpendHistory(platforms, endDate, range.start);
+  const historyRowsSaved = await saveAdSpendHistory(platforms, endDate, range.start, listingPriceFor);
 
   const wb = XLSX.utils.book_new();
 
@@ -2034,7 +2159,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     // products, not noise.
     const shortlist = rows
       .filter((p) => spendTax(p.range) > ACOS_SHORTLIST_MIN_SPEND)
-      .sort((a, b) => acosSortRank(b.day, b.price) - acosSortRank(a.day, a.price))
+      .sort((a, b) => acosSortRank(b.day, b.price, listingPriceFor(platform, b.sku)) - acosSortRank(a.day, a.price, listingPriceFor(platform, a.sku)))
       .slice(0, TOP_N);
     platformSummaries.push({
       platform,
@@ -2046,20 +2171,26 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       overallDayValue: round2(overallDay.value),
       overallRangeUnits: overallRange.units,
       overallRangeValue: round2(overallRange.value),
-      topProducts: shortlist.map((p) => ({
-        name: p.name,
-        price: p.price,
-        day: { spend: round2(p.day.spend), spendTax: round2(spendTax(p.day)), orders: p.day.units, cpc: round2(computeCpc(p.day)), acos: acosCell(p.day, p.price) },
-        range: { spend: round2(p.range.spend), spendTax: round2(spendTax(p.range)), orders: p.range.units, cpc: round2(computeCpc(p.range)), acos: acosCell(p.range, p.price) },
-      })),
-      allProducts: [...rows]
-        .sort((a, b) => acosSortRank(b.day, b.price) - acosSortRank(a.day, a.price))
-        .map((p) => ({
+      topProducts: shortlist.map((p) => {
+        const listingPrice = listingPriceFor(platform, p.sku);
+        return {
           name: p.name,
           price: p.price,
-          day: { spend: round2(p.day.spend), spendTax: round2(spendTax(p.day)), orders: p.day.units, cpc: round2(computeCpc(p.day)), acos: acosCell(p.day, p.price) },
-          range: { spend: round2(p.range.spend), spendTax: round2(spendTax(p.range)), orders: p.range.units, cpc: round2(computeCpc(p.range)), acos: acosCell(p.range, p.price) },
-        })),
+          day: { spend: round2(p.day.spend), spendTax: round2(spendTax(p.day)), orders: p.day.units, cpc: round2(computeCpc(p.day)), acos: acosCell(p.day, p.price, listingPrice) },
+          range: { spend: round2(p.range.spend), spendTax: round2(spendTax(p.range)), orders: p.range.units, cpc: round2(computeCpc(p.range)), acos: acosCell(p.range, p.price, listingPrice) },
+        };
+      }),
+      allProducts: [...rows]
+        .sort((a, b) => acosSortRank(b.day, b.price, listingPriceFor(platform, b.sku)) - acosSortRank(a.day, a.price, listingPriceFor(platform, a.sku)))
+        .map((p) => {
+          const listingPrice = listingPriceFor(platform, p.sku);
+          return {
+            name: p.name,
+            price: p.price,
+            day: { spend: round2(p.day.spend), spendTax: round2(spendTax(p.day)), orders: p.day.units, cpc: round2(computeCpc(p.day)), acos: acosCell(p.day, p.price, listingPrice) },
+            range: { spend: round2(p.range.spend), spendTax: round2(spendTax(p.range)), orders: p.range.units, cpc: round2(computeCpc(p.range)), acos: acosCell(p.range, p.price, listingPrice) },
+          };
+        }),
     });
 
     const blockStart = sumAoa.length;
@@ -2095,8 +2226,9 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
         // here (summaryAcosCell), overriding the CPC/Price fallback acosCell would otherwise
         // fall back to for them — Summary-sheet-only, the Ad spend report and SKU Wise Report
         // sheets' ACOS columns for Flipkart/Meesho are untouched.
-        const daySummaryAcos = platform === "Amazon" ? acosCell(p.day, p.price) : summaryAcosCell(round2(p.day.spend), dayAdSales as number);
-        const rangeSummaryAcos = platform === "Amazon" ? acosCell(p.range, p.price) : summaryAcosCell(round2(p.range.spend), rangeAdSales as number);
+        const listingPrice = listingPriceFor(platform, p.sku);
+        const daySummaryAcos = platform === "Amazon" ? acosCell(p.day, p.price, listingPrice) : summaryAcosCell(round2(p.day.spend), dayAdSales as number);
+        const rangeSummaryAcos = platform === "Amazon" ? acosCell(p.range, p.price, listingPrice) : summaryAcosCell(round2(p.range.spend), rangeAdSales as number);
         sumAoa.push([
           // "Ad spend (without/with tax)" here is the SINGLE-DAY total, matching
           // the seller's own manual workbook's Summary sheet convention — the
@@ -2138,6 +2270,10 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     const amazonRowsForSocial = groupProductsByName([...amz.products.values()], undefined, skuToMasterSkuidName);
     const socialProduct = amazonRowsForSocial.find((p) => p.name.trim().toLowerCase() === SOCIAL_MEDIA_PRODUCT_NAME.toLowerCase());
     const price = socialProduct?.price ?? 0;
+    // This is a real Amazon SKU (see socialProduct above), so it gets the same listing-price
+    // lookup as every other Amazon computeAcos call site — dayAgg/rangeAgg below never carry an
+    // adOrders field, so they always take the new CPC/listingPrice-or-price gate regardless.
+    const listingPrice = socialProduct ? amazonListingPriceMap.get(socialProduct.sku) : undefined;
     const dayAgg: WindowAgg = { spend: socialMedia.daySpend, units: socialProduct?.day.units ?? 0 };
     const rangeAgg: WindowAgg = { spend: socialMedia.rangeSpend, units: socialProduct?.range.units ?? 0 };
     socialMediaRow = sumAoa.length;
@@ -2145,8 +2281,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       "Social Media",
       round2(socialMedia.daySpend), round2(spendTax(dayAgg)),
       socialProduct?.name ?? SOCIAL_MEDIA_PRODUCT_NAME, price,
-      round2(dayAgg.spend), round2(spendTax(dayAgg)), dayAgg.units, round2(price * dayAgg.units), round2(computeCpc(dayAgg)), acosCell(dayAgg, price), null,
-      round2(rangeAgg.spend), round2(spendTax(rangeAgg)), rangeAgg.units, round2(price * rangeAgg.units), round2(computeCpc(rangeAgg)), acosCell(rangeAgg, price), null,
+      round2(dayAgg.spend), round2(spendTax(dayAgg)), dayAgg.units, round2(price * dayAgg.units), round2(computeCpc(dayAgg)), acosCell(dayAgg, price, listingPrice), null,
+      round2(rangeAgg.spend), round2(spendTax(rangeAgg)), rangeAgg.units, round2(price * rangeAgg.units), round2(computeCpc(rangeAgg)), acosCell(rangeAgg, price, listingPrice), null,
       "", "",
     ]);
     // Same figures as the Summary-sheet row above, reshaped for the emailed daily digest (see
@@ -2157,8 +2293,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       daySpendTax: round2(spendTax(dayAgg)),
       product: socialProduct?.name ?? SOCIAL_MEDIA_PRODUCT_NAME,
       price,
-      day: { spend: round2(dayAgg.spend), spendTax: round2(spendTax(dayAgg)), orders: dayAgg.units, cpc: round2(computeCpc(dayAgg)), acos: acosCell(dayAgg, price) },
-      range: { spend: round2(rangeAgg.spend), spendTax: round2(spendTax(rangeAgg)), orders: rangeAgg.units, cpc: round2(computeCpc(rangeAgg)), acos: acosCell(rangeAgg, price) },
+      day: { spend: round2(dayAgg.spend), spendTax: round2(spendTax(dayAgg)), orders: dayAgg.units, cpc: round2(computeCpc(dayAgg)), acos: acosCell(dayAgg, price, listingPrice) },
+      range: { spend: round2(rangeAgg.spend), spendTax: round2(spendTax(rangeAgg)), orders: rangeAgg.units, cpc: round2(computeCpc(rangeAgg)), acos: acosCell(rangeAgg, price, listingPrice) },
     };
   }
 
@@ -2263,7 +2399,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     // sheet's Orders total ~40-60% above what an ad-spend-only view shows.
     const rows = groupProductsByName([...products.values()], masterSkuidsByName, skuToMasterSkuidName)
       .filter((p) => spendTax(p.range) > 0)
-      .sort((a, b) => acosSortRank(b.day, b.price) - acosSortRank(a.day, a.price));
+      .sort((a, b) => acosSortRank(b.day, b.price, listingPriceFor(platform, b.sku)) - acosSortRank(a.day, a.price, listingPriceFor(platform, a.sku)));
     detailLabelCells.push({ addr: XLSX.utils.encode_cell({ r: detailAoa.length, c: 0 }), platform });
     detailAoa.push([platform, ...Array(DETAIL_COLS - 1).fill("")]);
     detailAoa.push(Array(DETAIL_COLS).fill(""));
@@ -2278,7 +2414,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       { s: { r: groupRow, c: 3 }, e: { r: groupRow, c: 7 } },
       { s: { r: groupRow, c: 8 }, e: { r: groupRow, c: 12 } },
     );
-    rows.forEach((p) => detailAoa.push([p.sku, ...productAoaRow(p)]));
+    rows.forEach((p) => detailAoa.push([p.sku, ...productAoaRow(p, listingPriceFor(platform, p.sku))]));
     if (!rows.length) detailAoa.push(["(no advertised products with activity in range)", ...Array(DETAIL_COLS - 1).fill("")]);
     detailAoa.push([]);
   });
@@ -2366,10 +2502,13 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           : round2((p.range.adOrders || 0) * p.price);
         const dayAdOrders = platform === "Amazon" ? (p.day.adOrders !== undefined ? p.day.adOrders : null) : p.day.adOrders || 0;
         const rangeAdOrders = platform === "Amazon" ? (p.range.adOrders !== undefined ? p.range.adOrders : null) : p.range.adOrders || 0;
+        // This sheet is ungrouped (one row per real SKU, unlike Ad spend report's merged rows
+        // above), so p.sku is always a single exact SKU and always a valid key into the maps.
+        const listingPrice = listingPriceFor(platform, p.sku);
         skuWiseRows.push([
           p.sku, platform, p.price,
-          round2(p.day.spend), round2(spendTax(p.day)), p.day.units, round2(dayTotalSales), round2(computeCpc(p.day)), acosCell(p.day, p.price), dayAdSales, dayAdOrders,
-          round2(p.range.spend), round2(spendTax(p.range)), p.range.units, round2(rangeTotalSales), round2(computeCpc(p.range)), acosCell(p.range, p.price), rangeAdSales, rangeAdOrders,
+          round2(p.day.spend), round2(spendTax(p.day)), p.day.units, round2(dayTotalSales), round2(computeCpc(p.day)), acosCell(p.day, p.price, listingPrice), dayAdSales, dayAdOrders,
+          round2(p.range.spend), round2(spendTax(p.range)), p.range.units, round2(rangeTotalSales), round2(computeCpc(p.range)), acosCell(p.range, p.price, listingPrice), rangeAdSales, rangeAdOrders,
         ]);
       });
   });

@@ -1,5 +1,5 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/testing/asserts.ts";
-import { spendTax, computeCpc, computeAcos, actionSheetAcos, ACOS_UNDEFINED_SENTINEL, acosCell, acosSortRank, getDateWindow, groupProductsByName } from "./adSpendReportExport.ts";
+import { spendTax, computeCpc, computeAcos, actionSheetAcos, ACOS_UNDEFINED_SENTINEL, acosCell, acosSortRank, getDateWindow, groupProductsByName, flipkartRowRevenue } from "./adSpendReportExport.ts";
 
 Deno.test("spendTax applies the flat 1.18 GST multiplier when none is tagged", () => {
   assertEquals(spendTax({ spend: 100, units: 5 }), 118);
@@ -9,56 +9,109 @@ Deno.test("computeCpc falls back to spendTax when units is 0", () => {
   assertEquals(computeCpc({ spend: 100, units: 0 }), 118);
 });
 
-Deno.test("computeAcos with no Sponsored Products row falls back to Spend (no tax) / Total Sales, never CPC/Price (which is tax-inclusive)", () => {
-  // No `revenue` tracked on the aggregate (a bare WindowAgg) -> Total Sales is
-  // estimated as units x price (the Meesho case, which never sets `revenue`).
-  // Deliberately NOT 118 / 10 / 20 (the old CPC/Price formula) — that divides
-  // by spendTax(), which double-counts GST against a proxy ACOS.
-  assertEquals(computeAcos({ spend: 100, units: 10 }, 20), 100 / 200);
-  // `revenue` (real per-order sales for the window), when tracked, is the
-  // real Total Sales figure — Amazon/Flipkart's own real-order revenue, which
-  // can legitimately differ from units x price when price moved mid-window.
-  assertEquals(computeAcos({ spend: 100, units: 10, revenue: 150 }, 20), 100 / 150);
-  // Total Sales 0 (price 0, so nothing to divide by) with real spend on file
-  // is a genuinely unknown ratio, not literal 0% — the sentinel, blanked by
-  // acosCell, same convention as the Sponsored Products branch below.
+Deno.test("computeAcos: no ad-attribution data of any kind now uses CPC/Price as the last-resort fallback (the seller's confirmed change)", () => {
+  // A bare WindowAgg — no adAttributedSales (Amazon) and adOrders not > 0 (Flipkart/Meesho) — is the
+  // true "no ad-attribution data at all" case (e.g. an Amazon SB/SD-only SKU). With no listingPrice
+  // argument, this uses the CALLER's `price` parameter as CPC's denominator. CPC is spendTax(a)/units
+  // (WITH tax) — a deliberate, confirmed change from the old fallback, which divided raw a.spend (no
+  // tax) by Total Sales instead.
+  assertEquals(computeAcos({ spend: 100, units: 10 }, 20), computeCpc({ spend: 100, units: 10 }) / 20);
+  assertEquals(computeAcos({ spend: 100, units: 10 }, 20), (118 / 10) / 20);
+  // adOrders explicitly 0 (not just undefined), with no adAttributedSales either, behaves
+  // identically to undefined — NOT a real Sponsored Products row (that would also set
+  // adAttributedSales — see the dedicated Amazon-priority test below for that case).
+  assertEquals(computeAcos({ spend: 100, units: 10, adOrders: 0 }, 20), computeCpc({ spend: 100, units: 10 }) / 20);
+  // listingPrice, when provided and positive, wins over the `price` parameter — the seller's whole
+  // point: `price` can be a stale master-table snapshot, listingPrice is the current live listing.
+  assertEquals(computeAcos({ spend: 100, units: 10 }, 20, 45), computeCpc({ spend: 100, units: 10 }) / 45);
+  // listingPrice of 0/undefined/negative all degrade to the `price` parameter, exactly like a SKU
+  // the listing table doesn't cover yet (or Meesho, which has no listing table at all).
+  assertEquals(computeAcos({ spend: 100, units: 10 }, 20, 0), computeCpc({ spend: 100, units: 10 }) / 20);
+  assertEquals(computeAcos({ spend: 100, units: 10 }, 20, undefined), computeCpc({ spend: 100, units: 10 }) / 20);
+  // Both price AND listingPrice non-positive, with real spend on file, is a genuinely unknown ratio
+  // — the sentinel, blanked by acosCell — same convention the old fallback used.
   assertEquals(computeAcos({ spend: 100, units: 10 }, 0), ACOS_UNDEFINED_SENTINEL);
-  // Total Sales 0 AND no spend at all -> 0, nothing to report.
+  assertEquals(computeAcos({ spend: 100, units: 10 }, 0, 0), ACOS_UNDEFINED_SENTINEL);
+  // No price of any kind AND no spend at all -> 0, nothing to report.
   assertEquals(computeAcos({ spend: 0, units: 10 }, 0), 0);
+  // `revenue` (the old real-per-order-sales fallback field) no longer changes anything once this
+  // last-resort branch is reached — it's gone entirely, per the seller's explicit instruction (see
+  // computeAcos's own comment).
+  assertEquals(computeAcos({ spend: 100, units: 10, revenue: 150 }, 20), computeCpc({ spend: 100, units: 10, revenue: 150 }) / 20);
 });
 
-Deno.test("computeAcos prefers Flipkart's adSales / Meesho's adOrders x price over Total Sales, per the seller's final explicit instruction", () => {
+Deno.test("computeAcos: a real Amazon Sponsored Products row keeps its own Ad Spend/Ad-Attributed-Sales ratio even when adOrders reads 0 this window", () => {
+  // Regression for the exact gap caught in review of an earlier version of this gate: Amazon's own
+  // "7 Day Total Sales" and "7 Day Total Orders" are independently reported fields on the raw
+  // Sponsored Products export, so a real SP row can legitimately show adAttributedSales > 0 with
+  // adOrders === 0 that same window. An adOrders-checked-first gate would have incorrectly sent this
+  // to the new CPC/Price fallback instead of Amazon's own ratio — checking adAttributedSales first
+  // (unconditionally, regardless of adOrders) fixes that; this pins the contract directly.
+  const spRowZeroOrders = { spend: 100, units: 10, adAttributedSpend: 100, adAttributedSales: 200, adOrders: 0 };
+  assertEquals(computeAcos(spRowZeroOrders, 20), 0.5);
+  // Confirm it's NOT silently falling through to CPC/Price (which would give a different number).
+  assertEquals(computeAcos(spRowZeroOrders, 20) === computeCpc(spRowZeroOrders) / 20, false);
+  // Same with adOrders undefined instead of explicitly 0 (a real SP row that never had this field
+  // populated at all) — identical result, since the check is `!== undefined` on adAttributedSales,
+  // not conditioned on adOrders in any way.
+  const spRowNoOrdersField = { spend: 100, units: 10, adAttributedSpend: 100, adAttributedSales: 200 };
+  assertEquals(computeAcos(spRowNoOrdersField, 20), 0.5);
+  // And the sentinel case: a real SP row, adOrders===0, but zero attributed SALES too — still
+  // Amazon's own sentinel convention (real spend, zero attribution -> unknown, not CPC/Price).
+  const spRowZeroEverything = { spend: 50, units: 10, adAttributedSpend: 50, adAttributedSales: 0, adOrders: 0 };
+  assertEquals(computeAcos(spRowZeroEverything, 20), ACOS_UNDEFINED_SENTINEL);
+  // A listingPrice argument is correctly ignored entirely for a real Amazon SP row — it's an
+  // Ad-Spend/Ad-Sales ratio, not a CPC/Price one, regardless of what listingPrice the caller passes.
+  assertEquals(computeAcos(spRowZeroOrders, 20, 999), 0.5);
+});
+
+Deno.test("computeAcos prefers Flipkart's adSales / Meesho's adOrders x price over Total Sales, per the seller's final explicit instruction (Total Ad Orders > 0, clearing the new gate)", () => {
+  // Every fixture below now needs an explicit positive adOrders to clear the new Total-Ad-Orders
+  // gate (see the gate's own test group above) and reach this Ad Spend/Ad-Attributed-Sales logic
+  // at all — adOrders wasn't part of the original fixtures (added here, matching this branch's own
+  // real-world data: Flipkart's WindowAgg always sets adOrders alongside adSales, Meesho's adOrders
+  // IS the ad-attribution signal itself), so this still proves the ">0" branch is unchanged.
   // Final answer, verified against a real example: "Chewy tube (Green - Spiral model)", Flipkart,
   // 11-to-17-09-2026 — Spend 1,504.01 / Ad Sales 7,587 = 19.8%, matching the seller's own manual
   // math exactly (real per-order Total Sales for that same window was a different, larger 12,182,
   // which is what this branch deliberately does NOT divide by).
-  assertEquals(Math.round(computeAcos({ spend: 1504.01, units: 53, revenue: 12182, adSales: 7587 }, 229.27) * 10000) / 10000, 0.1982);
+  assertEquals(Math.round(computeAcos({ spend: 1504.01, units: 53, revenue: 12182, adSales: 7587, adOrders: 40 }, 229.27) * 10000) / 10000, 0.1982);
   // adSales present but exactly 0 (real spend, zero ad-attributed sales this window, even with a
   // real Total Sales/revenue on file) is the same "genuinely unknown ratio" sentinel as Amazon's
   // adAttributedSales branch — a deliberate blank, not a silent fall-through to Total Sales.
-  assertEquals(computeAcos({ spend: 120.7, units: 1, revenue: 373, adSales: 0 }, 365.89), ACOS_UNDEFINED_SENTINEL);
+  assertEquals(computeAcos({ spend: 120.7, units: 1, revenue: 373, adSales: 0, adOrders: 3 }, 365.89), ACOS_UNDEFINED_SENTINEL);
   // Meesho's adOrders x price is used the same way, since Meesho's ad export has no currency sales
   // figure directly.
   assertEquals(computeAcos({ spend: 50, units: 5, revenue: 500, adOrders: 2 }, 100), 50 / 200);
-  // No adSales/adOrders field at all (undefined, not 0) is the true "no ad-attribution data of any
-  // kind" case, and still falls back to Total Sales/revenue.
-  assertEquals(computeAcos({ spend: 50, units: 5, revenue: 500 }, 100), 50 / 500);
+  // The old "no adSales/adOrders field at all -> falls back to Total Sales/revenue" case (this
+  // file's previous version of this test) is now structurally UNREACHABLE via the new gate: reaching
+  // this file's totalSales/revenue branch requires adOrders to be simultaneously >0 (to clear the
+  // new gate above) and undefined (for the adSalesFigure ternary just below the gate to fall
+  // through) — a contradiction. See computeAcos's own comment for the full explanation; the
+  // equivalent real-world scenario (no ad-attribution data at all) is covered by the new gate's own
+  // test group above instead, which now returns CPC/Price rather than this Spend/Total-Sales proxy.
   // Amazon is unaffected — its adAttributedSales branch still takes priority over everything else.
-  assertEquals(computeAcos({ spend: 100, units: 10, adAttributedSpend: 100, adAttributedSales: 200 }, 20), 0.5);
+  assertEquals(computeAcos({ spend: 100, units: 10, adAttributedSpend: 100, adAttributedSales: 200, adOrders: 5 }, 20), 0.5);
 });
 
 Deno.test("computeAcos: an Amazon SKU with spend + price + orders but no Sponsored Products row gets a real percentage, never blank", () => {
-  // Regression for the bug reported against a live Ad Spend Report export:
-  // SB/SD-only Amazon SKUs (e.g. Therapressure Brush (Green), Polyglycolic
-  // suture thread) had valid Spend/CPC/Price but ACOS rendered as a blank
-  // cell — the old CPC/Price fallback could never itself return exactly the
-  // 9.99 sentinel, but real production data hit this seam another way; this
-  // pins the fix's actual contract instead: any SKU with real spend, price,
-  // and Total Sales > 0 always resolves to a finite, non-sentinel number.
-  const v = computeAcos({ spend: 379.97, units: 4, revenue: 23936.01 }, 5671);
-  assertEquals(v, 379.97 / 23936.01);
+  // Regression for the bug reported against a live Ad Spend Report export: SB/SD-only Amazon SKUs
+  // (e.g. Therapressure Brush (Green), Polyglycolic suture thread) had valid Spend/CPC/Price but
+  // ACOS rendered as a blank cell. This exact scenario — no Sponsored Products row, so no adOrders
+  // field at all — is now handled directly by the Total-Ad-Orders gate itself (CPC/Price), rather
+  // than the old real-revenue-proxy fallback this test originally pinned; the underlying contract
+  // this regression cares about — a SKU with real spend/price never renders as the blank sentinel —
+  // still holds, just via the new formula.
+  const fixture = { spend: 379.97, units: 4, revenue: 23936.01 };
+  const v = computeAcos(fixture, 5671);
+  assertEquals(v, computeCpc(fixture) / 5671);
   assertEquals(v === ACOS_UNDEFINED_SENTINEL, false);
-  assertEquals(acosCell({ spend: 379.97, units: 4, revenue: 23936.01 }, 5671), Math.round((379.97 / 23936.01) * 10000) / 10000);
+  assertEquals(acosCell(fixture, 5671), Math.round((computeCpc(fixture) / 5671) * 10000) / 10000);
+  // A current live listing price (listingPrice), when on file, wins over the stale `price`
+  // argument — the exact fix this whole feature was built for on precisely this kind of SB/SD-only
+  // SKU, which has no Ad Spend/Ad Sales ratio to fall back to at all.
+  const listingPrice = 5999;
+  assertEquals(computeAcos(fixture, 5671, listingPrice), computeCpc(fixture) / listingPrice);
 });
 
 Deno.test("actionSheetAcos: a real Sponsored Products row with zero attributed sales this window still falls back to Spend/Total Sales, unlike computeAcos", () => {
@@ -69,7 +122,11 @@ Deno.test("actionSheetAcos: a real Sponsored Products row with zero attributed s
   // that as a genuinely-unknown ratio for every other sheet). The Action Sheet is meant to be
   // acted on, so it uses a real, computable number here instead: Spend(no tax)/Total Sales, exactly
   // like a SKU with no Sponsored Products row at all.
-  const suturethreadKT = { spend: 436.86, units: 1, revenue: 721, adAttributedSpend: 436.86, adAttributedSales: 0 };
+  // adOrders: 1 added to both fixtures below (not part of the original bug report) purely so
+  // computeAcos's own comparison assertions here still exercise its adAttributedSales branch rather
+  // than the new Total-Ad-Orders gate (see that gate's own test group) — actionSheetAcos itself has
+  // no such gate and is completely unaffected either way.
+  const suturethreadKT = { spend: 436.86, units: 1, revenue: 721, adAttributedSpend: 436.86, adAttributedSales: 0, adOrders: 1 };
   // computeAcos (every other sheet): correctly stays the sentinel — has an SP row, attributed 0.
   assertEquals(computeAcos(suturethreadKT, 721), ACOS_UNDEFINED_SENTINEL);
   // actionSheetAcos (Action Sheet only): the real 60.59%, not 999%.
@@ -77,7 +134,7 @@ Deno.test("actionSheetAcos: a real Sponsored Products row with zero attributed s
   assertEquals(Math.round(v * 10000) / 100, 60.59);
   assertEquals(v === ACOS_UNDEFINED_SENTINEL, false);
   // A genuine positive Sponsored Products attribution is untouched — same number as computeAcos.
-  const attributed = { spend: 999, units: 999, adAttributedSpend: 516.18, adAttributedSales: 379.04 };
+  const attributed = { spend: 999, units: 999, adAttributedSpend: 516.18, adAttributedSales: 379.04, adOrders: 10 };
   assertEquals(actionSheetAcos(attributed, 999), computeAcos(attributed, 999));
   // No Sponsored Products row at all (undefined, not 0) — same fallback as computeAcos's own.
   assertEquals(actionSheetAcos({ spend: 436.86, units: 1, revenue: 721 }, 721), 436.86 / 721);
@@ -86,24 +143,29 @@ Deno.test("actionSheetAcos: a real Sponsored Products row with zero attributed s
   assertEquals(actionSheetAcos({ spend: 100, units: 0 }, 721), ACOS_UNDEFINED_SENTINEL);
 });
 
-Deno.test("computeAcos prefers Amazon's own ad-attributed spend/sales when on file, ignoring GST and real-order units/price entirely", () => {
+Deno.test("computeAcos prefers Amazon's own ad-attributed spend/sales when on file (Total Ad Orders > 0), ignoring GST and real-order units/price entirely", () => {
+  // adOrders: added to every fixture below to clear the new Total-Ad-Orders gate (see that gate's
+  // own test group) — none of these were part of the original fixtures, since this test predates
+  // that feature; the point here is that the ">0" branch itself is completely unchanged.
   // Matches the raw Sponsored Products Advertised Product export's own ACOS
   // (Spend / 7 Day Total Sales, no GST) rather than this report's usual
   // real-order-based CPC/Price formula — per the seller's explicit request
   // that ACOS match the raw export number-for-number.
   assertEquals(
-    computeAcos({ spend: 999, units: 999, adAttributedSpend: 516.18, adAttributedSales: 379.04 }, 999),
+    computeAcos({ spend: 999, units: 999, adAttributedSpend: 516.18, adAttributedSales: 379.04, adOrders: 30 }, 999),
     516.18 / 379.04
   );
   // Ad spend with zero attributed sales reads as the same 9.99 "near-infinite"
   // sentinel this file uses elsewhere for a spend/revenue ratio it can't compute.
-  assertEquals(computeAcos({ spend: 0, units: 0, adAttributedSpend: 50, adAttributedSales: 0 }, 100), 9.99);
+  assertEquals(computeAcos({ spend: 0, units: 0, adAttributedSpend: 50, adAttributedSales: 0, adOrders: 4 }, 100), 9.99);
   // No spend and no attributed sales at all -> 0, not the sentinel.
-  assertEquals(computeAcos({ spend: 0, units: 0, adAttributedSpend: 0, adAttributedSales: 0 }, 100), 0);
-  // adAttributedSales undefined (no Sponsored Products row for this SKU at all, e.g. SB/SD-only
-  // spend) falls back to the Spend(no tax)/Total Sales proxy formula instead of reading as a
-  // false 0% ACOS.
-  assertEquals(computeAcos({ spend: 100, units: 10 }, 20), 100 / 200);
+  assertEquals(computeAcos({ spend: 0, units: 0, adAttributedSpend: 0, adAttributedSales: 0, adOrders: 4 }, 100), 0);
+  // adAttributedSales undefined (skips Amazon's own branch entirely) WITH adOrders > 0 takes the
+  // Flipkart/Meesho-style branch instead — adOrders x price, since adSales isn't set here — no
+  // longer the old Spend(no tax)/Total Sales proxy this test originally pinned before this feature
+  // existed. The realistic version of "no Sponsored Products row at all" (SB/SD-only Amazon spend)
+  // is adOrders undefined/0, which is covered by the last-resort CPC/Price test group instead.
+  assertEquals(computeAcos({ spend: 100, units: 10, adOrders: 4 }, 20), 100 / 80);
 });
 
 Deno.test("acosCell blanks out the ACOS_UNDEFINED_SENTINEL to null instead of showing a literal 999% cell", () => {
@@ -111,10 +173,15 @@ Deno.test("acosCell blanks out the ACOS_UNDEFINED_SENTINEL to null instead of sh
   // spend rendered as a spreadsheet cell showing "999%", read by the seller as a data error. Every
   // xlsx/DB/email ACOS write goes through acosCell instead of pct(computeAcos(...)) directly so this
   // case renders as a blank cell instead.
-  assertEquals(acosCell({ spend: 0, units: 0, adAttributedSpend: 50, adAttributedSales: 0 }, 100), null);
+  // adOrders added below (not part of the original fixture) to clear the new Total-Ad-Orders gate,
+  // same reasoning as the computeAcos test groups above.
+  assertEquals(acosCell({ spend: 0, units: 0, adAttributedSpend: 50, adAttributedSales: 0, adOrders: 2 }, 100), null);
   // A real, computable ACOS still comes through as the normal rounded fraction.
-  assertEquals(acosCell({ spend: 999, units: 999, adAttributedSpend: 516.18, adAttributedSales: 379.04 }, 999), Math.round((516.18 / 379.04) * 10000) / 10000);
-  // No spend, no sales, no ad data at all -> 0, not blank (nothing to report, not "unknown").
+  assertEquals(acosCell({ spend: 999, units: 999, adAttributedSpend: 516.18, adAttributedSales: 379.04, adOrders: 30 }, 999), Math.round((516.18 / 379.04) * 10000) / 10000);
+  // No spend, no sales, no ad data at all -> 0, not blank (nothing to report, not "unknown") — this
+  // one now goes through the new Total-Ad-Orders gate (adOrders undefined) instead of the old
+  // adAttributedSales branch, landing on the same 0 result either way (computeCpc is 0 when spend
+  // and units are both 0, so 0/price is still 0).
   assertEquals(acosCell({ spend: 0, units: 0 }, 100), 0);
 });
 
@@ -124,14 +191,16 @@ Deno.test("acosSortRank puts a known, finite ACOS above the sentinel in a worst-
   // numerically larger than any real ACOS, three blank "zero attributed sales" Amazon rows
   // pushed Chewy tube bump's concrete, known 136% ACOS entirely off the visible top-3 list.
   // acosSortRank must rank the sentinel LAST, not first, so a real number always wins.
-  const knownHigh = { spend: 999, units: 999, adAttributedSpend: 516.18, adAttributedSales: 379.04 }; // 136.18%
-  const sentinelBlank = { spend: 0, units: 0, adAttributedSpend: 185.72, adAttributedSales: 0 }; // real spend, zero attribution
+  // adOrders added to every fixture below (not part of the original bug report) to clear the new
+  // Total-Ad-Orders gate, same reasoning as the computeAcos test groups above.
+  const knownHigh = { spend: 999, units: 999, adAttributedSpend: 516.18, adAttributedSales: 379.04, adOrders: 30 }; // 136.18%
+  const sentinelBlank = { spend: 0, units: 0, adAttributedSpend: 185.72, adAttributedSales: 0, adOrders: 5 }; // real spend, zero attribution
   const rows = [{ label: "blank", agg: sentinelBlank }, { label: "known", agg: knownHigh }]
     .sort((a, b) => acosSortRank(b.agg, 199) - acosSortRank(a.agg, 199));
   assertEquals(rows[0].label, "known");
   assertEquals(rows[1].label, "blank");
   // A real ACOS still sorts by its own magnitude, unaffected by the sentinel remap.
-  assertEquals(acosSortRank({ spend: 50, units: 50, adAttributedSpend: 50, adAttributedSales: 100 }, 10) < acosSortRank(knownHigh, 199), true);
+  assertEquals(acosSortRank({ spend: 50, units: 50, adAttributedSpend: 50, adAttributedSales: 100, adOrders: 8 }, 10) < acosSortRank(knownHigh, 199), true);
 });
 
 Deno.test("getDateWindow computes a pure UTC-midnight trailing window, not local time", () => {
@@ -262,13 +331,16 @@ Deno.test("groupProductsByName's DAY ad-attributed merge sums every variant's sp
   const rows = groupProductsByName([
     {
       platform: "Amazon" as const, sku: "B-CT-G-8", name: "Chewy tube (Green - Spiral model)", price: 239,
-      day: { spend: 195.19, units: 1, adAttributedSpend: 195.19, adAttributedSales: 189.52 },
-      range: { spend: 1150.58, units: 45, adAttributedSpend: 1150.58, adAttributedSales: 10355.19 },
+      // adOrders: 1 added below (not part of the original bug report) purely so this test's own
+      // computeAcos assertion clears the new Total-Ad-Orders gate and still exercises the
+      // adAttributedSales branch this test is actually about — see that gate's own test group.
+      day: { spend: 195.19, units: 1, adAttributedSpend: 195.19, adAttributedSales: 189.52, adOrders: 1 },
+      range: { spend: 1150.58, units: 45, adAttributedSpend: 1150.58, adAttributedSales: 10355.19, adOrders: 1 },
     },
     {
       platform: "Amazon" as const, sku: "B-CT-G-1", name: "Chewy tube (Green - Spiral model)", price: 239,
-      day: { spend: 38.77, units: 0, adAttributedSpend: 38.77, adAttributedSales: 0 },
-      range: { spend: 220.0, units: 0, adAttributedSpend: 220.0, adAttributedSales: 0 },
+      day: { spend: 38.77, units: 0, adAttributedSpend: 38.77, adAttributedSales: 0, adOrders: 0 },
+      range: { spend: 220.0, units: 0, adAttributedSpend: 220.0, adAttributedSales: 0, adOrders: 0 },
     },
   ]);
   assertEquals(rows.length, 1);
@@ -315,4 +387,24 @@ Deno.test("groupProductsByName's DAY ad-attributed merge sums every variant's sp
   ]);
   assertEquals(bothZero[0].day.adAttributedSpend, 50);
   assertEquals(bothZero[0].day.adAttributedSales, 0);
+});
+
+Deno.test("flipkartRowRevenue: real Invoice Amount wins, falls back to quantity x current listing price only when it's missing", () => {
+  // Real bug this was written for: some uploaded Flipkart "Orders" exports are a logistics/
+  // returns-style report (delivery SLAs, dispatch dates, cancellation reasons) with no Invoice
+  // Amount/price column under any name at all, rather than the report type this was designed
+  // against — confirmed directly against Supabase data, not a parsing bug. That silently zeroed out
+  // Flipkart's Summary sheet "Overall Sales Value" and the Ad spend report/SKU Wise Report's Total
+  // Sales column for every SKU in that upload.
+  // 1. A real, positive Invoice Amount on the row always wins, regardless of what the listing
+  // price map has on file for that SKU — real order data is never overridden.
+  assertEquals(flipkartRowRevenue(500, 2, 100), 500);
+  assertEquals(flipkartRowRevenue(500, 2, undefined), 500);
+  // 2. No real Invoice Amount (0, this row's own export has no such column) falls back to this
+  // row's own quantity x its SKU's current barm_flipkart_listings selling price.
+  assertEquals(flipkartRowRevenue(0, 2, 150), 300);
+  // 3. Neither a real Invoice Amount NOR a listing-table price for this SKU -> 0, same as before
+  // this fallback existed (no third fallback invented).
+  assertEquals(flipkartRowRevenue(0, 2, undefined), 0);
+  assertEquals(flipkartRowRevenue(0, 2, 0), 0);
 });
