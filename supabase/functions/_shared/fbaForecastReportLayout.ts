@@ -147,15 +147,29 @@ function buildTableSheet<T>(rows: T[], cols: Col<T>[], opts: TableOpts<T>): XLSX
     const s = { ...(c.headerStyle ?? opts.headerStyle), ...fillOf(c.headerFill ?? null) };
     ws[XLSX.utils.encode_cell({ r: 0, c: ci })] = cell(c.header, s);
   });
+  // Cells of one column that look the same share ONE style object. With
+  // ~190k cells, a fresh object per cell pushed the Edge Function past its
+  // memory limit (the job died silently mid-generation); sharing produces
+  // the identical workbook.
+  const styles = new Map<string, Style>();
+  const styleFor = (ci: number, bold: boolean, hit: [string, string | null] | null, band: string | null): Style => {
+    const key = `${ci}|${hit ? `${hit[0]}/${hit[1]}` : `band:${band}`}`;
+    let s = styles.get(key);
+    if (!s) {
+      const base = opts.body(bold);
+      s = hit
+        ? { ...base, ...fillOf(hit[0]), ...(hit[1] ? { font: { ...(base.font as Style), color: { rgb: hit[1] } } } : {}) }
+        : { ...base, ...fillOf(band) };
+      styles.set(key, s);
+    }
+    return s;
+  };
   rows.forEach((r, ri) => {
     const band = opts.band ? opts.band(r) : null;
     cols.forEach((c, ci) => {
       const v = c.value(r);
-      const base = opts.body(!!c.bold);
       const hit = c.rule ? c.rule(r, v) : null;
-      const s = hit
-        ? { ...base, ...fillOf(hit[0]), ...(hit[1] ? { font: { ...(base.font as Style), color: { rgb: hit[1] } } } : {}) }
-        : { ...base, ...fillOf(band) };
+      const s = styleFor(ci, !!c.bold, hit, band);
       ws[XLSX.utils.encode_cell({ r: ri + 1, c: ci })] = cell(v, s, c.fmt);
     });
   });

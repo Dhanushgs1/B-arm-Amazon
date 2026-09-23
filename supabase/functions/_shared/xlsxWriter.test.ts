@@ -57,3 +57,40 @@ Deno.test("writeXlsxWithViews leaves every cell value, formula, merge and number
     assertEquals(cells(b), cells(a));
   }
 });
+
+// Reads a zip's central directory: [name, method] per entry.
+function zipEntries(bytes: Uint8Array): Array<[string, number]> {
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let eocd = bytes.length - 22;
+  while (eocd >= 0 && v.getUint32(eocd, true) !== 0x06054b50) eocd--;
+  const count = v.getUint16(eocd + 10, true);
+  let p = v.getUint32(eocd + 16, true);
+  const out: Array<[string, number]> = [];
+  for (let i = 0; i < count; i++) {
+    const method = v.getUint16(p + 10, true), nlen = v.getUint16(p + 28, true), xlen = v.getUint16(p + 30, true), clen = v.getUint16(p + 32, true);
+    out.push([new TextDecoder().decode(bytes.subarray(p + 46, p + 46 + nlen)), method]);
+    p += 46 + nlen + xlen + clen;
+  }
+  return out;
+}
+
+Deno.test("writeXlsxWithViews writes a deflate-compressed zip with exactly the workbook's parts", () => {
+  const bytes = writeXlsxWithViews(sampleWorkbook());
+  const entries = zipEntries(bytes);
+  const names = entries.map(([n]) => n);
+  assertEquals(names.includes("[Content_Types].xml"), true);
+  assertEquals(names.includes("xl/worksheets/sheet4.xml"), true);
+  assertEquals(names.some((n) => n.includes("Sh33tJ5") || n.startsWith("Root Entry")), false);
+  // Big XML parts are deflated (method 8), never stored uncompressed.
+  assertEquals(entries.find(([n]) => n === "xl/styles.xml")![1], 8);
+  // Same parts, same contents as the plain library output (apart from the injected panes).
+  // deno-lint-ignore no-explicit-any
+  const plain = (XLSX as any).CFB.read(XLSX.write(sampleWorkbook(), { type: "buffer", bookType: "xlsx" }), { type: "buffer" });
+  // deno-lint-ignore no-explicit-any
+  const ours = (XLSX as any).CFB.read(bytes, { type: "buffer" });
+  const text = (z: { FullPaths: string[]; FileIndex: Array<{ content: Uint8Array }> }, n: string) => {
+    const i = z.FullPaths.findIndex((p) => p.endsWith(n));
+    return new TextDecoder().decode(z.FileIndex[i].content);
+  };
+  for (const n of ["xl/styles.xml", "xl/workbook.xml", "[Content_Types].xml", "xl/worksheets/sheet3.xml"]) assertEquals(text(ours, n), text(plain, n));
+});
