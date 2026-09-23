@@ -25,6 +25,7 @@ import {
   type DailySalesRejectReason,
   type StockSnapshotRejectReason,
 } from "./fbaForecastRules";
+import { runBatchedUpload, type BatchedUploadProgress } from "./batchedUpload";
 
 // ── shared helpers ───────────────────────────────────────────────────────
 
@@ -184,17 +185,68 @@ export async function parseAndCleanFbaSales30d(file: File, reportDate: string): 
   return { cleanedRows, totalRows: rows.length, rejectionReasons };
 }
 
-/** Phase 2: atomically replace barm_fba_daily_sales via RPC, then log the audit row. */
+const FBA_DAILY_SALES_BATCH_SIZE = 1000;
+
+/**
+ * Phase 2: stage the cleaned rows 1,000 at a time (sequentially) under one
+ * upload session, then atomically swap them into barm_fba_daily_sales and
+ * log the audit row. Sending the whole file in one request was dying in
+ * transit ("Failed to fetch"). The swap happens only after every batch is
+ * staged and the staged totals match, so barm_fba_daily_sales never holds
+ * partial data — see scripts/fba_daily_sales_batched_upload.sql.
+ */
 export async function commitFbaSales30d(
   fileName: string,
   cleanedRows: FbaDailySalesCleanedRow[],
   totalRows: number,
-  rejectionReasons: Record<string, number>
+  rejectionReasons: Record<string, number>,
+  onProgress?: (p: BatchedUploadProgress) => void
 ): Promise<{ rowsAccepted: number }> {
   const targetTable = "barm_fba_daily_sales";
+  const sessionId = crypto.randomUUID();
   try {
-    const { error } = await supabasePublic.rpc("replace_barm_fba_daily_sales", { rows: cleanedRows });
-    if (error) throw new Error(error.message);
+    await runBatchedUpload(cleanedRows, {
+      batchSize: FBA_DAILY_SALES_BATCH_SIZE,
+      onProgress,
+      stageBatch: async (batchIndex, rows) => {
+        const { data, error } = await supabasePublic.rpc("stage_barm_fba_daily_sales_batch", {
+          p_session_id: sessionId,
+          p_batch_index: batchIndex,
+          rows,
+        });
+        if (error) throw new Error(error.message);
+        return Number(data);
+      },
+      commit: async (expectedRows, expectedBatches) => {
+        const { data, error } = await supabasePublic.rpc("commit_barm_fba_daily_sales_session", {
+          p_session_id: sessionId,
+          p_expected_rows: expectedRows,
+          p_expected_batches: expectedBatches,
+        });
+        if (error) throw new Error(error.message);
+        return Number(data);
+      },
+      // Only a successful commit deletes this session's staged rows.
+      isSessionCommitted: async () => {
+        const { count, error } = await supabasePublic
+          .from("barm_fba_daily_sales_staging")
+          .select("*", { count: "exact", head: true })
+          .eq("session_id", sessionId);
+        if (error) throw new Error(error.message);
+        return count === 0;
+      },
+      discard: async () => {
+        const { error } = await supabasePublic.rpc("discard_barm_fba_daily_sales_session", { p_session_id: sessionId });
+        if (error) throw new Error(error.message);
+      },
+    });
+
+    // Independent post-commit check, outside the commit transaction.
+    const { count, error: countErr } = await supabasePublic.from(targetTable).select("*", { count: "exact", head: true });
+    if (countErr) throw new Error(`Upload committed, but verifying the row count failed: ${countErr.message}`);
+    if (count !== cleanedRows.length) {
+      throw new Error(`Upload committed, but ${targetTable} has ${count} rows — expected ${cleanedRows.length}.`);
+    }
 
     await recordUploadHistorySafe({
       file_name: fileName,

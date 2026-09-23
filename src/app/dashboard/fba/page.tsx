@@ -34,6 +34,7 @@ import {
   type UploadHistoryRow,
 } from "@/lib/fbaForecastUpload";
 import { fetchFbaForecastReportBlob } from "@/lib/fbaForecastJobs";
+import type { BatchedUploadProgress } from "@/lib/batchedUpload";
 
 interface PreviewState<T> {
   status: "idle" | "parsing" | "preview" | "committing" | "done" | "error";
@@ -79,6 +80,7 @@ function FbaDailySalesCard({
   dataInfo: FbaDataInfo | undefined;
 }) {
   const [state, setState] = useState<PreviewState<ParseCleanResult<FbaDailySalesCleanedRow>>>({ status: "idle" });
+  const [progress, setProgress] = useState<BatchedUploadProgress | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const disabled = !reportDate;
 
@@ -95,12 +97,15 @@ function FbaDailySalesCard({
   const confirm = async () => {
     if (state.status !== "preview" || !state.parsed || !state.fileName) return;
     setState((prev) => ({ ...prev, status: "committing" }));
+    setProgress(null);
     try {
-      const res = await commitFbaSales30d(state.fileName, state.parsed.cleanedRows, state.parsed.totalRows, state.parsed.rejectionReasons);
-      setState({ status: "done", fileName: state.fileName, message: `${res.rowsAccepted} rows saved (of ${state.parsed.totalRows})` });
+      const res = await commitFbaSales30d(state.fileName, state.parsed.cleanedRows, state.parsed.totalRows, state.parsed.rejectionReasons, setProgress);
+      setState({ status: "done", fileName: state.fileName, message: `${res.rowsAccepted} rows saved (of ${state.parsed.totalRows}) — row count verified` });
       onCommitted();
     } catch (err) {
       setState({ status: "error", fileName: state.fileName, error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setProgress(null);
     }
   };
 
@@ -169,7 +174,21 @@ function FbaDailySalesCard({
           </div>
         )}
         {state.status === "committing" && (
-          <span className="flex items-center gap-1.5 text-muted-foreground"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving to Supabase…</span>
+          <div className="space-y-1.5">
+            <span className="flex items-center gap-1.5 text-muted-foreground">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              {!progress
+                ? "Saving to Supabase…"
+                : progress.phase === "committing"
+                  ? `Verifying & committing ${progress.totalRows.toLocaleString("en-US")} rows…`
+                  : `Uploading ${progress.batchesDone}/${progress.totalBatches} — ${progress.rowsDone.toLocaleString("en-US")} / ${progress.totalRows.toLocaleString("en-US")} rows`}
+            </span>
+            {progress && progress.totalRows > 0 && (
+              <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                <div className="h-full bg-primary transition-all" style={{ width: `${(progress.rowsDone / progress.totalRows) * 100}%` }} />
+              </div>
+            )}
+          </div>
         )}
         {state.status === "done" && (
           <span className="flex items-center gap-1.5 text-green-600 dark:text-green-400 font-semibold"><CheckCircle2 size={14} /> {state.message}</span>
