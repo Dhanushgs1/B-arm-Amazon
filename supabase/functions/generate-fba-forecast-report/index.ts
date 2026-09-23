@@ -39,6 +39,9 @@ Deno.serve(async (req: Request) => {
         .from("fba-forecast-reports")
         .upload(storagePath, xlsxBytes, {
           contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          // A regenerate overwrites this same path; the default max-age=3600
+          // let Storage's CDN keep serving the previous workbook for up to an hour.
+          cacheControl: "0",
           upsert: true,
         });
       if (uploadError) throw new Error(`Storage upload failed: ${uploadError.message}`);
