@@ -9,6 +9,17 @@ Deno.test("shipStateToZone matches known states case/whitespace-insensitively", 
   assertEquals(shipStateToZone("Jammu & Kashmir"), "Punjab_zone");
 });
 
+// Real 30-day orders export (172922020719.txt) carried both of these; the
+// manual formula's exact-match list dropped them to "Unknown".
+Deno.test("shipStateToZone maps the '&' spelling of Dadra and Nagar Haveli", () => {
+  assertEquals(shipStateToZone("DADRA & NAGAR HAVELI"), "Maharashtra_zone");
+});
+
+Deno.test("shipStateToZone reads a known state out of a comma-separated address", () => {
+  assertEquals(shipStateToZone("ALAPPUZHA, KERALA, INDIA"), "Karnataka_zone");
+  assertEquals(shipStateToZone("Somewhere, Atlantis"), "Unknown");
+});
+
 Deno.test("shipStateToZone falls back to Unknown for an unrecognized state", () => {
   assertEquals(shipStateToZone("Atlantis"), "Unknown");
   assertEquals(shipStateToZone(""), "Unknown");

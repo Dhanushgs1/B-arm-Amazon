@@ -266,6 +266,26 @@ export interface DailySalesRawRow {
 
 export type DailySalesRejectReason = "s_prefix_order" | "today_order" | "outside_window" | "cancelled" | "merchant";
 
+// India has one fixed offset (UTC+05:30, no daylight saving).
+const IST_OFFSET_MS = 330 * 60 * 1000;
+
+/**
+ * The IST calendar date ('YYYY-MM-DD') of an Amazon orders-export
+ * `purchase-date`, which arrives as an ISO-8601 timestamp with an offset
+ * (e.g. "2026-09-22T20:15:00+00:00", 01:45 IST on the 23rd). The seller's
+ * manual sheet counts orders on their IST date (Excel shows the file's
+ * timestamps in local time), so an order placed between 00:00 and 05:30
+ * IST belongs to the next day, not to its UTC date. A value without a time
+ * part is taken as already being a date. '' if blank.
+ */
+export function purchaseDateIst(raw: string): string {
+  const s = raw.trim();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) || !/(Z|[+-]\d{2}:?\d{2})$/i.test(s)) return s.slice(0, 10);
+  const ms = Date.parse(s);
+  if (!Number.isFinite(ms)) return s.slice(0, 10);
+  return new Date(ms + IST_OFFSET_MS).toISOString().slice(0, 10);
+}
+
 /**
  * True if `dateIso` falls within the trailing `days`-day window ending at
  * (and including) `reportDate`: `[reportDate - (days-1), reportDate]`. Both

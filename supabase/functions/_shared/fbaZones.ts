@@ -12,7 +12,7 @@ const SHIP_STATE_ZONES: Array<{ zone: string; states: string[] }> = [
   { zone: "Tamilnadu_zone", states: ["TAMILNADU", "TAMIL NADU", "TN", "PALGHAT", "ANDAMAN & NICOBAR ISLANDS", "ANDAMAN ISLANDS", "AN", "PUDUCHERRY"] },
   { zone: "Karnataka_zone", states: ["KARNATAKA", "KA", "GOA", "GA", "LAKSHWADEEP", "LAKSHADWEEP", "KERALA", "KL"] },
   { zone: "Telangana_zone", states: ["TELANGANA", "TELENGANA", "TG", "ANDHRA PRADESH", "ANDHRAPRADESH", "AP", "ANDHARA PRADESH"] },
-  { zone: "Maharashtra_zone", states: ["MAHARASHTRA", "MAHARASTRA", "MH", "DADRA AND NAGAR HAVELI AND DAMAN AND DIU", "DAMAN & DIU", "DADRA AND NAGAR HAVELI"] },
+  { zone: "Maharashtra_zone", states: ["MAHARASHTRA", "MAHARASTRA", "MH", "DADRA AND NAGAR HAVELI AND DAMAN AND DIU", "DAMAN & DIU", "DADRA AND NAGAR HAVELI", "DADRA & NAGAR HAVELI"] },
   { zone: "gujarat_zone", states: ["GUJARAT", "GUJRAT", "GJ"] },
   { zone: "Nagpur_zone", states: ["MADHYA PRADESH", "MADHYAPRADESH", "MP", "CHHATTISGARH", "CHATTISGARH", "CG"] },
   { zone: "Rajasthan_zone", states: ["RAJASTHAN", "RJ"] },
@@ -25,14 +25,30 @@ const SHIP_STATE_ZONES: Array<{ zone: string; states: string[] }> = [
   { zone: "Punjab_zone", states: ["PUNJAB", "PB", "HIMACHAL PRADESH", "HIMACHALPRADESH", "HP", "JAMMU & KASHMIR", "JAMMU AND KASHMIR", "JAMMU KASHMIR", "JK", "LADAKH", "LA", "CHANDIGARH"] },
 ];
 
-/** Ship-state (e.g. "Maharashtra", "TN") -> zone. Matches the exact
- *  nested-IF formula in the user's live 30_days_sales!G column: upper-cased
- *  and trimmed before matching. Returns "Unknown" for anything unrecognized,
- *  same as the formula's final else-branch. */
-export function shipStateToZone(state: string): string {
-  const normalized = state.trim().toUpperCase();
+function exactStateZone(normalized: string): string | null {
   for (const { zone, states } of SHIP_STATE_ZONES) {
     if (states.includes(normalized)) return zone;
+  }
+  return null;
+}
+
+/** Ship-state (e.g. "Maharashtra", "TN") -> zone. Matches the exact
+ *  nested-IF formula in the user's live 30_days_sales!G column: upper-cased
+ *  and trimmed before matching. Two additions beyond that formula, both
+ *  seen in the real orders export and otherwise dropped as "Unknown": the
+ *  "DADRA & NAGAR HAVELI" spelling, and an address typed into ship-state
+ *  (e.g. "ALAPPUZHA, KERALA, INDIA"), read by its first comma-separated
+ *  part that is a known state. Returns "Unknown" for anything else, same
+ *  as the formula's final else-branch. */
+export function shipStateToZone(state: string): string {
+  const normalized = state.trim().toUpperCase();
+  const exact = exactStateZone(normalized);
+  if (exact) return exact;
+  if (normalized.includes(",")) {
+    for (const part of normalized.split(",")) {
+      const zone = exactStateZone(part.trim());
+      if (zone) return zone;
+    }
   }
   return "Unknown";
 }

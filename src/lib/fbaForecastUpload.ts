@@ -21,6 +21,7 @@ import {
   cleanStockSnapshotRow,
   selectStockSnapshotDate,
   parseUsSlashDate,
+  purchaseDateIst,
   type FbfRawRow,
   type DailySalesRejectReason,
   type StockSnapshotRejectReason,
@@ -141,9 +142,8 @@ export interface FbaDailySalesCleanedRow {
  * `useDashboard()`), never the server's real "today" — it anchors both the
  * "drop today's rows" rule and the trailing 30-day sales window. The
  * `purchase-date` column arrives as a full ISO-8601 timestamp with a UTC
- * offset (e.g. "2026-09-22T07:08:36+00:00") — `.slice(0, 10)` reads off
- * just the date part, same convention as `isoDateOnly` in
- * amazonReportUpload.ts.
+ * offset (e.g. "2026-09-22T07:08:36+00:00") and is counted on its IST
+ * date (`purchaseDateIst`), matching the seller's manual sheet.
  */
 export async function parseAndCleanFbaSales30d(file: File, reportDate: string): Promise<ParseCleanResult<FbaDailySalesCleanedRow>> {
   assertFileExtension(file, [".csv", ".txt"]);
@@ -154,7 +154,7 @@ export async function parseAndCleanFbaSales30d(file: File, reportDate: string): 
   const cleanedRows: FbaDailySalesCleanedRow[] = [];
 
   for (const row of rows) {
-    const purchaseDate = (row["purchase-date"] || "").trim().slice(0, 10);
+    const purchaseDate = purchaseDateIst(row["purchase-date"] || "");
     const result = cleanDailySalesRow(
       {
         amazonOrderId: (row["amazon-order-id"] || "").trim(),

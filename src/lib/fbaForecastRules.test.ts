@@ -13,6 +13,7 @@ import {
   selectStockSnapshotDate,
   parseUsSlashDate,
   parseManualPlanGrid,
+  purchaseDateIst,
 } from "./fbaForecastRules.ts";
 
 // ── classifyStatus ───────────────────────────────────────────────────────
@@ -212,6 +213,54 @@ test("dedupeByIdentityKey is case/whitespace-normalized for sku and fc", () => {
   ];
   const out = dedupeByIdentityKey(rows, fbfIdentityKey);
   assert.equal(out.length, 1);
+});
+
+// ── purchaseDateIst ──────────────────────────────────────────────────────
+
+// The orders export stamps purchase-date in UTC; the seller's manual sheet
+// (Excel "Short Date" on an IST machine) shows the IST calendar date.
+test("purchaseDateIst moves an early-morning IST order onto its IST date", () => {
+  assert.equal(purchaseDateIst("2026-08-24T20:15:00+00:00"), "2026-08-25"); // 01:45 IST
+  assert.equal(purchaseDateIst("2026-09-22T18:29:59+00:00"), "2026-09-22"); // 23:59:59 IST
+  assert.equal(purchaseDateIst("2026-09-22T18:30:00Z"), "2026-09-23");      // 00:00 IST
+  assert.equal(purchaseDateIst("2026-09-23T07:31:00+00:00"), "2026-09-23");
+});
+
+test("purchaseDateIst keeps 00:00-05:29 and 05:30 UTC on the same IST day", () => {
+  assert.equal(purchaseDateIst("2026-09-23T00:30:00+00:00"), "2026-09-23"); // 06:00 IST
+  assert.equal(purchaseDateIst("2026-09-23T05:29:59+00:00"), "2026-09-23"); // 10:59:59 IST
+  assert.equal(purchaseDateIst("2026-09-23T05:30:00+00:00"), "2026-09-23"); // 11:00 IST
+});
+
+test("purchaseDateIst rolls 18:30 UTC and later onto the next IST day", () => {
+  assert.equal(purchaseDateIst("2026-09-22T18:29:59+00:00"), "2026-09-22");
+  assert.equal(purchaseDateIst("2026-09-22T18:30:00+00:00"), "2026-09-23");
+  assert.equal(purchaseDateIst("2026-12-31T20:00:00+00:00"), "2027-01-01"); // across a year end
+});
+
+// The date that cleanDailySalesRow filters on is the IST one.
+const cleanAt = (ts: string, reportDate: string) =>
+  cleanDailySalesRow({ amazonOrderId: "402-1", purchaseDate: purchaseDateIst(ts), orderStatus: "Shipped", fulfillmentChannel: "Amazon" }, reportDate);
+
+test("report-date rows are dropped by their IST date, not their UTC date", () => {
+  // 22-Sep 19:00 UTC is 23-Sep 00:30 IST: a report-date (23-Sep) row, dropped.
+  assert.deepEqual(cleanAt("2026-09-22T19:00:00+00:00", "2026-09-23"), { keep: false, reason: "today_order" });
+  // 22-Sep 18:00 UTC is 22-Sep 23:30 IST: kept.
+  assert.deepEqual(cleanAt("2026-09-22T18:00:00+00:00", "2026-09-23"), { keep: true });
+});
+
+test("the 30-day window's first day is judged on the IST date", () => {
+  // Report 23-Sep: window is 25-Aug..23-Sep (23-Sep itself then dropped as today).
+  // 24-Aug 18:30 UTC is 25-Aug 00:00 IST: inside.
+  assert.deepEqual(cleanAt("2026-08-24T18:30:00+00:00", "2026-09-23"), { keep: true });
+  // 24-Aug 18:29 UTC is still 24-Aug IST: outside.
+  assert.deepEqual(cleanAt("2026-08-24T18:29:00+00:00", "2026-09-23"), { keep: false, reason: "outside_window" });
+});
+
+test("purchaseDateIst honours a non-UTC offset and leaves a bare date alone", () => {
+  assert.equal(purchaseDateIst("2026-09-22T23:40:00+05:30"), "2026-09-22");
+  assert.equal(purchaseDateIst("2026-09-22"), "2026-09-22");
+  assert.equal(purchaseDateIst("  "), "");
 });
 
 // ── isWithinTrailingWindow ────────────────────────────────────────────────
