@@ -154,64 +154,61 @@ export const adStatusHasSales = (a: WindowAgg): boolean => a.units > 0;
 // per-order revenue where it's tracked, i.e. Amazon/Flipkart's `revenue`; the flat Price x units
 // estimate otherwise, i.e. Meesho, which never populates `revenue` on its WindowAgg).
 //
-// History: this same ad-attributed-sales branch was added (6f32888), reverted (cd333b5, on the
-// grounds that Flipkart/Meesho's ad-attributed revenue is legitimately zero far more often than
-// real per-order revenue is, and folding it into this shared function blanked the ACOS column on
-// the majority of Ad spend report/SKU Wise Report rows), and is now restored here as the seller's
-// own final, explicit call once they'd seen exactly that trade-off spelled out: a SKU with real
-// orders but zero ad-attributed sales that window WILL show a blank ACOS here — that is the
-// intended reading of "ad spend / ad-attributed sales", not a defect.
+// History: this same ad-attributed-sales branch was added (6f32888), reverted (cd333b5), restored
+// (a real SP row with 0 attributed sales WAS meant to blank), and is now superseded again by the
+// seller's final, explicit rule below: ACOS should never blank out just because a specific
+// ad-attribution figure happens to be 0 when a real, computable CPC/Price ratio is available —
+// confirmed directly after review of a live generated report (SKU A001-5 and others: real Orders,
+// real Spend, Total Ad Sales 0, ACOS rendering blank when it should read as a real percentage).
 //
 // The sentinel below is deliberately reused (not Infinity/NaN) for internal comparisons — sorting
 // "worst ACOS first" and the Action Sheet's >14% threshold both still want a very-high-but-finite
-// number here, since ad spend with zero/unknown sales in a window is exactly the kind of row those
-// should surface. Only the user-visible cell/JSON writers (acosCell below) treat it specially,
-// blanking it out instead of showing "999%".
+// number here. Only the user-visible cell/JSON writers (acosCell below) treat it specially,
+// blanking it out instead of showing "999%". With every fallback below now routing through
+// acosCpcOverPrice, the sentinel is reachable only for a genuinely unpriced row (no price and no
+// listingPrice on file at all) with real spend — there is truly nothing to divide by.
 export const ACOS_UNDEFINED_SENTINEL = 9.99;
-// Real-Orders gate (a.units, the same denominator computeCpc itself uses — NOT Total Ad Orders/
-// a.adOrders), per the seller's explicit, later instruction, confirmed a second time after being
-// shown it overrides the earlier Amazon exception on purpose: whenever a SKU/window's real Orders
-// are 0, ACOS is ALWAYS CPC/Price — never the blank sentinel, and never the Ad Spend/Ad-Attributed
-// Sales ratio, even for a genuine Amazon Sponsored Products row or real Flipkart/Meesho ad-order
-// data on file for that same SKU/window. This deliberately supersedes the "Amazon's own SP-row
-// check always wins" rule from the previous version of this function — confirmed directly with the
-// seller (a real SP row with adOrders===0 used to correctly stay blank; it now computes CPC/Price
-// instead, on purpose). CPC here is exactly computeCpc(a) — when a.units===0, that's already just
-// spendTax(a) (Spend WITH tax), so "CPC = Spend(with tax)" for a zero-Orders row falls out of the
-// existing computeCpc definition rather than needing a second formula. Spend=0 (and therefore
-// CPC=0) correctly reads as ACOS=0%, not the sentinel — only genuinely unpriced (no listingPrice
-// and no price) rows with real spend still fall back to the sentinel, since there's truly nothing
-// to divide by. Only when real Orders ARE > 0 does the ad-attribution-preferred logic below run,
-// completely unchanged from before this instruction.
-export const computeAcos = (a: WindowAgg, price: number, listingPrice?: number): number => {
-  if (a.units === 0) {
-    const p = listingPrice && listingPrice > 0 ? listingPrice : price;
-    if (!p || p <= 0) return a.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
-    const cpc = computeCpc(a);
-    return cpc > 0 ? cpc / p : 0;
-  }
-  // Orders > 0 below this point — completely unchanged from before this instruction.
-  // Amazon: a real Sponsored Products row always wins.
-  if (a.adAttributedSales !== undefined) {
-    const spend = a.adAttributedSpend ?? 0;
-    return a.adAttributedSales > 0 ? spend / a.adAttributedSales : spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
-  }
-  // Flipkart/Meesho: only a genuine ad-attributed-orders count this window counts as "has ad data".
-  if ((a.adOrders ?? 0) > 0) {
-    const adSalesFigure = a.adSales !== undefined ? a.adSales : a.adOrders! * price;
-    return adSalesFigure > 0 ? a.spend / adSalesFigure : a.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
-  }
-  // Real Orders exist but no ad-attribution data of any kind -> CPC/Price, per the seller's
-  // confirmed instruction, replacing the old real-revenue-proxy fallback entirely.
+// CPC/Price, with the same "genuinely unpriced -> sentinel, else 0" fallback every computeAcos
+// branch below shares — factored out once several call sites started needing it, both the
+// Orders=0 gate and every ad-attribution branch's own "attribution is exactly 0" case.
+const acosCpcOverPrice = (a: WindowAgg, price: number, listingPrice?: number): number => {
   const p = listingPrice && listingPrice > 0 ? listingPrice : price;
   if (!p || p <= 0) return a.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
-  return computeCpc(a) / p;
+  const cpc = computeCpc(a);
+  return cpc > 0 ? cpc / p : 0;
+};
+// Real-Orders gate (a.units, the same denominator computeCpc itself uses — NOT Total Ad Orders/
+// a.adOrders), per the seller's explicit instruction, confirmed after being shown it overrides the
+// earlier Amazon exception on purpose: whenever a SKU/window's real Orders are 0, ACOS is ALWAYS
+// CPC/Price — never the blank sentinel, and never the Ad Spend/Ad-Attributed Sales ratio, even for
+// a genuine Amazon Sponsored Products row or real Flipkart/Meesho ad-order data on file for that
+// same SKU/window.
+export const computeAcos = (a: WindowAgg, price: number, listingPrice?: number): number => {
+  if (a.units === 0) return acosCpcOverPrice(a, price, listingPrice);
+  // Orders > 0 below this point.
+  // Amazon: prefer its own Ad Spend/Ad-Attributed Sales ratio whenever there's a real (>0)
+  // attributed sales figure to divide by; when attribution is defined but exactly 0 (real ad
+  // spend, zero attributed sales this window), that used to be the ACOS_UNDEFINED_SENTINEL — per
+  // the seller's later, confirmed instruction (see this function's own comment above), it now
+  // falls back to CPC/Price instead, the same as every other "can't use ad-attribution" case.
+  if (a.adAttributedSales !== undefined) {
+    if (a.adAttributedSales > 0) return (a.adAttributedSpend ?? 0) / a.adAttributedSales;
+    return acosCpcOverPrice(a, price, listingPrice);
+  }
+  // Flipkart/Meesho: same treatment — a genuine ad-attributed-orders count with a real (>0)
+  // ad-sales figure keeps its own ratio; adSalesFigure exactly 0 falls back to CPC/Price too.
+  if ((a.adOrders ?? 0) > 0) {
+    const adSalesFigure = a.adSales !== undefined ? a.adSales : a.adOrders! * price;
+    if (adSalesFigure > 0) return a.spend / adSalesFigure;
+    return acosCpcOverPrice(a, price, listingPrice);
+  }
+  // No ad-attribution data of any kind for this SKU/window -> CPC/Price, same fallback as above.
+  return acosCpcOverPrice(a, price, listingPrice);
 };
 
-// Action Sheet only. computeAcos's Sponsored Products branch deliberately keeps a real SP row
-// with exactly zero attributed sales this window as the ACOS_UNDEFINED_SENTINEL (a genuinely
-// unknown ratio, blanked by acosCell) — correct for Summary/Ad spend report/SKU Wise Report, which
-// show it as an honest blank rather than guess. The Action Sheet is different: it's a worksheet
+// Action Sheet only. Unlike computeAcos above, this keeps its own separate Spend(no tax)/Total
+// Sales fallback (not CPC/Price) for a Sponsored Products row with 0 attributed sales — the Action
+// Sheet is different: it's a worksheet
 // built to be ACTED on, and per the seller's explicit report against a real export (a Suture
 // thread-KT row: Orders 1, Spend without tax ₹436.86, Price ₹721, Total Sales ₹721 — a fully
 // computable 60.59% — still rendered as the sentinel's literal "999%"), a SKU with real
@@ -1207,15 +1204,23 @@ export async function fetchMeeshoProducts(
       sku,
       name: resolveProductName(nameBySku.get(sku), sku) || nameBySku.get(sku) || sku,
       price: priceBySku.get(sku) || 0,
-      day: { spend: spendBySkuDay.get(sku) || 0, units: 0, adOrders: adOrdersDayBySku.get(sku) || 0 },
-      range: { spend: spendBySku.get(sku)?.spend || 0, units: unitsBySku.get(sku)?.units || 0, adOrders: adOrdersRangeBySku.get(sku) || 0 },
+      day: { spend: spendBySkuDay.get(sku) || 0, units: 0, revenue: 0, adOrders: adOrdersDayBySku.get(sku) || 0 },
+      // revenue: real per-order Quantity x Supplier Listed Price (revenueBySku, same raw source as
+      // the Order Value fix above) — per the seller's later, confirmed instruction that Meesho's
+      // Total Sales (Summary/Ad spend report/SKU Wise Report) must match raw data too, not stay on
+      // the flat Price(meesho_price_marketing) x Orders estimate this used to fall back to. The
+      // display "Price" column (priceBySku above) and the ACOS CPC/Price fallback are unaffected —
+      // both still read meesho_price_marketing as before; only Total Sales changed.
+      range: { spend: spendBySku.get(sku)?.spend || 0, units: unitsBySku.get(sku)?.units || 0, revenue: revenueBySku.get(sku) || 0, adOrders: adOrdersRangeBySku.get(sku) || 0 },
     });
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows.forEach((r: any) => {
     if (!r.sku || r.order_date !== endDate || isCancelled(r.order_status)) return;
     const p = products.get(r.sku);
-    if (p) p.day.units += num(r.quantity);
+    if (!p) return;
+    p.day.units += num(r.quantity);
+    p.day.revenue = (p.day.revenue || 0) + num(r.quantity) * num(r.supplier_listed_price);
   });
 
   const campaigns: CampaignSpendRow[] = [...campaignSpendDay.entries()]
@@ -2221,14 +2226,18 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     sumLabelCells.push({ row: blockStart, platform });
     if (shortlist.length) {
       shortlist.forEach((p, i) => {
-        // Total Sales, per the seller's explicit request: Amazon/Flipkart use real per-order
-        // revenue (WindowAgg.revenue — see fetchAmazonProducts/fetchFlipkartProducts and
-        // groupProductsByName's plain sum of it across a product's SKU variants); Meesho stays
-        // on the flat Price x Orders(units) estimate, same as the B Arm orders / Meesho
-        // leaderboard sheets elsewhere in this workbook. Computed once for the day's Orders and
-        // once for the range's, so each block gets its own Total Sales next to its own Orders count.
-        const dayTotalSales = platform === "Meesho" ? round2(p.price * p.day.units) : round2(p.day.revenue || 0);
-        const rangeTotalSales = platform === "Meesho" ? round2(p.price * p.range.units) : round2(p.range.revenue || 0);
+        // Total Sales, per the seller's explicit request: every platform (Amazon/Flipkart/Meesho
+        // alike) uses real per-order revenue (WindowAgg.revenue — see
+        // fetchAmazonProducts/fetchFlipkartProducts/fetchMeeshoProducts and groupProductsByName's
+        // plain sum of it across a product's SKU variants), not a flat Price x Orders estimate.
+        // Meesho's revenue is Quantity x each order row's own raw Supplier Listed Price (same
+        // source as the Order Value fix), NOT priceBySku/meesho_price_marketing — per the seller's
+        // later, confirmed instruction that this figure must match raw data too. The B Arm orders /
+        // Meesho leaderboard sheets elsewhere in this workbook still use the flat Price x Orders
+        // estimate deliberately, unaffected by this. Computed once for the day's Orders and once
+        // for the range's, so each block gets its own Total Sales next to its own Orders count.
+        const dayTotalSales = round2(p.day.revenue || 0);
+        const rangeTotalSales = round2(p.range.revenue || 0);
         // Ad Sales, per the seller's explicit request: Amazon uses its own ad-attributed Sales
         // figure (the same adAttributedSales computeAcos uses for Amazon's ACOS); Flipkart uses
         // its own ads export's "Total Revenue" figure (WindowAgg.adSales, from fsnRows —
@@ -2512,12 +2521,13 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     [...products.values()]
       .filter((p) => spendTax(p.range) > 0)
       .forEach((p) => {
-        // Meesho stays on the old flat Price x range-Orders estimate, per the seller's explicit
-        // choice — only Amazon/Flipkart use the real per-order revenue sum above. Day uses
-        // p.day.revenue directly (Amazon/Flipkart) — the same field revenueRangeBySku's range
-        // figure is itself sourced from, just not exposed as its own returned Map for the day window.
-        const dayTotalSales = platform === "Meesho" ? p.price * p.day.units : p.day.revenue || 0;
-        const rangeTotalSales = platform === "Meesho" ? p.price * p.range.units : revenueRangeBySku.get(p.sku) || 0;
+        // Every platform (Amazon/Flipkart/Meesho alike) now uses the real per-order revenue sum —
+        // see fetchMeeshoProducts's own comment on why Meesho's day.revenue/revenueRangeBySku are
+        // sourced from each order row's raw Supplier Listed Price, not priceBySku. Day uses
+        // p.day.revenue directly — the same field revenueRangeBySku's range figure is itself
+        // sourced from, just not exposed as its own returned Map for the day window.
+        const dayTotalSales = p.day.revenue || 0;
+        const rangeTotalSales = revenueRangeBySku.get(p.sku) || 0;
         const dayAdSales =
           platform === "Amazon" ? (p.day.adAttributedSales !== undefined ? round2(p.day.adAttributedSales) : null)
           : platform === "Flipkart" ? round2(p.day.adSales || 0)
@@ -2683,23 +2693,27 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
 
   // ── B Arm orders — cross-platform Product/Quantity/Price/Sales leaderboard,
   // matching the hand-built workbook's own (empty, in every sample seen)
-  // "B Arm orders" tab, but actually populated here from the range window's
-  // order data already computed above rather than left blank.
+  // "B Arm orders" tab, but actually populated here from the single reporting
+  // day's own order data — per the seller's explicit report against a live
+  // generated file that this sheet was reading the 7-day range instead of
+  // the single day. Every other Product/Quantity/Price/Sales leaderboard in
+  // this workbook (Meesho (B Arm) orders below) intentionally stays on the
+  // range window; this one specifically must not.
   const bArmAoa: (string | number)[][] = [["Product", "Quantity", "Price", "Sales"]];
   const bArmZeroRows: (string | number)[][] = [];
   platforms.forEach(({ products }) => {
     const grouped = groupProductsByName([...products.values()], undefined, skuToMasterSkuidName);
     grouped
-      .filter((p) => p.range.units > 0)
-      .sort((a, b) => b.range.units * b.price - a.range.units * a.price)
-      .forEach((p) => bArmAoa.push([p.name, p.range.units, p.price, round2(p.price * p.range.units)]));
+      .filter((p) => p.day.units > 0)
+      .sort((a, b) => b.day.units * b.price - a.day.units * a.price)
+      .forEach((p) => bArmAoa.push([p.name, p.day.units, p.price, round2(p.price * p.day.units)]));
     // Amazon catalog SKUs seeded above with zero orders this window — held back from the main
     // leaderboard and appended after every platform's real activity below, so a reader sees "who's
     // actually selling" first and "not selling at all" as a distinct trailing block, not mixed in.
     grouped
-      .filter((p) => p.range.units === 0)
+      .filter((p) => p.day.units === 0)
       .sort((a, b) => a.name.localeCompare(b.name))
-      .forEach((p) => bArmZeroRows.push([p.name, p.range.units, p.price, round2(p.price * p.range.units)]));
+      .forEach((p) => bArmZeroRows.push([p.name, p.day.units, p.price, round2(p.price * p.day.units)]));
   });
   bArmAoa.push(...bArmZeroRows);
   const wsBArm = XLSX.utils.aoa_to_sheet(bArmAoa);
