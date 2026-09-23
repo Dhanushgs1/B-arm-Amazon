@@ -21,11 +21,12 @@ import XLSX from "npm:xlsx-js-style@1.2.0";
 import { fetchAllRows } from "./deps/amazonReportShared.ts";
 import { fetchProductMarketingMap, buildProductMarketingResolver } from "./deps/productMarketingUpload.ts";
 import { shipStateToZone, fcToZone } from "./fbaZones.ts";
-import { computeFbaAnalysis, type SalesRow, type StockRow, type StatusRow, type FbaAnalysisRow, type StatusCategory } from "./fbaForecastCalc.ts";
+import { computeFbaAnalysis, type SalesRow, type StockRow, type StatusRow, type StatusCategory } from "./fbaForecastCalc.ts";
+import { buildFbaForecastLayout } from "./fbaForecastReportLayout.ts";
 
-interface RawSalesRow { purchase_date: string; product_name: string; sku: string; quantity: number; ship_state: string; }
-interface RawStockRow { report_date: string; msku: string; ending_warehouse_balance: number; fulfillment_center: string; }
-interface RawStatusRow { sku: string; quantity: number; fc: string; source_month: string; }
+interface RawSalesRow { purchase_date: string; fulfillment_channel: string | null; product_name: string; sku: string; quantity: number; ship_state: string; }
+interface RawStockRow { report_date: string; fnsku: string | null; asin: string | null; msku: string; disposition: string | null; ending_warehouse_balance: number; fulfillment_center: string; }
+interface RawStatusRow { product: string | null; sku: string; quantity: number; fc: string; status_raw: string | null; booked_date: string | null; pickup_date: string | null; source_month: string; active_date?: string | null; }
 
 async function fetchRawData() {
   const [salesRaw, stockRaw, bookedRaw, intransitRaw, activeRaw] = await Promise.all([
@@ -45,7 +46,9 @@ export interface FbaForecastReportResult {
   lowStockAlertCount: number;
 }
 
-export async function buildFbaForecastReportWorkbook(): Promise<FbaForecastReportResult> {
+/** `reportDate` is passed through to the layout only — the raw tables are
+ *  never filtered by it (see the file comment above). */
+export async function buildFbaForecastReportWorkbook(reportDate: string | null = null): Promise<FbaForecastReportResult> {
   const { salesRaw, stockRaw, bookedRaw, intransitRaw, activeRaw } = await fetchRawData();
 
   const salesRows: SalesRow[] = salesRaw.map((r) => ({ sku: r.sku, zone: shipStateToZone(r.ship_state), quantity: r.quantity }));
@@ -70,47 +73,20 @@ export async function buildFbaForecastReportWorkbook(): Promise<FbaForecastRepor
 
   const rows = computeFbaAnalysis(salesRows, stockRows, statusRows, resolveProductName);
 
-  const wb = XLSX.utils.book_new();
-  addFbaAnalysisSheet(wb, rows);
-  addRawSheet(wb, "30-Day Sales", ["Purchase Date", "Product Name", "SKU", "Quantity", "Ship State", "Zone"],
-    salesRaw.map((r) => [r.purchase_date, r.product_name, r.sku, r.quantity, r.ship_state, shipStateToZone(r.ship_state)]));
-  addRawSheet(wb, "FBA Stock", ["Report Date", "MSKU", "Fulfillment Center", "Zone", "Ending Warehouse Balance"],
-    stockRaw.map((r) => [r.report_date, r.msku, r.fulfillment_center, fcToZone(r.fulfillment_center), r.ending_warehouse_balance]));
-  addRawSheet(wb, "Booked", ["SKU", "FC", "Zone", "Quantity", "Source Month"],
-    bookedRaw.map((r) => [r.sku, r.fc, fcToZone(r.fc), r.quantity, r.source_month]));
-  addRawSheet(wb, "Intransit", ["SKU", "FC", "Zone", "Quantity", "Source Month"],
-    intransitRaw.map((r) => [r.sku, r.fc, fcToZone(r.fc), r.quantity, r.source_month]));
-  addRawSheet(wb, "Active", ["SKU", "FC", "Zone", "Quantity", "Source Month"],
-    activeRaw.map((r) => [r.sku, r.fc, fcToZone(r.fc), r.quantity, r.source_month]));
+  const zoneStatus = (r: RawStatusRow) => ({ ...r, zone: fcToZone(r.fc) });
+  const wb = buildFbaForecastLayout({
+    reportDate,
+    rows,
+    sales: salesRaw.map((r) => ({ ...r, zone: shipStateToZone(r.ship_state) })),
+    stock: stockRaw.map((r) => ({ ...r, zone: fcToZone(r.fulfillment_center) })),
+    booked: bookedRaw.map(zoneStatus),
+    intransit: intransitRaw.map(zoneStatus),
+    active: activeRaw.map(zoneStatus),
+  });
 
   const skuCount = new Set(rows.map((r) => r.sku)).size;
   const zoneCount = new Set(rows.map((r) => r.zone)).size;
   const lowStockAlertCount = rows.filter((r) => r.daysUntilStockout !== "--" && r.daysUntilStockout <= 14).length;
 
   return { wb, skuCount, zoneCount, lowStockAlertCount };
-}
-
-const FBA_ANALYSIS_HEADERS: Array<[keyof FbaAnalysisRow, string]> = [
-  ["sku", "SKU ID"], ["productName", "Product Name"], ["zone", "Zone"],
-  ["sales30d", "30-Day Sales (Zone)"], ["dailyRate", "Daily Rate (Zone)"], ["forecast120dZone", "120-Day Forecast (Zone)"],
-  ["totalOrders30dSku", "30-Day Orders (SKU Total)"], ["totalForecast120dSku", "120-Day Forecast (SKU Total)"],
-  ["maxForecastPerProduct", "Max Forecast Per Product"], ["minStockNeededZone", "Minimum Stock Needed (Zone)"],
-  ["salesPctRegion", "Sales % (Region)"], ["currentStockZone", "Current Stock (Zone)"], ["totalStockSku", "Current Stock (SKU Total)"],
-  ["stockNeededZone", "Stock Needed (Zone)"], ["bookedZone", "Booked (Zone)"], ["intransitZone", "Intransit (Zone)"],
-  ["bookedPlusIntransitZone", "Booked + Intransit (Zone)"], ["stockNeededAfterInboundZone", "Stock Needed After Inbound (Zone)"],
-  ["totalStockNeededAfterInboundSku", "Stock Needed After Inbound (SKU Total)"], ["activeZoneAccumulated", "Active, Last 3 Months (Zone)"],
-  ["toBeSentZone", "To Be Sent (Zone)"], ["stockToBeOrderedZone", "Stock To Be Ordered (SKU)"],
-  ["daysUntilStockout", "Days Until Stockout (Zone)"],
-];
-
-function addFbaAnalysisSheet(wb: XLSX.WorkBook, rows: FbaAnalysisRow[]): void {
-  const header = FBA_ANALYSIS_HEADERS.map(([, label]) => label);
-  const body = rows.map((r) => FBA_ANALYSIS_HEADERS.map(([key]) => r[key]));
-  const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
-  XLSX.utils.book_append_sheet(wb, ws, "FBA Analysis");
-}
-
-function addRawSheet(wb: XLSX.WorkBook, name: string, header: string[], body: unknown[][]): void {
-  const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
-  XLSX.utils.book_append_sheet(wb, ws, name);
 }

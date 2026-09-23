@@ -4,8 +4,8 @@
 // EdgeRuntime.waitUntil so the caller (a Vercel route) never waits on it.
 // Mirrors ../generate-ad-spend-report/index.ts exactly.
 import { createClient } from "npm:@supabase/supabase-js@2.110.8";
-import XLSX from "npm:xlsx-js-style@1.2.0";
 import { buildFbaForecastReportWorkbook } from "../_shared/fbaForecastReportExport.ts";
+import { writeXlsxWithViews } from "../_shared/xlsxWriter.ts";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -28,12 +28,12 @@ Deno.serve(async (req: Request) => {
       }).eq("id", job_id);
       if (statusError) throw new Error(`Failed to mark job as processing: ${statusError.message}`);
 
-      const result = await buildFbaForecastReportWorkbook();
+      const result = await buildFbaForecastReportWorkbook(report_date);
 
-      // See the matching comment in ../generate-ad-spend-report/index.ts:
-      // type: "buffer" correctly returns a real Uint8Array under Deno's npm
-      // compatibility layer; type: "array" does not.
-      const xlsxBytes = XLSX.write(result.wb, { type: "buffer", bookType: "xlsx" }) as Uint8Array;
+      // writeXlsxWithViews wraps XLSX.write (type: "buffer", see the
+      // matching comment in ../generate-ad-spend-report/index.ts) and adds
+      // the frozen panes / tab colours xlsx-js-style can't write itself.
+      const xlsxBytes = writeXlsxWithViews(result.wb);
       const storagePath = `${report_date}/fba-forecast-report.xlsx`;
       const { error: uploadError } = await supabase.storage
         .from("fba-forecast-reports")
