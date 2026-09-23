@@ -8,6 +8,7 @@
 // from useDashboard()) — never the server's real "today". See
 // src/app/dashboard/fba/page.tsx, which is the only caller.
 import { supabase } from "@/lib/supabaseClient";
+import { withStaleProcessingAsFailed } from "@/lib/fbaForecastJobRules";
 
 export const FBA_FORECAST_REPORT_TYPE = "fba_forecast";
 
@@ -16,18 +17,23 @@ export interface FbaForecastJobRow {
   report_date: string;
   status: "pending" | "processing" | "completed" | "failed";
   error_message: string | null;
+  started_at?: string | null;
+  updated_at?: string | null;
 }
 
+/** A job stuck in "processing" past STALE_PROCESSING_MS is returned as
+ *  "failed" (see fbaForecastJobRules.ts), so the page offers Retry and
+ *  findOrCreateFbaForecastJob can start a fresh run. */
 export async function findFbaForecastJob(reportDate: string): Promise<FbaForecastJobRow | null> {
   const { data, error } = await supabase
     .from("report_generation_jobs")
-    .select("id, report_date, status, error_message")
+    .select("id, report_date, status, error_message, started_at, updated_at")
     .eq("report_date", reportDate)
     .eq("report_type", FBA_FORECAST_REPORT_TYPE)
     .eq("account_name", "")
     .maybeSingle();
   if (error) throw new Error(`Job lookup failed: ${error.message}`);
-  return (data as FbaForecastJobRow) || null;
+  return withStaleProcessingAsFailed((data as FbaForecastJobRow) || null);
 }
 
 /**
@@ -35,7 +41,9 @@ export async function findFbaForecastJob(reportDate: string): Promise<FbaForecas
  * or `force` is true — in which case it creates (or resets) a `pending`
  * job and returns `created: true` so the caller knows to invoke the Edge
  * Function. A `processing` job is ALWAYS returned as-is regardless of
- * `force`, matching adSpendJobs.ts's findOrCreateJob exactly.
+ * `force`, matching adSpendJobs.ts's findOrCreateJob exactly — except one
+ * stuck past STALE_PROCESSING_MS, which findFbaForecastJob reports as
+ * `failed` and so can be retried.
  */
 export async function findOrCreateFbaForecastJob(
   reportDate: string,
