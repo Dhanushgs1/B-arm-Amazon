@@ -1317,12 +1317,14 @@ async function fetchSocialMediaAdSpend(
 // day block and the range block) and Overall Sales QTS/Value change.
 async function fetchGoogleOrders(range: { start: string; end: string }, endDate: string): Promise<{
   perProduct: { name: string; quantity: number; price: number }[];
-  // Single reporting day's own per-product breakdown — added for the "B Arm orders" sheet, which
-  // (per the seller's later, explicit instruction) now shows Google's orders exclusively, replacing
-  // the Amazon/Flipkart/Meesho merge that used to live there. Kept separate from `perProduct` above
-  // (still range-scoped, unchanged) since that one still feeds the Ad spend report sheet's own
-  // Google detail table, which is deliberately range-scoped (see this function's own comment).
-  dayPerProduct: { name: string; quantity: number; price: number }[];
+  // One row per (order_date, product) across the full 7-day range — for the "B Arm orders" sheet,
+  // which (per the seller's later, explicit instruction) now shows Google's orders exclusively,
+  // replacing the Amazon/Flipkart/Meesho merge that used to live there, spanning the full range
+  // window with its own Date column rather than a single-day or a date-less range total. Kept
+  // separate from `perProduct` above (still range-scoped but aggregated across every date into one
+  // row per product, unchanged) since that one still feeds the Ad spend report sheet's own Google
+  // detail table.
+  dailyPerProduct: { name: string; date: string; quantity: number; price: number }[];
   dayUnits: number;
   dayValue: number;
   rangeUnits: number;
@@ -1333,13 +1335,14 @@ async function fetchGoogleOrders(range: { start: string; end: string }, endDate:
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ).catch(() => [])) as any[];
   const byProduct = new Map<string, { quantity: number; priceSum: number; priceCount: number }>();
-  const byProductDay = new Map<string, { quantity: number; priceSum: number; priceCount: number }>();
+  const byDateProduct = new Map<string, { date: string; name: string; quantity: number; priceSum: number; priceCount: number }>();
   let dayUnits = 0;
   let dayValue = 0;
   let rangeUnits = 0;
   let rangeValue = 0;
   rows.forEach((r) => {
     const name = r.product_name || "(no product name)";
+    const date = r.order_date || "";
     const qty = num(r.quantity);
     const price = num(r.price);
     const value = qty * price;
@@ -1352,19 +1355,21 @@ async function fetchGoogleOrders(range: { start: string; end: string }, endDate:
     if (r.order_date === endDate) {
       dayUnits += qty;
       dayValue += value;
-      const dayAcc = byProductDay.get(name) || { quantity: 0, priceSum: 0, priceCount: 0 };
-      dayAcc.quantity += qty;
-      if (price > 0) { dayAcc.priceSum += price; dayAcc.priceCount += 1; }
-      byProductDay.set(name, dayAcc);
     }
+    const dateKey = `${date}\u0000${name}`;
+    const dateAcc = byDateProduct.get(dateKey) || { date, name, quantity: 0, priceSum: 0, priceCount: 0 };
+    dateAcc.quantity += qty;
+    if (price > 0) { dateAcc.priceSum += price; dateAcc.priceCount += 1; }
+    byDateProduct.set(dateKey, dateAcc);
   });
-  const toPerProduct = (m: Map<string, { quantity: number; priceSum: number; priceCount: number }>) =>
-    [...m.entries()]
-      .map(([name, acc]) => ({ name, quantity: acc.quantity, price: acc.priceCount ? acc.priceSum / acc.priceCount : 0 }))
-      .sort((a, b) => b.quantity * b.price - a.quantity * a.price);
+  const dailyPerProduct = [...byDateProduct.values()]
+    .map((acc) => ({ name: acc.name, date: acc.date, quantity: acc.quantity, price: acc.priceCount ? acc.priceSum / acc.priceCount : 0 }))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
   return {
-    perProduct: toPerProduct(byProduct),
-    dayPerProduct: toPerProduct(byProductDay),
+    perProduct: [...byProduct.entries()]
+      .map(([name, acc]) => ({ name, quantity: acc.quantity, price: acc.priceCount ? acc.priceSum / acc.priceCount : 0 }))
+      .sort((a, b) => b.quantity * b.price - a.quantity * a.price),
+    dailyPerProduct,
     dayUnits, dayValue: Math.round(dayValue * 100) / 100,
     rangeUnits, rangeValue: Math.round(rangeValue * 100) / 100,
   };
@@ -2709,24 +2714,29 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     currencyCols: [2, 3],
   });
 
-  // ── B Arm orders — Google's own Product/Quantity/Price/Sales leaderboard,
-  // single reporting day only — per the seller's later, explicit instruction,
-  // this sheet is Google-only now, replacing an earlier Amazon/Flipkart/Meesho
-  // cross-platform merge that used to live here (Amazon/Flipkart/Meesho are
-  // still shown on every other sheet — Ad spend report, SKU Wise Report,
-  // Summary, etc. — just not here anymore). googleOrders.dayPerProduct is the
-  // single day's own per-product breakdown (see fetchGoogleOrders's own
-  // comment) — deliberately NOT the range-scoped perProduct the Ad spend
-  // report sheet's separate Google detail table still uses.
-  const bArmAoa: (string | number)[][] = [["Product", "Quantity", "Price", "Sales"]];
-  googleOrders.dayPerProduct
+  // ── B Arm orders — Google's own Product/Date/Quantity/Price/Sales
+  // breakdown, one row per day per product across the full 7-day range —
+  // per the seller's later, explicit instruction, this sheet is Google-only
+  // now, replacing an earlier Amazon/Flipkart/Meesho cross-platform merge
+  // that used to live here (Amazon/Flipkart/Meesho are still shown on every
+  // other sheet — Ad spend report, SKU Wise Report, Summary, etc. — just not
+  // here anymore). A first version of this sheet was single-day/no-date; the
+  // seller then asked for the full range with a Date column instead, so a
+  // reader can see exactly which day contributed what, rather than either a
+  // single day or a dateless range aggregate. googleOrders.dailyPerProduct is
+  // one row per (date, product) already sorted date-then-name (see
+  // fetchGoogleOrders's own comment) — deliberately NOT the range-scoped,
+  // per-product-only perProduct the Ad spend report sheet's separate Google
+  // detail table still uses.
+  const bArmAoa: (string | number)[][] = [["Product", "Date", "Quantity", "Price", "Sales"]];
+  googleOrders.dailyPerProduct
     .filter((p) => p.quantity > 0)
-    .forEach((p) => bArmAoa.push([p.name, p.quantity, round2(p.price), round2(p.quantity * p.price)]));
+    .forEach((p) => bArmAoa.push([p.name, dotDate(p.date), p.quantity, round2(p.price), round2(p.quantity * p.price)]));
   const wsBArm = XLSX.utils.aoa_to_sheet(bArmAoa);
-  styleHeader(wsBArm, 0, 4, "6B7280");
-  wsBArm["!cols"] = [{ wch: 60 }, { wch: 10 }, { wch: 10 }, { wch: 14 }];
+  styleHeader(wsBArm, 0, 5, "6B7280");
+  wsBArm["!cols"] = [{ wch: 60 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 14 }];
   wsBArm["!views"] = [{ state: "frozen", ySplit: 1 }];
-  applyNumberFormats(wsBArm, 1, bArmAoa.length, { 2: CURRENCY_FMT, 3: CURRENCY_FMT });
+  applyNumberFormats(wsBArm, 1, bArmAoa.length, { 3: CURRENCY_FMT, 4: CURRENCY_FMT });
   XLSX.utils.book_append_sheet(wb, wsBArm, "B Arm orders");
 
   // ── Notes ──
