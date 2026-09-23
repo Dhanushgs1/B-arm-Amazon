@@ -1317,6 +1317,12 @@ async function fetchSocialMediaAdSpend(
 // day block and the range block) and Overall Sales QTS/Value change.
 async function fetchGoogleOrders(range: { start: string; end: string }, endDate: string): Promise<{
   perProduct: { name: string; quantity: number; price: number }[];
+  // Single reporting day's own per-product breakdown — added for the "B Arm orders" sheet, which
+  // (per the seller's later, explicit instruction) now shows Google's orders exclusively, replacing
+  // the Amazon/Flipkart/Meesho merge that used to live there. Kept separate from `perProduct` above
+  // (still range-scoped, unchanged) since that one still feeds the Ad spend report sheet's own
+  // Google detail table, which is deliberately range-scoped (see this function's own comment).
+  dayPerProduct: { name: string; quantity: number; price: number }[];
   dayUnits: number;
   dayValue: number;
   rangeUnits: number;
@@ -1327,6 +1333,7 @@ async function fetchGoogleOrders(range: { start: string; end: string }, endDate:
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ).catch(() => [])) as any[];
   const byProduct = new Map<string, { quantity: number; priceSum: number; priceCount: number }>();
+  const byProductDay = new Map<string, { quantity: number; priceSum: number; priceCount: number }>();
   let dayUnits = 0;
   let dayValue = 0;
   let rangeUnits = 0;
@@ -1338,20 +1345,26 @@ async function fetchGoogleOrders(range: { start: string; end: string }, endDate:
     const value = qty * price;
     rangeUnits += qty;
     rangeValue += value;
-    if (r.order_date === endDate) {
-      dayUnits += qty;
-      dayValue += value;
-    }
     const acc = byProduct.get(name) || { quantity: 0, priceSum: 0, priceCount: 0 };
     acc.quantity += qty;
     if (price > 0) { acc.priceSum += price; acc.priceCount += 1; }
     byProduct.set(name, acc);
+    if (r.order_date === endDate) {
+      dayUnits += qty;
+      dayValue += value;
+      const dayAcc = byProductDay.get(name) || { quantity: 0, priceSum: 0, priceCount: 0 };
+      dayAcc.quantity += qty;
+      if (price > 0) { dayAcc.priceSum += price; dayAcc.priceCount += 1; }
+      byProductDay.set(name, dayAcc);
+    }
   });
-  const perProduct = [...byProduct.entries()]
-    .map(([name, acc]) => ({ name, quantity: acc.quantity, price: acc.priceCount ? acc.priceSum / acc.priceCount : 0 }))
-    .sort((a, b) => b.quantity * b.price - a.quantity * a.price);
+  const toPerProduct = (m: Map<string, { quantity: number; priceSum: number; priceCount: number }>) =>
+    [...m.entries()]
+      .map(([name, acc]) => ({ name, quantity: acc.quantity, price: acc.priceCount ? acc.priceSum / acc.priceCount : 0 }))
+      .sort((a, b) => b.quantity * b.price - a.quantity * a.price);
   return {
-    perProduct,
+    perProduct: toPerProduct(byProduct),
+    dayPerProduct: toPerProduct(byProductDay),
     dayUnits, dayValue: Math.round(dayValue * 100) / 100,
     rangeUnits, rangeValue: Math.round(rangeValue * 100) / 100,
   };
@@ -2696,31 +2709,19 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     currencyCols: [2, 3],
   });
 
-  // ── B Arm orders — cross-platform Product/Quantity/Price/Sales leaderboard,
-  // matching the hand-built workbook's own (empty, in every sample seen)
-  // "B Arm orders" tab, but actually populated here from the single reporting
-  // day's own order data — per the seller's explicit report against a live
-  // generated file that this sheet was reading the 7-day range instead of
-  // the single day. Every other Product/Quantity/Price/Sales leaderboard in
-  // this workbook (Meesho (B Arm) orders below) intentionally stays on the
-  // range window; this one specifically must not.
+  // ── B Arm orders — Google's own Product/Quantity/Price/Sales leaderboard,
+  // single reporting day only — per the seller's later, explicit instruction,
+  // this sheet is Google-only now, replacing an earlier Amazon/Flipkart/Meesho
+  // cross-platform merge that used to live here (Amazon/Flipkart/Meesho are
+  // still shown on every other sheet — Ad spend report, SKU Wise Report,
+  // Summary, etc. — just not here anymore). googleOrders.dayPerProduct is the
+  // single day's own per-product breakdown (see fetchGoogleOrders's own
+  // comment) — deliberately NOT the range-scoped perProduct the Ad spend
+  // report sheet's separate Google detail table still uses.
   const bArmAoa: (string | number)[][] = [["Product", "Quantity", "Price", "Sales"]];
-  const bArmZeroRows: (string | number)[][] = [];
-  platforms.forEach(({ products }) => {
-    const grouped = groupProductsByName([...products.values()], undefined, skuToMasterSkuidName);
-    grouped
-      .filter((p) => p.day.units > 0)
-      .sort((a, b) => b.day.units * b.price - a.day.units * a.price)
-      .forEach((p) => bArmAoa.push([p.name, p.day.units, p.price, round2(p.price * p.day.units)]));
-    // Amazon catalog SKUs seeded above with zero orders this window — held back from the main
-    // leaderboard and appended after every platform's real activity below, so a reader sees "who's
-    // actually selling" first and "not selling at all" as a distinct trailing block, not mixed in.
-    grouped
-      .filter((p) => p.day.units === 0)
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .forEach((p) => bArmZeroRows.push([p.name, p.day.units, p.price, round2(p.price * p.day.units)]));
-  });
-  bArmAoa.push(...bArmZeroRows);
+  googleOrders.dayPerProduct
+    .filter((p) => p.quantity > 0)
+    .forEach((p) => bArmAoa.push([p.name, p.quantity, round2(p.price), round2(p.quantity * p.price)]));
   const wsBArm = XLSX.utils.aoa_to_sheet(bArmAoa);
   styleHeader(wsBArm, 0, 4, "6B7280");
   wsBArm["!cols"] = [{ wch: 60 }, { wch: 10 }, { wch: 10 }, { wch: 14 }];
