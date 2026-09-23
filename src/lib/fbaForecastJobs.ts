@@ -71,16 +71,23 @@ export async function findOrCreateFbaForecastJob(
  * the browser — `supabase` uses the public anon key, and the
  * "fba-forecast-reports" bucket's storage policy
  * (scripts/fba_forecast_report_tables.sql) grants anon read.
+ *
+ * A regenerate overwrites the same storage path, and Storage's CDN keeps
+ * serving the previous file for up to an hour (cache-control max-age=3600).
+ * Keying the request on this report's own generated_at (cacheNonce) gives
+ * each generation its own URL, so Download always gets the latest file.
  */
 export async function fetchFbaForecastReportBlob(reportDate: string): Promise<Blob> {
   const { data: reportRow, error: rowErr } = await supabase
     .from("fba_forecast_reports")
-    .select("xlsx_storage_path")
+    .select("xlsx_storage_path, generated_at")
     .eq("report_date", reportDate)
     .maybeSingle();
   if (rowErr) throw new Error(`Looking up report failed: ${rowErr.message}`);
   if (!reportRow?.xlsx_storage_path) throw new Error("Report has no stored file yet.");
-  const { data: blob, error: dlErr } = await supabase.storage.from("fba-forecast-reports").download(reportRow.xlsx_storage_path);
+  const { data: blob, error: dlErr } = await supabase.storage
+    .from("fba-forecast-reports")
+    .download(reportRow.xlsx_storage_path, { cacheNonce: String(reportRow.generated_at ?? Date.now()) }, { cache: "no-store" });
   if (dlErr) throw new Error(`Downloading report failed: ${dlErr.message}`);
   return blob;
 }
