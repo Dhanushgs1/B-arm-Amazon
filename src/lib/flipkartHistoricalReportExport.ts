@@ -525,12 +525,14 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
   //   * there is no TACOS column at all. Instead they carry a second pair of
   //     ratios: cpc/acos measure spend against AD-attributed orders, while
   //     "real time" cpc/acos measure the same spend against ALL of that SKU's
-  //     orders — which is what shows whether the ad cost is carrying the SKU's
+  //     FINAL orders (Orders - Returns) — which is what shows whether the ad cost is carrying the SKU's
   //     whole demand or only the slice the ads can claim.
   //
   // Verified against their workbook (SKU A006-1, 7-day block): Ad Spent 403.28
   // -> with-tax 475.8704, cpc 475.8704/3 = 158.6235, acos /556 = 0.28529,
-  // real time CPC 475.8704/6 = 79.3117, Real Time ACOS = 0.14265.
+  // real time CPC 475.8704/6 = 79.3117, Real Time ACOS = 0.14265. (That
+  // workbook divided by gross Orders; real time CPC now divides by Final
+  // Orders = Orders - Returns, per the seller's later correction.)
   const FK_WIN_7 = ["Ad Spent ", "Ad Spent with Tax ", "Orders by Ad spent ", "Orders ", "Returns ", "Final Orders ", "cpc", "acos", "real time CPC ", "Real Time ACOS "];
   const FK_WIN_30 = ["Ad Spent ", "Ad spent with Tax ", "Orders by Ads ", "Orders ", "Returns ", "Final Orders ", "cpc", "acos ", "real Time cpc", "real time acos "];
   // Additive, so columns 0-25 stay exactly where their sheet has them: Orders /
@@ -569,9 +571,13 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
     // ad-attributed orders, which is what their sheet shows (a row with 0
     // "Orders by Ad spent" reads cpc = Ad Spent with Tax).
     const cpc = computeCpc(w);
-    const rtCpc = orders > 0 ? spendTax / orders : spendTax;
+    // Real-time CPC is measured per FINAL order (Orders - Returns), not per
+    // gross order — the seller's rule. No net orders -> untouched spend, same
+    // fallback the ad-attributed cpc uses.
+    const final = orders - w.returns;
+    const rtCpc = final > 0 ? spendTax / final : spendTax;
     return [
-      w.spend, spendTax, w.adUnits, orders, w.returns, orders - w.returns,
+      w.spend, spendTax, w.adUnits, orders, w.returns, final,
       cpc, computeAcos(w, price),
       rtCpc, price > 0 ? rtCpc / price : 0,
     ];
@@ -624,13 +630,13 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
       const w = getSkuW(row);
       orders += w.orderUnits;
       returns += w.returns;
-      rtDenom += row.meta.price * w.orderUnits;
+      rtDenom += row.meta.price * Math.max(0, w.orderUnits - w.returns);
     });
     return [
       spend, spendTax, adUnits, orders, returns, orders - returns,
       adUnits > 0 ? spendTax / adUnits : spendTax,
       acosDenom > 0 ? spendTax / acosDenom : 0,
-      orders > 0 ? spendTax / orders : spendTax,
+      orders - returns > 0 ? spendTax / (orders - returns) : spendTax,
       rtDenom > 0 ? spendTax / rtDenom : 0,
     ];
   };
@@ -673,7 +679,7 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
       set(finalCol, `${ordersCol}${n}-${returnsCol}${n}`);
       set(cpcCol, `IF(${byAdCol}${n}=0,${spendTaxCol}${n},${spendTaxCol}${n}/${byAdCol}${n})`);
       set(acosCol, `IF(${priceCol}${n}=0,0,${cpcCol}${n}/${priceCol}${n})`);
-      set(rtCpcCol, `IF(${ordersCol}${n}=0,${spendTaxCol}${n},${spendTaxCol}${n}/${ordersCol}${n})`);
+      set(rtCpcCol, `IF(${finalCol}${n}<=0,${spendTaxCol}${n},${spendTaxCol}${n}/${finalCol}${n})`);
       set(rtAcosCol, `IF(${priceCol}${n}=0,0,${rtCpcCol}${n}/${priceCol}${n})`);
     }
   }
@@ -1205,7 +1211,7 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
       ? ["Returns = the Quantity of every row in the dedicated Returns report whose Return Requested Date falls in this window, per SKU — it tracks a return from the moment it's requested through in-transit/completed, which the Order report's order_item_status can still show as pending (RETURN_REQUESTED) or can miss entirely if the underlying order falls outside this window."]
       : ["Returns = the Quantity of Order report rows with status RETURNED (no dedicated Returns report was uploaded for this window, so this is the fallback — upload one to get the fuller, more accurate figure described above)."],
     ["Total Units (#) = the SKU's ad-attributed units across ALL its campaigns, so it repeats on every campaign row for that SKU, while Ad Units (#) is just that one campaign's share. For a SKU advertised by a single campaign the two are equal."],
-    ["CPC (Analysis report) = Spend+Tax / Ad Units. ACOS = CPC / Price. TACOS = Spend+Tax / (Price x Final). Final, CPC and ACOS are live Excel formulas so the sheet recalculates if you edit a Price or an Orders figure."],
+    ["CPC (Analysis report) = Spend+Tax / Ad Units. ACOS = CPC / Price. Real time CPC = Spend+Tax / Final Orders (Orders - Returns; untouched Spend+Tax when Final is 0 or less). Real time ACOS = Real time CPC / Price. TACOS = Spend+Tax / (Price x Final). Final, CPC and ACOS are live Excel formulas so the sheet recalculates if you edit a Price or an Orders figure."],
     ["TACOS sheet is keyed PER SKU, and its CPC is a DIFFERENT metric from the Analysis report's: here CPC = Spend+Tax / Final orders (cost per net order), matching the Amazon workbook's TACOS tab. TACOS (= CPC / Price) comes out the same either way."],
     [
       hasListings
