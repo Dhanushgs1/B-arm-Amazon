@@ -6,6 +6,7 @@
 // syntax-only fix — no formula/logic change.
 import XLSX from "npm:xlsx-js-style@1.2.0";
 import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } from "./deps/amazonReportShared.ts";
+import { spCampaignDays, isSplitCoveredCampaignRow } from "./deps/amazonSpendRules.ts";
 import { upsertInChunks } from "./deps/amazonReportUpload.ts";
 import { toDate as parseFlexibleDate } from "./deps/meeshoReportUpload.ts";
 import { resolveProductName } from "./deps/categoryMap.ts";
@@ -449,6 +450,13 @@ export interface AdSpendReportOpts {
    *  hand-built workbook's "Last 7 days" date-range columns). */
   rangeDays?: number;
   accountName?: string;
+  /** Upsert this run's per-product figures into barm_ad_spend_history. Off unless a caller asks:
+   *  only the real generations (the Reports-page download and the daily generate-ad-spend-report
+   *  job) pass true, so a preview/audit build can never overwrite production history. */
+  persistHistory?: boolean;
+  /** Ask Gemini to word the Action Sheet suggestions (the rule-based text is always written first).
+   *  Defaults to true; audits pass false so a build makes no external calls. */
+  aiSuggestions?: boolean;
 }
 
 // Amazon/Flipkart order data used to come straight from barm_amazon_am_orders
@@ -539,11 +547,14 @@ export async function fetchAmazonProducts(
   reportDates: Set<string>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   spRows: any[];
+  /** Every fetched SP row, unfiltered — only for the raw "Amazon Spend" dump sheet. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  spRowsRaw: any[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows: any[];
   revenueRangeBySku: Map<string, number>;
 }> {
-  const [spRows, sbRows, sdRows, mapRows, orderRowsRaw, priceRows] = await Promise.all([
+  const [spRowsRaw, sbRows, sdRows, mapRows, orderRowsRaw, priceRows] = await Promise.all([
     fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
     fetchAllRows("barm_amazon_sb_campaign", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
     fetchAllRows("barm_amazon_sd_campaign", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
@@ -553,6 +564,12 @@ export async function fetchAmazonProducts(
     fetchDailyAmazonOrders(range, endDate),
     fetchAllRows("barm_amazon_price_listing", (q) => q),
   ]);
+  // Every SP-table row counts (plain raw sum), including the seller's per-SKU split of Brand/Display
+  // spend — the SKU attribution the seller wants (24 Sep 2026). An SB/SD campaign-day already split
+  // that way is dropped from the SB/SD rows below, so it is never counted twice.
+  const spRows = spRowsRaw;
+  const splitDays = spCampaignDays(spRows);
+  const sbSdRows = [...sbRows, ...sdRows].filter((r) => !isSplitCoveredCampaignRow(r, splitDays));
   // Amazon's own orders export can carry a literal duplicate line (every
   // column identical), and a duplicate could already be sitting in Supabase
   // from an upload made before combinedAdSpendUpload.ts's replaceRangeRows
@@ -666,7 +683,7 @@ export async function fetchAmazonProducts(
       adOrdersDayBySku.set(sku, (adOrdersDayBySku.get(sku) || 0) + orders7d);
     }
   });
-  [...sbRows, ...sdRows].forEach((r: { campaign_name?: string; spend?: number; report_date?: string }) => {
+  sbSdRows.forEach((r: { campaign_name?: string; spend?: number; report_date?: string }) => {
     const spend = num(r.spend);
     if (r.report_date === endDate) addCampaignSpend(r.campaign_name || "", spend);
     if (spend <= 0) return;
@@ -682,7 +699,7 @@ export async function fetchAmazonProducts(
   const addDay = (sku: string, spend: number) => spendBySkuDay.set(sku, (spendBySkuDay.get(sku) || 0) + spend);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   spRows.filter((r: any) => r.report_date === endDate).forEach((r: any) => { if (r.advertised_sku) addDay(r.advertised_sku, num(r.spend)); });
-  [...sbRows, ...sdRows]
+  sbSdRows
     .filter((r: { report_date?: string }) => r.report_date === endDate)
     .forEach((r: { campaign_name?: string; spend?: number }) => {
       const spend = num(r.spend);
@@ -798,7 +815,7 @@ export async function fetchAmazonProducts(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [...spRows, ...sbRows, ...sdRows].forEach((r: any) => { if (r.report_date) reportDates.add(r.report_date); });
 
-  return { products, overallDay, overallRange, campaigns, unmappedSpend, reportDates, spRows, orderRows, revenueRangeBySku: revenueBySku };
+  return { products, overallDay, overallRange, campaigns, unmappedSpend, reportDates, spRows, spRowsRaw, orderRows, revenueRangeBySku: revenueBySku };
 }
 
 // Amazon's current live listing price, straight off barm_amazon_price_listing (scripts/
@@ -1531,7 +1548,8 @@ async function enrichOptimizationActionRows(
   campaigns: Map<string, OptCampaignAgg>,
   skuToCampaignName: Map<string, string>,
   platformLabel: string,
-  searchTermTool: string
+  searchTermTool: string,
+  aiSuggestions: boolean
 ): Promise<void> {
   // Same sentinel convention as computeAcos/actionSheetAcos above: a real campaign/ad-group with
   // spend but zero attributed revenue is a genuinely unknown ratio, not a literal 999% — see
@@ -1564,7 +1582,7 @@ async function enrichOptimizationActionRows(
     );
   });
 
-  if (flagged.length) {
+  if (flagged.length && aiSuggestions) {
     const promptLines = flagged
       .map((c) => {
         const topAdGroups = [...c.adGroups.values()].sort((a, b) => b.spend - a.spend).slice(0, 5);
@@ -1626,7 +1644,8 @@ async function enrichOptimizationActionRows(
 async function enrichFlipkartActionRows(
   actionRows: { platform: Platform; name: string; sku: string; campaign?: string; acos: number; action: string }[],
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  fsnRows: any[]
+  fsnRows: any[],
+  aiSuggestions: boolean
 ): Promise<void> {
   const campaigns = aggregateForOptimization(fsnRows, {
     campaign: "campaign_name", adGroup: "adgroup_name", sku: "sku_id",
@@ -1635,7 +1654,7 @@ async function enrichFlipkartActionRows(
   // fsnRows already spans the full 7-day range (see fetchFlipkartAdSpendData) — no day-filtering
   // to widen here, unlike Amazon below.
   const skuToCampaignName = buildSkuCampaignMap(fsnRows, { campaign: "campaign_name", sku: "sku_id", spend: "ad_spend" });
-  await enrichOptimizationActionRows(actionRows, "Flipkart", campaigns, skuToCampaignName, "Flipkart Ads", "Flipkart Ads Manager");
+  await enrichOptimizationActionRows(actionRows, "Flipkart", campaigns, skuToCampaignName, "Flipkart Ads", "Flipkart Ads Manager", aiSuggestions);
 }
 
 // Amazon's sp_advertised_product carries Amazon's own trailing-7-day sales_7d/orders_7d per row
@@ -1651,7 +1670,8 @@ async function enrichAmazonActionRows(
   actionRows: { platform: Platform; name: string; sku: string; campaign?: string; acos: number; action: string }[],
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   spRows: any[],
-  endDate: string
+  endDate: string,
+  aiSuggestions: boolean
 ): Promise<void> {
   const dayRows = spRows.filter((r) => r.report_date === endDate);
   const campaigns = aggregateForOptimization(dayRows, {
@@ -1662,7 +1682,7 @@ async function enrichAmazonActionRows(
   // just endDate — a SKU whose only spend fell on an earlier day in the range still resolves to
   // its real campaign this way, even though its severity/Gemini analysis above stays day-scoped.
   const skuToCampaignName = buildSkuCampaignMap(spRows, { campaign: "campaign_name", sku: "advertised_sku", spend: "spend" });
-  await enrichOptimizationActionRows(actionRows, "Amazon", campaigns, skuToCampaignName, "Amazon Ads", "Amazon Ads Console");
+  await enrichOptimizationActionRows(actionRows, "Amazon", campaigns, skuToCampaignName, "Amazon Ads", "Amazon Ads Console", aiSuggestions);
 }
 
 // Every uploaded row keeps its original file's columns verbatim in a `raw`
@@ -1820,17 +1840,6 @@ export function acosCell(a: WindowAgg, price: number, listingPrice?: number): nu
   const v = computeAcos(a, price, listingPrice);
   return v === ACOS_UNDEFINED_SENTINEL ? null : pct(v);
 }
-// Summary sheet ACOS for Flipkart/Meesho only, per the seller's explicit request: instead of
-// the CPC/Price fallback computeAcos falls back to for these two platforms everywhere else
-// (Ad spend report, SKU Wise Report), the Summary sheet computes their ACOS directly as
-// Ad Spend / Ad Sales — the same Ad Sales figure already shown in Summary's own Ad Sales
-// column — for both the day and range blocks. Amazon needs no separate path here since
-// computeAcos already resolves to this same Spend/AdSales ratio for Amazon via its
-// adAttributedSales branch. Same blanking convention as acosCell: zero Ad Sales with real
-// spend is a genuinely undefined ratio (blank cell), zero Ad Sales with zero spend is 0%.
-function summaryAcosCell(spend: number, adSales: number): number | null {
-  return adSales > 0 ? pct(spend / adSales) : spend > 0 ? null : 0;
-}
 // "Worst ACOS first" sort ordering only (the Summary sheet's per-platform shortlist, the
 // email's top-3 table, and the full Ad spend report tab's row order) — a known, finite
 // ACOS ranks ABOVE the sentinel here, not below. A blank "Amazon attributed zero sales"
@@ -1982,6 +1991,7 @@ async function saveAdSpendHistory(
 
 export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promise<AdSpendReportResult> {
   const { endDate, accountName } = opts;
+  const aiSuggestions = opts.aiSuggestions !== false;
   const rangeDays = opts.rangeDays && opts.rangeDays > 0 ? opts.rangeDays : 7;
   const range = getDateWindow(endDate, rangeDays);
 
@@ -2013,8 +2023,20 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // there and computeAcos's own gate falls back to its `price` argument, unchanged from before
   // this feature. A merged multi-SKU row's comma-joined p.sku (see groupProductsByName) is never a
   // key in either map, so it degrades the same way — falls back to `price`, not a crash or a 0.
-  const listingPriceFor = (platform: Platform, sku: string): number | undefined =>
+  const listingPriceOne = (platform: Platform, sku: string): number | undefined =>
     platform === "Amazon" ? amazonListingPriceMap.get(sku) : platform === "Flipkart" ? flipkartListingPriceMap.get(sku) : undefined;
+  // A merged product row carries its SKUs joined ("A, B"); look each one up, first hit wins. The
+  // joined string itself never matched, so a merged row fell back to its blended price and its
+  // ACOS disagreed with the Summary sheet's for the same product.
+  const listingPriceFor = (platform: Platform, sku: string): number | undefined => {
+    const direct = listingPriceOne(platform, sku);
+    if (direct !== undefined || !sku.includes(",")) return direct;
+    for (const part of sku.split(",")) {
+      const p = listingPriceOne(platform, part.trim());
+      if (p !== undefined) return p;
+    }
+    return undefined;
+  };
   // The master lists one SKU spelling per product (e.g. "B-BULB-...-PK5(FK)"),
   // but ad/order data carries whatever variant spelling that platform export
   // used (e.g. "B-BULB-...-PK5-1") — a real, different string, not a typo.
@@ -2085,7 +2107,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     .map(({ platform, reportDates }) => ({ platform, missingDates: missingDates(reportDates, range.start, endDate) }))
     .filter(({ missingDates }) => missingDates.length > 0);
 
-  const historyRowsSaved = await saveAdSpendHistory(platforms, endDate, range.start, listingPriceFor);
+  const historyRowsSaved = opts.persistHistory ? await saveAdSpendHistory(platforms, endDate, range.start, listingPriceFor) : 0;
 
   const wb = XLSX.utils.book_new();
 
@@ -2099,37 +2121,59 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const dayLabel = dotDate(endDate);
   const rangeLabel = `${dotDate(range.start)} to ${dotDate(endDate)}`;
   const METRIC_NAMES = ["Spend", "Spend(with tax)", "Orders", "CPC", "ACOS"];
+  // Summary / SKU Wise Report ACOS header spells out the denominator (acosCell's 23 Sep 2026 rule),
+  // so it can't be misread as Spend ÷ Total Sales against the Total Orders/Total Sales beside it.
+  const ACOS_HEADER = "ACOS (Spend ÷ Ad Sales; CPC ÷ Price if no ad sales)";
+  // Meesho only: Ad Orders is the ad report's own "Orders by ad" (WindowAgg.adOrders — the same
+  // count Ad Sales and ACOS already use, so it ties 1:1 to the "Meesho (B Arm) Spend" sheet),
+  // deliberately NOT the orders sheet's "Order source = Ad order" tag, which Meesho's two exports
+  // don't agree on (seller's choice, 26 Sep 2026). Organic = Total − Ad, floored at 0 (the ad report
+  // can count an ad order the orders sheet has cancelled, and Ad Sales is Ad Orders x the listing
+  // Price while Total Sales is each order row's own Listed Price). Amazon/Flipkart get blanks.
+  const meeshoOrderSplit = (platform: Platform, a: WindowAgg, totalSales: number, adSales: number | null) => {
+    if (platform !== "Meesho") return { adOrders: null, organicOrders: null, organicSales: null };
+    const adOrders = a.adOrders || 0;
+    return { adOrders, organicOrders: Math.max(0, a.units - adOrders), organicSales: round2(Math.max(0, totalSales - (adSales || 0))) };
+  };
 
   // ── Summary sheet ──
-  // 21 columns: A Platform, B/C Ad spend without/with tax (range total), D/E
-  // Product/price, F-L day metrics, M-S range metrics — both blocks now
-  // Spend, Spend(with tax), Total Orders, Total Sales, CPC, ACOS, Ad Sales
+  // 27 columns: A Platform, B/C Ad spend without/with tax (range total), D/E
+  // Product/price, F-O day metrics, P-Y range metrics — both blocks now
+  // Spend, Spend(with tax), Total Orders, Total Sales, CPC, ACOS, Ad Sales, then Meesho-only Ad/Organic Orders and Organic Sales
   // (Total Sales is real per-order revenue for Amazon/Flipkart (see
   // WindowAgg.revenue), the flat Price x Total Orders estimate for Meesho
   // per the seller's choice; Ad Sales is Amazon's own ad-attributed Sales
   // figure — computeAcos's adAttributedSales — blank for Flipkart/Meesho,
   // which have no such data; both added at the seller's explicit request,
-  // in both the day and range blocks), T/U Overall sales QTS/Value (single
+  // in both the day and range blocks), Z/AA Overall sales QTS/Value (single
   // reporting day, matching the dayLabel header — NOT the 7-day range, see
   // the day-vs-range note where these cells are written below) —
-  // A,B,C,T,U merge down across however many product rows that platform gets.
-  const SUM_COLS = 21;
+  // A,B,C,Z,AA merge down across however many product rows that platform gets.
   // Both the day and range blocks get the extra Total Sales/Ad Sales columns here — the "Ad
   // spend report" sheet's day/range blocks still use the shared METRIC_NAMES/productAoaRow
   // below, unchanged, so that sheet's layout isn't affected by this Summary-only addition.
-  const SUMMARY_METRIC_NAMES = ["Spend", "Spend(with tax)", "Total Orders", "Total Sales", "CPC", "ACOS", "Ad Sales"];
+  // Ad Orders / Organic Orders / Organic Sales (seller's request, 26 Sep 2026) are Meesho-only —
+  // blank on Amazon/Flipkart rows, whose ad-vs-organic split hasn't been checked — so a Meesho
+  // row's ACOS can be reconciled straight against the "Meesho (B Arm) Spend" sheet's "Orders by
+  // ad" without filtering the orders sheet by Order source (see meeshoOrderSplit below).
+  const SUMMARY_METRIC_NAMES = ["Spend", "Spend(with tax)", "Total Orders", "Total Sales", "CPC", ACOS_HEADER, "Ad Sales", "Ad Orders", "Organic Orders", "Organic Sales"];
+  const SUM_M = SUMMARY_METRIC_NAMES.length;
+  const SUM_DAY_START = 5;
+  const SUM_RANGE_START = SUM_DAY_START + SUM_M;
+  const SUM_QTS_COL = SUM_RANGE_START + SUM_M;
+  const SUM_COLS = SUM_QTS_COL + 2;
   const sumAoa: (string | number | null)[][] = [
     Array(SUM_COLS).fill(""),
     ["Summary", ...Array(SUM_COLS - 1).fill("")],
     Array(SUM_COLS).fill(""),
-    ["Platform", "Ad spend (without tax)", "Ad spend (with tax)", "Worst ACOS product", "", dayLabel, "", "", "", "", "", "", rangeLabel, "", "", "", "", "", "", `Overall sales (${dayLabel})`, ""],
+    ["Platform", "Ad spend (without tax)", "Ad spend (with tax)", "Worst ACOS product", "", dayLabel, ...Array(SUM_M - 1).fill(""), rangeLabel, ...Array(SUM_M - 1).fill(""), `Overall sales (${dayLabel})`, ""],
     ["", "", "", "Product", "price", ...SUMMARY_METRIC_NAMES, ...SUMMARY_METRIC_NAMES, "QTS", "Value"],
   ];
   const sumMerges: XLSX.Range[] = [
     { s: { r: 1, c: 0 }, e: { r: 1, c: SUM_COLS - 1 } },
     { s: { r: 3, c: 0 }, e: { r: 4, c: 0 } }, { s: { r: 3, c: 1 }, e: { r: 4, c: 1 } }, { s: { r: 3, c: 2 }, e: { r: 4, c: 2 } },
-    { s: { r: 3, c: 3 }, e: { r: 3, c: 4 } }, { s: { r: 3, c: 5 }, e: { r: 3, c: 11 } }, { s: { r: 3, c: 12 }, e: { r: 3, c: 18 } },
-    { s: { r: 3, c: 19 }, e: { r: 3, c: 20 } },
+    { s: { r: 3, c: 3 }, e: { r: 3, c: 4 } }, { s: { r: 3, c: SUM_DAY_START }, e: { r: 3, c: SUM_RANGE_START - 1 } }, { s: { r: 3, c: SUM_RANGE_START }, e: { r: 3, c: SUM_QTS_COL - 1 } },
+    { s: { r: 3, c: SUM_QTS_COL }, e: { r: 3, c: SUM_QTS_COL + 1 } },
   ];
   const sumHeaderRowsStyled = [3, 4];
   const sumLabelCells: { row: number; platform: Platform }[] = [];
@@ -2281,14 +2325,16 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           platform === "Amazon" ? (p.range.adAttributedSales !== undefined ? round2(p.range.adAttributedSales) : null)
           : platform === "Flipkart" ? round2(p.range.adSales || 0)
           : round2((p.range.adOrders || 0) * p.price);
-        // Summary sheet's own ACOS cells: Amazon keeps computeAcos's existing
-        // adAttributedSales-based ratio (acosCell); Flipkart/Meesho use Spend/Ad Sales directly
-        // here (summaryAcosCell), overriding the CPC/Price fallback acosCell would otherwise
-        // fall back to for them — Summary-sheet-only, the Ad spend report and SKU Wise Report
-        // sheets' ACOS columns for Flipkart/Meesho are untouched.
+        // Summary sheet ACOS follows the same 23 Sep 2026 rule as every other ACOS cell and the
+        // emailed table, for all three platforms: Spend ÷ Ad Sales only when real Orders > 0 and
+        // ad sales > 0, otherwise CPC ÷ Price (acosCell). The Flipkart/Meesho Summary cells used
+        // Spend ÷ Ad Sales unconditionally and blanked on zero Ad Sales, so they disagreed with the
+        // email for the same product and day.
         const listingPrice = listingPriceFor(platform, p.sku);
-        const daySummaryAcos = platform === "Amazon" ? acosCell(p.day, p.price, listingPrice) : summaryAcosCell(round2(p.day.spend), dayAdSales as number);
-        const rangeSummaryAcos = platform === "Amazon" ? acosCell(p.range, p.price, listingPrice) : summaryAcosCell(round2(p.range.spend), rangeAdSales as number);
+        const daySummaryAcos = acosCell(p.day, p.price, listingPrice);
+        const rangeSummaryAcos = acosCell(p.range, p.price, listingPrice);
+        const daySplit = meeshoOrderSplit(platform, p.day, dayTotalSales, dayAdSales);
+        const rangeSplit = meeshoOrderSplit(platform, p.range, rangeTotalSales, rangeAdSales);
         sumAoa.push([
           // "Ad spend (without/with tax)" here is the SINGLE-DAY total, matching
           // the seller's own manual workbook's Summary sheet convention — the
@@ -2297,8 +2343,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           // post-generate toast on the Download page.
           i === 0 ? platform : "", i === 0 ? round2(daySpendRaw) : "", i === 0 ? round2(daySpendTaxTotal) : "",
           p.name, p.price,
-          round2(p.day.spend), round2(spendTax(p.day)), p.day.units, dayTotalSales, round2(computeCpc(p.day)), daySummaryAcos, dayAdSales,
-          round2(p.range.spend), round2(spendTax(p.range)), p.range.units, rangeTotalSales, round2(computeCpc(p.range)), rangeSummaryAcos, rangeAdSales,
+          round2(p.day.spend), round2(spendTax(p.day)), p.day.units, dayTotalSales, round2(computeCpc(p.day)), daySummaryAcos, dayAdSales, daySplit.adOrders, daySplit.organicOrders, daySplit.organicSales,
+          round2(p.range.spend), round2(spendTax(p.range)), p.range.units, rangeTotalSales, round2(computeCpc(p.range)), rangeSummaryAcos, rangeAdSales, rangeSplit.adOrders, rangeSplit.organicOrders, rangeSplit.organicSales,
           // Overall sales QTS/Value is the SINGLE reporting day's total (matches
           // the dayLabel header above), not the 7-day range — the seller's own
           // manual workbook tracks this figure daily, not as a weekly rollup.
@@ -2308,10 +2354,10 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
         ]);
       });
     } else {
-      sumAoa.push([platform, 0, 0, "(no ad spend in range)", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", overallDay.units, round2(overallDay.value)]);
+      sumAoa.push([platform, 0, 0, "(no ad spend in range)", "", ...Array(SUM_M * 2).fill(""), overallDay.units, round2(overallDay.value)]);
     }
     if (blockRows > 1) {
-      [0, 1, 2, 19, 20].forEach((c) => sumMerges.push({ s: { r: blockStart, c }, e: { r: blockStart + blockRows - 1, c } }));
+      [0, 1, 2, SUM_QTS_COL, SUM_QTS_COL + 1].forEach((c) => sumMerges.push({ s: { r: blockStart, c }, e: { r: blockStart + blockRows - 1, c } }));
     }
   });
 
@@ -2341,8 +2387,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       "Social Media",
       round2(socialMedia.daySpend), round2(spendTax(dayAgg)),
       socialProduct?.name ?? SOCIAL_MEDIA_PRODUCT_NAME, price,
-      round2(dayAgg.spend), round2(spendTax(dayAgg)), dayAgg.units, round2(price * dayAgg.units), round2(computeCpc(dayAgg)), acosCell(dayAgg, price, listingPrice), null,
-      round2(rangeAgg.spend), round2(spendTax(rangeAgg)), rangeAgg.units, round2(price * rangeAgg.units), round2(computeCpc(rangeAgg)), acosCell(rangeAgg, price, listingPrice), null,
+      round2(dayAgg.spend), round2(spendTax(dayAgg)), dayAgg.units, round2(price * dayAgg.units), round2(computeCpc(dayAgg)), acosCell(dayAgg, price, listingPrice), null, null, null, null,
+      round2(rangeAgg.spend), round2(spendTax(rangeAgg)), rangeAgg.units, round2(price * rangeAgg.units), round2(computeCpc(rangeAgg)), acosCell(rangeAgg, price, listingPrice), null, null, null, null,
       "", "",
     ]);
     // Same figures as the Summary-sheet row above, reshaped for the emailed daily digest (see
@@ -2373,8 +2419,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       "Google",
       0, 0,
       "(Orders/Sales only — no ad spend data)", "",
-      0, 0, googleOrders.dayUnits, round2(googleOrders.dayValue), "", "", "",
-      0, 0, googleOrders.rangeUnits, round2(googleOrders.rangeValue), "", "", "",
+      0, 0, googleOrders.dayUnits, round2(googleOrders.dayValue), "", "", "", "", "", "",
+      0, 0, googleOrders.rangeUnits, round2(googleOrders.rangeValue), "", "", "", "", "", "",
       googleOrders.dayUnits, round2(googleOrders.dayValue),
     ]);
     // Same figures, reshaped for the emailed daily digest (see buildAdSpendDailyHtml in
@@ -2389,8 +2435,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // matching the seller's own request. One Gemini call per platform covers every flagged campaign
   // at once (not one call per product) to keep this affordable and fast on the unattended daily
   // cron. See enrichOptimizationActionRows's own comment for exactly what data each is sourced from.
-  await enrichAmazonActionRows(actionRows, amz.spRows, endDate);
-  await enrichFlipkartActionRows(actionRows, fk.fsnRows);
+  await enrichAmazonActionRows(actionRows, amz.spRows, endDate, aiSuggestions);
+  await enrichFlipkartActionRows(actionRows, fk.fsnRows, aiSuggestions);
 
   const wsSummary = XLSX.utils.aoa_to_sheet(sumAoa);
   wsSummary["!merges"] = sumMerges;
@@ -2417,15 +2463,21 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   if (googleRow !== null) styleLabel(wsSummary, XLSX.utils.encode_cell({ r: googleRow, c: 0 }), "4285F4");
   wsSummary["!cols"] = [
     { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 60 }, { wch: 10 },
-    { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 24 }, { wch: 13 }, { wch: 13 }, { wch: 13 }, // day block: Spend, Spend(with tax), Total Orders, Total Sales (wider header), CPC, ACOS, Ad Sales
-    { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 24 }, { wch: 13 }, { wch: 13 }, { wch: 13 }, // range block: same shape
+    // day block, then range block: Spend, Spend(with tax), Total Orders, Total Sales (wider header),
+    // CPC, ACOS (wider — its header spells out the formula), Ad Sales, Ad Orders, Organic Orders, Organic Sales
+    ...[0, 1].flatMap(() => [13, 13, 13, 24, 13, 20, 13, 13, 14, 14].map((wch) => ({ wch }))),
     { wch: 10 }, { wch: 14 },
   ];
+  // Offsets within each day/range block, per SUMMARY_METRIC_NAMES: 0 Spend, 1 Spend(with tax),
+  // 3 Total Sales, 4 CPC, 5 ACOS, 6 Ad Sales, 9 Organic Sales.
+  const sumBlockFormats = (start: number) => ({
+    [start]: CURRENCY_FMT, [start + 1]: CURRENCY_FMT, [start + 3]: CURRENCY_FMT, [start + 4]: CURRENCY_FMT,
+    [start + 5]: PERCENT_FMT, [start + 6]: CURRENCY_FMT, [start + 9]: CURRENCY_FMT,
+  });
   applyNumberFormats(wsSummary, 5, sumAoa.length, {
-    1: CURRENCY_FMT, 2: CURRENCY_FMT, 4: CURRENCY_FMT, 5: CURRENCY_FMT, 6: CURRENCY_FMT,
-    8: CURRENCY_FMT, 9: CURRENCY_FMT, 10: PERCENT_FMT, 11: CURRENCY_FMT,
-    12: CURRENCY_FMT, 13: CURRENCY_FMT, 15: CURRENCY_FMT, 16: CURRENCY_FMT, 17: PERCENT_FMT, 18: CURRENCY_FMT,
-    20: CURRENCY_FMT,
+    1: CURRENCY_FMT, 2: CURRENCY_FMT, 4: CURRENCY_FMT,
+    ...sumBlockFormats(SUM_DAY_START), ...sumBlockFormats(SUM_RANGE_START),
+    [SUM_QTS_COL + 1]: CURRENCY_FMT,
   });
   // Long titles (a SKU with no product-master entry falls back to the raw
   // marketing title) need to wrap within the column instead of overflowing
@@ -2542,7 +2594,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // Flipkart's ads-export "Total Revenue"/direct+indirect Units Sold; Meesho's ad report's own
   // "Orders by ad" count, and that count x Price for Ad Sales (Meesho's ad export has no ₹ sales
   // figure directly).
-  const SKU_WISE_METRIC_NAMES = ["Spend (without tax)", "Spend (with tax)", "Orders", "Total Sales", "CPC", "ACOS", "Total Ad Sales", "Total Ad Orders"];
+  // Organic Orders / Organic Sales: Meesho only, blank on Amazon/Flipkart (see meeshoOrderSplit).
+  const SKU_WISE_METRIC_NAMES = ["Spend (without tax)", "Spend (with tax)", "Orders", "Total Sales", "CPC", ACOS_HEADER, "Total Ad Sales", "Total Ad Orders", "Organic Orders", "Organic Sales"];
   const SKU_WISE_COLS = 3 + SKU_WISE_METRIC_NAMES.length * 2;
   const skuWiseRows: (string | number | null)[][] = [];
   platforms.forEach(({ platform, products, revenueRangeBySku }) => {
@@ -2569,20 +2622,22 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
         // This sheet is ungrouped (one row per real SKU, unlike Ad spend report's merged rows
         // above), so p.sku is always a single exact SKU and always a valid key into the maps.
         const listingPrice = listingPriceFor(platform, p.sku);
+        const daySplit = meeshoOrderSplit(platform, p.day, dayTotalSales, dayAdSales);
+        const rangeSplit = meeshoOrderSplit(platform, p.range, rangeTotalSales, rangeAdSales);
         skuWiseRows.push([
           p.sku, platform, p.price,
-          round2(p.day.spend), round2(spendTax(p.day)), p.day.units, round2(dayTotalSales), round2(computeCpc(p.day)), acosCell(p.day, p.price, listingPrice), dayAdSales, dayAdOrders,
-          round2(p.range.spend), round2(spendTax(p.range)), p.range.units, round2(rangeTotalSales), round2(computeCpc(p.range)), acosCell(p.range, p.price, listingPrice), rangeAdSales, rangeAdOrders,
+          round2(p.day.spend), round2(spendTax(p.day)), p.day.units, round2(dayTotalSales), round2(computeCpc(p.day)), acosCell(p.day, p.price, listingPrice), dayAdSales, dayAdOrders, daySplit.organicOrders, daySplit.organicSales,
+          round2(p.range.spend), round2(spendTax(p.range)), p.range.units, round2(rangeTotalSales), round2(computeCpc(p.range)), acosCell(p.range, p.price, listingPrice), rangeAdSales, rangeAdOrders, rangeSplit.organicOrders, rangeSplit.organicSales,
         ]);
       });
   });
   // Highest range Total Sales first, across every platform — the point of a flat, per-SKU sheet is
-  // to see top sellers regardless of which platform they're on. Index 14 = range Total Sales,
-  // per SKU_WISE_METRIC_NAMES's position in the range block (cols 11-18, Total Sales is 4th).
+  // to see top sellers regardless of which platform they're on — range Total Sales, per
+  // SKU_WISE_METRIC_NAMES's position in the range block (Total Sales is 4th).
   const SKU_WISE_RANGE_TOTAL_SALES_COL = 3 + SKU_WISE_METRIC_NAMES.length + SKU_WISE_METRIC_NAMES.indexOf("Total Sales");
   skuWiseRows.sort((a, b) => Number(b[SKU_WISE_RANGE_TOTAL_SALES_COL]) - Number(a[SKU_WISE_RANGE_TOTAL_SALES_COL]));
   const skuWiseAoa: (string | number | null)[][] = [
-    ["", "", "", dayLabel, "", "", "", "", "", "", "", rangeLabel, "", "", "", "", "", "", ""],
+    ["", "", "", dayLabel, ...Array(SKU_WISE_METRIC_NAMES.length - 1).fill(""), rangeLabel, ...Array(SKU_WISE_METRIC_NAMES.length - 1).fill("")],
     ["SKU ID", "Platform", "Price", ...SKU_WISE_METRIC_NAMES, ...SKU_WISE_METRIC_NAMES],
     ...skuWiseRows,
   ];
@@ -2606,9 +2661,9 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   applyNumberFormats(wsSkuWise, 2, skuWiseAoa.length, {
     2: CURRENCY_FMT,
     [dayBlockStart]: CURRENCY_FMT, [dayBlockStart + 1]: CURRENCY_FMT, [dayBlockStart + 3]: CURRENCY_FMT,
-    [dayBlockStart + 4]: CURRENCY_FMT, [dayBlockStart + 5]: PERCENT_FMT, [dayBlockStart + 6]: CURRENCY_FMT,
+    [dayBlockStart + 4]: CURRENCY_FMT, [dayBlockStart + 5]: PERCENT_FMT, [dayBlockStart + 6]: CURRENCY_FMT, [dayBlockStart + 9]: CURRENCY_FMT,
     [rangeBlockStart]: CURRENCY_FMT, [rangeBlockStart + 1]: CURRENCY_FMT, [rangeBlockStart + 3]: CURRENCY_FMT,
-    [rangeBlockStart + 4]: CURRENCY_FMT, [rangeBlockStart + 5]: PERCENT_FMT, [rangeBlockStart + 6]: CURRENCY_FMT,
+    [rangeBlockStart + 4]: CURRENCY_FMT, [rangeBlockStart + 5]: PERCENT_FMT, [rangeBlockStart + 6]: CURRENCY_FMT, [rangeBlockStart + 9]: CURRENCY_FMT,
   });
   if (!skuWiseRows.length) XLSX.utils.sheet_add_aoa(wsSkuWise, [["(no advertised SKUs with activity in range)"]], { origin: { r: 2, c: 0 } });
   XLSX.utils.book_append_sheet(wb, wsSkuWise, "SKU Wise Report");
@@ -2701,7 +2756,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // Meesho (B Arm) Spend / Meesho (B Arm) orders tabs, so anyone reconciling
   // this report against the raw upload doesn't have to go find the original
   // file — it's sitting right here, unmodified. ──
-  rawRowsToSheet(wb, "Amazon Spend", amz.spRows);
+  rawRowsToSheet(wb, "Amazon Spend", amz.spRowsRaw);
   rawRowsToSheet(wb, "Amazon orders", amz.orderRows);
   rawRowsToSheet(wb, "Flipkart Spend", fk.fsnRows);
   rawRowsToSheet(wb, "Flipkart Orders", fk.orderRows);
@@ -2761,22 +2816,25 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           [""],
         ]
       : []),
-    ["Spend (with tax) = raw ad spend x (1 + that product's GST rate), applied once after summing — never a per-row multiply. Rate comes from the product master's Tax column per SKU (18% used when a SKU has none on file)."],
+    ["Spend (with tax) = raw ad spend x 1.18 (a flat 18% GST for every product), applied once after summing — never a per-row multiply."],
     ["CPC = Spend(with tax) / Orders. When Orders = 0, CPC = Spend(with tax) (undefined ratio, shown as the spend itself rather than blank)."],
-    ["ACOS = Spend (without tax) / that SKU's own ad-attributed sales, when on file for this window: for Amazon, whenever a SKU has a Sponsored Products row on file, that's Amazon's own raw Sponsored Products Spend / \"7 Day Total Sales\" directly from the ad export (no GST added) — matching Amazon's own report number-for-number rather than this sheet's real-order-based Orders/CPC; for Flipkart, its ads-export \"Total Revenue\"; for Meesho, its ad-attributed order count x price. Falls back to Spend (without tax) / Total Sales — real per-order revenue, never CPC/Price, which is tax-inclusive — only when none of the above is on file at all (an Amazon SKU with no Sponsored Products row, i.e. SB/SD-only spend; or a Flipkart/Meesho product with no ad-attributed sales data of its own)."],
+    ["ACOS (23 Sep 2026 rule — every ACOS column on the Summary, Ad spend report and SKU Wise sheets, and the email; the Action Sheet keeps its own ranking ACOS): Spend (without tax) / the SKU's own ad-attributed sales — Amazon: raw Sponsored Products Spend / \"7 Day Total Sales\" (no GST); Flipkart: its ads-export Total Revenue; Meesho: its ad-attributed order count x price — ONLY when the window has real Orders > 0 AND ad-attributed sales > 0. In every other case ACOS = CPC / Price, where CPC = Spend (with tax) / Orders (Spend (with tax) when Orders = 0) and Price is the listing price on file (barm_amazon_price_listing / barm_flipkart_listings / meesho_price_marketing), else the report price. ACOS is blank only for a row with spend but no price on file anywhere."],
     ["\"Orders\" = units sold of that product in the window, from the Orders/Order report, cancelled orders excluded. This is NOT ad-click-attributed units."],
+    ["Meesho Ad Orders / Organic Orders / Organic Sales (Summary and SKU Wise Report; blank for Amazon/Flipkart): Ad Orders = \"Orders by ad\" from Meesho's own Ads report (matches the Meesho (B Arm) Spend sheet 1:1 for the same SKU and date) — the count Ad Sales (Ad Orders x Price) and ACOS use. Organic Orders = Total Orders − Ad Orders; Organic Sales = Total Sales − Ad Sales (each floored at 0). The orders sheet's \"Order source = Ad order\" tag is NOT used — Meesho's two exports don't always agree on it."],
     ["\"Day\" = the single reporting day above. \"Range\" = that day and the", rangeDays - 1, "days before it, inclusive."],
     [""],
-    ["Amazon: Sponsored Products spend is per-SKU (barm_amazon_sp_advertised_product). Sponsored Brands/Display spend has no SKU column and is split across the SKUs mapped to that campaign on the Upload page, in proportion to their weight. Unmapped SB/SD spend for the range window: ₹" + round2(amz.unmappedSpend) + " — not attributed to any product below."],
-    ["Flipkart: FSN report spend is per-SKU for every campaign type, so no apportioning is needed. Price prefers the Listings snapshot; where a SKU has no listing row, price falls back to the window's realised average selling price (Earn more report)."],
-    ["Meesho: Ads report spend is per-SKU. Price prefers meesho_price_marketing's live scraped Meesho listing price; a SKU not in that table yet (or out of stock there) falls back to the Orders report's Supplier Discounted Price (else Supplier Listed Price). Overall sales QTS/Value uses that same price (Orders x price, per SKU), matching the seller's own manual workbook. Column names come from the seller's own workbook, not a native Meesho export seen directly — see src/lib/meeshoReportUpload.ts if a real export's headers turn out to differ."],
-    ["Google Ads and social-media (Meta) spend are not included — no sample export has been seen for either, so there's no confirmed column layout to parse."],
+    ["Amazon: spend is a plain sum of the SP table (barm_amazon_sp_advertised_product), which also carries your AM-ads sheet's per-SKU split of Sponsored Brands/Display spend (each campaign-day's first split row is named, the rest have a blank campaign) — that split is how Brand/Display spend reaches each product here. An SB/SD campaign-day with no such split is spread over the SKUs mapped to it on the Upload page; SB/SD spend with neither a split nor a mapping for the range window: ₹" + round2(amz.unmappedSpend) + " — not attributed to any product below."],
+    ["Flipkart: FSN report spend is per-SKU for every campaign type, so no apportioning is needed. Price comes from the SKU's own FK Orders Invoice Amount for the window (summed Invoice Amount / summed quantity, non-cancelled rows); only a SKU with no real order in the window falls back to the Listings snapshot (then the Earn more report's realised price)."],
+    ["Meesho: Ads report spend is per-SKU. Overall sales Value / Total Sales = Quantity x each order row's own Supplier Listed Price (Incl. GST + Commission), from the Orders report only. meesho_price_marketing (the live scraped listing price) is used only for the displayed Price and as the Price in the ACOS CPC / Price fallback. Column names come from the seller's own workbook, not a native Meesho export seen directly — see src/lib/meeshoReportUpload.ts if a real export's headers turn out to differ."],
+    ["Social-media (Meta) spend appears as its own Summary-sheet row when uploaded, separate from the three marketplace platforms. Google Ads spend is not included — no sample export has been seen, so there's no confirmed column layout to parse."],
     [""],
     ["Ad Status Report matches products across Amazon, Flipkart and Meesho by product NAME only (no cross-platform SKU mapping exists) — two listings with different titles for the same physical product will show as separate rows."],
     ["Action Sheet lists every SKU whose trailing 7-day ACOS is above 14%, worst first (identified by Campaign Name + SKU ID, not product name; Spend/Spend with tax/Orders/ACOS are all the 7-day range here, unlike every other sheet's single-day figures). Every row carries a concrete bid-cut %: rows matched to a real campaign in the uploaded Amazon/Flipkart ad data get one sized to that campaign's own ad-group/SKU performance (AI-assisted); unmatched rows (e.g. Meesho, which has no campaign data in this app, or a SKU that matched no campaign) get one computed from the SKU's own 7-day ACOS instead (20%/35%/50% cut for 14-60%/60-90%/90%+ ACOS). No specific search-term/keyword name is ever invented — that data isn't captured anywhere in this app; only a live SellerMate pull (Amazon only, on request) has real keyword-level detail."],
     [`Low Spend Campaigns lists every campaign spending ₹${LOW_SPEND_THRESHOLD} or less on the single reporting day above, across all platforms, ascending by spend.`],
     [""],
-    [`Every product with activity in the range window above was also upserted into the barm_ad_spend_history table (Spend/Orders/CPC/ACOS, day and range) — a running history independent of this file, keyed on (report_date, platform, sku). Rows saved this run: ${historyRowsSaved}.`],
+    [opts.persistHistory
+      ? `Every product with activity in the range window above was also upserted into the barm_ad_spend_history table (Spend/Orders/CPC/ACOS, day and range) — a running history independent of this file, keyed on (report_date, platform, sku). Rows saved this run: ${historyRowsSaved}.`
+      : "Preview build — nothing was saved to the barm_ad_spend_history table."],
   ]);
   wsNotes["!cols"] = [{ wch: 110 }];
   if (wsNotes["A1"]) wsNotes["A1"].s = { font: { bold: true, sz: 13 } };

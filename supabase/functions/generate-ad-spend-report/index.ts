@@ -41,6 +41,8 @@ Deno.serve(async (req: Request) => {
         endDate: report_date,
         rangeDays: range_days,
         accountName: acctName || undefined,
+        // The daily job is a real generation, so it records history explicitly.
+        persistHistory: true,
       });
 
       // writeXlsxWithViews wraps XLSX.write (type: "buffer" — type: "array"

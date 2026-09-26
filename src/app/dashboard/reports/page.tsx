@@ -113,7 +113,8 @@ export default function ReportsPage() {
     if (!endDate) { alert("Pick a date at the top of the dashboard first."); return; }
     setAdSpendGenerating(true); setAdSpendMsg(null);
     try {
-      const res = await exportAdSpendReport({ endDate, accountName: account?.name });
+      // A real generation — the one place besides the daily job that records history.
+      const res = await exportAdSpendReport({ endDate, accountName: account?.name, persistHistory: true });
       const parts = res.platformTotals.map((p) => `${p.platform} ₹${p.rangeSpendTax.toFixed(0)}`).join(", ");
       setAdSpendMsg(`Downloaded ${res.filename} — ${res.productCount} products, range spend ${parts}${res.lowSpendCampaignCount ? `, ${res.lowSpendCampaignCount} low-spend campaigns flagged` : ""}${res.historyRowsSaved ? ` · ${res.historyRowsSaved} rows saved to history` : " · history not saved (run scripts/ad_spend_history_table.sql?)"}.`);
     } catch (err) {
