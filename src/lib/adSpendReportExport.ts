@@ -2091,6 +2091,23 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     { platform: "Flipkart", products: fk.products, overallDay: fk.overallDay, overallRange: fk.overallRange, campaigns: fk.campaigns, revenueRangeBySku: fk.revenueRangeBySku },
     { platform: "Meesho", products: ms.products, overallDay: ms.overallDay, overallRange: ms.overallRange, campaigns: ms.campaigns, revenueRangeBySku: ms.revenueRangeBySku },
   ];
+  // Ad-performance view (seller's request, 26 Sep 2026): every Meesho ad metric — Summary, Ad spend
+  // report, SKU Wise Report, Action Sheet and the emailed tables (platformSummaries) — counts
+  // Meesho's own "Orders by ad" (WindowAgg.adOrders, 1:1 with the "Meesho (B Arm) Spend" sheet) as
+  // Orders, with Total Sales = Ad Orders x Price, so CPC = Spend (with tax) ÷ Ad Orders and
+  // computeAcos's CPC ÷ Price fallback uses that same CPC. NOT the orders sheet's "Order source =
+  // Ad order" tag, which Meesho's two exports disagree on. Overall sales QTS/Value, the Meesho
+  // orders leaderboard, the Ad Status Report and ad-spend history keep reading `platforms` (every
+  // real order). Amazon/Flipkart entries pass through as the very same objects.
+  const meeshoAdView = (p: ProductRow): ProductRow => {
+    const view = (a: WindowAgg): WindowAgg => ({ ...a, units: a.adOrders || 0, revenue: (a.adOrders || 0) * p.price });
+    return { ...p, day: view(p.day), range: view(p.range) };
+  };
+  const adPlatforms = platforms.map((pl) => {
+    if (pl.platform !== "Meesho") return pl;
+    const products = new Map([...pl.products].map(([sku, p]) => [sku, meeshoAdView(p)] as [string, ProductRow]));
+    return { ...pl, products, revenueRangeBySku: new Map([...products].map(([sku, p]) => [sku, p.range.revenue || 0] as [string, number])) };
+  });
 
   const incompleteDates: AdSpendReportResult["incompleteDates"] = [
     { platform: "Amazon" as const, reportDates: amz.reportDates },
@@ -2115,12 +2132,6 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const dayLabel = dotDate(endDate);
   const rangeLabel = `${dotDate(range.start)} to ${dotDate(endDate)}`;
   const METRIC_NAMES = ["Spend", "Spend(with tax)", "Orders", "CPC", "ACOS"];
-  // Meesho rows on the Summary / SKU Wise Report sheets count ad-attributed orders only (seller's
-  // request, 26 Sep 2026): Orders = the ad report's own "Orders by ad" (WindowAgg.adOrders — ties
-  // 1:1 to the "Meesho (B Arm) Spend" sheet; NOT the orders sheet's "Order source = Ad order" tag,
-  // which Meesho's two exports disagree on), Total Sales = Ad Sales (Ad Orders x Price), CPC =
-  // Spend (with tax) ÷ Ad Orders. ACOS is unchanged. Amazon/Flipkart rows are untouched.
-  const ordersAggFor = (platform: Platform, a: WindowAgg): WindowAgg => (platform === "Meesho" ? { ...a, units: a.adOrders || 0 } : a);
 
   // ── Summary sheet ──
   // 21 columns: A Platform, B/C Ad spend without/with tax (range total), D/E
@@ -2193,14 +2204,16 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     return `Monitor / review keywords — trim bids ~${cut}% (7-day ACOS ${acosPct}%). ${note}`;
   };
   const TOP_N = 3; // shortlist length — worst (highest) DAY ACOS first, matching the visible ACOS column, not range ACOS or spend
-  platforms.forEach(({ platform, products, overallDay, overallRange }) => {
+  adPlatforms.forEach(({ platform, products, overallDay, overallRange }) => {
     // All products with any spend at all — totals must include every rupee,
     // not just the ones that clear the shortlist bar below. Grouped by
     // resolved product name first, so a product's 4-5 SKU variants sum into
     // one row instead of showing up as separate near-duplicate rows.
     const rows = groupProductsByName([...products.values()], undefined, skuToMasterSkuidName).filter((p) => spendTax(p.range) > 0);
     rows.forEach((p) => {
-      const rangeAcos = actionSheetAcos(p.range, p.price);
+      // Meesho uses the same ACOS as its Summary / SKU Wise cells (Spend ÷ Ad Sales, else CPC ÷ Price
+      // on the ad-orders CPC — see adPlatforms), not actionSheetAcos's Spend ÷ Total Sales proxy.
+      const rangeAcos = platform === "Meesho" ? computeAcos(p.range, p.price, listingPriceFor(platform, p.sku)) : actionSheetAcos(p.range, p.price);
       if (rangeAcos > ACTION_ACOS_THRESHOLD) {
         actionRows.push({
           platform,
@@ -2286,10 +2299,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
         // Meesho leaderboard sheets elsewhere in this workbook still use the flat Price x Orders
         // estimate deliberately, unaffected by this. Computed once for the day's Orders and once
         // for the range's, so each block gets its own Total Sales next to its own Orders count.
-        const dayTotalSales = platform === "Meesho" ? round2((p.day.adOrders || 0) * p.price) : round2(p.day.revenue || 0);
-        const rangeTotalSales = platform === "Meesho" ? round2((p.range.adOrders || 0) * p.price) : round2(p.range.revenue || 0);
-        const dayOrdersAgg = ordersAggFor(platform, p.day);
-        const rangeOrdersAgg = ordersAggFor(platform, p.range);
+        const dayTotalSales = round2(p.day.revenue || 0);
+        const rangeTotalSales = round2(p.range.revenue || 0);
         // Ad Sales, per the seller's explicit request: Amazon uses its own ad-attributed Sales
         // figure (the same adAttributedSales computeAcos uses for Amazon's ACOS); Flipkart uses
         // its own ads export's "Total Revenue" figure (WindowAgg.adSales, from fsnRows —
@@ -2321,8 +2332,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           // post-generate toast on the Download page.
           i === 0 ? platform : "", i === 0 ? round2(daySpendRaw) : "", i === 0 ? round2(daySpendTaxTotal) : "",
           p.name, p.price,
-          round2(p.day.spend), round2(spendTax(p.day)), dayOrdersAgg.units, dayTotalSales, round2(computeCpc(dayOrdersAgg)), daySummaryAcos, dayAdSales,
-          round2(p.range.spend), round2(spendTax(p.range)), rangeOrdersAgg.units, rangeTotalSales, round2(computeCpc(rangeOrdersAgg)), rangeSummaryAcos, rangeAdSales,
+          round2(p.day.spend), round2(spendTax(p.day)), p.day.units, dayTotalSales, round2(computeCpc(p.day)), daySummaryAcos, dayAdSales,
+          round2(p.range.spend), round2(spendTax(p.range)), p.range.units, rangeTotalSales, round2(computeCpc(p.range)), rangeSummaryAcos, rangeAdSales,
           // Overall sales QTS/Value is the SINGLE reporting day's total (matches
           // the dayLabel header above), not the 7-day range — the seller's own
           // manual workbook tracks this figure daily, not as a weekly rollup.
@@ -2470,7 +2481,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const detailHeaderRows: number[] = [];
   const detailLabelCells: { addr: string; platform: Platform }[] = [];
   const detailMerges: XLSX.Range[] = [];
-  platforms.forEach(({ platform, products }) => {
+  adPlatforms.forEach(({ platform, products }) => {
     // Sorted by day ACOS descending (worst first) — same metric/direction as the Summary
     // sheet's "Worst ACOS product" shortlist, so a reader doesn't have to reconcile two
     // different orderings for the same numbers across sheets.
@@ -2569,7 +2580,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const SKU_WISE_METRIC_NAMES = ["Spend (without tax)", "Spend (with tax)", "Orders", "Total Sales", "CPC", "ACOS", "Total Ad Sales", "Total Ad Orders"];
   const SKU_WISE_COLS = 3 + SKU_WISE_METRIC_NAMES.length * 2;
   const skuWiseRows: (string | number | null)[][] = [];
-  platforms.forEach(({ platform, products, revenueRangeBySku }) => {
+  adPlatforms.forEach(({ platform, products, revenueRangeBySku }) => {
     [...products.values()]
       .filter((p) => spendTax(p.range) > 0)
       .forEach((p) => {
@@ -2578,10 +2589,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
         // sourced from each order row's raw Supplier Listed Price, not priceBySku. Day uses
         // p.day.revenue directly — the same field revenueRangeBySku's range figure is itself
         // sourced from, just not exposed as its own returned Map for the day window.
-        const dayTotalSales = platform === "Meesho" ? (p.day.adOrders || 0) * p.price : p.day.revenue || 0;
-        const rangeTotalSales = platform === "Meesho" ? (p.range.adOrders || 0) * p.price : revenueRangeBySku.get(p.sku) || 0;
-        const dayOrdersAgg = ordersAggFor(platform, p.day);
-        const rangeOrdersAgg = ordersAggFor(platform, p.range);
+        const dayTotalSales = p.day.revenue || 0;
+        const rangeTotalSales = revenueRangeBySku.get(p.sku) || 0;
         const dayAdSales =
           platform === "Amazon" ? (p.day.adAttributedSales !== undefined ? round2(p.day.adAttributedSales) : null)
           : platform === "Flipkart" ? round2(p.day.adSales || 0)
@@ -2597,8 +2606,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
         const listingPrice = listingPriceFor(platform, p.sku);
         skuWiseRows.push([
           p.sku, platform, p.price,
-          round2(p.day.spend), round2(spendTax(p.day)), dayOrdersAgg.units, round2(dayTotalSales), round2(computeCpc(dayOrdersAgg)), acosCell(p.day, p.price, listingPrice), dayAdSales, dayAdOrders,
-          round2(p.range.spend), round2(spendTax(p.range)), rangeOrdersAgg.units, round2(rangeTotalSales), round2(computeCpc(rangeOrdersAgg)), acosCell(p.range, p.price, listingPrice), rangeAdSales, rangeAdOrders,
+          round2(p.day.spend), round2(spendTax(p.day)), p.day.units, round2(dayTotalSales), round2(computeCpc(p.day)), acosCell(p.day, p.price, listingPrice), dayAdSales, dayAdOrders,
+          round2(p.range.spend), round2(spendTax(p.range)), p.range.units, round2(rangeTotalSales), round2(computeCpc(p.range)), acosCell(p.range, p.price, listingPrice), rangeAdSales, rangeAdOrders,
         ]);
       });
   });
@@ -2791,7 +2800,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     ["CPC = Spend(with tax) / Orders. When Orders = 0, CPC = Spend(with tax) (undefined ratio, shown as the spend itself rather than blank)."],
     ["ACOS (23 Sep 2026 rule — every ACOS column on the Summary, Ad spend report and SKU Wise sheets, and the email; the Action Sheet keeps its own ranking ACOS): Spend (without tax) / the SKU's own ad-attributed sales — Amazon: raw Sponsored Products Spend / \"7 Day Total Sales\" (no GST); Flipkart: its ads-export Total Revenue; Meesho: its ad-attributed order count x price — ONLY when the window has real Orders > 0 AND ad-attributed sales > 0. In every other case ACOS = CPC / Price, where CPC = Spend (with tax) / Orders (Spend (with tax) when Orders = 0) and Price is the listing price on file (barm_amazon_price_listing / barm_flipkart_listings / meesho_price_marketing), else the report price. ACOS is blank only for a row with spend but no price on file anywhere."],
     ["\"Orders\" = units sold of that product in the window, from the Orders/Order report, cancelled orders excluded. This is NOT ad-click-attributed units."],
-    ["Meesho rows on the Summary and SKU Wise Report sheets count ad orders only: Orders = \"Orders by ad\" from Meesho's own Ads report (matches the Meesho (B Arm) Spend sheet 1:1 for the same SKU and date), Total Sales = Ad Sales (Ad Orders x Price), CPC = Spend (with tax) / Ad Orders. ACOS is unchanged. The orders sheet's \"Order source = Ad order\" tag is NOT used — Meesho's two exports don't always agree on it. Amazon/Flipkart rows are unaffected."],
+    ["Meesho ad metrics count ad orders only — Summary, Ad spend report, SKU Wise Report, Action Sheet and the daily email: Orders = \"Orders by ad\" from Meesho's own Ads report (matches the Meesho (B Arm) Spend sheet 1:1 for the same SKU and date), Total Sales = Ad Sales (Ad Orders x Price), CPC = Spend (with tax) / Ad Orders, ACOS = Spend / Ad Sales, or CPC / Price when there are no ad orders. Overall sales QTS/Value and the Meesho (B Arm) orders leaderboard still count every Meesho order. The orders sheet's \"Order source = Ad order\" tag is NOT used — Meesho's two exports don't always agree on it. Amazon/Flipkart are unaffected."],
     ["\"Day\" = the single reporting day above. \"Range\" = that day and the", rangeDays - 1, "days before it, inclusive."],
     [""],
     ["Amazon: spend is a plain sum of the SP table (barm_amazon_sp_advertised_product), which also carries your AM-ads sheet's per-SKU split of Sponsored Brands/Display spend (each campaign-day's first split row is named, the rest have a blank campaign) — that split is how Brand/Display spend reaches each product here. An SB/SD campaign-day with no such split is spread over the SKUs mapped to it on the Upload page; SB/SD spend with neither a split nor a mapping for the range window: ₹" + round2(amz.unmappedSpend) + " — not attributed to any product below."],
