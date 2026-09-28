@@ -8,10 +8,11 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { buildWeeklySalesWorkbookFromHistorical } from "@/lib/weeklySalesExport";
 import { fetchAllRows } from "@/lib/historicalAnalysisReportExport";
-import { buildOrphanSpendDivisor, istDayWindowUtc, isStandardOrderId, isGenuineFbaReturn } from "@/lib/amazonReportShared";
-import { fetchMisAmazonOrders, fetchMisFbaReturns } from "@/lib/misAdapters";
-import { categorizeTitle, resolveProductName } from "@/lib/categoryMap";
+import { spCampaignDays, isSplitCoveredCampaignRow } from "@/lib/amazonSpendRules";
+import { weekAdKpis, roasOf, acosPctOf, productMapForPeriod } from "@/lib/weeklyEmailKpis";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
+import { checkSessionOrInternal, guard, isInternalRequest } from "@/lib/apiAuth";
+import { readEmailSettings } from "@/lib/emailSettingsStore";
 import * as XLSX from "xlsx-js-style";
 
 // See send-email.ts's own config comment — this route's Supabase fetches (MIS orders/returns
@@ -22,8 +23,8 @@ export const config = {
 };
 
 // Every KPI in this email (Total Sales, Units Ordered, Ad Spend, Ad Sales, ROAS, ACOS, Returns) is
-// sourced from the app's own synced/uploaded data — the MIS tables (fetchMisAmazonOrders,
-// fetchMisFbaReturns) and the barm_amazon_sp/sb/sd_campaign ad-spend tables — never from a live
+// sourced from the app's own synced/uploaded data — the attached Weekly Sales workbook's own totals
+// (MIS orders + AM/FBA/SellerFlex returns) and the barm_amazon_sp/sb/sd_campaign ad-spend tables — never from a live
 // SellerMate API call. This used to call SellerMate's get_retail_product_performance /
 // get_fba_customer_returns for these numbers; that was replaced after confirming (see the
 // ppc-dashboard-sellermate-summary-bug finding) that get_retail_product_performance is inflated
@@ -38,27 +39,16 @@ async function fetchWeeklyAdRows(start: string, end: string) {
   return { spRows, sbRows, sdRows };
 }
 
-// Spend is a normal per-day figure on every ad-report row, safe to sum across the window. Sales
-// fields with an "Nd" rolling-attribution-window name (sp's sales_7d, sd's sales_14d) are NOT —
-// summing those across multiple days' rows would multiply-count the same rolling total, so each is
-// read only once, off the window's own end-date row (same convention adSpendReportExport.ts's
-// enrichAmazonActionRows uses). SB's plain "sales" field is per-day, so it's summed like spend.
-function weekAdKpis(
-  spRows: any[], sbRows: any[], sdRows: any[], start: string, end: string
-): { spend: number; adSales: number } {
-  const n = (v: unknown) => Number(v) || 0;
-  const inRange = (r: { report_date?: string }) => !!r.report_date && r.report_date >= start && r.report_date <= end;
-  const onEndDate = (rows: any[]) => rows.filter((r) => r.report_date === end);
-  const spOrphanDivisor = buildOrphanSpendDivisor(spRows.filter(inRange));
-  const spend =
-    spRows.filter(inRange).reduce((s, r) => s + n(r.spend) / spOrphanDivisor(r), 0) +
-    sbRows.filter(inRange).reduce((s, r) => s + n(r.spend), 0) +
-    sdRows.filter(inRange).reduce((s, r) => s + n(r.spend), 0);
-  const adSales =
-    onEndDate(spRows).reduce((s, r) => s + n(r.sales_7d), 0) +
-    sbRows.filter(inRange).reduce((s, r) => s + n(r.sales), 0) +
-    onEndDate(sdRows).reduce((s, r) => s + n(r.sales_14d), 0);
-  return { spend, adSales };
+// Week ad KPIs (weekAdKpis in weeklyEmailKpis.ts) sum spend AND sales over every day of the week.
+// SP spend is a plain sum of every SP-table row (the seller's rule for every report), which includes
+// the seller's per-SKU split of Brand/Display spend; an SB/SD campaign-day already split that way is
+// dropped so its spend isn't counted twice (24 Sep 2026). SB/SD sales are kept for those days — the
+// split rows carry spend only, so Ad Sales would otherwise lose that campaign's attributed sales.
+function adKpisForWeek(spRows: any[], sbRows: any[], sdRows: any[], start: string, end: string) {
+  const splitDays = spCampaignDays(spRows);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const spendOnly = (r: any) => (isSplitCoveredCampaignRow(r, splitDays) ? { ...r, spend: 0 } : r);
+  return weekAdKpis(spRows, sbRows.map(spendOnly), sdRows.map(spendOnly), start, end);
 }
 
 // Local Y-M-D (avoid toISOString's UTC shift on an IST server, which would
@@ -73,55 +63,6 @@ const pctChange = (last: number, now: number) => {
   return ((now - last) / last) * 100;
 };
 
-// SKU-wise, sourced from the uploaded Orders export (barm_amazon_am_orders) instead of
-// SellerMate's live get_retail_product_performance tool — that API only exposes ASIN-level data,
-// while the uploaded raw export carries the real per-order SKU.
-async function retailMapBySku(start: string, end: string) {
-  // IST calendar day (istDayWindowUtc), not the raw UTC purchase_date column —
-  // matching historicalAnalysisReportExport.ts's convention. Filtering by the
-  // raw UTC date instead put orders from the last ~5.5 hours of the UTC day on
-  // the wrong side of the window, so this route's per-SKU movers (and the
-  // Units Ordered summary line) could disagree with the attached Weekly Sales
-  // Report XLSX by exactly the boundary orders.
-  const window = istDayWindowUtc(start, end);
-  const [rows, priceRows] = await Promise.all([
-    fetchMisAmazonOrders((q) => q.gte("purchase_datetime", window.gte).lt("purchase_datetime", window.lt)),
-    fetchAllRows("barm_amazon_price_listing", (q) => q),
-  ]);
-  const listingPriceBySku = new Map<string, number>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  for (const r of priceRows as any[]) {
-    const price = Number(r.price) || 0;
-    if (r.seller_sku && price > 0 && !listingPriceBySku.has(r.seller_sku)) listingPriceBySku.set(r.seller_sku, price);
-  }
-  const map = new Map<string, { name: string; sku: string; sales: number; units: number }>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  for (const r of rows as any[]) {
-    if (!r.sku) continue;
-    const cur = map.get(r.sku) || { name: "", sku: r.sku, sales: 0, units: 0 };
-    if (r.product_name && !cur.name) cur.name = r.product_name;
-    // Same corrections as the Excel builder (see weeklySalesExport.ts): item_price is the line
-    // total, cancelled/non-standard-order-id rows aren't real sales, and a 0 price on a real
-    // shipment falls back to the listing price. The email body and the attachment must not disagree.
-    if (String(r.order_status || "").toLowerCase().startsWith("cancelled")) continue;
-    if (!isStandardOrderId(r.amazon_order_id)) continue;
-    const qty = r.quantity || 0;
-    const linePrice = Number(r.item_price) || 0;
-    cur.sales += linePrice > 0 ? linePrice : qty * (listingPriceBySku.get(r.sku) || 0);
-    cur.units += qty;
-    map.set(r.sku, cur);
-  }
-  map.forEach((p) => { p.name = resolveProductName(p.name || p.sku, p.sku) || p.name || p.sku; });
-  return map;
-}
-
-// FBA returns in the window, same "genuine return" filter (excludes courier RTO/undeliverable
-// parcels) the Historical Analysis Report and Weekly Sales Report attachment already use — counts
-// return events (rows), matching what the old get_fba_customer_returns total_count represented.
-async function returnsCount(start: string, end: string): Promise<number> {
-  const rows = await fetchMisFbaReturns((q: any) => q.gte("return_date", start).lte("return_date", end));
-  return rows.filter((r: any) => isGenuineFbaReturn(r)).length;
-}
 
 // Same fixed distribution list as send-ad-spend-email.ts / send-historical-email.ts — used only
 // when the caller doesn't pass `to` (the Reports page's own manual "Send" button, which — like
@@ -141,16 +82,26 @@ const DEFAULT_CC = [
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  // Browser-facing (Reports and Settings buttons) and called by cron: session or signed call.
+  if (!guard(req, res, checkSessionOrInternal)) return;
 
-  const { slot = "B", amazon_account_id, workspace_id, to: toBody, cc: ccBody, currency = "INR", endDate, send = true, accountName = "B-ARM" } = req.body || {};
+  const { slot = "B", amazon_account_id, workspace_id, to: bodyTo, cc: bodyCc, recipients, currency = "INR", endDate, send = true, accountName = "B-ARM" } = req.body || {};
   if (!amazon_account_id || !workspace_id) return res.status(400).json({ error: "amazon_account_id and workspace_id are required" });
-  // Fallback applies only when the caller omits `to` entirely (the Reports page's manual "Send",
-  // the only caller with no per-account recipient to pass). The Settings page and the cron always
-  // pass an explicit `to` (Settings' notifEmail) but send `cc: ccEmail || undefined` when the
-  // account has no CC configured — gating the whole fallback on `to` (not `cc` individually) keeps
-  // that intentional "no CC" from being overwritten with DEFAULT_CC.
+  // Recipients are never taken from a browser request. A signed server call (the cron) passes the
+  // saved notifEmail/ccEmail as to/cc; the Settings button asks for recipients:"saved" and gets
+  // this slot's saved settings; anything else (the Reports page "Send") gets the fixed list.
+  let toBody: string | undefined, ccBody: string | undefined;
+  if (isInternalRequest(req.headers)) {
+    toBody = bodyTo; ccBody = bodyCc;
+  } else if (recipients === "saved") {
+    const saved = await readEmailSettings(slot === "A" ? "A" : "B");
+    if (!saved.notifEmail) return res.status(400).json({ error: "No alert email saved in Settings" });
+    toBody = saved.notifEmail; ccBody = saved.ccEmail || undefined;
+  }
+  // Fallback applies only when no recipient was resolved above — gating the whole fallback on
+  // `to` (not `cc` individually) keeps an intentional "no CC" from being overwritten with DEFAULT_CC.
   const to = toBody !== undefined ? toBody : DEFAULT_TO;
-  const cc = toBody !== undefined ? ccBody : (ccBody !== undefined ? ccBody : DEFAULT_CC);
+  const cc = toBody !== undefined ? ccBody : DEFAULT_CC;
 
   // Windows: this week = [end-6, end]; last week = [end-13, end-7]. Default end = yesterday.
   let end = endDate as string | undefined;
@@ -162,24 +113,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const T = { start: iso(thisStart), end }, L = { start: iso(lastStart), end: iso(lastEnd) };
 
   try {
-    // Per-product data is SKU-wise, sourced from the uploaded Orders export (see retailMapBySku).
-    const tMap = await retailMapBySku(T.start, T.end);
-    const lMap = await retailMapBySku(L.start, L.end);
-    const tSalesTotal = [...tMap.values()].reduce((s, p) => s + p.sales, 0);
-    const lSalesTotal = [...lMap.values()].reduce((s, p) => s + p.sales, 0);
-    const tUnitsTotal = [...tMap.values()].reduce((s, p) => s + p.units, 0);
-    const lUnitsTotal = [...lMap.values()].reduce((s, p) => s + p.units, 0);
+    // Sales, units and returns are the attached workbook's own figures (same build, same rows), so
+    // the email body can never disagree with its attachment: Total Sales is the workbook's net-of-
+    // returns Total Sales, Units Ordered its Orders, and Returns shows both its All Returns and its
+    // Customer Returns units (AM + FBA + SellerFlex; customer = courier RTO excluded), per the
+    // seller's choice — IST days, end date included.
+    const built = await buildWeeklySalesWorkbookFromHistorical({ thisWeek: T, lastWeek: L });
+    const totalsFor = (w: { start: string; end: string }) => built.periodTotals.find((p) => p.start === w.start && p.end === w.end)!;
+    const tTot = totalsFor(T), lTot = totalsFor(L);
+    const tMap = productMapForPeriod(built.productPeriods, tTot.label);
+    const lMap = productMapForPeriod(built.productPeriods, lTot.label);
+    const tSalesTotal = tTot.totalSales, lSalesTotal = lTot.totalSales;
+    const tUnitsTotal = tTot.orders, lUnitsTotal = lTot.orders;
+    const returnsStr = (t: { allReturns: number; customerReturns: number }) => `${t.allReturns} (${t.customerReturns} customer)`;
 
     // One fetch spanning both weeks (14 days), split by date below — same "fetch once, filter
     // twice" approach the rest of this file (and historicalAnalysisReportExport.ts) uses.
     const { spRows, sbRows, sdRows } = await fetchWeeklyAdRows(L.start, T.end);
-    const tAd = weekAdKpis(spRows, sbRows, sdRows, T.start, T.end);
-    const lAd = weekAdKpis(spRows, sbRows, sdRows, L.start, L.end);
-    const roas = (a: { spend: number; adSales: number }) => (a.spend > 0 ? a.adSales / a.spend : 0);
-    const acos = (a: { spend: number; adSales: number }) => (a.adSales > 0 ? (a.spend / a.adSales) * 100 : 0);
-
-    const retThis = await returnsCount(T.start, T.end);
-    const retLast = await returnsCount(L.start, L.end);
+    const tAd = adKpisForWeek(spRows, sbRows, sdRows, T.start, T.end);
+    const lAd = adKpisForWeek(spRows, sbRows, sdRows, L.start, L.end);
+    const roas = roasOf, acos = acosPctOf;
 
     const money = (v: number) => (currency === "INR" ? "₹" : "$") + new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(v || 0));
     const compare = [
@@ -189,7 +142,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       { label: "Ad Sales", lastStr: money(lAd.adSales), thisStr: money(tAd.adSales), deltaPct: pctChange(lAd.adSales, tAd.adSales), goodUp: true },
       { label: "ROAS", lastStr: roas(lAd).toFixed(2) + "x", thisStr: roas(tAd).toFixed(2) + "x", deltaPct: pctChange(roas(lAd), roas(tAd)), goodUp: true },
       { label: "ACOS", lastStr: acos(lAd).toFixed(1) + "%", thisStr: acos(tAd).toFixed(1) + "%", deltaPct: pctChange(acos(lAd), acos(tAd)), goodUp: false },
-      { label: "Returns", lastStr: String(retLast), thisStr: String(retThis), deltaPct: pctChange(retLast, retThis), goodUp: false },
+      // Week-over-week % tracks All Returns — the figure Total Orders is reduced by.
+      { label: "Returns", lastStr: returnsStr(lTot), thisStr: returnsStr(tTot), deltaPct: pctChange(lTot.allReturns, tTot.allReturns), goodUp: false },
     ];
 
     // Per-product movers: only products with meaningful sales in either week
@@ -211,12 +165,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Flipkart/other marketplaces can be appended here once wired up.
     const platforms = [{ name: "Amazon", sales: tSalesTotal || 0 }];
 
-    // Department breakdown, this week AND last week — reuses the same per-product rows already
-    // fetched above, categorized via the product->department map (categoryMap.ts).
-    function aggregateByDept(map: Map<string, { name: string; sku: string; sales: number; units: number }>) {
+    // Department breakdown, this week AND last week — the workbook's own per-product rows and the
+    // department each carries there (Product Master first, categoryMap.ts fallback).
+    function aggregateByDept(map: ReturnType<typeof productMapForPeriod>) {
       const agg = new Map<string, { sales: number; units: number }>();
-      for (const [sku, p] of map.entries()) {
-        const dept = categorizeTitle(p.name, undefined, sku);
+      for (const p of map.values()) {
+        const dept = p.category;
         const d = agg.get(dept) || { sales: 0, units: 0 };
         d.sales += p.sales;
         d.units += p.units;
@@ -258,16 +212,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // not the live API. Best-effort: a failure here must not block the email itself.
     let attachments: any[] | undefined;
     try {
-      const { wb, filename } = await buildWeeklySalesWorkbookFromHistorical({ thisWeek: T, lastWeek: L });
-      const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
-      attachments = [{ filename, content: buf.toString("base64"), encoding: "base64" }];
+      const buf = XLSX.write(built.wb, { type: "buffer", bookType: "xlsx" });
+      attachments = [{ filename: built.filename, content: buf.toString("base64"), encoding: "base64" }];
     } catch (err) {
       console.error("[Marketplace360] Weekly Amazon Sales Report attachment failed:", err);
     }
 
     let emailResult: any = null;
     if (send && to) {
-      const r = await internalFetch(`${internalOrigin(req)}/api/send-email`, {
+      const r = await internalFetch(`${internalOrigin()}/api/send-email`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: "weeklyReport", to, cc, data: emailData, attachments }),
       });
@@ -275,7 +228,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (!r.ok) emailResult = { error: emailResult?.error || "send-email failed" };
     }
 
-    return res.status(200).json({ thisWeek: T, lastWeek: L, compare, gainers, losers, bestSellers, platforms, departments, whatsappText, emailed: !!(send && to), emailResult });
+    // Only what the UIs read (Settings shows whatsappText); the report body itself goes out by email.
+    return res.status(200).json({ thisWeek: T, lastWeek: L, whatsappText, emailed: !!(send && to), emailResult });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || "weekly-report failed" });
   }

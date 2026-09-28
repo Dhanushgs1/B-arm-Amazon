@@ -2,7 +2,10 @@ import * as XLSX from "xlsx-js-style";
 import { mcp } from "@/lib/api";
 import { resolveProductName } from "@/lib/categoryMap";
 import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
-import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns } from "@/lib/misAdapters";
+import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns, fetchAllMisReportDataInfo } from "@/lib/misAdapters";
+import { staleSourceWarnings } from "@/lib/reportCoverage";
+import { dedupeSellerFlexReturns } from "@/lib/amazonSpendRules";
+import { trailingWindow } from "@/lib/reportWindows";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, gstMultiplierFromTax } from "@/lib/masterProductSkuid";
 import { fetchProductMarketingMap, buildProductMarketingResolver } from "@/lib/productMarketingUpload";
 
@@ -193,18 +196,28 @@ export type ToolCaller = (tool: string, args: any) => Promise<any>;
 // SB/SD (campaign-level, no ASIN column) aren't included here, same as the
 // live get_advertised_product_performance call this replaces — that endpoint
 // only ever covered Sponsored Products too.
-function spRowsToAdRows(spRows: any[]): any[] {
+//
+// A blank-ASIN row is the seller's per-SKU split of Brand/Display spend (each campaign-day's first
+// split row is named, the rest have a blank campaign; all have 0 units). That split is how the seller
+// wants Brand/Display spend counted (24 Sep 2026), so it is kept — plain sum, like every SP row — by
+// resolving the ASIN from the row's SKU.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function spRowsToAdRows(spRows: any[], asinForSku: (sku: string) => string | undefined): any[] {
   return spRows
-    .filter((r) => r.advertised_asin)
-    .map((r) => ({
-      adAsin: r.advertised_asin,
+    .map((r) => ({ r, asin: r.advertised_asin || asinForSku(r.advertised_sku || "") }))
+    .filter(({ asin }) => !!asin)
+    .map(({ r, asin }) => ({
+      adAsin: asin,
       // This SP row's own SKU — GST is a per-SKU rate (see aggregateWindow),
       // so it must travel with the row even though ProductRow itself is keyed
       // by ASIN, not SKU.
       adSku: r.advertised_sku || "",
       spend: r.spend || 0,
       sales: r.advertised_sku_sales_7d || r.sales_7d || 0,
-      orders: r.advertised_sku_units_7d || r.units_7d || 0,
+      // "7 Day Total Units" (units_7d), NOT advertised_sku_units_7d — the column the seller's own
+      // workbook uses for Advertised SKU Units, verified in historicalAnalysisReportExport.ts. Reading
+      // the other one first understated units (1,696 vs 2,062 over 30 days) and inflated CPC/ACOS.
+      orders: r.units_7d || 0,
     }));
 }
 
@@ -220,42 +233,32 @@ function ordersToRetailRows(orderRows: any[]): any[] {
       asin: r.asin,
       productName: r.product_name,
       unitsOrdered: r.quantity || 0,
-      averageSellingPrice: r.item_price || 0,
+      // item_price is the LINE total (see weeklySalesExport.ts), so the per-unit fallback price is
+      // item_price / quantity — a 10-unit line otherwise set Price to 10x the real price.
+      averageSellingPrice: r.quantity > 0 ? (r.item_price || 0) / r.quantity : r.item_price || 0,
     }));
 }
 
-// Returns per ASIN — computed per SKU first (AM returns take priority; FBA +
-// SF returns only fill in for a SKU with NO AM return recorded, since the same
-// physical return can otherwise show up in both and get double-counted), then
-// rolled up to each SKU's own ASIN. Same rule as
-// historicalAnalysisReportExport.ts, verified directly against the seller's
-// workbook (AM-else-(FBA+SF) reproduced their Returns column for all 140 SKUs
-// it currently tracks — a plain sum or an AM-only figure each diverged).
+// Returns per ASIN — AM + FBA + SellerFlex returns per SKU (every return reported), rolled up to
+// each SKU's own ASIN. Same rule as historicalAnalysisReportExport.ts (seller's decision, 24 Sep 2026):
+// the three sources share no orders, so adding them never double-counts; each SellerFlex return
+// counts once despite the MIS table's repeat-upload copies (dedupeSellerFlexReturns).
 function returnsToReturnRows(amReturnRows: any[], fbaReturnRows: any[], sfReturnRows: any[]): any[] {
-  const amBySku = new Map<string, number>();
+  const bySku = new Map<string, number>();
   const skuAsin = new Map<string, string>();
-  amReturnRows.forEach((r) => {
-    if (!r.merchant_sku) return;
-    amBySku.set(r.merchant_sku, (amBySku.get(r.merchant_sku) || 0) + (r.return_quantity || 0));
-    if (r.asin) skuAsin.set(r.merchant_sku, r.asin);
-  });
-  const fbaSfBySku = new Map<string, number>();
-  fbaReturnRows.forEach((r) => {
-    if (!r.sku) return;
-    fbaSfBySku.set(r.sku, (fbaSfBySku.get(r.sku) || 0) + (r.quantity || 0));
-    if (r.asin) skuAsin.set(r.sku, r.asin);
-  });
-  sfReturnRows.forEach((r) => {
-    if (!r.msku) return;
-    fbaSfBySku.set(r.msku, (fbaSfBySku.get(r.msku) || 0) + (r.units || 0));
-    if (r.asin) skuAsin.set(r.msku, r.asin);
-  });
+  const add = (sku: string, qty: number, asin?: string) => {
+    bySku.set(sku, (bySku.get(sku) || 0) + qty);
+    if (asin) skuAsin.set(sku, asin);
+  };
+  amReturnRows.forEach((r) => { if (r.merchant_sku) add(r.merchant_sku, r.return_quantity || 0, r.asin); });
+  fbaReturnRows.forEach((r) => { if (r.sku) add(r.sku, r.quantity || 0, r.asin); });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dedupeSellerFlexReturns(sfReturnRows).forEach((r: any) => add(r.msku, r.units || 0, r.asin));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const out: any[] = [];
-  new Set([...amBySku.keys(), ...fbaSfBySku.keys()]).forEach((sku) => {
+  bySku.forEach((quantity, sku) => {
     const asin = skuAsin.get(sku);
-    if (!asin) return;
-    const amSum = amBySku.get(sku) || 0;
-    out.push({ asin, quantity: amSum > 0 ? amSum : (fbaSfBySku.get(sku) || 0) });
+    if (asin) out.push({ asin, quantity });
   });
   return out;
 }
@@ -334,7 +337,7 @@ function aggregateWindow(
   const returnsByAsin = new Map<string, number>();
   returnRows.forEach((r: any) => {
     if (!r.asin) return;
-    returnsByAsin.set(r.asin, (returnsByAsin.get(r.asin) || 0) + (r.quantity || 1));
+    returnsByAsin.set(r.asin, (returnsByAsin.get(r.asin) || 0) + (r.quantity || 0));
   });
   returnsByAsin.forEach((cnt, asin) => {
     const w = pick(ensure(asin));
@@ -371,19 +374,19 @@ interface BuildOpts {
   accountId: string | undefined;
   workspaceId: string | undefined;
   accountName: string | undefined;
-  today?: Date; // injectable for testing; defaults to now
+  /** "YYYY-MM-DD" — the dashboard's selected end date. Both trailing windows end ON this day and
+   *  it is never changed. Callers that omit it fall back to `today` (legacy behaviour). */
+  endDate?: string;
+  today?: Date; // legacy fallback when no endDate is given; defaults to now
 }
 
 export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
   const { call, accountId, workspaceId, accountName } = opts;
   const baseArgs = { amazon_account_id: accountId, workspace_id: workspaceId };
 
-  const today = opts.today || new Date();
-  const end = localDateStr(today);
-  const d30 = new Date(today); d30.setDate(d30.getDate() - 29);
-  const d7 = new Date(today); d7.setDate(d7.getDate() - 6);
-  const start30 = localDateStr(d30);
-  const start7 = localDateStr(d7);
+  const end = opts.endDate || localDateStr(opts.today || new Date());
+  const start30 = trailingWindow(end, 30).start;
+  const start7 = trailingWindow(end, 7).start;
 
   const label30 = `Last 30 days (${dotDate(start30)} to ${dotDate(end)})`;
   const label7 = `Last 7 days (${dotDate(start7)} to ${dotDate(end)})`;
@@ -400,6 +403,7 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
   // of the 7-day window) and the 7-day slice is filtered in memory below,
   // matching historicalAnalysisReportExport.ts's single-fetch pattern for the
   // same tables.
+  const coveragePromise = fetchAllMisReportDataInfo();
   const [
     spRows30, orderRows30, amReturnRows30, fbaReturnRows30, sfReturnRows30, inventory, catalog, masterSkuid, productMarketing,
   ] = await Promise.all([
@@ -459,8 +463,22 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
   const fbaReturnRows7 = fbaReturnRows30.filter((r: any) => r.return_date >= win7Ist.gte);
   const sfReturnRows7 = sfReturnRows30.filter((r: any) => r.pickup_date >= start7);
 
-  aggregateWindow(products, ensure, (p) => p.w30, spRowsToAdRows(spRows30), ordersToRetailRows(orderRows30), returnsToReturnRows(amReturnRows30, fbaReturnRows30, sfReturnRows30), resolveSkuidTax);
-  aggregateWindow(products, ensure, (p) => p.w7, spRowsToAdRows(spRows7), ordersToRetailRows(orderRows7), returnsToReturnRows(amReturnRows7, fbaReturnRows7, sfReturnRows7), resolveSkuidTax);
+  // SKU -> ASIN, for deleted-campaign SP rows that carry a SKU but no ASIN (see spRowsToAdRows).
+  const asinBySku = new Map<string, string>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  spRows30.forEach((r: any) => { if (r.advertised_sku && r.advertised_asin && !asinBySku.has(r.advertised_sku)) asinBySku.set(r.advertised_sku, r.advertised_asin); });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  orderRows30.forEach((r: any) => { if (r.sku && r.asin && !asinBySku.has(r.sku)) asinBySku.set(r.sku, r.asin); });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  catalog.forEach((c: any) => { if (c.sku && c.asin && !asinBySku.has(c.sku)) asinBySku.set(c.sku, c.asin); });
+  const asinForSku = (sku: string) => asinBySku.get(sku);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const isDeletedCampaignRow = (r: any) => !r.advertised_asin;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const unresolvedDeletedSpend30 = spRows30.filter((r: any) => isDeletedCampaignRow(r) && !asinForSku(r.advertised_sku || "")).reduce((t: number, r: any) => t + (r.spend || 0), 0);
+
+  aggregateWindow(products, ensure, (p) => p.w30, spRowsToAdRows(spRows30, asinForSku), ordersToRetailRows(orderRows30), returnsToReturnRows(amReturnRows30, fbaReturnRows30, sfReturnRows30), resolveSkuidTax);
+  aggregateWindow(products, ensure, (p) => p.w7, spRowsToAdRows(spRows7, asinForSku), ordersToRetailRows(orderRows7), returnsToReturnRows(amReturnRows7, fbaReturnRows7, sfReturnRows7), resolveSkuidTax);
 
   // Inventory (per-location): FBA warehouse balance per FC → aggregate by state,
   // keyed to the specific SKU each location row carries.
@@ -519,7 +537,9 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
   // Keep ASINs that had any real activity in either window, or that hold stock —
   // drops the long tail of dormant catalog ASINs with zero everything.
   const rows = [...products.values()].filter((p) => {
-    const winActive = p.w30.spendTax || p.w30.orders || p.w7.spendTax || p.w7.orders;
+    // Returns count as activity too — an ASIN with only a return this window was dropped, so the
+    // grand-total Returns came out one short of the raw data.
+    const winActive = p.w30.spendTax || p.w30.orders || p.w30.returns || p.w7.spendTax || p.w7.orders || p.w7.returns;
     const stockActive = [...p.skus.values()].some((s) => s.fbaTotal || s.fbmQty);
     return !!(winActive || stockActive);
   });
@@ -743,24 +763,38 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
 
   // A small notes sheet documenting sourcing + the ~48h Amazon sync lag, so the
   // trailing-day dip isn't mistaken for a real drop.
+  const coverage = await coveragePromise;
+  const returnCoverageWarnings = staleSourceWarnings(
+    [
+      { label: "AM returns (amazon_returns)", maxDate: coverage.am_returns?.maxDate ?? null, error: coverage.am_returns?.error },
+      { label: "FBA returns (amazon_fba_returns)", maxDate: coverage.fba_returns?.maxDate ?? null, error: coverage.fba_returns?.error },
+      { label: "SellerFlex returns (amazon_seller_flex_return)", maxDate: coverage.sf_return?.maxDate ?? null, error: coverage.sf_return?.error },
+      { label: "Orders (amazon_orders)", maxDate: coverage.am_orders?.maxDate ?? null, error: coverage.am_orders?.error },
+    ],
+    end,
+    "whatever that source feeds (Returns for a returns source, Orders for the orders table — and so Final and TACOS) is understated for those days.",
+    dotDate
+  );
   const wsNote = XLSX.utils.aoa_to_sheet([
     ["Analysis Report — Ad Performance"],
+    ...returnCoverageWarnings.map((w) => [w]),
     [`Account: ${accountName || "-"}`],
     [`Last 30 days: ${dotDate(start30)} to ${dotDate(end)}`],
     [`Last 7 days: ${dotDate(start7)} to ${dotDate(end)}`],
     [""],
-    ["Spend+Tax = ad spend x (1 + that SKU's GST rate), from the product master's per-SKU Tax column (18% used when a SKU has none on file). Final = Orders - Returns."],
+    ["Spend+Tax = ad spend x 1.18 (a flat 18% GST for every product). Final = Orders - Returns."],
     ["CPC = Spend+Tax / Advertised SKU Units (falls back to Spend+Tax when units = 0)."],
     ["ACOS = CPC / Price = Spend+Tax / (Advertised SKU Units x Price)."],
     ["TACOS = Spend+Tax / (Price x Final)."],
-    ["Advertised SKU Units = ad-attributed orders; Total Units = ad sales / price (estimate)."],
+    ["Spend is a plain sum of every Sponsored Products row's raw spend. It includes your AM-ads sheet's per-SKU split of Brand/Display spend (rows with no ASIN), attributed through each SKU's ASIN" + (unresolvedDeletedSpend30 > 0 ? ` — ₹${unresolvedDeletedSpend30.toFixed(2)} (30 days, before GST) belongs to SKUs with no known ASIN and is not in any row.` : ".") + " SB/SD campaign totals are not added on top."],
+    ["Advertised SKU Units = the SP report's 7 Day Total Units (the same column the Historical Analysis Report uses); Total Units = ad sales / price (estimate)."],
     ["Product name comes from the Master SKU sheet; Price shown as a whole number."],
     ["One row per ASIN (product) - matches the Weekly Sales Report. Ad + retail sales are only ever known per ASIN, never per SKU, so when a product has multiple SKUs only one (the primary: FBA listing preferred, then most stock, then price) is shown as the SKU ID / FBA-MFN / Price for that row."],
     ["FBA availability (Available / Grand Total / Number of FBA Not Available / All FBA) is summed across every SKU of the product, not just the primary one - stock levels are genuinely known per SKU, unlike sales."],
     ["Price and FBA/MFN come from the live product listing (All-Listings feed) - the listing price and its fulfillment channel (AMAZON_IN = FBA, DEFAULT = MFN) of the primary SKU."],
     ["Inbound-shipped-quantity shows '—': Amazon's inbound / in-transit quantity is not exposed by the SP-API inventory feed (only the ledger warehouse balance is synced)."],
-    ["Returns = AM returns for a SKU if any were recorded, otherwise FBA + SF returns for that SKU (courier RTO / undeliverable included either way) — matching the seller's own workbook. AM and FBA/SF returns can both record the same physical return, so they aren't simply added together."],
-    ["The most recent 1-2 days can look low - that's Amazon's own reporting sync lag, not a real drop."],
+    ["Returns = AM + FBA + SellerFlex returns for the product's SKUs, every return reported (courier RTO / undeliverable included). The three sources share no orders, so adding them never double-counts; each SellerFlex return counts once despite repeat uploads."],
+    ["Both windows end on the date selected on the dashboard. The most recent 1-2 days can look low - that's Amazon's own reporting sync lag, not a real drop."],
   ]);
   wsNote["!cols"] = [{ wch: 110 }];
   wsNote["A1"].s = { font: { bold: true, sz: 13, color: { rgb: "312E81" } } };
@@ -775,14 +809,17 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
 export async function exportAnalysisReport(opts: {
   account: { id?: string; workspace_id?: string; name?: string } | null | undefined;
   keySlot: string;
+  /** "YYYY-MM-DD" selected on the dashboard — passed through unchanged. */
+  endDate?: string;
 }) {
-  const { account, keySlot } = opts;
+  const { account, keySlot, endDate } = opts;
   const call: ToolCaller = (tool, args) => mcp(tool, args, keySlot);
   const { wb, filename, ...stats } = await buildAnalysisReportWorkbook({
     call,
     accountId: account?.id,
     workspaceId: account?.workspace_id,
     accountName: account?.name,
+    endDate,
   });
   XLSX.writeFile(wb, filename);
   return { filename, ...stats };

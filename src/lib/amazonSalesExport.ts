@@ -1,557 +1,56 @@
 import * as XLSX from "xlsx-js-style";
-import { mcp } from "@/lib/api";
-import { categorizeTitle, resolveProductName, CATEGORY_COLORS } from "@/lib/categoryMap";
-import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
-import { fetchMasterSkuidMap, buildMasterSkuidResolver } from "@/lib/masterProductSkuid";
-import { fetchProductMarketingMap, buildProductMarketingResolver } from "@/lib/productMarketingUpload";
+import { CATEGORY_COLORS } from "@/lib/categoryMap";
+import { buildPeriods, type SalesReportGranularity } from "@/lib/salesReportPeriods";
+import { loadAmazonSkuPeriodData, EXCLUDED_CATEGORIES } from "@/lib/amazonSkuPeriodData";
+export type { SalesReportGranularity };
 
-// SellerMate's get_retail_product_performance rejects start_date === end_date outright, so a
-// single calendar day can't be queried directly. "daily" instead uses a cumulative-prefix trick:
-// fetch Query(anchor, day_k) for every day (anchor = 2 days before the range, always valid since
-// it's never equal to day_k), then day_k's real total = CUM(day_k) - CUM(day_{k-1}) per ASIN —
-// the shared "anchor..day_{k-1}" portion cancels out. Verified against real account data: this
-// reconciles exactly with directly-queried multi-day windows. The most recent 1-2 days can still
-// look artificially low — that's Amazon's own reporting sync lag, not a bug in this math.
-export type SalesReportGranularity = "daily" | "weekly" | "monthly";
-
-// Everything below is transport-agnostic: it just needs something that can call a SellerMate
-// tool and return its JSON. The browser calls through the /api/tool proxy (see
-// exportAmazonSalesReport); server code (scheduled emails) calls SellerMate directly with an API
-// key (see buildAmazonSalesWorkbookForAccount) — same report-building logic either way.
-type ToolCaller = (tool: string, args: any) => Promise<any>;
-
-interface PeriodBucket {
-  label: string;
-  start: string;
-  end: string;
-  // False when this bucket was clipped short by the selected end date (e.g. the trailing
-  // week/month of the range only has 2 days of data) — such a bucket reads as a huge fake
-  // "decline" against a full-length neighbour, so the growth summary skips comparing it.
-  isFull: boolean;
+function fmtDot(iso: string): string {
+  const [y, m, d] = iso.split("-");
+  return `${d}.${m}.${y}`;
 }
 
-interface PeriodStats {
-  orders: number;
-  allReturns: number; // every return Amazon reports, including courier RTO/undeliverable — what Total Orders is based on
-  returns: number; // genuine customer returns only (courier RTO excluded)
-  totalOrders: number;
-  price: number;
-  totalSales: number;
-}
-
-interface ProductRow {
-  asin: string;
-  name: string;
-  sku: string;
-  periods: Record<string, PeriodStats>;
-  grandTotalSales: number;
-}
-
-function fmtDot(d: Date) {
-  const dd = String(d.getDate()).padStart(2, "0");
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const yyyy = d.getFullYear();
-  return `${dd}.${mm}.${yyyy}`;
-}
-
-function toIso(d: Date) {
-  return d.toISOString().slice(0, 10);
-}
-
-// Split [startDate, endDate] (YYYY-MM-DD) into consecutive buckets per the requested granularity.
-function buildPeriods(startDate: string, endDate: string, granularity: SalesReportGranularity): PeriodBucket[] {
-  const periods: PeriodBucket[] = [];
-  const start = new Date(startDate + "T00:00:00Z");
-  const end = new Date(endDate + "T00:00:00Z");
-
-  if (granularity === "daily") {
-    // Amazon's own reporting sync typically finalizes a day's figures 24-48h later, so the most
-    // recent 2 calendar days are marked "not full" — they still show in the data table, but the
-    // growth summary skips them rather than reading a sync-lag dip as a fake sales decline.
-    const today = new Date();
-    const reliableCutoff = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()) - 2 * 86400000;
-    let cursor = start;
-    while (cursor <= end) {
-      periods.push({ label: fmtDot(cursor), start: toIso(cursor), end: toIso(cursor), isFull: cursor.getTime() <= reliableCutoff });
-      cursor = new Date(cursor.getTime() + 86400000);
-    }
-  } else if (granularity === "weekly") {
-    let cursor = start;
-    while (cursor <= end) {
-      // Align each bucket's natural end to the Sunday of ITS calendar week (ISO
-      // Monday-Sunday), not a flat +6-day offset from wherever the cursor happens
-      // to land. A mid-week cursor (only possible for the very first bucket, if
-      // the selected start date isn't a Monday) still ends on that week's Sunday,
-      // which snaps every following bucket onto a real Monday-Sunday week.
-      const dow = cursor.getUTCDay(); // 0=Sun..6=Sat
-      const daysToSunday = (7 - dow) % 7;
-      const naturalWeekEnd = new Date(cursor.getTime() + daysToSunday * 86400000);
-      const weekEnd = new Date(Math.min(naturalWeekEnd.getTime(), end.getTime()));
-      periods.push({
-        label: `${fmtDot(cursor)}-${fmtDot(weekEnd)}`,
-        start: toIso(cursor),
-        end: toIso(weekEnd),
-        isFull: weekEnd.getTime() === naturalWeekEnd.getTime(),
-      });
-      cursor = new Date(weekEnd.getTime() + 86400000);
-    }
-    // Drop a trailing week that hasn't actually finished yet — clipped short by
-    // the selected end date (e.g. the current in-progress week, today being
-    // mid-week). Showing a 1-2 day "week" next to full 7-day weeks reads as a
-    // fake crash in sales, so it's dropped entirely rather than just flagged.
-    // Keep at least one bucket so a range narrower than a week doesn't vanish.
-    if (periods.length > 1 && !periods[periods.length - 1].isFull) {
-      periods.pop();
-    }
-  } else {
-    // monthly — split on calendar month boundaries, clipped to the requested range
-    let cursor = start;
-    while (cursor <= end) {
-      const monthEnd = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, 0));
-      const bucketEnd = new Date(Math.min(monthEnd.getTime(), end.getTime()));
-      periods.push({
-        label: `${fmtDot(cursor)}-${fmtDot(bucketEnd)}`,
-        start: toIso(cursor),
-        end: toIso(bucketEnd),
-        // Also require the bucket to start on the 1st — otherwise the very first bucket of a
-        // mid-month-start range (e.g. 17 Jun–30 Jun) would end exactly on a month boundary and
-        // wrongly look "full" despite covering under half the month.
-        isFull: cursor.getUTCDate() === 1 && bucketEnd.getTime() === monthEnd.getTime(),
-      });
-      cursor = new Date(bucketEnd.getTime() + 86400000);
-    }
-  }
-  return periods;
-}
-
-async function fetchAllRetail(call: ToolCaller, args: any) {
-  const all: any[] = [];
-  for (let page = 0; page < 20; page++) {
-    const res = await call("get_retail_product_performance", { ...args, page, page_size: 500 });
-    const rows = res.data || [];
-    all.push(...rows);
-    if (!res.pagination?.hasMore || rows.length === 0) break;
-  }
-  return all;
-}
-
-// get_fba_customer_returns (proxied through SellerMate) surfaces no dedicated per-line return
-// ID — only orderId/asin/sku/returnDate/quantity/reason/detailedDisposition/customerComments
-// (see productsWorkbookExport.ts's Returns sheet columns for the full field set this API gives
-// us). So a return record's identity is the combination of every one of those fields together,
-// never a single field alone — two genuinely distinct returns can share the same SKU, the same
-// date, or the same quantity, so deduping on any one of those would silently drop real returns.
-// Two records only collide here when they match on all of them, which is what an exact-duplicate
-// row (e.g. the same page re-served twice) looks like.
-function returnRecordKey(r: any): string {
-  return [
-    r.orderId ?? "",
-    r.asin ?? "",
-    r.sku ?? "",
-    r.returnDate ?? "",
-    r.quantity ?? "",
-    r.reason ?? "",
-    r.detailedDisposition ?? "",
-    r.customerComments ?? "",
-  ].join("|");
-}
-
-async function fetchAllReturns(call: ToolCaller, args: any) {
-  // get_fba_customer_returns rejects start_date === end_date outright — a monthly/weekly bucket
-  // can collapse to a single day (e.g. a narrow selected range, or a trailing partial period), so
-  // widen the query by a day either side and filter the result back down to the real window.
-  let { start_date, end_date } = args;
-  let exactDay: string | null = null;
-  if (start_date === end_date) {
-    exactDay = start_date;
-    const d = new Date(start_date + "T00:00:00Z");
-    start_date = toIso(new Date(d.getTime() - 86400000));
-    end_date = toIso(new Date(d.getTime() + 86400000));
-  }
-
-  // Dedup incrementally as each page arrives (against everything seen on every earlier page in
-  // this fetch, not just the previous one) rather than after the fact — so a page that repeats or
-  // overlaps an earlier one, from a pagination bug or an upstream retry re-serving the same page,
-  // is caught and attributed to the page it came from instead of silently inflating the total.
-  const seen = new Set<string>();
-  const all: any[] = [];
-  let rawCount = 0;
-  for (let page = 0; page < 20; page++) {
-    const res = await call("get_fba_customer_returns", { ...args, start_date, end_date, page, page_size: 500 });
-    const rows = res.order_returns || [];
-    rawCount += rows.length;
-    let pageDuplicates = 0;
-    for (const r of rows) {
-      const key = returnRecordKey(r);
-      if (seen.has(key)) { pageDuplicates++; continue; }
-      seen.add(key);
-      all.push(r);
-    }
-    if (pageDuplicates > 0) {
-      console.warn(
-        `[amazonSalesExport] fetchAllReturns: page ${page} carried ${pageDuplicates} return record(s) already seen on an earlier page in this fetch (${start_date}..${end_date}) — dropped.`
-      );
-    }
-    if (!res.pagination?.hasMore || rows.length === 0) break;
-  }
-  const duplicateCount = rawCount - all.length;
-  console.info(
-    `[amazonSalesExport] fetchAllReturns(${start_date}..${end_date}): ${rawCount} raw return record(s) fetched, ${all.length} unique, ${duplicateCount} duplicate(s) removed.`
-  );
-
-  // Every return Amazon reports (genuine customer returns + courier RTO/undeliverable) —
-  // callers split these into "All Returns" vs "Customer Returns" via isGenuineReturn below.
-  return exactDay ? all.filter((r: any) => String(r.returnDate || "").slice(0, 10) === exactDay) : all;
-}
-
-// A courier RTO / refused-delivery "return" (reason starts with UNDELIVERABLE) means the package
-// never actually reached the customer — it isn't a genuine product return. Same filter as the
-// Products page export (see products/page.tsx's genuineReturns).
-function isGenuineReturn(r: any) {
-  return !String(r.reason || "").toUpperCase().startsWith("UNDELIVERABLE");
-}
-
-async function fetchFullCatalog(call: ToolCaller, args: any) {
-  const all: any[] = [];
-  let offset = 0;
-  for (let i = 0; i < 30; i++) {
-    const res = await call("list_product_catalog", { ...args, limit: 200, offset, include_suppressed: true });
-    const page = res.products || [];
-    all.push(...page);
-    offset += page.length;
-    if (page.length < 200 || offset >= (res.total || 0)) break;
-  }
-  return all;
-}
-
-async function fetchAllInventory(call: ToolCaller, args: any) {
-  const seen = new Set<string>();
-  const all: any[] = [];
-  let offset = 0;
-  for (let i = 0; i < 10; i++) {
-    const res = await call("get_inventory", { ...args, limit: 200, offset });
-    const items = res.items || [];
-    for (const item of items) {
-      if (item.asin && seen.has(item.asin)) continue;
-      if (item.asin) seen.add(item.asin);
-      all.push(item);
-    }
-    if (items.length === 0 || offset + items.length >= (res.total || 0)) break;
-    offset += 200;
-  }
-  return all;
-}
-
-async function fetchPeriod(call: ToolCaller, baseArgs: any, period: PeriodBucket) {
-  const periodArgs = { ...baseArgs, start_date: period.start, end_date: period.end };
-  const [retailRows, returnRows] = await Promise.all([
-    fetchAllRetail(call, periodArgs),
-    fetchAllReturns(call, periodArgs),
-  ]);
-  return { period, retailRows, returnRows };
-}
-
-// Per-ASIN daily retail stats via a cumulative-prefix trick (see the SalesReportGranularity
-// comment for why): fetch Query(anchor, day_k) for every day, then diff consecutive cumulative
-// totals. One extra call (the anchor..day_{-1} baseline) plus one call per day — far cheaper
-// than a naive 3-calls-per-day subtraction, and mathematically exact either way.
-async function fetchDailyRetailByAsin(call: ToolCaller, baseArgs: any, days: PeriodBucket[]) {
-  const n = days.length;
-  const anchor = new Date(days[0].start + "T00:00:00Z");
-  anchor.setUTCDate(anchor.getUTCDate() - 2);
-  const anchorIso = toIso(anchor);
-  const baseline = new Date(anchor.getTime() + 86400000); // anchor + 1 day
-
-  // cumEnds[0] = baseline (the "day -1" reference point); cumEnds[k+1] = days[k]'s date
-  const cumEnds = [baseline, ...days.map((d) => new Date(d.start + "T00:00:00Z"))];
-
-  const BATCH = 6;
-  const cumRows: any[][] = new Array(cumEnds.length);
-  for (let i = 0; i < cumEnds.length; i += BATCH) {
-    const idxBatch = Array.from({ length: Math.min(BATCH, cumEnds.length - i) }, (_, j) => i + j);
-    const results = await Promise.all(
-      idxBatch.map((idx) =>
-        fetchAllRetail(call, { ...baseArgs, start_date: anchorIso, end_date: toIso(cumEnds[idx]) }).catch(() => [])
-      )
-    );
-    idxBatch.forEach((idx, j) => { cumRows[idx] = results[j]; });
-  }
-
-  const cumMaps = cumRows.map((rows) => {
-    const m = new Map<string, { totalSales: number; unitsOrdered: number }>();
-    rows.forEach((r: any) => {
-      if (!r.asin) return;
-      m.set(r.asin, { totalSales: r.totalSales || 0, unitsOrdered: r.unitsOrdered || 0 });
-    });
-    return m;
-  });
-
-  const allAsins = new Set<string>();
-  cumMaps.forEach((m) => m.forEach((_v, asin) => allAsins.add(asin)));
-
-  // asin -> (day label -> stats)
-  const dailyByAsin = new Map<string, Map<string, { orders: number; totalSales: number; price: number }>>();
-  allAsins.forEach((asin) => {
-    const perDay = new Map<string, { orders: number; totalSales: number; price: number }>();
-    for (let k = 0; k < n; k++) {
-      const prev = cumMaps[k].get(asin) || { totalSales: 0, unitsOrdered: 0 };
-      const curr = cumMaps[k + 1].get(asin) || { totalSales: 0, unitsOrdered: 0 };
-      const totalSales = Math.max(0, curr.totalSales - prev.totalSales);
-      const orders = Math.max(0, curr.unitsOrdered - prev.unitsOrdered);
-      perDay.set(days[k].label, { orders, totalSales, price: orders ? totalSales / orders : 0 });
-    }
-    dailyByAsin.set(asin, perDay);
-  });
-
-  return dailyByAsin;
-}
-
-// Returns are additive by nature (each return has its own date), so — unlike retail sales —
-// they don't need the cumulative-prefix trick: one call over the whole range, bucketed by day.
-// get_fba_customer_returns rejects start_date === end_date too (a single-day daily report calls
-// this with startDate === endDate), so widen a single-day query by 1 day either side — harmless
-// since results are bucketed by their actual returnDate afterward anyway, not by the query window.
-async function fetchReturnsByDay(call: ToolCaller, baseArgs: any, startDate: string, endDate: string) {
-  let queryStart = startDate, queryEnd = endDate;
-  if (queryStart === queryEnd) {
-    const d = new Date(queryStart + "T00:00:00Z");
-    queryStart = toIso(new Date(d.getTime() - 86400000));
-    queryEnd = toIso(new Date(d.getTime() + 86400000));
-  }
-  const rows = await fetchAllReturns(call, { ...baseArgs, start_date: queryStart, end_date: queryEnd });
-  const allByDayAsin = new Map<string, Map<string, number>>(); // dayIso -> (asin -> count), every return
-  const genuineByDayAsin = new Map<string, Map<string, number>>(); // dayIso -> (asin -> count), courier RTO excluded
-  rows.forEach((r: any) => {
-    if (!r.asin || !r.returnDate) return;
-    const dayIso = String(r.returnDate).slice(0, 10);
-    const qty = r.quantity || 1;
-    if (!allByDayAsin.has(dayIso)) allByDayAsin.set(dayIso, new Map());
-    const allMap = allByDayAsin.get(dayIso)!;
-    allMap.set(r.asin, (allMap.get(r.asin) || 0) + qty);
-    if (isGenuineReturn(r)) {
-      if (!genuineByDayAsin.has(dayIso)) genuineByDayAsin.set(dayIso, new Map());
-      const genuineMap = genuineByDayAsin.get(dayIso)!;
-      genuineMap.set(r.asin, (genuineMap.get(r.asin) || 0) + qty);
-    }
-  });
-  return { allByDayAsin, genuineByDayAsin };
-}
-
-// Amazon-only sales report (Orders / Returns / Total Orders / Price / Total Sales / Growth% per
-// product per period) — mirrors the layout of the legacy "REVENUE" workbook's Amazon Sales sheet,
-// sourced live from the SellerMate API, with the Flipkart column blocks dropped entirely.
-// Ends with an auto-computed Top Losers / Top Gainers summary comparing the last two periods —
-// the legacy sheet's manually-typed reasons (negative reviews, competitor pressure) aren't
-// derivable from the API, so only signals we can actually verify (low stock, a returns spike, a
-// price drop) are surfaced; everything else is left for the reader to annotate.
+// Amazon-only sales report (Orders / All Returns / Customer Returns / Total Orders / Price / Total
+// Sales / Growth % per SKU per period) — mirrors the layout of the legacy "REVENUE" workbook's
+// Amazon Sales sheet, with the Flipkart column blocks dropped entirely. Ends with an auto-computed
+// Top Losers / Top Gainers summary comparing the last two full periods — the legacy sheet's
+// manually-typed reasons (negative reviews, competitor pressure) aren't derivable from the data, so
+// only signals we can actually verify (low stock, a returns spike, a price drop) are surfaced.
 //
-// Pure builder — takes a ToolCaller so it works from the browser or a server cron alike. Returns
-// the workbook + filename without writing anything; callers decide whether to trigger a browser
-// download (XLSX.writeFile) or turn it into a Buffer for an email attachment (XLSX.write).
-async function buildAmazonSalesWorkbook(opts: {
-  call: ToolCaller;
-  accountId: string | undefined;
-  workspaceId: string | undefined;
+// Sourced only from the app's synced MIS tables via loadAmazonSkuPeriodData — the same per-SKU
+// figures as the Weekly Sales Report (IST day bucketing; returns = AM + FBA + SellerFlex; Total
+// Orders = Orders − All Returns; Total Sales = Price × Total Orders; courier RTO excluded from
+// Customer Returns). It used to call SellerMate live (get_retail_product_performance, which
+// over-reports this account's sales ~1.7–2.2x, plus FBA-only returns bucketed by UTC day), and was
+// ASIN-grain; it is now SKU-grain.
+//
+// Returns the workbook + filename without writing anything; callers decide whether to trigger a
+// browser download (XLSX.writeFile) or turn it into a Buffer for an email attachment (XLSX.write).
+export async function buildAmazonSalesWorkbook(opts: {
   startDate: string;
   endDate: string;
   granularity: SalesReportGranularity;
 }) {
-  const { call, accountId, workspaceId, endDate, granularity } = opts;
-  let { startDate } = opts;
-  const baseArgs = { amazon_account_id: accountId, workspace_id: workspaceId };
+  const { startDate, endDate, granularity } = opts;
 
-  // Daily reports need at least 2 CONSECUTIVE full (already-synced) days to produce a Growth
-  // Summary — a narrow selection (e.g. a single day, or just yesterday+today) can otherwise land
-  // entirely inside Amazon's ~48h reporting sync-lag window and come back as "unavailable" with
-  // all-zero rows. Widen the fetch window under the hood (like the weekly email always auto-pairs
-  // "this vs last") so there's a real comparison, without requiring the user to pick a wider range.
-  if (granularity === "daily") {
-    const minStart = new Date(endDate + "T00:00:00Z");
-    minStart.setUTCDate(minStart.getUTCDate() - 2);
-    const minStartIso = toIso(minStart);
-    if (minStartIso < startDate) startDate = minStartIso;
-  }
-
+  // The selected range is used exactly as given — buildPeriods tiles [startDate, endDate] with no
+  // widening or trimming. A selection too narrow to hold two full periods has no Growth Summary.
   const periods = buildPeriods(startDate, endDate, granularity);
 
-  const [catalog, inventory, productMarketing, productMaster, masterSkuid] = await Promise.all([
-    fetchFullCatalog(call, baseArgs),
-    fetchAllInventory(call, baseArgs).catch(() => []),
-    fetchProductMarketingMap(),
-    fetchProductMasterMap(),
-    fetchMasterSkuidMap(),
-  ]);
-  const { resolveName: resolveMarketingName, resolveCategory: resolveMarketingCategory } = buildProductMarketingResolver(productMarketing);
-  const { resolveName: resolveBarmName, resolveCategory: resolveBarmCategory } = buildProductMasterResolver(productMaster);
-  const { resolveName: resolveSkuidName, resolveCategory: resolveSkuidCategory } = buildMasterSkuidResolver(masterSkuid);
-  // master_product_marketing is the marketing team's freshest, most current master — checked
-  // first; master_product_skuid and barm_product_master only fill in a SKU it doesn't have.
-  const resolveMasterName = (sku: string, fallback: string) =>
-    resolveMarketingName(sku, resolveSkuidName(sku, resolveBarmName(sku, fallback)));
-  const resolveMasterCategory = (sku: string, fallback: string) =>
-    resolveMarketingCategory(sku, resolveSkuidCategory(sku, resolveBarmCategory(sku, fallback)));
+  const {
+    dataPulledAt, dataThrough, returnCoverageWarnings,
+    visibleRows, rowsByCategory, catBySku, categoryAgg, stockOf,
+  } = await loadAmazonSkuPeriodData({ periods, includeAds: false });
 
-  // list_product_catalog is the reliable source for SKU — get_inventory's sku field comes back
-  // blank for some accounts (seen on B-ARM), so catalog is read first and inventory is only a
-  // fallback for whichever ASINs catalog didn't cover.
-  const nameByAsin = new Map<string, string>();
-  const skuByAsin = new Map<string, string>();
-  catalog.forEach((c: any) => {
-    if (c.asin && !nameByAsin.has(c.asin)) nameByAsin.set(c.asin, c.itemName || c.asin);
-    if (c.asin && c.sku && !skuByAsin.has(c.asin)) skuByAsin.set(c.asin, c.sku);
-  });
-
-  const stockByAsin = new Map<string, number>();
-  inventory.forEach((i: any) => {
-    if (!i.asin) return;
-    const stock = (i.fba?.endingWarehouseBalance || 0) + (i.fbm?.quantity || 0);
-    stockByAsin.set(i.asin, (stockByAsin.get(i.asin) || 0) + stock);
-    if (i.sku && !skuByAsin.has(i.asin)) skuByAsin.set(i.asin, i.sku);
-  });
-
-  const productsByAsin = new Map<string, ProductRow>();
-  const ensureProduct = (asin: string) => {
-    let p = productsByAsin.get(asin);
-    if (!p) {
-      p = { asin, name: nameByAsin.get(asin) || asin, sku: skuByAsin.get(asin) || "", periods: {}, grandTotalSales: 0 };
-      productsByAsin.set(asin, p);
-    }
-    return p;
-  };
-
-  // Seed every catalog product so zero-sale periods still show a row (per catalog visibility).
-  catalog.forEach((c: any) => {
-    if (c.asin) ensureProduct(c.asin);
-  });
-
-  if (granularity === "daily") {
-    // Daily can't query single days directly — use the cumulative-prefix trick for retail sales,
-    // and a single whole-range call for returns (bucketed by day client-side).
-    const [dailyByAsin, { allByDayAsin, genuineByDayAsin }] = await Promise.all([
-      fetchDailyRetailByAsin(call, baseArgs, periods),
-      fetchReturnsByDay(call, baseArgs, startDate, endDate),
-    ]);
-
-    dailyByAsin.forEach((perDay, asin) => {
-      const p = ensureProduct(asin);
-      periods.forEach((pd) => {
-        const stat = perDay.get(pd.label);
-        if (!stat) return;
-        const allReturns = allByDayAsin.get(pd.start)?.get(asin) || 0;
-        const returns = genuineByDayAsin.get(pd.start)?.get(asin) || 0;
-        p.periods[pd.label] = {
-          orders: stat.orders,
-          allReturns,
-          returns,
-          totalOrders: Math.max(0, stat.orders - allReturns),
-          price: stat.price,
-          totalSales: stat.totalSales,
-        };
-        p.grandTotalSales += stat.totalSales;
-      });
-    });
-  } else {
-    // Fetch periods in small concurrent batches — a long date range can mean dozens of buckets,
-    // and sequential fetching would take minutes.
-    const BATCH = 5;
-    for (let i = 0; i < periods.length; i += BATCH) {
-      const batch = periods.slice(i, i + BATCH);
-      const results = await Promise.all(batch.map((p) => fetchPeriod(call, baseArgs, p)));
-      results.forEach(({ period, retailRows, returnRows }) => {
-        const allReturnsByAsin = new Map<string, number>();
-        const genuineReturnsByAsin = new Map<string, number>();
-        returnRows.forEach((r: any) => {
-          if (!r.asin) return;
-          const qty = r.quantity || 1;
-          allReturnsByAsin.set(r.asin, (allReturnsByAsin.get(r.asin) || 0) + qty);
-          if (isGenuineReturn(r)) genuineReturnsByAsin.set(r.asin, (genuineReturnsByAsin.get(r.asin) || 0) + qty);
-        });
-
-        retailRows.forEach((r: any) => {
-          if (!r.asin) return;
-          const p = ensureProduct(r.asin);
-          if (!nameByAsin.has(r.asin) && r.productName) p.name = r.productName;
-          const orders = r.unitsOrdered || 0;
-          const allReturns = allReturnsByAsin.get(r.asin) || 0;
-          const returns = genuineReturnsByAsin.get(r.asin) || 0;
-          const totalSales = r.totalSales || 0;
-          const price = r.averageSellingPrice || (orders ? totalSales / orders : 0);
-          p.periods[period.label] = {
-            orders,
-            allReturns,
-            returns,
-            totalOrders: Math.max(0, orders - allReturns),
-            price,
-            totalSales,
-          };
-          p.grandTotalSales += totalSales;
-        });
-      });
-    }
-  }
-
-  // Prefer the seller's own approved Product Master name (matched by SKU) over both the raw
-  // catalog/listing title and the older hand-maintained SKU_NAME_MAP in categoryMap.ts — Product
-  // Master is the one the seller's team actually curates and approves, so it wins when present;
-  // categoryMap.ts's SKU_NAME_MAP only fills in SKUs the master hasn't been updated with yet.
-  productsByAsin.forEach((p) => {
-    p.name = resolveMasterName(p.sku, resolveProductName(p.name, p.sku) || p.name);
-  });
-
-  const rows = [...productsByAsin.values()].sort((a, b) => b.grandTotalSales - a.grandTotalSales);
-
-  // Discontinued (retired SKUs) and Other (unclassified — usually a stale ASIN with no catalog
-  // title to categorize) are noise for reporting purposes: excluded from every sheet in this
-  // workbook (Amazon Sales, Category Breakdown, Growth Summary) rather than just hidden/zeroed.
-  const EXCLUDED_CATEGORIES = new Set(["Discontinued", "Other"]);
-
-  // ── Category/Department aggregation — same per-product per-period data, grouped by
-  // department (Gynaecology / Pulmonology / Occupational Therapy / General / Other). Product
-  // Master's own Category column wins when the SKU is in it (same seller-curated priority as the
-  // name resolution above); categoryMap.ts's SKU_CATEGORY_MAP / title fuzzy-match only fills in
-  // SKUs the master doesn't have a category for yet — so departments can be tracked
-  // period-over-period without opening the full per-product sheet. ──
-  const categoryAgg = new Map<string, { periods: Record<string, { sales: number; units: number }>; grandSales: number; grandUnits: number }>();
-  const catByAsin = new Map<string, string>();
-  rows.forEach((p) => {
-    const cat = resolveMasterCategory(p.sku, categorizeTitle(p.name, p.asin, p.sku));
-    catByAsin.set(p.asin, cat);
-    let c = categoryAgg.get(cat);
-    if (!c) { c = { periods: {}, grandSales: 0, grandUnits: 0 }; categoryAgg.set(cat, c); }
-    periods.forEach((pd) => {
-      const stat = p.periods[pd.label];
-      if (!stat) return;
-      const cur = c!.periods[pd.label] || { sales: 0, units: 0 };
-      cur.sales += stat.totalSales;
-      cur.units += stat.orders;
-      c!.periods[pd.label] = cur;
-      c!.grandSales += stat.totalSales;
-      c!.grandUnits += stat.orders;
-    });
-  });
-
-  const visibleRows = rows.filter((p) => !EXCLUDED_CATEGORIES.has(catByAsin.get(p.asin) || "Other"));
-
-  // Row order for the main sheet: grouped by department (highest-selling department first,
-  // matching the Category Breakdown sheet), then by each product's own sales within that group —
-  // so the per-SKU data reads "category-wise" while staying at full product granularity.
-  const categoryRank = new Map<string, number>();
-  [...categoryAgg.entries()]
-    .sort((a, b) => b[1].grandSales - a[1].grandSales)
-    .forEach(([name], i) => categoryRank.set(name, i));
-  const rowsByCategory = [...visibleRows].sort((a, b) => {
-    const ra = categoryRank.get(catByAsin.get(a.asin) || "") ?? 999;
-    const rb = categoryRank.get(catByAsin.get(b.asin) || "") ?? 999;
-    if (ra !== rb) return ra - rb;
-    return b.grandTotalSales - a.grandTotalSales;
-  });
+  // A period running past the last synced order day is measured over fewer days than its
+  // neighbour, so its "decline" is missing data — keep it in the table but out of the comparison.
+  if (dataThrough) periods.forEach((pd) => { if (pd.end > dataThrough) pd.isFull = false; });
 
   // ── Build the main data sheet ──
   // Column 0 = Product, column 1 = SKU, column 2 = Category (department), then 7 columns per
   // period (Orders, All Returns, Customer Returns, Total Orders, Price, Total Sales, Growth %).
-  // All Returns is every return Amazon reports; Customer Returns excludes courier RTO/undeliverable
-  // "returns" (see isGenuineReturn) — Total Orders subtracts All Returns, since an RTO'd order
-  // never became a real sale either even though the customer didn't reject it. Rows are grouped by department
+  // All Returns is every AM + FBA + SellerFlex return; Customer Returns excludes courier RTO /
+  // undeliverable / rejected parcels — Total Orders subtracts All Returns, since an RTO'd order
+  // never became a real sale either. Rows are grouped by department
   // (rowsByCategory) so the sheet reads "category-wise" while staying at full product/SKU granularity.
   const COLS_PER_PERIOD = 7;
   const LEAD_COLS = 3; // Product, SKU, Category
@@ -570,7 +69,7 @@ async function buildAmazonSalesWorkbook(opts: {
 
   let prevCat: string | null = null;
   rowsByCategory.forEach((p) => {
-    const cat = catByAsin.get(p.asin) || "Other";
+    const cat = catBySku.get(p.sku) || "Other";
     if (cat !== prevCat) { categoryChangeRows.add(aoa.length); prevCat = cat; }
     const rowData: any[] = [p.name, p.sku, cat];
     let prevTotalSales: number | null = null;
@@ -688,7 +187,7 @@ async function buildAmazonSalesWorkbook(opts: {
         if (lastSales === 0 && prevSales === 0) return null;
         const delta = lastSales - prevSales;
         const pct = prevSales !== 0 ? delta / prevSales : lastSales > 0 ? 1 : 0;
-        const stock = stockByAsin.get(p.asin);
+        const stock = stockOf(p.sku);
         const returnsJump = (last?.returns || 0) - (prev?.returns || 0);
         const priceDropPct = prev?.price ? (last?.price || 0) / prev.price - 1 : 0;
         let reason = "";
@@ -702,7 +201,7 @@ async function buildAmazonSalesWorkbook(opts: {
         // Δ columns are measured against.
         const units = last?.orders || 0;
         const price = last?.price || 0;
-        return { name: p.name, sku: p.sku, units, price, delta, pct, reason, category: catByAsin.get(p.asin) || "Other" };
+        return { name: p.name, sku: p.sku, units, price, delta, pct, reason, category: catBySku.get(p.sku) || "Other" };
       })
       .filter((d): d is Delta => d !== null);
 
@@ -928,62 +427,29 @@ async function buildAmazonSalesWorkbook(opts: {
   }
 
   XLSX.utils.book_append_sheet(wb, ws, "Amazon Sales");
-
-  if (granularity === "daily") {
-    const wsInfo = XLSX.utils.aoa_to_sheet([
-      ["Note"],
-      ["The most recent 1–2 days in this report can show unusually low or zero sales — that's Amazon's own reporting sync lag, not a drop in real sales. Figures for a given day typically finalize within 24–48 hours."],
-    ]);
-    wsInfo["!cols"] = [{ wch: 100 }];
-    XLSX.utils.book_append_sheet(wb, wsInfo, "Notes");
-  }
+  // Where the figures come from, how far the synced data reaches, and any source that stops short
+  // of the selected end date (missing days read as zero sales/returns, not as a real drop).
+  const staleOrders = dataThrough && dataThrough < endDate
+    ? [`⚠ READ THIS FIRST — the synced Orders data only reaches ${fmtDot(dataThrough)}, but this report runs to ${fmtDot(endDate)}. Days after ${fmtDot(dataThrough)} show no orders because they are not synced yet, not because nothing sold; those periods are left out of the Growth Summary.`]
+    : [];
+  const wsInfo = XLSX.utils.aoa_to_sheet([
+    ["Note"],
+    ...staleOrders.map((w) => [w]),
+    ...returnCoverageWarnings.map((w) => [w]),
+    [`Source: the app's synced Amazon Orders and AM / FBA / SellerFlex Returns tables (not SellerMate), bucketed by IST calendar day. Orders data through ${dataThrough ? fmtDot(dataThrough) : "—"}. Data pulled at ${dataPulledAt}.`],
+    ["Total Orders = Orders − All Returns; Total Sales = Price × Total Orders. A return whose order fell in an earlier period can make a period's Total Orders negative."],
+  ]);
+  wsInfo["!cols"] = [{ wch: 120 }];
+  XLSX.utils.book_append_sheet(wb, wsInfo, "Notes");
 
   const gLabel = granularity === "daily" ? "Daily" : granularity === "weekly" ? "Weekly" : "Monthly";
   const filename = `Amazon_${gLabel}_Sales_Report_${startDate}_to_${endDate}.xlsx`;
-  return { wb, filename, productCount: visibleRows.length, periodCount: periods.length, dataRowCount };
+  return { wb, filename, productCount: visibleRows.length, periodCount: periods.length, dataRowCount, dataThrough };
 }
 
-// Browser entry point (used by the Reports page) — fetches through the /api/tool proxy with the
-// account's keySlot, then triggers a real file download.
-export async function exportAmazonSalesReport(opts: {
-  account: { id?: string; workspace_id?: string; name?: string } | null | undefined;
-  keySlot: string;
-  startDate: string;
-  endDate: string;
-  granularity: SalesReportGranularity;
-}) {
-  const { account, keySlot, startDate, endDate, granularity } = opts;
-  const call: ToolCaller = (tool, args) => mcp(tool, args, keySlot);
-  const { wb, filename, ...stats } = await buildAmazonSalesWorkbook({
-    call, accountId: account?.id, workspaceId: account?.workspace_id, startDate, endDate, granularity,
-  });
+// Browser entry point (used by the Reports page) — builds the workbook and triggers a download.
+export async function exportAmazonSalesReport(opts: { startDate: string; endDate: string; granularity: SalesReportGranularity }) {
+  const { wb, filename, ...stats } = await buildAmazonSalesWorkbook(opts);
   XLSX.writeFile(wb, filename);
   return stats;
-}
-
-// Server entry point (used by the scheduled-email cron in instrumentation.ts) — calls SellerMate
-// directly with an API key, and hands back the raw workbook so the caller can turn it into a
-// Buffer (XLSX.write(wb, { type: "buffer", bookType: "xlsx" })) for a nodemailer attachment.
-export async function buildAmazonSalesWorkbookForAccount(opts: {
-  apiKey: string;
-  accountId: string;
-  workspaceId: string;
-  startDate: string;
-  endDate: string;
-  granularity: SalesReportGranularity;
-}) {
-  const SELLERMATE_BASE_URL = "https://api.sellermate.ai/public/v1/tools";
-  const call: ToolCaller = async (tool, args) => {
-    const r = await fetch(`${SELLERMATE_BASE_URL}/${tool}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-API-Key": opts.apiKey },
-      body: JSON.stringify(args),
-    });
-    if (!r.ok) throw new Error(`${tool}: ${await r.text()}`);
-    return r.json();
-  };
-  return buildAmazonSalesWorkbook({
-    call, accountId: opts.accountId, workspaceId: opts.workspaceId,
-    startDate: opts.startDate, endDate: opts.endDate, granularity: opts.granularity,
-  });
 }

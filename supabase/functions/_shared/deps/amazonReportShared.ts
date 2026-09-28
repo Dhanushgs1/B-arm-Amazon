@@ -1,4 +1,5 @@
 import { supabasePublic } from "./amazonReportUpload.ts";
+import { isCourierRtoReturnType } from "./amazonSpendRules.ts";
 
 // Small helpers shared by every report that reads the manually-uploaded Amazon
 // tables (barm_amazon_*) — split out from historicalAnalysisReportExport.ts so
@@ -34,9 +35,21 @@ export async function fetchAllRows(table: string, apply: (q: any) => any, orderB
     // 1000-row page boundary.
     let q = apply(supabasePublic.from(table).select("*"));
     for (const col of orderCols) q = q.order(col, { ascending: true });
-    const { data, error } = await q.range(from, from + PAGE - 1);
+    // Same retry as src/lib/amazonReportShared.ts's copy: a brief statement-timeout blip on any
+    // single page otherwise failed the whole daily job (7 of 16 cron runs, 10-23 Sep 2026). Only a
+    // read is retried, so a retry can never duplicate a write.
+    let error: { message: string } | null = null;
+    let rows: unknown[] = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await q.range(from, from + PAGE - 1);
+      error = res.error;
+      if (!error) {
+        rows = res.data || [];
+        break;
+      }
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+    }
     if (error) throw new Error(`Fetch ${table} failed: ${error.message}`);
-    const rows = data || [];
     all.push(...rows);
     if (rows.length < PAGE) break;
     from += PAGE;
@@ -68,10 +81,11 @@ export function isStandardOrderId(orderId: string | undefined): boolean {
 export function isGenuineFbaReturn(r: { reason?: string }): boolean {
   return !String(r.reason || "").toUpperCase().startsWith("UNDELIVERABLE");
 }
-// AM returns (Seller Central return-requests export) signals the same thing
-// via "Return type" = "Undelivered" instead of a reason-code prefix.
+// AM returns (Seller Central return-requests export) signal the same thing via "Return type":
+// "Undelivered", "Rejected" and "Undelivered/Rejected" are all courier RTO (Rejected by the seller's
+// decision of 24 Sep 2026, matching FBA's UNDELIVERABLE_REFUSED). SellerFlex's "UNDELIVERED" too.
 export function isGenuineAmReturn(r: { return_type?: string }): boolean {
-  return String(r.return_type || "").toLowerCase() !== "undelivered";
+  return !isCourierRtoReturnType(r.return_type);
 }
 
 // Amazon's Orders/FBA-returns exports carry a timestamp (with time-of-day) in

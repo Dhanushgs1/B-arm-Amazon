@@ -1,6 +1,7 @@
 import * as XLSX from "xlsx";
 import { supabasePublic, dedupeExactRows, type ReportDataInfo } from "@/lib/amazonReportUpload";
 import { toDate as parseFlexibleDate } from "@/lib/meeshoReportUpload";
+import { amazonPurchaseIstDate, chunk, planReplaceByKey } from "@/lib/amazonOrderUploadRules";
 
 // Ingests the seller's own hand-assembled "Last 7 days - DD-MM-YYYY.xlsx"
 // workbook in one shot. Writes each sheet's raw rows into its own dedicated
@@ -80,6 +81,21 @@ function makePicker(row: Record<string, unknown>) {
 interface DailyMirrorSpec {
   table: string;
   buildRow: (r: Record<string, unknown>) => Record<string, unknown> | null;
+  /** When set, existing rows are replaced per value of this column (e.g. per order) instead of
+   *  clearing the file's whole report_date range — see amazonOrderUploadRules.ts for why. */
+  replaceBy?: string;
+  /** Per-row identity used to drop repeated lines within one file before inserting. */
+  identityOf?: (row: Record<string, unknown>) => string;
+}
+
+// Deletes every row of `table` whose `column` is one of `values`, chunked so the IN-list stays
+// well inside PostgREST's URL limit.
+async function deleteWhereIn(table: string, column: string, values: string[]): Promise<string | null> {
+  for (const part of chunk(values, 200)) {
+    const { error } = await supabasePublic.from(table).delete().in(column, part);
+    if (error) return error.message;
+  }
+  return null;
 }
 
 interface DailyMirrorOutcome {
@@ -90,13 +106,20 @@ interface DailyMirrorOutcome {
 
 async function mirrorSheetToDailyTable(ws: XLSX.WorkSheet, spec: DailyMirrorSpec): Promise<DailyMirrorOutcome> {
   const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" });
-  const mapped = raw.map(spec.buildRow).filter((r): r is Record<string, unknown> => r !== null);
+  let mapped = raw.map(spec.buildRow).filter((r): r is Record<string, unknown> => r !== null);
 
   if (!mapped.length) {
     return { table: spec.table, status: "empty", detail: `0/${raw.length} rows had identifying data.` };
   }
-
-  const dates = mapped.map((r) => r.report_date as string | null).filter((d): d is string => !!d).sort();
+  if (spec.replaceBy) {
+    const plan = planReplaceByKey(mapped, spec.replaceBy, spec.identityOf);
+    mapped = plan.insertRows;
+    const delErr = await deleteWhereIn(spec.table, spec.replaceBy, plan.deleteKeys);
+    if (delErr) {
+      return { table: spec.table, status: "error", detail: `Replacing existing rows by ${spec.replaceBy} failed: ${delErr}` };
+    }
+  }
+  const dates = spec.replaceBy ? [] : mapped.map((r) => r.report_date as string | null).filter((d): d is string => !!d).sort();
   if (dates.length) {
     const { error: delErr } = await supabasePublic
       .from(spec.table)
@@ -149,6 +172,10 @@ const MIRROR_AM_ADS: DailyMirrorSpec = {
 
 const MIRROR_AM_ORD: DailyMirrorSpec = {
   table: "barm_daily_am_orders",
+  // Replace per order, never per date range, and store the IST business day — see
+  // amazonOrderUploadRules.ts for the data loss the old UTC date + range delete caused.
+  replaceBy: "order_id",
+  identityOf: (row) => str((row.raw as Record<string, unknown> | undefined)?.["order-item-id"]),
   buildRow: (r) => {
     const p = makePicker(r);
     const order_id = str(p("amazon-order-id"));
@@ -157,7 +184,7 @@ const MIRROR_AM_ORD: DailyMirrorSpec = {
     if (!order_id && !sku) return null;
     return {
       order_id,
-      report_date: parseFlexibleDate(purchaseDateRaw),
+      report_date: amazonPurchaseIstDate(purchaseDateRaw) ?? parseFlexibleDate(purchaseDateRaw),
       purchase_datetime: str(purchaseDateRaw) || null,
       order_status: str(p("order-status")),
       sku,
@@ -337,8 +364,10 @@ export async function fetchDailyTablesDataInfo(): Promise<ReportDataInfo> {
 interface ReportTableSpec {
   table: string;
   dateCol: string;
-  strategy: "upsert" | "replaceRange";
+  strategy: "upsert" | "replaceRange" | "replaceKeys";
   onConflict?: string;
+  /** "replaceKeys" only: rows are replaced per value of this column (e.g. per order). */
+  replaceBy?: string;
   /**
    * Amazon's own SP export has one row per keyword/targeting expression, not
    * one per SKU — so several rows can share the same (date, campaign, ad
@@ -410,7 +439,11 @@ const REPORT_TARGETS: Record<string, ReportTableSpec> = {
   "AM ord": {
     table: "barm_amazon_am_orders",
     dateCol: "purchase_date",
-    strategy: "replaceRange",
+    // Per order, not per purchase_date range: purchase_date is the UTC date (the standalone Orders
+    // upload stores it the same way), so clearing the file's range wiped the earlier upload's rows
+    // for the file's first UTC day — the same loss described in amazonOrderUploadRules.ts.
+    strategy: "replaceKeys",
+    replaceBy: "amazon_order_id",
     buildRow: (r) => {
       const p = makePicker(r);
       const amazon_order_id = str(p("amazon-order-id"));
@@ -600,6 +633,18 @@ async function replaceRangeRows(table: string, dateCol: string, rows: Record<str
   return `${deduped.length} rows -> ${table}`;
 }
 
+async function replaceKeyRows(table: string, keyCol: string, rows: Record<string, unknown>[]): Promise<string> {
+  // Same exact-duplicate guard as replaceRangeRows, plus one row per order-item-id.
+  const { deleteKeys, insertRows } = planReplaceByKey(dedupeExactRows(rows), keyCol, (r) => str(r.order_item_id));
+  const delErr = await deleteWhereIn(table, keyCol, deleteKeys);
+  if (delErr) throw new Error(`Replacing ${table} rows by ${keyCol} failed: ${delErr}`);
+  for (const part of chunk(insertRows, 300)) {
+    const { error } = await supabasePublic.from(table).insert(part);
+    if (error) throw new Error(`Insert into ${table} failed: ${error.message}`);
+  }
+  return `${insertRows.length} rows -> ${table}`;
+}
+
 async function writeReportTable(ws: XLSX.WorkSheet, spec: ReportTableSpec): Promise<string> {
   const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" });
   let mapped = raw.map(spec.buildRow).filter((r): r is Record<string, unknown> => r !== null);
@@ -607,7 +652,9 @@ async function writeReportTable(ws: XLSX.WorkSheet, spec: ReportTableSpec): Prom
   if (spec.strategy === "upsert" && spec.mergeSumFields) {
     mapped = mergeByConflictKey(mapped, spec.onConflict!.split(","), spec.mergeSumFields);
   }
-  return spec.strategy === "upsert" ? upsertRows(spec.table, mapped, spec.onConflict!) : replaceRangeRows(spec.table, spec.dateCol, mapped);
+  if (spec.strategy === "upsert") return upsertRows(spec.table, mapped, spec.onConflict!);
+  if (spec.strategy === "replaceKeys") return replaceKeyRows(spec.table, spec.replaceBy!, mapped);
+  return replaceRangeRows(spec.table, spec.dateCol, mapped);
 }
 
 export async function uploadCombinedWorkbook(file: File): Promise<SheetUploadOutcome[]> {

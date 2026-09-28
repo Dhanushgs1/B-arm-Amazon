@@ -257,7 +257,8 @@ export default function ReportsPage() {
         return;
 
       } else if (type.includes("Analysis Report")) {
-        const { filename: analysisName } = await exportAnalysisReport({ account, keySlot });
+        // Same selected end date as every other report on this page — never "today".
+        const { filename: analysisName } = await exportAnalysisReport({ account, keySlot, endDate: effEnd });
         setHistory(prev => [{ filename: analysisName, timestamp: new Date() }, ...prev]);
         setGenerating(null);
         return;
@@ -265,7 +266,7 @@ export default function ReportsPage() {
       } else if (type.includes("Amazon Daily") || type.includes("Amazon Weekly") || type.includes("Amazon Monthly")) {
         const granularity: SalesReportGranularity = type.includes("Daily") ? "daily" : type.includes("Weekly") ? "weekly" : "monthly";
         const gLabel = granularity === "daily" ? "Daily" : granularity === "weekly" ? "Weekly" : "Monthly";
-        await exportAmazonSalesReport({ account, keySlot, startDate: effStart, endDate: effEnd, granularity });
+        await exportAmazonSalesReport({ startDate: effStart, endDate: effEnd, granularity });
         setHistory(prev => [{ filename: `Amazon_${gLabel}_Sales_Report_${dateSuffix}.xlsx`, timestamp: new Date() }, ...prev]);
         setGenerating(null);
         return;

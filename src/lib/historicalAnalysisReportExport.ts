@@ -1,7 +1,9 @@
 import * as XLSX from "xlsx-js-style";
 import { fcToState } from "@/lib/analysisReportExport";
-import { buildOrphanSpendDivisor, fetchAllRows, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
-import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns } from "@/lib/misAdapters";
+import { spCampaignDays, isSplitCoveredCampaignRow, dedupeSellerFlexReturns } from "@/lib/amazonSpendRules";
+import { fetchAllRows, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
+import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns, fetchAllMisReportDataInfo } from "@/lib/misAdapters";
+import { staleSourceWarnings } from "@/lib/reportCoverage";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog, gstMultiplierFromTax } from "@/lib/masterProductSkuid";
 import { fetchProductMarketingMap, buildProductMarketingResolver } from "@/lib/productMarketingUpload";
@@ -205,6 +207,8 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   const win30Ist = istDayWindowUtc(win30.start, endDate);
   const win7Ist = istDayWindowUtc(win7.start, endDate);
 
+  // How far each return source reaches, checked in parallel with the main fetch below.
+  const coveragePromise = fetchAllMisReportDataInfo();
   // Fetch every ad/order/return row ONCE for the 30-day window (a superset of
   // the 7-day window) — the 7-day block is then derived by filtering these
   // same rows in memory, avoiding a second round-trip to Supabase.
@@ -510,10 +514,14 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     // (e.g. SKU A001-5 over 2026-07-04→2026-08-02: units_7d sums to 4, matching
     // their 4 — advertised_sku_units_7d sums to only 1, which is what this line
     // used to read and is why CPC/ACOS were previously off by ~4x for that SKU).
-    const orphanShareDivisor = buildOrphanSpendDivisor(rowsSp);
+    //
+    //
+    // Spend is a PLAIN sum of every SP-table row's raw spend, matching the raw export and the Ad
+    // Spend Report. That includes the seller's per-SKU split of Brand/Display spend (named first row
+    // plus blank-campaign rows, 0 units) — the SKU attribution the seller wants counted (24 Sep 2026).
     rowsSp.forEach((r) => {
       if (!r.advertised_sku) return;
-      addAd(r.campaign_name || "", r.advertised_sku, (r.spend || 0) / orphanShareDivisor(r), r.units_7d || 0);
+      addAd(r.campaign_name || "", r.advertised_sku, r.spend || 0, r.units_7d || 0);
     });
     // SB/SD: campaign-level only — SPEND is split across the campaign's mapped
     // SKUs by weight, but Advertised SKU Units are recorded as 0, matching the
@@ -533,8 +541,11 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
       }
       shares.forEach(({ sku, share }) => addAd(r.campaign_name || "", sku, spend * share, 0));
     }
-    rowsSb.forEach((r) => applyCampaignAdRow(r));
-    rowsSd.forEach((r) => applyCampaignAdRow(r));
+    // An SB/SD campaign-day the seller already split onto SKUs in the SP table is skipped — its spend
+    // is counted there (isSplitCoveredCampaignRow), so adding the campaign total too would double it.
+    const splitDays = spCampaignDays(rowsSp);
+    rowsSb.forEach((r) => { if (!isSplitCoveredCampaignRow(r, splitDays)) applyCampaignAdRow(r); });
+    rowsSd.forEach((r) => { if (!isSplitCoveredCampaignRow(r, splitDays)) applyCampaignAdRow(r); });
     // Orders — "Orders" is the SUM of order quantity, not the number of order
     // records, matching the seller's pivot. Cancelled orders are excluded: they
     // were never sold, so counting them would inflate Orders and depress ACOS.
@@ -545,35 +556,24 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
       if (!r.sku || isCancelledOrder(r) || !isStandardOrderId(r.amazon_order_id)) return;
       ensureSku(r.sku).orderUnits += r.quantity || 0;
     });
-    // Returns — AM returns (Seller Central return-requests) are the seller's
-    // canonical per-SKU record; FBA + SF returns only fill in for a SKU that
-    // has NO AM return recorded, since the same physical return can otherwise
-    // show up in both AM returns and FBA/SF returns and get double-counted.
-    // Verified directly against the seller's own workbook: this exact
-    // AM-else-(FBA+SF) fallback rule reproduced their Returns column for ALL
-    // 140 SKUs it currently tracks — a plain unfiltered sum of all three
-    // channels, or AM-only, or a genuine-returns filter, each diverged on a
-    // large minority of SKUs. isGenuineAmReturn/isGenuineFbaReturn stay
-    // available for other reports (e.g. weeklySalesExport.ts) that want a
-    // genuine-only figure — this report just isn't one of them.
-    const amReturnsBySku = new Map<string, number>();
+    // Returns = AM returns + FBA returns + SellerFlex returns, every return reported (courier RTO
+    // included), by the seller's decision of 24 Sep 2026 — the same "All Returns" the Weekly Sales
+    // Report subtracts. This replaced "AM returns if the SKU has any, else FBA + SF": the three
+    // sources share no orders (AM returns are merchant-fulfilled orders, FBA/SF returns Amazon-
+    // fulfilled ones), so that rule never prevented a double count and instead dropped real FBA/SF
+    // returns (~103 units over the 30 days to 17 Sep 2026).
+    const addReturns = (sku: string, qty: number) => { ensureSku(sku).returns += qty; };
     rowsAmReturns.forEach((r) => {
       if (!r.merchant_sku) return;
-      amReturnsBySku.set(r.merchant_sku, (amReturnsBySku.get(r.merchant_sku) || 0) + (r.return_quantity || 0));
+      addReturns(r.merchant_sku, r.return_quantity || 0);
     });
-    const fbaSfReturnsBySku = new Map<string, number>();
     rowsFbaReturns.forEach((r) => {
       if (!r.sku) return;
-      fbaSfReturnsBySku.set(r.sku, (fbaSfReturnsBySku.get(r.sku) || 0) + (r.quantity || 0));
+      addReturns(r.sku, r.quantity || 0);
     });
-    rowsSfReturns.forEach((r) => {
-      if (!r.msku) return;
-      fbaSfReturnsBySku.set(r.msku, (fbaSfReturnsBySku.get(r.msku) || 0) + (r.units || 0));
-    });
-    new Set([...amReturnsBySku.keys(), ...fbaSfReturnsBySku.keys()]).forEach((sku) => {
-      const amSum = amReturnsBySku.get(sku) || 0;
-      ensureSku(sku).returns += amSum > 0 ? amSum : (fbaSfReturnsBySku.get(sku) || 0);
-    });
+    // The MIS amazon_seller_flex_return table holds each return several times over (one copy per
+    // re-upload), so each (order, shipment, mSKU) counts once — see dedupeSellerFlexReturns.
+    dedupeSellerFlexReturns(rowsSfReturns).forEach((r) => addReturns(r.msku, r.units || 0));
     return { pairs, skus, pairIds };
   }
 
@@ -764,6 +764,32 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     staleDays > 0 && dataThrough
       ? `⚠ READ THIS FIRST — the uploaded/synced Orders data only reaches ${dotDate(dataThrough)}, but "Last 7 days" runs to ${dotDate(win7.end)}. So the 7-day block above is measured over ${Math.max(0, 7 - staleDays)} day(s) of real order data, not 7 — any SKU showing 0 Orders/Returns/Final there most likely just has no synced data for those missing days, not zero sales. The 30-day block and Spend+Tax/Advertised Units figures are unaffected (ad spend and the 30-day window aren't gated by this). Either sync/upload newer orders, or set the dashboard end date to ${dotDate(dataThrough)} and regenerate.`
       : null;
+  // Same idea per return source (AM returns stopped syncing on 3 Sep 2026 while orders ran on).
+  const coverage = await coveragePromise;
+  const returnCoverageWarnings = staleSourceWarnings(
+    [
+      { label: "AM returns (amazon_returns)", maxDate: coverage.am_returns?.maxDate ?? null, error: coverage.am_returns?.error },
+      { label: "FBA returns (amazon_fba_returns)", maxDate: coverage.fba_returns?.maxDate ?? null, error: coverage.fba_returns?.error },
+      { label: "SellerFlex returns (amazon_seller_flex_return)", maxDate: coverage.sf_return?.maxDate ?? null, error: coverage.sf_return?.error },
+    ],
+    endDate,
+    "Returns (and so Final and TACOS) are understated for those days.",
+    dotDate
+  );
+
+  // Key Insights' MISSING DATA line, built from what is actually absent or stale instead of always
+  // asking for SellerFlex/ledger uploads that may already be on file.
+  const NO_MISSING_DATA = "None — every source used here reaches the report end date.";
+  const missingSources = [
+    ...(coverage.am_returns?.maxDate && coverage.am_returns.maxDate >= endDate ? [] : ["AM returns"]),
+    ...(coverage.fba_returns?.maxDate && coverage.fba_returns.maxDate >= endDate ? [] : ["FBA returns"]),
+    ...(coverage.sf_return?.maxDate && coverage.sf_return.maxDate >= endDate ? [] : ["SellerFlex returns"]),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ...((ledgerRawRows as any[]).length ? [] : ["Inventory Ledger"]),
+  ];
+  const missingDataNote = missingSources.length
+    ? `Missing or not reaching ${dotDate(endDate)}: ${missingSources.join(", ")} — see the READ THIS FIRST lines on the Notes sheet.`
+    : NO_MISSING_DATA;
 
   const buildAvailCells = (m: SkuMeta): (string | number)[] => {
     if (!m.isFba && m.fbaTotal <= 0) return ["0", "", "", "", ""];
@@ -1181,15 +1207,19 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
       const key = `${campaignName}*${sku || ""}`;
       map.set(key, (map.get(key) || 0) + (spend || 0));
     };
-    rowsSp.forEach((r) => add(r.campaign_name, r.advertised_sku, r.spend));
+    // Same spend basis as aggregateWindow, so this list adds up to the Analysis report's total:
+    // unnamed Brand/Display split rows get their own labelled line instead of being dropped, and
+    // SB/SD campaign-days already split onto SKUs are skipped below.
+    rowsSp.forEach((r) => add(r.campaign_name || "(Brand/Display split, unnamed)", r.advertised_sku, r.spend));
+    const splitDays = spCampaignDays(rowsSp);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const addCampaignLevel = (r: any) => {
       const shares = campaignShares(r.campaign_name);
       if (!shares) { add(r.campaign_name, "", r.spend); return; }
       shares.forEach(({ sku, share }) => add(r.campaign_name, sku, (r.spend || 0) * share));
     };
-    rowsSb.forEach(addCampaignLevel);
-    rowsSd.forEach(addCampaignLevel);
+    rowsSb.forEach((r) => { if (!isSplitCoveredCampaignRow(r, splitDays)) addCampaignLevel(r); });
+    rowsSd.forEach((r) => { if (!isSplitCoveredCampaignRow(r, splitDays)) addCampaignLevel(r); });
     return map;
   }
   const topAdspendByCampaign = (map: Map<string, number>) =>
@@ -1558,10 +1588,13 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
       spend: (r.spend || 0) * share, advUnits: 0, split: true,
     }));
   };
+  // Same rule as aggregateWindow: a campaign-day already split onto SKUs in the SP table is not
+  // synthesized again, so this sheet keeps reconciling with the Analysis report.
+  const adSheetSplitDays = spCampaignDays(spRows);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  sbRows.forEach((r: any) => pushCampaignAdSheetRows(r));
+  sbRows.forEach((r: any) => { if (!isSplitCoveredCampaignRow(r, adSheetSplitDays)) pushCampaignAdSheetRows(r); });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  sdRows.forEach((r: any) => pushCampaignAdSheetRows(r));
+  sdRows.forEach((r: any) => { if (!isSplitCoveredCampaignRow(r, adSheetSplitDays)) pushCampaignAdSheetRows(r); });
   adSheetRows.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   XLSX.utils.book_append_sheet(wb, buildRawSheet(adSheetRows, ADSPEND_HEADERS, {
     // Both date columns carry the row's own day: these are daily exports, so a
@@ -1740,13 +1773,13 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     ["4. REPLENISH FIRST", stockoutStates.concat(understockedStates).length
       ? `Prioritize FBA inbound shipments to: ${[...new Set(stockoutStates.concat(understockedStates))].join(", ")}`
       : "No urgent replenishment gaps detected.", "", "", "", "", "", ""],
-    ["5. MISSING DATA", "Upload SF Returns, Inventory Ledger for complete analysis.", "", "", "", "", "", ""],
+    ["5. MISSING DATA", missingDataNote, "", "", "", "", "", ""],
     ["", "", "", "", "", "", "", ""],
     ["💡 ACTION ITEMS", "", "", "", "", "", "", ""],
     ["Priority 1", `Review unmapped SB/SD campaigns on Upload page - ₹${unmappedSpend30.toFixed(2)} unattributed (last 30 days)`, "", "", "", "", "", ""],
     ["Priority 2", stockoutStates.length ? `Ship inventory to stockout states: ${stockoutStates.join(", ")}` : "Increase FBA availability in high-demand states", "", "", "", "", "", ""],
     ["Priority 3", "Pause low-ACOS campaigns or test new keywords", "", "", "", "", "", ""],
-    ["Priority 4", "Upload missing returns/inventory data for better insights", "", "", "", "", "", ""],
+    ["Priority 4", missingDataNote === NO_MISSING_DATA ? "No missing or stale source data detected." : "Sync/upload the missing or stale sources listed under MISSING DATA above.", "", "", "", "", "", ""],
   ];
 
   const wsInsights = XLSX.utils.aoa_to_sheet(insightsAoa);
@@ -1792,18 +1825,20 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     [`Data pulled at: ${dataPulledAt} (compare this against the Weekly Sales Report's own "Data pulled at" — the two files disagree on a SKU whenever they were generated far enough apart to see different uploads, not because either one is wrong).`],
     [""],
     ...(staleDataNote ? [[staleDataNote]] : []),
+    ...returnCoverageWarnings.map((w) => [w]),
     ["Every figure here comes from the manually uploaded reports (Upload Reports page). The live SellerMate API is NOT called at all — not for spend, orders, returns, price, channel or FBA stock. That is what lets both trailing windows be recomputed from a fixed historical upload instead of only 'as of today', and it means a missing upload shows up as missing data (flagged below) rather than being filled in with today's snapshot."],
     ["Analysis report / TACOS sheets: both windows always end on the same date and are recomputed from the SAME 30-day fetch — the 7-day block is simply the last 7 days of that data, not a separate query."],
     ["GRAIN — the Analysis report has ONE ROW PER CAMPAIGN x SKU. Only Spend+Tax and Advertised SKU Units are per-campaign. Total Units, Orders and Returns belong to the SKU (Amazon reports them per SKU, never per campaign), so a SKU advertised by two campaigns — most commonly one campaign per fulfillment channel, e.g. an FBA campaign and an MFN campaign for the same SKU — shows the SAME Orders/Returns on BOTH of its rows. Summing this sheet's Orders column therefore double-counts every such SKU (looks like ~2x for a dual-channel SKU with exactly one campaign per channel). For a genuine per-SKU total, either read the GRAND TOTAL row (which deliberately sums Orders/Returns/Total Units over distinct SKUs, not over rows, and so will not equal a plain SUM() of the column above it) or the TACOS sheet, which is already one row per SKU."],
     ["A SKU that had orders or returns this window but was never advertised and carries no FBA stock still gets a row here (Row Labels blank campaign, falls back to its product name) — Orders/Returns are real, Spend+Tax and Advertised SKU Units are correctly 0. Previously such SKUs were left out of this sheet entirely (it only covered advertised/FBA-tracked SKUs), which is why a plain SKU export could show far fewer rows here than on the order-driven Weekly Sales Report."],
     ["Sponsored Brands / Display spend is only ever known per campaign (Amazon's own export has no SKU column). Each such campaign's spend is split across the SKUs assigned to it on the Upload Reports page, in proportion to the WEIGHT given to each. Weights are relative, so {2,1,1} and {50,25,25} split identically. Campaigns with no mapping at all are grouped under the '⚠ Unmapped SB/SD campaigns' row rather than being dropped, so their spend still appears in the totals."],
-    ["Spend+Tax = ad spend x (1 + that SKU's GST rate) — computed from each row's raw 'spend' field, summed per campaign x SKU, then multiplied once. Rate comes from the product master's per-SKU Tax column (18% used when a SKU has none on file). Not a formula in the Analysis report/TACOS sheets (matches the original workbook), but is a live formula (Spend x rate) in the 'Orders, returns, adspend' sheet."],
+    ["Spend+Tax = ad spend x 1.18 (a flat 18% GST for every product) — computed from each row's raw 'spend' field, summed per campaign x SKU, then multiplied once. Not a formula in the Analysis report/TACOS sheets (matches the original workbook), but is a live formula (Spend x rate) in the 'Orders, returns, adspend' sheet."],
     ["Orders = the SUM OF ORDER QUANTITY for the SKU (units ordered), NOT the number of order records — matching the seller's own pivot. CANCELLED orders are excluded: they were never sold, so counting them would inflate Orders and depress ACOS/TACOS."],
     ["Total Units (#) = the SKU's ad-attributed units across ALL its campaigns, so it is the same on every campaign row for that SKU, while Advertised SKU Units (#) is just that one campaign's share. For a SKU advertised by a single campaign the two columns are equal."],
     ["Advertised SKU Units is 0 on Sponsored Brands / Display rows. Amazon attributes those units to the campaign, never to a SKU, so apportioning them by the spend weights would invent fractional units (a third of a sale) and then divide spend by them in CPC. Only Sponsored Products units — which are genuinely per-SKU in the export — are counted."],
     ["Final = Orders - Returns. CPC (Analysis report) = Spend+Tax / Advertised SKU Units. ACOS = CPC / Price. TACOS = Spend+Tax / (Price x Final)."],
     ["TACOS sheet is keyed PER SKU (not per campaign x SKU): it measures a SKU's whole ad cost against its whole net order volume, so splitting it by campaign would divide one campaign's spend by the SKU's total orders. Its CPC is also a DIFFERENT metric from the Analysis report's: here CPC = Spend+Tax / Final orders (cost per net order), matching the seller's original workbook. TACOS (= CPC / Price) comes out the same either way."],
-["Returns = AM returns for a SKU if any were recorded, otherwise FBA + SF returns for that SKU (courier RTO / undeliverable included either way) — matching the seller's own workbook. AM and FBA/SF returns can both record the same physical return, so they aren't simply added together; the raw rows are on the 'AM returns', 'FBA returns' and 'SF returns' sheets if you need a different figure."],
+["Returns = AM returns + FBA returns + SellerFlex returns for that SKU, every return reported (courier RTO / undeliverable included) — the same All Returns the Weekly Sales Report subtracts. The three sources share no orders, so adding them never double-counts. Each SellerFlex return is counted once (the MIS table stores repeat uploads). Raw rows are on the 'AM returns', 'FBA returns' and 'SF returns' sheets."],
+    ["Sponsored Products spend is a plain sum of every SP-table row's raw Spend, matching the raw export and the Ad Spend Report. That table also carries the seller's own per-SKU split of Brand/Display spend (each campaign-day's first split row is named, the rest have a blank campaign; all have 0 units), and that split is how Brand/Display spend is counted here. An SB/SD campaign-day already split that way is NOT added again from the SB/SD tables; only SB/SD spend with no split lands in the Unmapped row."],
     [
       hasUploadedPrice
         ? "Price and FBA/MFN channel come from the uploaded Price (All Listings) report."
@@ -1823,8 +1858,8 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     ],
     ["FBA status sheet: per-state stock pivot for FBA SKUs only (a snapshot, not time-windowed), with the same Available / Number of FBA Not Available / All FBA formulas as the seller's original workbook."],
     ["Price / AM orders / AM returns / FBA returns / SF returns / Adspend / Inventory ledger / FBA inventory sheets: verbatim dumps of the uploaded exports, every original column kept (each uploaded row stores its source CSV row, so nothing is trimmed). A few columns in these sheets are DERIVED, not from Amazon: 'IST with Time' and 'Date ' on AM orders (from the UTC purchase-date), 'return-time' on FBA returns (split out of return-date), 'Area' on Inventory ledger (from Location), and on Adspend the 'Start/End Date' pair plus the 'Campaign Name*Advertised SKU' pivot key."],
-    ["Adspend sheet also carries one synthesized row per (Sponsored Brands/Display campaign x mapped SKU) holding that SKU's weighted share of the campaign's spend — those rows have a blank Ad Group Name and Advertised ASIN, because neither exists at campaign grain. This is what makes the sheet reconcile with the Analysis report."],
-    ["SF returns sheet: raw dump of uploaded SellerFlex (self-fulfilled) returns for the 30-day window, if any were uploaded. Folded into the Returns / Final / ACOS / TACOS figures elsewhere in this workbook, same as AM returns + FBA returns."],
+    ["Adspend sheet also carries one synthesized row per (Sponsored Brands/Display campaign x mapped SKU) holding that SKU's weighted share of the campaign's spend — those rows have a blank Ad Group Name and Advertised ASIN, because neither exists at campaign grain. This is what makes the sheet reconcile with the Analysis report — except SB/SD campaign-days the seller already split onto SKUs in the SP table: their synthesized rows are left out (that spend is counted from the split rows)."],
+    ["SF returns sheet: raw dump of the synced SellerFlex (self-fulfilled) returns for the 30-day window — every stored copy, since the MIS table keeps one copy per re-upload. The Returns / Final / TACOS figures count each return once (per Customer Order ID + Shipment ID + mSKU), added to that SKU's AM and FBA returns (see the Returns rule above)."],
     ["'Orders, returns, adspend' sheet: 4 independent top-N lists side by side (Adspend by campaign x SKU, Adspend by SKU, Orders by SKU, Returns by SKU), each split into its own 30-day/7-day pair — a given row is NOT a joined record; the SKU in the Orders columns has no relation to whatever SKU appears in the Returns columns of that same row."],
     ["Key Insights sheet: State-wise analysis and recommendations are based on the 30-day window only."],
     ["A delisted/discontinued SKU's leftover FBA stock no longer pulls it into the TACOS/FBA-status sheets on its own once the uploaded Price (All Listings) report marks it 'Inactive' AND it had no orders, returns or ad spend in the 30-day window — that combination was the source of SKUs appearing ONLY in this report and never in the order-driven Weekly Sales Report. A SKU with any real activity this window still appears regardless of listing status; an account without a Status column in its Price upload is unaffected (treated as unknown, not inactive)."],
@@ -1875,6 +1910,28 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
  * (enforced by the no-restricted-imports rule for this file in
  * eslint.config.mjs). `account` is used for the display name on the Notes sheet.
  */
+// Verbatim raw-dump sheets (one uploaded row per sheet row). They make the download self-contained
+// but are ~95% of its size (Inventory ledger alone ~32k rows), which is why the emailed copy omits them.
+export const HISTORICAL_RAW_DUMP_SHEETS = ["AM orders", "AM returns", "FBA returns", "SF returns", "Adspend", "Inventory ledger", "FBA inventory"] as const;
+
+/** The emailed copy: every computed sheet, minus the raw dumps, plus a sheet saying so. The attachment
+ *  travels base64-encoded inside a JSON request that Vercel caps at 4.5 MB, and the full workbook is
+ *  ~11.7 MB even compressed; the slim copy is ~1.4 MB. The dashboard download is unchanged. */
+export function slimHistoricalWorkbookForEmail(wb: XLSX.WorkBook): XLSX.WorkBook {
+  const drop = new Set<string>(HISTORICAL_RAW_DUMP_SHEETS);
+  const slim = XLSX.utils.book_new();
+  wb.SheetNames.filter((n) => !drop.has(n)).forEach((n) => XLSX.utils.book_append_sheet(slim, wb.Sheets[n], n));
+  const omitted = wb.SheetNames.filter((n) => drop.has(n));
+  const about = XLSX.utils.aoa_to_sheet([
+    ["About this email copy"],
+    ["Every computed sheet is included and its figures are identical to the dashboard download."],
+    [`Left out to keep the attachment small enough to email: the raw upload dumps (${omitted.join(", ")}). Download the full workbook from the Reports page to see them.`],
+  ]);
+  about["!cols"] = [{ wch: 110 }];
+  XLSX.utils.book_append_sheet(slim, about, "About this copy");
+  return slim;
+}
+
 export async function exportHistoricalAnalysisReport(opts: {
   endDate?: string;
   account: { id?: string; workspace_id?: string; name?: string } | null | undefined;
@@ -1888,8 +1945,8 @@ export async function exportHistoricalAnalysisReport(opts: {
   });
   // bookSST forces a shared-string table instead of xlsx-js-style's default of
   // inlining every string cell — with thousands of Orders rows repeating the
-  // same ~150-char product names, this is the difference between an ~8MB and
-  // ~1.5MB file for the same data.
+  // same ~150-char product names, it shrinks the file several-fold (the full workbook is still
+  // ~12 MB with compression, mostly the raw Inventory ledger dump — see slimHistoricalWorkbookForEmail).
   //
   // compression DEFLATEs the zip entries; without it the parts are STORED, and
   // since the raw-dump sheets are highly repetitive XML that alone accounts for
