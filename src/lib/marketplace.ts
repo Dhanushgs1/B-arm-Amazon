@@ -6,7 +6,21 @@
 // UI changes once fetchFlipkartOverview is backed by a real API call.
 
 export type MarketplaceId = "amazon" | "flipkart";
-export type MarketplaceTab = MarketplaceId | "compare";
+// Meesho and BARM (the seller's own Google/B-Arm orders channel) are
+// upload-and-download-only tabs with no analytics pages, so they're tabs, not
+// MarketplaceIds — none of the demo-data generators below know about them.
+export type UploadOnlyTab = "meesho" | "barm";
+export type MarketplaceTab = MarketplaceId | UploadOnlyTab | "compare";
+
+export const UPLOAD_ONLY_TAB_META: Record<UploadOnlyTab, { label: string; tagline: string; color: string; home: string }> = {
+  meesho: { label: "Meesho", tagline: "Meesho · Overview, Upload & Download", color: "#9F2089", home: "/dashboard/meesho" },
+  // BARM Upload reuses the existing Google Orders (B-Arm) upload page.
+  barm: { label: "BARM", tagline: "BARM (Google) · Overview, Upload & Download", color: "#10B981", home: "/dashboard/barm" },
+};
+
+export function isUploadOnlyTab(tab: MarketplaceTab): tab is UploadOnlyTab {
+  return tab === "meesho" || tab === "barm";
+}
 
 export interface MarketplaceMeta {
   id: MarketplaceId;
@@ -56,6 +70,8 @@ export const MOCK_MARKETPLACES: MarketplaceId[] = ["flipkart"];
 export function getMarketplaceTab(pathname: string | null): MarketplaceTab {
   const p = pathname || "";
   if (p.startsWith("/dashboard/flipkart")) return "flipkart";
+  if (p.startsWith("/dashboard/meesho")) return "meesho";
+  if (p.startsWith("/dashboard/barm") || p.startsWith("/dashboard/google")) return "barm";
   if (p.startsWith("/dashboard/compare")) return "compare";
   return "amazon";
 }
