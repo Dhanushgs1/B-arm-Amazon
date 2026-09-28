@@ -7,6 +7,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { supabase } from "@/lib/supabaseClient";
 import { findJob } from "@/lib/adSpendJobs";
+import { checkSessionOrInternal, edgeFunctionHeaders, guard, isInternalRequest } from "@/lib/apiAuth";
 
 const DEFAULT_TO = "kaviyapriyabarm@gmail.com";
 const DEFAULT_CC = [
@@ -22,13 +23,20 @@ const DEFAULT_CC = [
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  // Browser-facing (Reports page "Send"): requires the signed-in dashboard session.
+  if (!guard(req, res, checkSessionOrInternal)) return;
+  const edgeHeaders = edgeFunctionHeaders();
+  if (!edgeHeaders) return res.status(503).json({ error: "INTERNAL_API_SECRET is not configured" });
 
   const { endDate, accountName, to, cc } = req.body || {};
   if (!endDate) return res.status(400).json({ error: "endDate is required" });
 
   const acctName = accountName || "";
-  const toAddr = to !== undefined ? to : DEFAULT_TO;
-  const ccAddr = cc !== undefined ? cc : DEFAULT_CC;
+  // Only a signed server call may choose recipients; a browser request always goes to the fixed
+  // distribution list, whatever to/cc its body carries.
+  const trusted = isInternalRequest(req.headers);
+  const toAddr = trusted && to !== undefined ? to : DEFAULT_TO;
+  const ccAddr = trusted && cc !== undefined ? cc : DEFAULT_CC;
 
   try {
     const job = await findJob(endDate, acctName);
@@ -64,7 +72,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     try {
       const edgeRes = await fetch(`${edgeBaseUrl}/send-ad-spend-email`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: edgeHeaders,
         body: JSON.stringify({ job_id: job.id, report_date: endDate, account_name: acctName, to: toAddr, cc: ccAddr || undefined }),
         signal: ackController.signal,
       });

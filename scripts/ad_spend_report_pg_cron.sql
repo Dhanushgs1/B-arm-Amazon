@@ -19,7 +19,13 @@ select cron.schedule(
   )
   select net.http_post(
     url := '<SUPABASE_EDGE_URL>/generate-ad-spend-report',
-    headers := '{"Content-Type": "application/json"}'::jsonb,
+    -- The Edge Function rejects calls without x-m360-internal (see
+    -- supabase/functions/_shared/internalAuth.ts). The secret is read from
+    -- Supabase Vault so it never appears in this job's stored command text.
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'x-m360-internal', (select decrypted_secret from vault.decrypted_secrets where name = 'internal_api_secret')
+    ),
     body := jsonb_build_object('job_id', new_job.id, 'report_date', new_job.report_date)
   )
   from new_job;
@@ -30,3 +36,9 @@ select cron.schedule(
 -- Functions base URL for this Supabase project (same value used for Task 6's
 -- SUPABASE_EDGE_URL env var, e.g. https://<project-ref>.supabase.co/functions/v1).
 -- This is a placeholder on purpose — do not run this script until it's replaced.
+--
+-- Also store the Edge Functions' shared secret in Vault first (same value as
+-- the INTERNAL_API_SECRET Vercel env var and Supabase function secret):
+--   select vault.create_secret('<INTERNAL_API_SECRET>', 'internal_api_secret');
+-- If this job is already scheduled, re-run cron.schedule above (same job name
+-- replaces it) — the old definition sends no header and will now get a 401.

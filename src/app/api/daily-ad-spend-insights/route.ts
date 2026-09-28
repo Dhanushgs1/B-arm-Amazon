@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { checkSession } from "@/lib/apiAuth";
+import { rejectUnlessAllowed } from "@/lib/appRouteAuth";
 
 // One Gemini call for the whole product list (not one call per product) —
 // same reasoning as gemini-insights/route.ts: keep this to a single request
@@ -19,6 +21,9 @@ interface InsightProduct {
 }
 
 export async function POST(req: Request) {
+  // Spends the company's Gemini key: signed-in session only, capped at 10 calls per 10 minutes per IP.
+  const rejected = rejectUnlessAllowed(req, checkSession, { bucket: "daily-ad-spend-insights", limit: 10, windowMs: 10 * 60_000 });
+  if (rejected) return rejected;
   try {
     const body = await req.json().catch(() => ({}));
     const products: InsightProduct[] = Array.isArray(body.products) ? body.products : [];

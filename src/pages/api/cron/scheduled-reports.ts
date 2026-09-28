@@ -15,12 +15,13 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { readEmailSettings } from "@/lib/emailSettingsStore";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
+import { checkCron, guard } from "@/lib/apiAuth";
 
 const KEY_SLOTS = ["A", "B"] as const;
 
 async function callReportEndpoint(req: NextApiRequest, pathname: string, body: Record<string, any>, label: string) {
   try {
-    const r = await internalFetch(`${internalOrigin(req)}${pathname}`, {
+    const r = await internalFetch(`${internalOrigin()}${pathname}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -40,7 +41,7 @@ async function callReportEndpoint(req: NextApiRequest, pathname: string, body: R
 // rather than its own direct nodemailer/Gmail SMTP call — see send-email.ts's own comment on why.
 async function sendMonthlyPlaceholder(req: NextApiRequest, toEmail: string, ccEmail?: string) {
   const now = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
-  const r = await internalFetch(`${internalOrigin(req)}/api/send-email`, {
+  const r = await internalFetch(`${internalOrigin()}/api/send-email`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -140,15 +141,10 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // Vercel Cron sends "Authorization: Bearer $CRON_SECRET" when CRON_SECRET is set
-  // as a project env var. Enforced only if you've set one — add it in Vercel
-  // project settings to stop this public URL from being triggered by anyone else.
-  if (process.env.CRON_SECRET) {
-    const auth = req.headers.authorization;
-    if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-  }
+  // Vercel Cron sends "Authorization: Bearer $CRON_SECRET" once CRON_SECRET is set as a project
+  // env var. Fails closed: with no CRON_SECRET configured this public URL refuses to run (503)
+  // rather than running for anyone.
+  if (!guard(req, res, checkCron)) return;
 
   // ?dryRun=1 — confirms routing, settings, and today's Monday/1st-of-month
   // flags without actually sending any report or email. Useful for verifying

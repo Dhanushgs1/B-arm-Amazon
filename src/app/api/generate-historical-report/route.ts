@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { exportHistoricalAnalysisReport } from '@/lib/historicalAnalysisReportExport';
+import { checkInternal } from '@/lib/apiAuth';
+import { rejectUnlessAllowed } from '@/lib/appRouteAuth';
 
 export async function POST(request: NextRequest) {
+  // Heavy build that writes a file on the server; its only caller is generate-report-now.sh, so
+  // it takes signed server/script calls only (x-m360-internal: $INTERNAL_API_SECRET).
+  const rejected = rejectUnlessAllowed(request, checkInternal);
+  if (rejected) return rejected;
   try {
     const body = await request.json();
     const { accountId, workspaceId, accountName, startDate, endDate } = body;

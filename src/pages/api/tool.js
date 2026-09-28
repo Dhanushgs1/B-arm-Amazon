@@ -1,3 +1,5 @@
+import { checkSession, guard } from "@/lib/apiAuth";
+
 // Server-side proxy for the SellerMate.AI Public API.
 //
 // Two-account setup, routed by the "slot" the client sends (A = Lkn, B = Barm).
@@ -56,7 +58,11 @@ function resolveApiKey(slot) {
   );
 }
 
-module.exports = async (req, res) => {
+// Proxies read-only SellerMate tools using the server's own API keys, so it exposes business data
+// (orders, inventory, retail performance): requires the signed-in dashboard session.
+export default async function handler(req, res) {
+  if (!guard(req, res, checkSession)) return;
+
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed. Use POST.' });
     return;
@@ -122,4 +128,4 @@ module.exports = async (req, res) => {
   } catch (e) {
     res.status(502).json({ error: `Upstream error calling SellerMate: ${e.message}` });
   }
-};
+}

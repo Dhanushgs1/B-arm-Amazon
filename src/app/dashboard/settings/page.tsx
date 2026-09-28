@@ -275,8 +275,8 @@ export default function SettingsPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             type: "confirmation",
-            to: notifEmail,
-            cc: ccEmail || undefined,
+            // Recipients come from the settings just saved for this slot (server-side).
+            keySlot,
             data: { activeAlerts, acosThreshold, lowStockThreshold },
           }),
         });
@@ -726,7 +726,8 @@ export default function SettingsPage() {
                               headers: { "Content-Type": "application/json" },
                               body: JSON.stringify({
                                 slot: keySlot, amazon_account_id: account.id, workspace_id: account.workspace_id,
-                                to: notifEmail, cc: ccEmail || undefined, currency: account?.currency || "INR",
+                                // Server sends to this slot's saved notifEmail/ccEmail.
+                                recipients: "saved", currency: account?.currency || "INR",
                               }),
                             });
                             const json = await r.json();

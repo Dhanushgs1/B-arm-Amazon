@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
+import { checkSession } from "@/lib/apiAuth";
+import { rejectUnlessAllowed } from "@/lib/appRouteAuth";
 
 export async function POST(req: Request) {
+  // Spends the company's Gemini key on a caller-supplied prompt: signed-in session only, and
+  // capped at 30 calls per 10 minutes per IP.
+  const rejected = rejectUnlessAllowed(req, checkSession, { bucket: "gemini-insights", limit: 30, windowMs: 10 * 60_000 });
+  if (rejected) return rejected;
   try {
     const body = await req.json().catch(() => ({}));
     const prompt = body.prompt;

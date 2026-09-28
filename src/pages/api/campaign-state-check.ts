@@ -16,9 +16,12 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { resolveSellerMateKey } from "@/lib/adAlerts";
 import { checkCampaignStateChanges } from "@/lib/campaignStateTracker";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
+import { checkInternal, guard } from "@/lib/apiAuth";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  // Cron/server-only: callable solely via internalFetch (signed with INTERNAL_API_SECRET).
+  if (!guard(req, res, checkInternal)) return;
 
   const { slot = "B", amazon_account_id, workspace_id, to, cc } = req.body || {};
   if (!amazon_account_id || !workspace_id) {
@@ -33,7 +36,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let emailResult: any = null;
     if (result.transitions.length > 0 && to) {
-      const r = await internalFetch(`${internalOrigin(req)}/api/send-email`, {
+      const r = await internalFetch(`${internalOrigin()}/api/send-email`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: "campaignPause", to, cc, data: { transitions: result.transitions } }),

@@ -11,6 +11,8 @@
 // daily_ad_spend_reports (result_json, xlsx_storage_path) — never recomputes
 // anything.
 import { createClient } from "npm:@supabase/supabase-js@2.110.8";
+import { rejectUnlessInternal } from "../_shared/internalAuth.ts";
+import { escapeDeep, escapeHtml } from "../_shared/htmlEscape.ts";
 import nodemailer from "npm:nodemailer@9.0.3";
 import { SITE_URL } from "../_shared/deps/siteUrl.ts";
 
@@ -361,6 +363,9 @@ const transporter = nodemailer.createTransport({
 
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
+  // Only the Vercel API routes and the pg_cron job hold INTERNAL_API_SECRET (see _shared/internalAuth.ts).
+  const rejected = await rejectUnlessInternal(req);
+  if (rejected) return rejected;
   const body = await req.json().catch(() => ({}));
   const { job_id, report_date, account_name, to, cc } = body as {
     job_id?: number; report_date?: string; account_name?: string; to?: string; cc?: string;
@@ -407,7 +412,8 @@ Deno.serve(async (req: Request) => {
       // buildAdSpendDailyHtml(): the ported adSpendDaily branch body from
       // send-email.ts, called with the same `data` shape send-ad-spend-email.ts
       // already builds today.
-      const html = buildAdSpendDailyHtml({
+      // Escaped like send-email.ts: every interpolated value is text, never markup.
+      const html = buildAdSpendDailyHtml(escapeDeep({
         dayLabel, rangeLabel, currency: "INR",
         platformSummaries: result.platformSummaries,
         socialMediaSummary: result.socialMediaSummary,
@@ -415,7 +421,7 @@ Deno.serve(async (req: Request) => {
         productCount: result.productCount,
         lowSpendCampaignCount: result.lowSpendCampaignCount,
         incompleteDates: result.incompleteDates,
-      }, to);
+      }), escapeHtml(to));
 
       const info = await transporter.sendMail({
         from: `Marketplace360 Dashboard <${Deno.env.get("SMTP_FROM")}>`,

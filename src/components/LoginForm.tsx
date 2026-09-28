@@ -37,14 +37,23 @@ export default function LoginForm() {
     setError("");
     setLoading(true);
 
-    // Simulated latency for loading states
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-
+    // The password is checked server-side (DASHBOARD_PASSWORD), which sets the HttpOnly session
+    // cookie the API routes require. The username still only picks the account slot.
     const uTrim = username.trim();
-    if (
-      (uTrim === "Barm" && password === "Barm@123") ||
-      (uTrim === "Lkn" && password === "Lkn@123")
-    ) {
+    let ok = false;
+    let serverError = "";
+    try {
+      const r = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: uTrim, password }),
+      });
+      ok = r.ok;
+      if (!r.ok && r.status !== 401) serverError = (await r.json().catch(() => ({}))).error || "";
+    } catch {
+      serverError = "Could not reach the server. Please try again.";
+    }
+    if (ok) {
       if (rememberMe) {
         localStorage.setItem("ppcRememberUser", uTrim);
       } else {
@@ -54,7 +63,7 @@ export default function LoginForm() {
       localStorage.setItem("ppcKeySlot", uTrim === "Barm" ? "B" : "A");
       window.location.href = "/dashboard";
     } else {
-      setError("Incorrect credentials. Please check your username and password and try again.");
+      setError(serverError || "Incorrect credentials. Please check your username and password and try again.");
       setLoading(false);
     }
   };

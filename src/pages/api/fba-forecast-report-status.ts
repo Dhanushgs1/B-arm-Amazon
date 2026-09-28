@@ -2,9 +2,12 @@
 // GET-only status check for the dashboard's polling — separate from the
 // generate route so polling never accidentally re-triggers generation.
 import type { NextApiRequest, NextApiResponse } from "next";
+import { checkSessionOrInternal, guard } from "@/lib/apiAuth";
 import { findFbaForecastJob } from "@/lib/fbaForecastJobs";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  // Browser-facing: requires the signed-in dashboard session (or a signed server call).
+  if (!guard(req, res, checkSessionOrInternal)) return;
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
   const { reportDate } = req.query;
   if (!reportDate || typeof reportDate !== "string") return res.status(400).json({ error: "reportDate is required" });

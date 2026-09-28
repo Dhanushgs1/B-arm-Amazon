@@ -276,7 +276,6 @@ export async function maybeAlertHighAcos(type: UploadReportType, rows: any[], ke
     const settingsRes = await fetch(`/api/email-settings?keySlot=${encodeURIComponent(keySlot)}`);
     const settings = settingsRes.ok ? await settingsRes.json() : {};
     const notifEmail: string | undefined = settings.notifEmail || undefined;
-    const ccEmail: string | undefined = settings.ccEmail || undefined;
     const acosThreshold: number = Number(settings.acosThreshold) || 40;
     const currency: string = settings.currency || "INR";
 
@@ -298,8 +297,8 @@ export async function maybeAlertHighAcos(type: UploadReportType, rows: any[], ke
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         type: "campaign",
-        to: notifEmail,
-        cc: ccEmail,
+        // Recipients are resolved server-side from this slot's saved settings.
+        keySlot,
         data: { campaigns, acosThreshold },
       }),
     });

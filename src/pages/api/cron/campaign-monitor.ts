@@ -24,6 +24,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { readEmailSettings } from "@/lib/emailSettingsStore";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
+import { checkCron, guard } from "@/lib/apiAuth";
 
 const KEY_SLOTS = ["A", "B"] as const;
 
@@ -33,7 +34,7 @@ async function checkSlot(req: NextApiRequest, slot: string) {
     return { skipped: true, reason: "Account context not saved — save Settings once for this slot." };
   }
   try {
-    const r = await internalFetch(`${internalOrigin(req)}/api/campaign-state-check`, {
+    const r = await internalFetch(`${internalOrigin()}/api/campaign-state-check`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -51,13 +52,8 @@ async function checkSlot(req: NextApiRequest, slot: string) {
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // Same guard as scheduled-reports.ts — enforced only when CRON_SECRET is set.
-  if (process.env.CRON_SECRET) {
-    const auth = req.headers.authorization;
-    if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-  }
+  // Same guard as scheduled-reports.ts — fails closed (503) when CRON_SECRET is not configured.
+  if (!guard(req, res, checkCron)) return;
 
   const now = new Date();
   const bySlot: Record<string, any> = {};

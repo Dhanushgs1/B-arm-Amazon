@@ -4,8 +4,11 @@
 echo "🚀 Generating Historical Analysis Report..."
 echo ""
 
+# The route only accepts signed calls: export INTERNAL_API_SECRET (same value as .env.local) first.
+: "${INTERNAL_API_SECRET:?INTERNAL_API_SECRET must be set}"
 curl -X POST http://localhost:3000/api/generate-historical-report \
   -H "Content-Type: application/json" \
+  -H "x-m360-internal: ${INTERNAL_API_SECRET}" \
   -d '{
     "accountId": "default-account",
     "workspaceId": "default-workspace",

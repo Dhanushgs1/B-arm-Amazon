@@ -5,6 +5,7 @@
 // via EdgeRuntime.waitUntil so the caller (a Vercel route or pg_cron) never
 // waits on it either.
 import { createClient } from "npm:@supabase/supabase-js@2.110.8";
+import { rejectUnlessInternal } from "../_shared/internalAuth.ts";
 import { buildAdSpendReportWorkbook } from "../_shared/adSpendReportExport.ts";
 import { writeXlsxWithViews } from "../_shared/xlsxWriter.ts";
 
@@ -14,6 +15,9 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
+  // Only the Vercel API routes and the pg_cron job hold INTERNAL_API_SECRET (see _shared/internalAuth.ts).
+  const rejected = await rejectUnlessInternal(req);
+  if (rejected) return rejected;
   const body = await req.json().catch(() => ({}));
   const { job_id, report_date, account_name, range_days } = body as {
     job_id?: number; report_date?: string; account_name?: string; range_days?: number;

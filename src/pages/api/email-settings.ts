@@ -4,9 +4,12 @@
 // another's automated emails).
 
 import type { NextApiRequest, NextApiResponse } from "next";
+import { checkSessionOrInternal, guard } from "@/lib/apiAuth";
 import { readEmailSettings, writeEmailSettings } from "@/lib/emailSettingsStore";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  // Browser-facing: requires the signed-in dashboard session (or a signed server call).
+  if (!guard(req, res, checkSessionOrInternal)) return;
   if (req.method === "GET") {
     const keySlot = (req.query.keySlot as string) || "B";
     const settings = await readEmailSettings(keySlot);

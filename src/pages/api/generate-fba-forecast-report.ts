@@ -4,6 +4,7 @@
 // report Edge Function, awaiting only its fast ack — never the actual
 // report computation. Mirrors generate-ad-spend-report.ts exactly.
 import type { NextApiRequest, NextApiResponse } from "next";
+import { checkSessionOrInternal, edgeFunctionHeaders, guard } from "@/lib/apiAuth";
 import { findOrCreateFbaForecastJob } from "@/lib/fbaForecastJobs";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -17,6 +18,11 @@ async function markJobFailedIfStillPending(jobId: number, message: string): Prom
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  // Browser-facing: requires the signed-in dashboard session (or a signed server call).
+  if (!guard(req, res, checkSessionOrInternal)) return;
+  // Checked before any job row is created: the Edge Function rejects calls without this secret.
+  const edgeHeaders = edgeFunctionHeaders();
+  if (!edgeHeaders) return res.status(503).json({ error: "INTERNAL_API_SECRET is not configured" });
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   // reportDate is ALWAYS the dashboard's own selected date (endDate from
@@ -41,7 +47,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     try {
       const edgeRes = await fetch(`${edgeBaseUrl}/generate-fba-forecast-report`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: edgeHeaders,
         body: JSON.stringify({ job_id: job.id, report_date: reportDate }),
         signal: ackController.signal,
       });

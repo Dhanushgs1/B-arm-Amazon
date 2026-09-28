@@ -7,9 +7,12 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { findStockoutAdSpend, resolveSellerMateKey } from "@/lib/stockout";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
+import { checkInternal, guard } from "@/lib/apiAuth";
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  // Cron/server-only: callable solely via internalFetch (signed with INTERNAL_API_SECRET).
+  if (!guard(req, res, checkInternal)) return;
 
   const {
     slot = "B",
@@ -36,7 +39,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     let emailResult: any = null;
     if (send && to && items.length > 0) {
-      const r = await internalFetch(`${internalOrigin(req)}/api/send-email`, {
+      const r = await internalFetch(`${internalOrigin()}/api/send-email`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: "stockout", to, cc, data: { items, currency } }),
@@ -50,7 +53,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       totalWasted,
       lookbackDays,
       lowStockThreshold,
-      items,
+      // Status metadata only — the item list itself goes out in the email, never in the response.
       emailed: !!(send && to && items.length > 0),
       emailResult,
     });

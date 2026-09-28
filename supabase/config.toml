@@ -10,3 +10,13 @@
 
 [functions.generate-fba-forecast-report]
 verify_jwt = false
+
+# All three functions are invoked without a Supabase user JWT (Vercel API routes, pg_cron), so JWT
+# verification stays off and each function instead requires the shared "x-m360-internal" header
+# (see functions/_shared/internalAuth.ts). Set it once as a function secret:
+#   supabase secrets set INTERNAL_API_SECRET=<same value as the Vercel env var>
+[functions.generate-ad-spend-report]
+verify_jwt = false
+
+[functions.send-ad-spend-email]
+verify_jwt = false

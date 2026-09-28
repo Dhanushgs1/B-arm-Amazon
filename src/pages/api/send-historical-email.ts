@@ -10,8 +10,9 @@
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import * as XLSX from "xlsx-js-style";
-import { buildHistoricalAnalysisReportWorkbook } from "@/lib/historicalAnalysisReportExport";
+import { buildHistoricalAnalysisReportWorkbook, slimHistoricalWorkbookForEmail } from "@/lib/historicalAnalysisReportExport";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
+import { checkSessionOrInternal, guard, isInternalRequest } from "@/lib/apiAuth";
 
 // See send-email.ts's own config comment — this route does the slow part (Supabase fetch across
 // 30/7-day windows) before even calling send-email, so it needs the same raised Vercel timeout.
@@ -30,6 +31,9 @@ const DEFAULT_CC = [
   "sriram@b-arm.com",
 ].join(",");
 
+// Vercel's 4.5 MB request-body cap, less headroom for the JSON envelope and email summary fields.
+const MAX_ATTACHMENT_BASE64_BYTES = 4 * 1024 * 1024;
+
 function iso(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
@@ -47,6 +51,8 @@ function windowStart(endDate: string, days: number): string {
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  // Browser-facing (Reports page "Send"): requires the signed-in dashboard session.
+  if (!guard(req, res, checkSessionOrInternal)) return;
 
   const { endDate: endDateBody, accountName, to, cc } = req.body || {};
   // Defaults to yesterday (IST-agnostic UTC date, matching weekly-report.ts's
@@ -59,14 +65,29 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
   // `to`/`cc` explicitly present (even as "") means "use exactly this, don't
   // fall back to the real distribution list" — matches send-ad-spend-email.ts.
-  const toAddr = to !== undefined ? to : DEFAULT_TO;
-  const ccAddr = cc !== undefined ? cc : DEFAULT_CC;
+  // Only a signed server call may choose recipients; a browser request always goes to the fixed
+  // distribution list, whatever to/cc its body carries.
+  const trusted = isInternalRequest(req.headers);
+  const toAddr = trusted && to !== undefined ? to : DEFAULT_TO;
+  const ccAddr = trusted && cc !== undefined ? cc : DEFAULT_CC;
 
   try {
     const result = await buildHistoricalAnalysisReportWorkbook({ endDate, accountName });
-    const buf = XLSX.write(result.wb, { type: "buffer", bookType: "xlsx" });
+    // The emailed copy leaves out the raw upload dumps (slimHistoricalWorkbookForEmail) — the full
+    // workbook was ~50 MB uncompressed and ~11.7 MB even compressed, while this request can carry at
+    // most 4.5 MB. Same bookSST + DEFLATE options as the download.
+    const buf = XLSX.write(slimHistoricalWorkbookForEmail(result.wb), { type: "buffer", bookType: "xlsx", bookSST: true, compression: true });
+    // The attachment travels base64-encoded inside a JSON POST to /api/send-email, and Vercel caps a
+    // function's request body at 4.5 MB — fail with a clear reason instead of an opaque 413.
+    const base64Bytes = Math.ceil(buf.length / 3) * 4;
+    if (base64Bytes > MAX_ATTACHMENT_BASE64_BYTES) {
+      return res.status(413).json({
+        error: `Historical report attachment is ${(buf.length / 1048576).toFixed(1)} MB (${(base64Bytes / 1048576).toFixed(1)} MB encoded), over the ${(MAX_ATTACHMENT_BASE64_BYTES / 1048576).toFixed(1)} MB an email request can carry, even without the raw sheets. Download it from the Reports page instead.`,
+        endDate,
+      });
+    }
 
-    const emailRes = await internalFetch(`${internalOrigin(req)}/api/send-email`, {
+    const emailRes = await internalFetch(`${internalOrigin()}/api/send-email`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

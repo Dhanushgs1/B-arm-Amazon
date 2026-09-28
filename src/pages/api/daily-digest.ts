@@ -23,9 +23,10 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { findBleedingCampaigns, findWastedSearchTerms, resolveSellerMateKey, fetchAsinSkuMap } from "@/lib/adAlerts";
 import { findStockoutAdSpend } from "@/lib/stockout";
-import { buildAmazonSalesWorkbookForAccount } from "@/lib/amazonSalesExport";
+import { buildAmazonSalesWorkbook } from "@/lib/amazonSalesExport";
 import { resolveProductName } from "@/lib/categoryMap";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
+import { checkInternal, guard } from "@/lib/apiAuth";
 import * as XLSX from "xlsx-js-style";
 
 const SELLERMATE_BASE_URL = "https://api.sellermate.ai/public/v1/tools";
@@ -72,6 +73,8 @@ async function fetchAllInventory(amazon_account_id: string, workspace_id: string
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  // Cron/server-only: callable solely via internalFetch (signed with INTERNAL_API_SECRET).
+  if (!guard(req, res, checkInternal)) return;
 
   const {
     slot = "B", amazon_account_id, workspace_id, to, cc, currency = "INR",
@@ -79,9 +82,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     acosThreshold = 40, minSpend = 500, lookbackDays = 7, lowStockThreshold = 5,
     // The detailed per-product workbook lives in the Monday weekly report, which is built from the
     // uploaded SKU-level exports and carries the full Growth Summary with category insights. The
-    // daily attachment was the ASIN-level SellerMate build of the same sheet — thinner, and a
-    // second thing to keep in step — so the digest ships as a body-only email. Pass
-    // attachWorkbook:true to get it back for a one-off.
+    // daily attachment is the Amazon Sales report (daily buckets, last 7 days, from the synced MIS
+    // tables) — a thinner second copy of the same figures — so the digest ships as a body-only
+    // email by default. Pass attachWorkbook:true to get it back for a one-off.
     attachWorkbook = false,
   } = req.body || {};
 
@@ -195,16 +198,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       inventory: { outOfStock, low, totalValue },
     };
 
-    // Full per-product workbook, same as the standalone daily report attached. Best-effort: the
-    // digest must still go out if the workbook build fails.
+    // Full per-SKU workbook, same as the Reports page's Amazon Daily Sales download. Best-effort:
+    // the digest must still go out if the workbook build fails.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let attachments: any[] | undefined;
     if (attachWorkbook) {
       try {
         const weekStart = new Date(day + "T00:00:00Z");
         weekStart.setUTCDate(weekStart.getUTCDate() - 6);
-        const { wb, filename } = await buildAmazonSalesWorkbookForAccount({
-          apiKey, accountId: amazon_account_id, workspaceId: workspace_id,
+        const { wb, filename } = await buildAmazonSalesWorkbook({
           startDate: weekStart.toISOString().slice(0, 10), endDate: day, granularity: "daily",
         });
         const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
@@ -222,7 +224,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let emailResult: any = null;
     if (send && to && hasRealData) {
-      const r = await internalFetch(`${internalOrigin(req)}/api/send-email`, {
+      const r = await internalFetch(`${internalOrigin()}/api/send-email`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: "dailyDigest", to, cc, data: emailData, attachments }),
@@ -234,7 +236,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     return res.status(200).json({
-      date: day, dateLabel, metrics,
+      // Status metadata only — the sales/spend figures go out in the email, not in this response
+      // (whose first 300 chars the cron writes to the function log).
+      date: day, dateLabel,
       counts: { stockout: stockoutItems.length, bleeding: bleedingItems.length, wastedTerms: wastedTerms.length },
       attached: !!attachments,
       emailed: !!(send && to && hasRealData),

@@ -1,6 +1,9 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import nodemailer from "nodemailer";
 import { SITE_URL } from "@/lib/siteUrl";
+import { decideSend } from "@/lib/emailSendPolicy";
+import { escapeEmailData, escapeHtml } from "@/lib/htmlEscape";
+import { readEmailSettings } from "@/lib/emailSettingsStore";
 
 // Reverted from Resend back to Gmail SMTP by the seller's own request: Resend needs a verified
 // domain to send to real recipients (sandboxed to the signup email otherwise), and while that
@@ -74,7 +77,8 @@ function wrap(body: string, channel: string | null = "amazon", headExtra = "") {
 </body></html>`;
 }
 
-function buildHtml(type: string, data: Record<string, any>, toEmail: string): string {
+// Exported for the template-escaping regression tests (src/lib/security.routes.test.ts).
+export function buildHtml(type: string, data: Record<string, any>, toEmail: string): string {
   // Every template below renders through this so the header's channel badge follows the data.
   const w = (body: string) => wrap(body, data.channel || "amazon");
   // Raw-HTML passthrough for callers that already built their own body (e.g. the monthly
@@ -1201,7 +1205,20 @@ export const config = {
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const { type = "test", to, cc, data = {}, subject, attachments } = req.body;
+  const body = req.body || {};
+  const { type = "test", data = {}, subject, attachments } = body;
+
+  // Signed server calls may send anything; a signed-in browser only the test/confirmation/campaign
+  // templates, with production recipients taken from saved settings — see emailSendPolicy.ts.
+  const decision = decideSend(req.headers, body);
+  if (!decision.ok) return res.status(decision.status).json({ error: decision.error });
+
+  let { to, cc } = body;
+  if (decision.recipients === "saved") {
+    const saved = await readEmailSettings(body.keySlot === "A" ? "A" : "B");
+    to = saved.notifEmail;
+    cc = saved.ccEmail || undefined;
+  }
 
   if (!to) return res.status(400).json({ error: "Recipient email (to) is required" });
   if (!process.env.SMTP_FROM || !process.env.SMTP_PASS) {
@@ -1209,7 +1226,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   try {
-    const html = buildHtml(type, data, to);
+    // Every string in `data` is HTML-escaped before the templates interpolate it; only a signed
+    // request may pass the few server-built markup fields (see htmlEscape.ts's RAW_FIELDS).
+    const html = buildHtml(type, escapeEmailData(type, data, decision.internal), escapeHtml(to));
     // Gmail silently clips a received message around ~102KB, cutting off whatever comes after —
     // logged here because that failure mode is invisible from the sender's side otherwise (the
     // send still reports success). If this creeps past ~90KB for a template with large generated

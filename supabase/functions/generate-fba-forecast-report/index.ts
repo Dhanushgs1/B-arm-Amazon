@@ -4,6 +4,7 @@
 // EdgeRuntime.waitUntil so the caller (a Vercel route) never waits on it.
 // Mirrors ../generate-ad-spend-report/index.ts exactly.
 import { createClient } from "npm:@supabase/supabase-js@2.110.8";
+import { rejectUnlessInternal } from "../_shared/internalAuth.ts";
 import { buildFbaForecastReportWorkbook } from "../_shared/fbaForecastReportExport.ts";
 import { writeXlsxWithViews } from "../_shared/xlsxWriter.ts";
 
@@ -13,6 +14,9 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
+  // Only the Vercel API routes and the pg_cron job hold INTERNAL_API_SECRET (see _shared/internalAuth.ts).
+  const rejected = await rejectUnlessInternal(req);
+  if (rejected) return rejected;
   const body = await req.json().catch(() => ({}));
   // report_date is passed through EXACTLY as received from the dashboard's
   // own selected date — never reformatted, never defaulted to "today".

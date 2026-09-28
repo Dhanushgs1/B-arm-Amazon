@@ -36,8 +36,9 @@ export async function register() {
         Monthly: "Marketplace360 - Monthly Performance Report",
       };
       try {
-        const port = process.env.PORT || 3000;
-        const r = await fetch(`http://localhost:${port}/api/send-email`, {
+        // internalFetch signs the request — send-email rejects unsigned "custom" sends.
+        const { internalFetch, internalOrigin } = await import("@/lib/internalFetch");
+        const r = await internalFetch(`${internalOrigin()}/api/send-email`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -63,8 +64,9 @@ export async function register() {
     //    settings (keySlot / amazonAccountId / workspaceId from the Settings page). ──
     async function runAlertEndpoint(pathname: string, body: Record<string, any>, label: string) {
       try {
-        const port = process.env.PORT || 3000;
-        const r = await fetch(`http://localhost:${port}${pathname}`, {
+        // Signed: the alert/report endpoints reject unsigned calls.
+        const { internalFetch, internalOrigin } = await import("@/lib/internalFetch");
+        const r = await internalFetch(`${internalOrigin()}${pathname}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
