@@ -58,9 +58,19 @@ TACOS     = Spend+Tax ÷ (Price × Final)
 excluded (they never became revenue, so counting them would inflate Orders and flatter
 ACOS/TACOS).
 
-**Returns is AM-else-FBA+SF, never a sum of all three.** The same physical return can appear in
-both AM returns and FBA/SF returns, so adding them double-counts. If a SKU has any AM return
-recorded, that is its figure; otherwise fall back to FBA + SF.
+**Returns is AM + FBA + SellerFlex, summed** (seller's decision, 24 Sep 2026 — the same "All
+Returns" the Weekly Sales Report subtracts). The three sources share no orders (AM returns belong to
+merchant-fulfilled orders, FBA/SF returns to Amazon-fulfilled ones), so adding them never
+double-counts. Each SellerFlex return counts once per (Customer Order ID, Shipment ID, mSKU) — the
+MIS table stores ~4 copies of each from repeat uploads. Workbooks generated before this change used
+"AM if the SKU has any, else FBA + SF", which dropped real FBA/SF returns.
+
+**Spend is a plain sum of every Sponsored Products-table row** — no orphan-campaign divisor. That
+table also carries the seller's own per-SKU split of Brand/Display spend (each campaign-day's first
+split row is named, the rest have a blank campaign and ad group; all have 0 impressions/clicks/units),
+and that split is how Brand/Display spend is counted. An SB/SD campaign-day already split this way is
+NOT added again from the SB/SD tables. Blank-campaign rows are these split rows, not deleted SP
+campaigns.
 
 **Advertised SKU Units is always 0 on Sponsored Brands / Display rows.** Amazon attributes those
 units to the campaign, never to a SKU. Apportioning them by spend weight would invent
@@ -151,9 +161,10 @@ before the window and legitimately outnumber in-window orders — `B-SENFDT-1`: 
 returns, Final −11, TACOS displayed as 2091%. The data is real; the percentage is an artifact of
 the clamp-then-substitute-1 fallback. Report it as undefined.
 
-**Unmapped SB/SD spend.** Those campaigns carry no SKU, so unmapped ones pool into a single
-`⚠ Unmapped` row — their spend still reaches the totals but is attributed to nothing (₹58,112 in
-one recent run). Always surface the rupee figure; it is money the report cannot explain.
+**Unmapped SB/SD spend.** SB/SD campaign-days with neither a seller split in the SP table nor a
+campaign→SKU mapping pool into a single `⚠ Unmapped` row — their spend still reaches the totals but is
+attributed to nothing. Always surface the rupee figure. (Before 24 Sep 2026 this row also held SB/SD
+spend that the split rows already counted — ₹58k–60k per 30 days — i.e. a double count.)
 
 ## Where the code lives
 

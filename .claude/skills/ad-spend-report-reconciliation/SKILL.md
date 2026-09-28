@@ -78,15 +78,15 @@ which also tracks this figure daily rather than as a weekly rollup):
 | Flipkart | `Quantity` | `Invoice Amount` |
 | Meesho | `Quantity` | `Supplier Listed Price (Incl. GST + Commission)`, but see exception below |
 
-**Meesho exception (since 2026-09-03):** unlike Amazon/Flipkart, Meesho's Value is Orders x
-each SKU's `meesho_price_marketing` live scraped listing price (falling back to this order
-sheet's own Supplier Listed/Discounted Price only for a SKU not in that table yet) — confirmed
-against the seller's own manual reference workbook, whose Meesho orders sheet carries a separate
-per-product "Quantity x Price = Sales" side table using that same live-price method, not a
-straight per-order-row sum. `meesho_price_marketing` lives in Supabase, not the xlsx, so
-`reconcile_report.js` can't verify Meesho's Value independently — it reports any gap from the
-raw Supplier Listed/Discounted Price sum as INFO, not FAIL. **QTS is unaffected** (it never
-depended on price) and still must match the raw sheet exactly like the other two platforms.
+**Meesho (current rule since 2026-09-23):** Value = Quantity x each order row's own
+`Supplier Listed Price (Incl. GST + Commission)` — a straight per-order-row sum, the same as Amazon and
+Flipkart. `meesho_price_marketing` is used only for the displayed Price and as the Price in the ACOS
+CPC / Price fallback, never for Value. (From 2026-09-03 to 2026-09-23 the rule was Orders x
+`meesho_price_marketing`; the seller explicitly replaced it.) **QTS** must match the raw sheet exactly.
+
+**Amazon spend:** a plain sum of the raw AM-ads sheet's Spend column, including the seller's own
+per-SKU split of Sponsored Brands/Display spend (named first row + blank-campaign rows). SB/SD
+campaign-days already split this way are not added again (seller's decision, 24 Sep 2026).
 
 A few percent of drift between a live recomputation and a previously-generated report is
 **expected** (orders/cancellations/returns change between the raw file's download moment and
