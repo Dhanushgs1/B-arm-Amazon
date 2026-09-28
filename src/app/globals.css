@@ -100,6 +100,50 @@
   border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
+/* ── Clean-luxury surfaces ───────────────────────────────────────────────────
+   One card surface for KPI cards and chart cards: crisp solid white (no blur),
+   a hairline border and a two-layer soft shadow that deepens on hover. */
+.premium-card {
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 6px 20px -10px rgba(15, 23, 42, 0.10);
+  transition: box-shadow 0.35s cubic-bezier(0.16, 1, 0.3, 1), transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.35s ease;
+}
+.premium-card-hover:hover {
+  transform: translateY(-2px);
+  border-color: rgba(79, 70, 229, 0.18);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 18px 40px -16px rgba(79, 70, 229, 0.22);
+}
+.dark .premium-card {
+  background: rgba(15, 23, 42, 0.72);
+  border-color: rgba(148, 163, 184, 0.10);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+}
+.dark .premium-card-hover:hover {
+  border-color: rgba(129, 140, 248, 0.28);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 18px 40px -16px rgba(99, 102, 241, 0.35);
+}
+
+/* Page canvas: the flat background with two very faint colour washes at the top corners. */
+.premium-canvas {
+  background-color: var(--background);
+  background-image:
+    radial-gradient(900px 420px at 0% -10%, rgba(99, 102, 241, 0.06), transparent 60%),
+    radial-gradient(700px 380px at 100% -10%, rgba(14, 165, 233, 0.05), transparent 60%);
+  background-attachment: local;
+}
+.dark .premium-canvas {
+  background-image:
+    radial-gradient(900px 420px at 0% -10%, rgba(99, 102, 241, 0.12), transparent 60%),
+    radial-gradient(700px 380px at 100% -10%, rgba(14, 165, 233, 0.08), transparent 60%);
+}
+
+/* Anyone who asks the OS for reduced motion gets no hover lifts or CSS keyframe loops either. */
+@media (prefers-reduced-motion: reduce) {
+  .premium-card, .premium-card-hover:hover { transition: none; transform: none; }
+  .shimmer, .animate-pulse { animation: none; }
+}
+
 /* Premium Micro-Animations */
 @keyframes shimmer {
   0% { background-position: -200% 0; }

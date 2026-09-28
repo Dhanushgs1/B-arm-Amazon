@@ -13,7 +13,24 @@ import {
   ComposedChart,
   Legend,
 } from "recharts";
-import { cn } from "@/lib/utils";
+import { motion, useReducedMotion } from "framer-motion";
+
+const EASE_OUT_EXPO = [0.16, 1, 0.3, 1] as const;
+
+/** Shared chart-card shell: the KPI cards' clean surface, fading up once as it arrives. */
+function ChartCard({ className, children }: { className?: string; children: React.ReactNode }) {
+  const reduceMotion = useReducedMotion();
+  return (
+    <motion.div
+      initial={reduceMotion ? false : { opacity: 0, y: 14 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.2, duration: 0.6, ease: EASE_OUT_EXPO }}
+      className={`premium-card rounded-2xl p-6 h-full flex flex-col ${className ?? ""}`}
+    >
+      {children}
+    </motion.div>
+  );
+}
 
 interface TrendChartProps {
   title: string;
@@ -37,9 +54,9 @@ export function TrendChart({
   valuePrefix = "",
 }: TrendChartProps) {
   return (
-    <div className="glass gradient-border rounded-[22px] p-6 h-full flex flex-col">
-      <h3 className="text-base font-extrabold mb-4 flex items-center gap-2 tracking-tight">
-        <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: color, boxShadow: `0 0 10px ${color}66` }} />
+    <ChartCard>
+      <h3 className="text-[15px] font-bold mb-4 flex items-center gap-2 tracking-tight text-slate-800 dark:text-slate-100">
+        <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: color, boxShadow: `0 0 0 4px ${color}1f` }} />
         {title}
       </h3>
       <div className="flex-1 w-full" style={{ minHeight: height }}>
@@ -131,7 +148,7 @@ export function TrendChart({
           )}
         </ResponsiveContainer>
       </div>
-    </div>
+    </ChartCard>
   );
 }
 
@@ -145,10 +162,10 @@ export function UnifiedTrendChart({ data, currency = "INR", height = 320 }: Unif
   const curPrefix = currency === "INR" ? "₹" : "$";
 
   return (
-    <div className="glass rounded-[22px] border border-border p-6 h-full flex flex-col">
+    <ChartCard>
       <div className="flex items-center justify-between mb-6 flex-wrap gap-2">
-        <h3 className="text-base font-extrabold flex items-center gap-2 tracking-tight">
-          <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 shadow-[0_0_10px_#6c63ff88]" />
+        <h3 className="text-[15px] font-bold flex items-center gap-2 tracking-tight text-slate-800 dark:text-slate-100">
+          <span className="w-2 h-2 rounded-full bg-indigo-500 shadow-[0_0_0_4px_rgba(99,102,241,0.12)]" />
           Unified Performance Trends
         </h3>
         <div className="flex items-center gap-4 text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
@@ -302,6 +319,6 @@ export function UnifiedTrendChart({ data, currency = "INR", height = 320 }: Unif
           </ComposedChart>
         </ResponsiveContainer>
       </div>
-    </div>
+    </ChartCard>
   );
 }

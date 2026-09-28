@@ -1,7 +1,8 @@
 "use client";
 
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { cn } from "@/lib/utils";
+import { AnimatedNumber } from "@/components/AnimatedNumber";
 import {
   ArrowUpRight,
   ArrowDownRight,
@@ -12,8 +13,9 @@ import {
   Activity,
   MousePointer,
   Layers,
-  Sparkles
 } from "lucide-react";
+
+const EASE_OUT_EXPO = [0.16, 1, 0.3, 1] as const;
 
 interface KPICardProps {
   title: string;
@@ -72,27 +74,34 @@ export function KPICard({ title, value, subtitle, trend, inverseTrend, trendBasi
   };
 
   const CardIcon = getIcon();
+  const reduceMotion = useReducedMotion();
+  // Pages pass small, closely spaced delays (0.02 … 0.2); spread them so the cards visibly arrive
+  // one after another instead of all at once.
+  const enterDelay = delay * 3;
 
   return (
     <motion.div
       onClick={onClick}
-      initial={{ opacity: 0, y: 15 }}
+      onKeyDown={onClick ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); } } : undefined}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      initial={reduceMotion ? false : { opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ delay, duration: 0.4, ease: "easeOut" }}
+      transition={{ delay: enterDelay, duration: 0.55, ease: EASE_OUT_EXPO }}
       className={cn(
-        "glass border rounded-[22px] p-[18px] flex flex-col relative overflow-hidden group",
-        style.cardBorder,
-        onClick ? "cursor-pointer hover:shadow-[0_18px_40px_-12px_rgba(108,99,255,0.25)] hover:border-indigo-500/50" : "hover:shadow-[0_18px_40px_-12px_rgba(108,99,255,0.15)]",
-        "hover:-translate-y-1.5 transition-all duration-300"
+        "premium-card premium-card-hover rounded-2xl p-[18px] flex flex-col relative overflow-hidden group",
+        onClick && "cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/60"
       )}
     >
-      {/* Accent top bar */}
-      <div className={cn("absolute top-0 left-[18px] right-[18px] h-[2.5px] rounded-b-full bg-gradient-to-r opacity-70 group-hover:opacity-100 transition-opacity", style.topbar)} />
+      {/* Accent line — draws in from the left as the card arrives */}
+      <motion.div
+        initial={reduceMotion ? false : { scaleX: 0 }}
+        animate={{ scaleX: 1 }}
+        transition={{ delay: enterDelay + 0.15, duration: 0.8, ease: EASE_OUT_EXPO }}
+        className={cn("absolute top-0 left-0 right-0 h-[2px] origin-left bg-gradient-to-r opacity-80 group-hover:opacity-100 transition-opacity", style.topbar)}
+      />
 
-      {/* Hover glow effect */}
-      <div className="absolute -inset-0.5 bg-gradient-to-br from-[#6C63FF]/6 to-[#EC4899]/5 opacity-0 group-hover:opacity-100 transition duration-500 rounded-[inherit] pointer-events-none" />
-
-      <div className="relative z-10 flex justify-between items-start mb-2.5">
+      <div className="relative z-10 flex justify-between items-start mb-3">
         <div className="flex items-center gap-2.5">
           <div className={cn("w-8 h-8 rounded-xl flex items-center justify-center border transition-colors", style.bg, style.border, style.text)}>
             <CardIcon className="w-3.5 h-3.5" />
@@ -128,31 +137,28 @@ export function KPICard({ title, value, subtitle, trend, inverseTrend, trendBasi
           >
             No prior data
           </div>
-        ) : (
-          <div className="text-[9px] font-extrabold text-indigo-500/70 bg-indigo-500/8 px-1.5 py-0.5 rounded-full border border-indigo-500/15 flex items-center gap-1">
-            <Sparkles className="w-2.5 h-2.5" /> Real-time
-          </div>
-        )}
+        ) : null}
       </div>
 
       <div className="relative z-10 flex-1 flex flex-col justify-end pt-1">
-        <motion.div
-          initial={{ opacity: 0, scale: 0.96 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: delay + 0.15, duration: 0.35 }}
-          className="text-[25px] leading-tight font-extrabold text-slate-900 dark:text-white tracking-tight"
-        >
-          {value}
-        </motion.div>
+        <div className="text-[26px] leading-tight font-bold text-slate-900 dark:text-white tracking-tight">
+          <AnimatedNumber value={value} delay={enterDelay + 0.1} />
+        </div>
         {subtitle && (
-          <div className="text-[11.5px] font-semibold text-slate-500 dark:text-slate-400 mt-0.5">
+          <div className="text-[11.5px] font-medium text-slate-500 dark:text-slate-400 mt-1">
             {subtitle}
           </div>
         )}
       </div>
 
-      {/* Premium Sparkline Background Path */}
-      <div className="absolute bottom-0 left-0 right-0 h-8 opacity-20 pointer-events-none transition-opacity group-hover:opacity-40">
+      {/* Decorative wave — rises in softly behind the value */}
+      <motion.div
+        initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: enterDelay + 0.25, duration: 0.9, ease: EASE_OUT_EXPO }}
+        className="absolute bottom-0 left-0 right-0 h-8 pointer-events-none"
+      >
+      <div className="w-full h-full opacity-[0.14] transition-opacity duration-500 group-hover:opacity-30">
         <svg className="w-full h-full" viewBox="0 0 100 20" preserveAspectRatio="none">
           <defs>
             <linearGradient id={`spark-${title.replace(/\W/g, "")}`} x1="0" y1="0" x2="0" y2="1">
@@ -170,6 +176,7 @@ export function KPICard({ title, value, subtitle, trend, inverseTrend, trendBasi
           />
         </svg>
       </div>
+      </motion.div>
     </motion.div>
   );
 }

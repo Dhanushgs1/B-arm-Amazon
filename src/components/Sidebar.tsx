@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { useDashboard } from "@/lib/DashboardContext";
 import { useState, useEffect } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import {
   LayoutDashboard,
   Megaphone,
@@ -33,7 +33,7 @@ import {
   Database,
   type LucideIcon
 } from "lucide-react";
-import { MARKETPLACE_META, getMarketplaceTab } from "@/lib/marketplace";
+import { MARKETPLACE_META, UPLOAD_ONLY_TAB_META, getMarketplaceTab, isUploadOnlyTab } from "@/lib/marketplace";
 
 interface SidebarNavItem {
   id: string;
@@ -138,6 +138,33 @@ function marketplaceNavSections(marketplace: "flipkart"): SidebarNavSection[] {
   ];
 }
 
+// Shown on the Meesho and BARM tabs — those channels only have Overview,
+// Upload and Download pages, so each tab lists just its own three items (like Flipkart's
+// sidebar lists only Flipkart pages). Active state is matched on the full
+// path, since BARM's Upload lives under /dashboard/google.
+const UPLOAD_ONLY_NAV_SECTIONS: Record<"meesho" | "barm", SidebarNavSection[]> = {
+  meesho: [
+    {
+      label: "Meesho",
+      items: [
+        { id: "ms-overview", label: "Overview", icon: LayoutDashboard, path: "/dashboard/meesho" },
+        { id: "ms-upload", label: "Upload", icon: UploadCloud, path: "/dashboard/meesho/upload" },
+        { id: "ms-reports", label: "Download", icon: BarChart3, path: "/dashboard/meesho/reports" },
+      ],
+    },
+  ],
+  barm: [
+    {
+      label: "BARM (Google)",
+      items: [
+        { id: "barm-overview", label: "Overview", icon: LayoutDashboard, path: "/dashboard/barm" },
+        { id: "barm-upload", label: "Upload", icon: UploadCloud, path: "/dashboard/google/upload" },
+        { id: "barm-reports", label: "Download", icon: BarChart3, path: "/dashboard/barm/reports" },
+      ],
+    },
+  ],
+};
+
 const COMPARE_NAV_SECTIONS: SidebarNavSection[] = [
   {
     label: "Combined Workspace",
@@ -174,6 +201,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
   const router = useRouter();
   const { loggedInUser, account } = useDashboard();
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const reduceMotion = useReducedMotion();
   const marketplace = getMarketplaceTab(pathname);
 
   // Load collapse state from local storage on mount
@@ -199,7 +227,10 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
       ? marketplaceNavSections(marketplace)
       : marketplace === "compare"
       ? COMPARE_NAV_SECTIONS
+      : isUploadOnlyTab(marketplace)
+      ? UPLOAD_ONLY_NAV_SECTIONS[marketplace]
       : NAV_SECTIONS;
+  const matchActiveByPath = isUploadOnlyTab(marketplace);
 
   const marketplaceRoot = marketplace === "flipkart" ? `/dashboard/${marketplace}` : null;
   const currentPage =
@@ -210,6 +241,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
   const sidebarTagline =
     marketplace === "amazon" ? "Amazon Analytics"
     : marketplace === "compare" ? "Marketplace Comparison"
+    : isUploadOnlyTab(marketplace) ? `${UPLOAD_ONLY_TAB_META[marketplace].label} Reports`
     : `${MARKETPLACE_META[marketplace].label} Analytics`;
 
   // Shared nav body — rendered once for the always-in-flow desktop sidebar
@@ -260,7 +292,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
               </p>
             )}
             {section.items.map((item) => {
-              const isActive = currentPage === item.id;
+              const isActive = matchActiveByPath ? pathname === item.path : currentPage === item.id;
               const Icon = item.icon;
 
               const targetHref = item.path || (item.id === "overview" ? "/dashboard" : `/dashboard/${item.id}`);
@@ -273,20 +305,27 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
                       if (closeOnNavigate) onCloseMobile?.();
                     }}
                     className={cn(
-                      "w-full flex items-center rounded-xl text-[12px] font-bold transition-all duration-200 cursor-pointer",
+                      "relative w-full flex items-center rounded-xl text-[12px] font-bold transition-colors duration-200 cursor-pointer",
                       collapsed ? "justify-center p-2" : "gap-2.5 px-2 py-1.5",
-                      isActive
-                        ? "bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white shadow-md shadow-indigo-500/20"
-                        : "text-slate-400 hover:bg-white/5 hover:text-white hover:translate-x-0.5"
+                      isActive ? "text-white" : "text-slate-400 hover:bg-white/5 hover:text-white"
                     )}
                   >
+                    {/* The active highlight is one shared element that slides to whichever item is
+                        active (layoutId), instead of each item switching its own background. */}
+                    {isActive && (
+                      <motion.span
+                        layoutId={`sidebar-active-${closeOnNavigate ? "mobile" : "desktop"}`}
+                        transition={reduceMotion ? { duration: 0 } : { type: "spring", stiffness: 420, damping: 36 }}
+                        className="absolute inset-0 rounded-xl bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] shadow-md shadow-indigo-500/25"
+                      />
+                    )}
                     <span className={cn(
-                      "w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors",
+                      "relative w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors",
                       isActive ? "bg-white/15" : "bg-slate-900 group-hover:bg-white/10"
                     )}>
                       <Icon className={cn("w-3.5 h-3.5", isActive ? "text-white" : "text-slate-400")} />
                     </span>
-                    {!collapsed && <span className="truncate">{item.label}</span>}
+                    {!collapsed && <span className="relative truncate">{item.label}</span>}
                   </Link>
 
                   {/* Tooltip shown only in collapsed view */}
