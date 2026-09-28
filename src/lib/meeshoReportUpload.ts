@@ -1,10 +1,14 @@
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { supabasePublic } from "@/lib/amazonReportUpload";
+import { mapMeeshoReturnRow, dedupeReturnsByStage, type MeeshoReturnRow } from "@/lib/meeshoReturnRules";
+import { classifyMeeshoSheet } from "@/lib/meeshoFileRules";
 
-// Meesho counterpart of amazonReportUpload.ts / flipkartReportUpload.ts — same
-// shape (one card per seller-downloaded export, parsed in the browser and
-// written into a barm_meesho_* raw table).
+// Meesho counterpart of amazonReportUpload.ts / flipkartReportUpload.ts — parsed
+// in the browser and written into the barm_meesho_* raw tables. The Meesho
+// Upload page has ONE card (uploadMeeshoFile below): whatever Meesho file is
+// dropped there is split sheet by sheet, by its headers (meeshoFileRules.ts),
+// into barm_meesho_ads / barm_meesho_orders / barm_meesho_returns.
 //
 // Unlike Amazon/Flipkart, no native Meesho export has been seen directly here
 // — the column names below come from the seller's own hand-assembled "Last 7
@@ -31,21 +35,13 @@ export const MS_REPORT_LABEL: Record<MeeshoUploadReportType, string> = {
   orders: "Meesho Orders / Payments report",
 };
 
-export const MS_REPORT_HINT: Record<MeeshoUploadReportType, string> = {
-  ads: "Meesho Ads Manager — campaign performance export: Date, Campaign name, Product, SKU ID, Spend, Views, Clicks, Orders by ad.",
-  orders:
-    "Meesho Supplier Panel — order/payment report, line-item level: Sub Order No, Catalog ID, Order Date, Product Name, SKU, Quantity, Supplier Listed/Discounted Price.",
-};
-
-export const MS_REPORT_ACCEPT: Record<MeeshoUploadReportType, string> = {
-  ads: ".csv,.xlsx,.xls",
-  orders: ".csv,.xlsx,.xls",
-};
-
 export const MS_REPORT_TABLE: Record<MeeshoUploadReportType, string> = {
   ads: "barm_meesho_ads",
   orders: "barm_meesho_orders",
 };
+
+// Filled from the raw workbook's Returns sheets (or a returns CSV) — see uploadMeeshoFile.
+export const MS_RETURNS_TABLE = "barm_meesho_returns";
 
 export const MS_DATE_COLUMN: Record<MeeshoUploadReportType, string> = {
   ads: "report_date",
@@ -142,21 +138,38 @@ function readSheetRows(ws: XLSX.WorkSheet): RawRow[] {
   return XLSX.utils.sheet_to_json<RawRow>(ws, { defval: "", raw: true });
 }
 
-async function readRows(file: File): Promise<RawRow[]> {
+function isWorkbookFile(file: File): boolean {
   const name = file.name.toLowerCase();
-  if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+  return name.endsWith(".xlsx") || name.endsWith(".xls");
+}
+
+interface SheetPart {
+  /** Sheet name, or the file name for a CSV — also where a returns stage is read from. */
+  name: string;
+  headers: string[];
+  rows: RawRow[];
+}
+
+// Every sheet of a workbook, or the single table of a CSV.
+async function readParts(file: File): Promise<SheetPart[]> {
+  if (isWorkbookFile(file)) {
     const wb = await readWorkbook(file);
-    return readSheetRows(wb.Sheets[wb.SheetNames[0]]);
+    return wb.SheetNames.map((name) => {
+      const ws = wb.Sheets[name];
+      const headerRow = (XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: "" })[0] || []) as unknown[];
+      return { name, headers: headerRow.map((h) => str(h)), rows: readSheetRows(ws) };
+    });
   }
-  return new Promise((resolve, reject) => {
+  const parsed = await new Promise<{ data: RawRow[]; meta: { fields?: string[] } }>((resolve, reject) => {
     Papa.parse<RawRow>(file, {
       header: true,
       skipEmptyLines: true,
       transformHeader: (h: string) => h.trim(),
-      complete: (results) => resolve(results.data),
+      complete: resolve,
       error: (err: Error) => reject(err),
     });
   });
+  return [{ name: file.name, headers: parsed.meta.fields || [], rows: parsed.data }];
 }
 
 // ── per-report row mappers ──────────────────────────────────────────────────
@@ -218,36 +231,125 @@ async function upsertInChunks(table: string, rows: Record<string, unknown>[], on
   }
 }
 
-export interface MeeshoUploadResult {
+export type MeeshoFileKind = "ads" | "orders" | "returns";
+
+export const MS_KIND_TABLE: Record<MeeshoFileKind, string> = {
+  ads: "barm_meesho_ads",
+  orders: "barm_meesho_orders",
+  returns: "barm_meesho_returns",
+};
+
+export interface MeeshoFilePartSummary {
+  kind: MeeshoFileKind;
+  /** Sheets (or the CSV) this kind was read from, with the rows each had, e.g. { "Returns OFD": 7 }. */
+  sheets: Record<string, number>;
   totalRows: number;
   savedRows: number;
+  /** Repeats of a key already in the file (same Sub Order No, or same date+campaign+SKU) — merged. */
+  duplicateRows: number;
+  /** Rows missing a required field (e.g. no Sub Order No). */
   skippedRows: number;
   minDate: string | null;
   maxDate: string | null;
 }
 
-export async function uploadMeeshoReportFile(type: MeeshoUploadReportType, file: File): Promise<MeeshoUploadResult> {
-  const rawRows = await readRows(file);
-  const mapped = rawRows.map(MAPPER[type]);
-  const required = REQUIRED_FIELDS[type];
-  const valid = mapped.filter((r) => required.every((f) => r[f] !== null && r[f] !== undefined && r[f] !== ""));
+export interface MeeshoFileParseResult {
+  /** Rows ready to upsert, per table. */
+  rows: Record<MeeshoFileKind, Record<string, unknown>[]>;
+  /** One entry per kind found in the file, in ads / orders / returns order. */
+  parts: MeeshoFilePartSummary[];
+  /** Sheets whose headers matched no Meesho export — left untouched. */
+  ignoredSheets: string[];
+}
 
-  if (!valid.length) {
-    return { totalRows: rawRows.length, savedRows: 0, skippedRows: rawRows.length, minDate: null, maxDate: null };
+/** Keeps the last row per key, in the order each key was last seen. */
+function lastByKey(rows: Record<string, unknown>[], keyFields: string[]): Record<string, unknown>[] {
+  const byKey = new Map<string, Record<string, unknown>>();
+  rows.forEach((r) => {
+    const key = keyFields.map((f) => String(r[f] ?? "")).join("\u0000");
+    byKey.delete(key);
+    byKey.set(key, r);
+  });
+  return [...byKey.values()];
+}
+
+const DATE_FIELD: Record<MeeshoFileKind, string> ={ ads: "report_date", orders: "order_date", returns: "return_created_date" };
+
+/** Reads the file and splits it sheet by sheet (meeshoFileRules.ts) without writing anything —
+ *  uploadMeeshoFile saves exactly these rows. */
+export async function parseMeeshoFile(file: File): Promise<MeeshoFileParseResult> {
+  const sheets: Record<MeeshoFileKind, Record<string, number>> = { ads: {}, orders: {}, returns: {} };
+  const totals: Record<MeeshoFileKind, number> = { ads: 0, orders: 0, returns: 0 };
+  const rows: Record<MeeshoFileKind, Record<string, unknown>[]> = { ads: [], orders: [], returns: [] };
+  const returnRows: MeeshoReturnRow[] = [];
+  const ignoredSheets: string[] = [];
+
+  for (const part of await readParts(file)) {
+    const found = classifyMeeshoSheet(part.name, part.headers);
+    if (!found) {
+      ignoredSheets.push(part.name);
+      continue;
+    }
+    sheets[found.kind][part.name] = part.rows.length;
+    totals[found.kind] += part.rows.length;
+    if (found.kind === "returns") {
+      part.rows.forEach((row) => {
+        const r = mapMeeshoReturnRow(row, found.stage, part.name);
+        if (r) returnRows.push(r);
+      });
+    } else {
+      const required = REQUIRED_FIELDS[found.kind];
+      part.rows
+        .map(MAPPER[found.kind])
+        .filter((r) => required.every((f) => r[f] !== null && r[f] !== undefined && r[f] !== ""))
+        .forEach((r) => rows[found.kind].push(r));
+    }
+  }
+  // A suborder on two return sheets keeps its furthest stage (and is saved once).
+  rows.returns = dedupeReturnsByStage(returnRows) as unknown as Record<string, unknown>[];
+  // One upsert batch must not name the same key twice (Postgres rejects the whole batch). Meesho's
+  // Orders sheet can list one Sub Order No twice (seen: 318957562313365696_1 on 12 and 18 Aug in the
+  // Aug 12 - Sep 10 file); the table holds it once either way, so the file's last copy is kept.
+  const duplicates: Record<MeeshoFileKind, number> = { ads: 0, orders: 0, returns: 0 };
+  for (const k of ["ads", "orders"] as const) {
+    const before = rows[k].length;
+    rows[k] = lastByKey(rows[k], ON_CONFLICT[k].split(","));
+    duplicates[k] = before - rows[k].length;
   }
 
-  await upsertInChunks(MS_REPORT_TABLE[type], valid, ON_CONFLICT[type]);
+  const parts = (["ads", "orders", "returns"] as const)
+    .filter((k) => Object.keys(sheets[k]).length)
+    .map((k): MeeshoFilePartSummary => {
+      const dates = rows[k].map((r) => r[DATE_FIELD[k]] as string | null).filter((x): x is string => !!x).sort();
+      return {
+        kind: k,
+        sheets: sheets[k],
+        totalRows: totals[k],
+        savedRows: rows[k].length,
+        duplicateRows: duplicates[k],
+        skippedRows: totals[k] - rows[k].length - duplicates[k],
+        minDate: dates[0] ?? null,
+        maxDate: dates[dates.length - 1] ?? null,
+      };
+    });
+  return { rows, parts, ignoredSheets };
+}
 
-  const dateCol = MS_DATE_COLUMN[type];
-  const dates = valid.map((r) => r[dateCol] as string | null).filter((d): d is string => !!d).sort();
+const KIND_ON_CONFLICT: Record<MeeshoFileKind, string> = { ...ON_CONFLICT, returns: "sub_order_no" };
 
-  return {
-    totalRows: rawRows.length,
-    savedRows: valid.length,
-    skippedRows: rawRows.length - valid.length,
-    minDate: dates[0] ?? null,
-    maxDate: dates[dates.length - 1] ?? null,
-  };
+/** The Meesho Upload page's one card: any Meesho file — the raw workbook (Orders + Returns sheets),
+ *  an Ads export, or a single Orders/Returns CSV — each sheet saved to its own table. */
+export async function uploadMeeshoFile(file: File): Promise<Omit<MeeshoFileParseResult, "rows">> {
+  const { rows, parts, ignoredSheets } = await parseMeeshoFile(file);
+  if (!parts.length) {
+    throw new Error(
+      `Couldn't find Meesho Ads, Orders or Returns data in "${file.name}" (sheets: ${ignoredSheets.join(", ") || "none"}). Nothing was saved.`
+    );
+  }
+  for (const p of parts) {
+    if (rows[p.kind].length) await upsertInChunks(MS_KIND_TABLE[p.kind], rows[p.kind], KIND_ON_CONFLICT[p.kind]);
+  }
+  return { parts, ignoredSheets };
 }
 
 // ── "data on file" summaries for the upload cards ───────────────────────────
@@ -277,6 +379,21 @@ export async function fetchMeeshoReportDataInfo(type: MeeshoUploadReportType): P
     minDate: minDate ? minDate.slice(0, 10) : null,
     maxDate: maxDate ? maxDate.slice(0, 10) : null,
   };
+}
+
+/** Returns on file (barm_meesho_returns), by Return Created Date — shown on the Orders card,
+ *  which is where the raw workbook carrying them is uploaded. */
+export async function fetchMeeshoReturnsDataInfo(): Promise<MeeshoReportDataInfo> {
+  const dateCol = "return_created_date";
+  const [minRes, maxRes] = await Promise.all([
+    supabasePublic.from(MS_RETURNS_TABLE).select(dateCol, { count: "exact" }).not(dateCol, "is", null).order(dateCol, { ascending: true }).limit(1),
+    supabasePublic.from(MS_RETURNS_TABLE).select(dateCol).not(dateCol, "is", null).order(dateCol, { ascending: false }).limit(1),
+  ]);
+  const failure = minRes.error || maxRes.error;
+  if (failure) return { rowCount: 0, minDate: null, maxDate: null, error: failure.message };
+  const minDate = (minRes.data?.[0] as unknown as Record<string, string> | undefined)?.[dateCol] ?? null;
+  const maxDate = (maxRes.data?.[0] as unknown as Record<string, string> | undefined)?.[dateCol] ?? null;
+  return { rowCount: minRes.count || 0, minDate: minDate ? minDate.slice(0, 10) : null, maxDate: maxDate ? maxDate.slice(0, 10) : null };
 }
 
 /** Never rejects — one unreachable table must not blank the other card's caption. */
