@@ -7,7 +7,7 @@ import { useDashboard } from "@/lib/DashboardContext";
 import { MARKETPLACE_META, type MarketplaceId } from "@/lib/marketplace";
 import { fetchBarmRatingsReviewsDataset } from "@/lib/barmRatingReviewData";
 import { generateRatingsReviewsDataset } from "@/lib/ratingsReviewsData";
-import type { RRProduct, RatingsReviewsDataset } from "@/lib/ratingsReviewsData";
+import type { RRProduct } from "@/lib/ratingsReviewsData";
 
 // New enterprise components
 import { RatingsHero } from "@/components/ratings/RatingsHero";
@@ -27,6 +27,7 @@ import { SkuRatingsChart } from "@/components/ratings/SkuRatingsChart";
 // Import filter bar + export from existing (preserved)
 import { RatingsFilterBar, DEFAULT_FILTERS, applyRatingsFilters, type RatingsFilters } from "@/components/ratings/RatingsFilterBar";
 import { exportRatingsReviewsExcel, exportRatingsReviewsPDF } from "@/lib/ratingsReviewsExport";
+import { ratingsDatasetForDisplay } from "@/lib/ratingsExportRules";
 
 import { Loader2, Database, Info, Download, FileSpreadsheet, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -79,48 +80,10 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace: Marke
     [startDate, endDate]
   );
 
-  // Merge: use real data where available, enrich with demo fields for missing ones
-  const dataset: RatingsReviewsDataset = useMemo(() => {
-    if (!barmDataset) return demoDataset;
-
-    // Merge barm products with demo products for richer visualization
-    const barmProducts = barmDataset.products;
-    const demoProducts = demoDataset.products;
-
-    // Enrich barm products with demo-style sentiment/keyword/returnReason data
-    const enriched: RRProduct[] = barmProducts.map((bp, i) => {
-      const demo = demoProducts[i % demoProducts.length];
-      return {
-        ...demo,
-        ...bp,
-        // Ensure these rich fields exist (from demo if barm doesn't have them)
-        positiveKeywords: bp.positiveKeywords?.length ? bp.positiveKeywords : demo.positiveKeywords,
-        negativeKeywords: bp.negativeKeywords?.length ? bp.negativeKeywords : demo.negativeKeywords,
-        returnReasons: bp.returnReasons?.length ? bp.returnReasons : demo.returnReasons,
-        ratingDistribution: bp.ratingDistribution?.length ? bp.ratingDistribution : demo.ratingDistribution,
-        reviewSummary: bp.reviewSummary || demo.reviewSummary,
-        recommendations: bp.recommendations?.length ? bp.recommendations : demo.recommendations,
-        positivePct: bp.positivePct || demo.positivePct,
-        negativePct: bp.negativePct || demo.negativePct,
-        neutralPct: bp.neutralPct || demo.neutralPct,
-        estimatedRevenueLost: bp.estimatedRevenueLost || demo.estimatedRevenueLost,
-        sales: bp.sales || demo.sales,
-        salesChangePct: bp.salesChangePct || demo.salesChangePct,
-        aiConfidence: bp.aiConfidence || demo.aiConfidence,
-        id: bp.id || demo.id,
-      };
-    });
-
-    return {
-      ...barmDataset,
-      products: enriched.length > 0 ? enriched : demoDataset.products,
-      ratingTrend: barmDataset.ratingTrend.length > 0 ? barmDataset.ratingTrend : demoDataset.ratingTrend,
-      categories: barmDataset.categories.length > 0 ? barmDataset.categories : demoDataset.categories,
-      platforms: barmDataset.platforms.length > 0 ? barmDataset.platforms : demoDataset.platforms,
-      rootCause: barmDataset.rootCause.length > 0 ? barmDataset.rootCause : demoDataset.rootCause,
-      executiveSummary: barmDataset.executiveSummary,
-    };
-  }, [barmDataset, demoDataset]);
+  // Real data is shown exactly as the source provides it — never padded with demo values (the source
+  // has no sales/revenue/return-reason/sentiment data, and filling those from the demo generator put
+  // fabricated figures into the Excel/PDF exports). Demo data appears only when no real dataset loaded.
+  const dataset = useMemo(() => ratingsDatasetForDisplay(barmDataset, demoDataset), [barmDataset, demoDataset]);
 
   const [filters, setFilters] = useState<RatingsFilters>(DEFAULT_FILTERS);
   const [selectedProduct, setSelectedProduct] = useState<RRProduct | null>(null);
@@ -198,7 +161,7 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace: Marke
           <Info className="w-3.5 h-3.5 text-indigo-500 flex-shrink-0 mt-0.5" />
           <p className="font-semibold text-indigo-700 dark:text-indigo-400">
             <span className="font-black">Live:</span> Showing tracker data for week of {barmDataset.source.currentDate}.{" "}
-            Sections without live data (sentiment, keywords, return reasons) use AI-enriched demo data.
+            This tracker has no review text, sales or return-reason data, so those sections stay empty rather than showing sample figures.
           </p>
         </div>
       )}
