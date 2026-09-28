@@ -35,10 +35,25 @@ export default function GoogleUploadReportsPage() {
     setState({ status: "parsing", fileName: file.name });
     try {
       const res = await uploadGoogleOrdersFile(file);
+      if (!res.layout) {
+        setState({
+          status: "error",
+          fileName: file.name,
+          message:
+            "No header row found — expected the offline layout (Date, Product, Quantity, Price per Product, Total Price, SKU ID) or the B-Arm Orders workbook (S no, Date, Invoice, Sku, Qty, Price). Nothing was saved.",
+        });
+        return;
+      }
+      const span = res.minDate ? ` · ${res.minDate}${res.maxDate !== res.minDate ? ` to ${res.maxDate}` : ""}` : "";
       setState({
         status: "done",
         fileName: file.name,
-        message: `${res.savedRows.toLocaleString("en-IN")} rows saved${res.skippedRows ? `, ${res.skippedRows} skipped` : ""} (of ${res.totalRows.toLocaleString("en-IN")})`,
+        message:
+          `${res.savedRows.toLocaleString("en-IN")} rows saved${res.skippedRows ? `, ${res.skippedRows} skipped` : ""} (of ${res.totalRows.toLocaleString("en-IN")})${span}` +
+          // Price comes only from the file — say so when it gave none, instead of showing ₹0 silently.
+          (res.rowsWithoutPrice
+            ? ` · ${res.rowsWithoutPrice} row${res.rowsWithoutPrice === 1 ? " has" : "s have"} no price in the file, so Sales is blank for them — fill "Price per Product" and upload again to update`
+            : ""),
       });
       refreshMeta();
     } catch (err) {
@@ -53,8 +68,8 @@ export default function GoogleUploadReportsPage() {
         <p className="text-muted-foreground text-sm">
           Upload the &quot;B-Arm Orders&quot; workbook here to bring direct/Google-driven sales into the Ad Spend
           Report on the <a href="/dashboard/reports" className="underline hover:text-foreground">Download page</a>.
-          This channel has no ad spend/CPC/ACOS data — only Orders and Sales (Quantity x Price). Re-uploading a file
-          that repeats an earlier invoice just updates that row, so nothing gets duplicated.
+          This channel has no ad spend/CPC/ACOS data — only Orders and Sales (Quantity x Price). Re-uploading the
+          same file (for example after filling in prices) updates those rows, so nothing gets duplicated.
         </p>
       </div>
 
@@ -80,7 +95,8 @@ export default function GoogleUploadReportsPage() {
         </div>
 
         <p className="text-[11px] text-muted-foreground mb-3 leading-snug">
-          The seller&apos;s own hand-kept workbook: S no, Invoice, Product, Qty, Price.
+          The B-ARM Offline Orders file (Date, Product, Quantity, Price per Product, Total Price, SKU ID), or the
+          older B-Arm Orders workbook (S no, Invoice, Sku, Qty, Price). Price is read from the file only.
         </p>
 
         <label

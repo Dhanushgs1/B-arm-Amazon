@@ -2,6 +2,7 @@ import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { supabasePublic } from "@/lib/amazonReportUpload";
 import { toDate as parseFlexibleDate } from "@/lib/meeshoReportUpload";
+import { detectBarmOrdersLayout, findBarmOrdersHeader, mapBarmOfflineRows, type BarmOrdersLayout } from "@/lib/barmOfflineOrderRules";
 
 // Google (direct/website) orders upload — the seller's own hand-kept "B-Arm
 // Orders" workbook for direct/Google-driven sales that don't come through
@@ -64,30 +65,32 @@ async function readWorkbook(file: File): Promise<XLSX.WorkBook> {
 // The seller's workbook carries a title line ("B-Arm Orders:04") above the
 // real header row — sheet_to_json's default header:1 object mode would read
 // that title as row 1's single column instead of skipping to the real
-// header, so the header row is located explicitly by its own "S no" cell
-// instead of assuming it's always row 1.
-function readSheetRows(ws: XLSX.WorkSheet): RawRow[] {
+// header, so the header row is located explicitly: the legacy layout by its own
+// "S no" cell (unchanged), the offline layout by its Date / Quantity / SKU ID
+// header (see findBarmOrdersHeader in barmOfflineOrderRules.ts).
+function readSheetRows(ws: XLSX.WorkSheet): { layout: BarmOrdersLayout | null; rows: RawRow[] } {
   const aoa = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: "" }) as unknown[][];
-  const headerIdx = aoa.findIndex((row) => row.some((c) => normalizeHeaderKey(str(c)) === "s no"));
-  if (headerIdx < 0) return [];
-  const [headerCells, ...dataRows] = aoa.slice(headerIdx);
+  const header = findBarmOrdersHeader(aoa);
+  if (!header) return { layout: null, rows: [] };
+  const [headerCells, ...dataRows] = aoa.slice(header.index);
   const headers = headerCells.map((h) => str(h));
-  return dataRows
+  const rows = dataRows
     .filter((cells) => cells.some((c) => str(c) !== ""))
     .map((cells) => {
       const row: RawRow = {};
       headers.forEach((key, i) => { if (key) row[key] = cells[i] ?? ""; });
       return row;
     });
+  return { layout: header.layout, rows };
 }
 
-async function readRows(file: File): Promise<RawRow[]> {
+async function readRows(file: File): Promise<{ layout: BarmOrdersLayout | null; rows: RawRow[] }> {
   const name = file.name.toLowerCase();
   if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
     const wb = await readWorkbook(file);
     return readSheetRows(wb.Sheets[wb.SheetNames[0]]);
   }
-  return new Promise((resolve, reject) => {
+  const rows = await new Promise<RawRow[]>((resolve, reject) => {
     Papa.parse<RawRow>(file, {
       header: true,
       skipEmptyLines: true,
@@ -96,6 +99,10 @@ async function readRows(file: File): Promise<RawRow[]> {
       error: (err: Error) => reject(err),
     });
   });
+  // A CSV always went through the legacy mapper (no "S no" check); only a CSV whose header is
+  // the offline layout's is routed to the offline rules now.
+  const layout = detectBarmOrdersLayout(Object.keys(rows[0] || {})) === "offline" ? "offline" : "legacy";
+  return { layout, rows };
 }
 
 function mapOrderRow(row: RawRow) {
@@ -124,24 +131,61 @@ async function upsertInChunks(table: string, rows: Record<string, unknown>[], on
   }
 }
 
+export interface GoogleOrdersParseResult {
+  /** null when no recognised header row was found (nothing to save). */
+  layout: BarmOrdersLayout | null;
+  totalRows: number;
+  /** Rows ready for barm_daily_google_orders, in file order. */
+  rows: Record<string, unknown>[];
+  skippedRows: number;
+  /** Offline layout only: saved rows whose file gives no price (price saved as null). */
+  rowsWithoutPrice: number;
+  minDate: string | null;
+  maxDate: string | null;
+}
+
+/** Reads and maps the file without writing anything — the upload below saves exactly these rows. */
+export async function parseGoogleOrdersFile(file: File): Promise<GoogleOrdersParseResult> {
+  const { layout, rows: rawRows } = await readRows(file);
+  let rows: Record<string, unknown>[];
+  let rowsWithoutPrice = 0;
+  if (layout === "offline") {
+    const parsed = mapBarmOfflineRows(rawRows);
+    rows = parsed.rows as unknown as Record<string, unknown>[];
+    rowsWithoutPrice = parsed.rowsWithoutPrice;
+  } else {
+    rows = rawRows.map(mapOrderRow).filter((r) => REQUIRED_FIELDS.every((f) => r[f as keyof typeof r] !== null && r[f as keyof typeof r] !== undefined && r[f as keyof typeof r] !== ""));
+  }
+  const dates = rows.map((r) => r.order_date as string | null).filter((d): d is string => !!d).sort();
+  return {
+    layout,
+    totalRows: rawRows.length,
+    rows,
+    skippedRows: rawRows.length - rows.length,
+    rowsWithoutPrice,
+    minDate: dates[0] ?? null,
+    maxDate: dates[dates.length - 1] ?? null,
+  };
+}
+
 export interface GoogleOrdersUploadResult {
   totalRows: number;
   savedRows: number;
   skippedRows: number;
+  layout: BarmOrdersLayout | null;
+  rowsWithoutPrice: number;
+  minDate: string | null;
+  maxDate: string | null;
 }
 
 export async function uploadGoogleOrdersFile(file: File): Promise<GoogleOrdersUploadResult> {
-  const rawRows = await readRows(file);
-  const mapped = rawRows.map(mapOrderRow);
-  const valid = mapped.filter((r) => REQUIRED_FIELDS.every((f) => r[f as keyof typeof r] !== null && r[f as keyof typeof r] !== undefined && r[f as keyof typeof r] !== ""));
+  const parsed = await parseGoogleOrdersFile(file);
+  const { rows, ...summary } = parsed;
+  if (!rows.length) return { ...summary, savedRows: 0, skippedRows: parsed.totalRows };
 
-  if (!valid.length) {
-    return { totalRows: rawRows.length, savedRows: 0, skippedRows: rawRows.length };
-  }
+  await upsertInChunks("barm_daily_google_orders", rows, "invoice");
 
-  await upsertInChunks("barm_daily_google_orders", valid, "invoice");
-
-  return { totalRows: rawRows.length, savedRows: valid.length, skippedRows: rawRows.length - valid.length };
+  return { ...summary, savedRows: rows.length };
 }
 
 export interface GoogleOrdersDataInfo {
