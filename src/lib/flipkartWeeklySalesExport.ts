@@ -1,6 +1,7 @@
 import * as XLSX from "xlsx-js-style";
 import { fetchAllRows } from "@/lib/amazonReportShared";
 import { fetchMisFkOrders, fetchMisFkReturns } from "@/lib/misAdapters";
+import { isFkSkeletonOrderRow } from "@/lib/flipkartOrderRules";
 import { categorizeTitle, resolveProductName, CATEGORY_COLORS } from "@/lib/categoryMap";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, gstMultiplierFromTax } from "@/lib/masterProductSkuid";
 import { fetchProductMarketingMap, buildProductMarketingResolver } from "@/lib/productMarketingUpload";
@@ -154,6 +155,8 @@ export async function buildFlipkartWeeklySalesWorkbook(opts: {
   (orderRows as any[]).forEach((r) => {
     const sku = String(r.sku || "").trim();
     if (!sku || !r.order_date) return;
+    // Skeleton rows (no order_item_id) duplicate a real order line — see flipkartOrderRules.ts.
+    if (isFkSkeletonOrderRow(r)) return;
     const pd = periodForDate(String(r.order_date).slice(0, 10));
     if (!pd) return;
     const status = String(r.order_item_status || "").toUpperCase();

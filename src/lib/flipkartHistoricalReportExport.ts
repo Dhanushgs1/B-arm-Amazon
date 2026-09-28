@@ -2,6 +2,7 @@ import * as XLSX from "xlsx-js-style";
 import { fetchAllRows } from "@/lib/amazonReportShared";
 import { FK_REPORT_LABEL } from "@/lib/flipkartReportUpload";
 import { fetchMisFkOrders, fetchMisFkReturns } from "@/lib/misAdapters";
+import { isFkSkeletonOrderRow } from "@/lib/flipkartOrderRules";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, gstMultiplierFromTax } from "@/lib/masterProductSkuid";
 import { fetchProductMarketingMap, buildProductMarketingResolver } from "@/lib/productMarketingUpload";
 
@@ -224,6 +225,9 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
   const seenOrderKeys = new Set<string>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const dedupedOrderRows = (orderRows as any[]).filter((r) => {
+    // Skeleton rows (no order_item_id) duplicate a real order line; the key below would otherwise
+    // keep one of them per quantity — see flipkartOrderRules.ts.
+    if (isFkSkeletonOrderRow(r)) return false;
     const key = `${r.order_item_id}|${r.order_item_status}|${r.quantity}`;
     if (seenOrderKeys.has(key)) return false;
     seenOrderKeys.add(key);
