@@ -8,8 +8,10 @@ import { amazonPurchaseIstDate, chunk, planReplaceByKey } from "@/lib/amazonOrde
 // barm_daily_<sheet> table (one table per sheet — a full archival copy,
 // unrelated to reporting) AND — see REPORT_TARGETS/writeReportTable below —
 // into the actual barm_amazon_sp_advertised_product/barm_amazon_am_orders/
-// barm_flipkart_fsn_report/barm_flipkart_order_report/barm_meesho_ads/
-// barm_meesho_orders tables "Generate Ad Spend Report" reads, using this
+// barm_flipkart_fsn_report/barm_flipkart_order_report
+// tables "Generate Ad Spend Report" reads (Meesho ads are read straight from
+// the barm_daily_ms_barm_ads copy, and Meesho orders come from
+// meesho_barm_ord instead, so "MS BARM ord" is only archived), using this
 // workbook's own column headers instead of each platform's native export
 // headers. Previously this uploader deliberately left those tables alone —
 // that's what made the one-file upload insufficient on its own and forced a
@@ -350,8 +352,8 @@ export async function fetchDailyTablesDataInfo(): Promise<ReportDataInfo> {
 // Spend Report never touches. That meant this one-file upload could never be
 // enough on its own, no matter how often it ran. These specs write the same
 // sheets into the REAL tables (barm_amazon_sp_advertised_product,
-// barm_amazon_am_orders, barm_flipkart_fsn_report, barm_flipkart_order_report,
-// barm_meesho_ads, barm_meesho_orders) using each table's own column names
+// barm_amazon_am_orders, barm_flipkart_fsn_report, barm_flipkart_order_report)
+// using each table's own column names
 // and conflict/replace strategy — matching what the standalone per-report
 // upload pages already do for the SAME tables, just reading this workbook's
 // column headers instead of each platform's native export headers.
@@ -541,59 +543,6 @@ const REPORT_TARGETS: Record<string, ReportTableSpec> = {
         product_title: str(p("Product", "product_title")),
         quantity: intOf(p("Quantity")),
         delivery_tracking_id: str(p("Tracking ID", "delivery_tracking_id")),
-        raw: r,
-      };
-    },
-  },
-  "MS BARM ads": {
-    table: "barm_meesho_ads",
-    dateCol: "report_date",
-    strategy: "upsert",
-    onConflict: "report_date,campaign_name,sku",
-    buildRow: (r) => {
-      const p = makePicker(r);
-      const report_date = parseFlexibleDate(p("Date"));
-      const campaign_name = str(p("Campaign name", "Campaign Name"));
-      const sku = str(p("SKU ID", "SKU"));
-      if (!report_date || !campaign_name || !sku) return null;
-      return {
-        report_date,
-        campaign_name,
-        product_name: str(p("Product")),
-        sku,
-        spend: numOf(p("Spend")),
-        views: intOf(p("Views")),
-        clicks: intOf(p("Clicks")),
-        orders_by_ad: intOf(p("Orders by ad")),
-        raw: r,
-      };
-    },
-  },
-  "MS BARM ord": {
-    table: "barm_meesho_orders",
-    dateCol: "order_date",
-    strategy: "upsert",
-    onConflict: "sub_order_no",
-    buildRow: (r) => {
-      const p = makePicker(r);
-      const sub_order_no = str(p("Sub Order No"));
-      if (!sub_order_no || sub_order_no === "-") return null;
-      return {
-        order_status: str(p("Reason for Credit Entry")),
-        sub_order_no,
-        catalog_id: str(p("Catalog ID")),
-        order_date: parseFlexibleDate(p("Order Date")),
-        order_source: str(p("Order source")),
-        customer_state: str(p("Customer State")),
-        product_name: str(p("Product Name")),
-        sku: str(p("SKU")),
-        size: str(p("Size")),
-        quantity: intOf(p("Quantity")),
-        supplier_listed_price: numOf(p("Supplier Listed Price (Incl. GST + Commission)", "Supplier Listed Price")),
-        supplier_discounted_price: numOf(
-          p("Supplier Discounted Price (Incl GST and Commision)", "Supplier Discounted Price (Incl GST and Commission)", "Supplier Discounted Price")
-        ),
-        packet_id: str(p("Packet Id")),
         raw: r,
       };
     },

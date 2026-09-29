@@ -3,6 +3,8 @@ import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } fr
 import { spCampaignDays, isSplitCoveredCampaignRow } from "@/lib/amazonSpendRules";
 import { upsertInChunks } from "@/lib/amazonReportUpload";
 import { toDate as parseFlexibleDate } from "@/lib/meeshoReportUpload";
+import { fetchMeeshoOrderRowsInRange } from "@/lib/meeshoBarmOrd";
+import { fetchBarmOnlineOrders } from "@/lib/barmOnlineOrders";
 import { resolveProductName } from "@/lib/categoryMap";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog, fetchMasterSkuidsByName, gstMultiplierFromTax, DEFAULT_GST_MULTIPLIER } from "@/lib/masterProductSkuid";
@@ -18,10 +20,9 @@ import { SITE_URL } from "@/lib/siteUrl";
 //
 // Sourced entirely from manually-uploaded tables — no live API call anywhere.
 // Amazon/Flipkart read the same barm_amazon_*/barm_flipkart_* tables the
-// Historical Analysis Report reads; Meesho reads barm_meesho_ads/orders,
-// populated by the new /dashboard/meesho/upload page (see
-// src/lib/meeshoReportUpload.ts) — run scripts/meesho_tables.sql once before
-// the first Meesho upload, those two tables don't exist otherwise. Google Ads
+// Historical Analysis Report reads; Meesho reads ad spend from barm_daily_ms_barm_ads
+// (combined upload sheet "MS BARM ads") and orders from meesho_barm_ord
+// (see src/lib/meeshoBarmOrd.ts). Google Ads
 // and social-media (Meta) spend are not included — no sample export has been
 // seen for either yet, so there's no column layout to build a parser from.
 //
@@ -114,7 +115,7 @@ function num(v: unknown): number {
 // product is honestly combinable). Left undefined for Meesho, which still uses the flat
 // Price x units estimate everywhere (Summary sheet, SKU Wise Report) per the seller's choice.
 // adOrders: ad-attributed order/unit count, for the SKU Wise Report's "Total Ad Orders" column —
-// Meesho: "Orders by ad" straight off its own ad report (barm_meesho_ads), i.e. ad-attributed
+// Meesho: "Orders by ad" straight off its own ad report (barm_daily_ms_barm_ads), i.e. ad-attributed
 // order count (Meesho's ad export has no ₹ sales figure the way Amazon's does, only this count) —
 // also what Summary's "Ad Sales" column for Meesho multiplies by price, and computeAcos's real
 // fallback denominator for Meesho, since Meesho never sets adSales. Amazon: Sponsored Products'
@@ -1080,9 +1081,9 @@ export async function fetchFlipkartListingPriceMap(): Promise<Map<string, number
 }
 
 // ── Meesho ───────────────────────────────────────────────────────────────────
-// No native Meesho export has been seen directly — barm_meesho_ads/orders are
-// populated by src/lib/meeshoReportUpload.ts from the seller's own
-// hand-assembled workbook column names (see that file's header comment). All
+// barm_daily_ms_barm_ads is filled by the combined upload (combinedAdSpendUpload.ts) from the
+// seller's own hand-assembled workbook column names (see that file's header
+// comment); orders come from meesho_barm_ord via src/lib/meeshoBarmOrd.ts. All
 // three fetches are wrapped in .catch(() => []) because their tables may not
 // exist yet (scripts/meesho_tables.sql / scripts/meesho_price_marketing_table.sql
 // not run) — that must degrade to "no Meesho data" / "no marketing price"
@@ -1103,8 +1104,12 @@ export async function fetchMeeshoProducts(
   revenueRangeBySku: Map<string, number>;
 }> {
   const [adsRows, orderRows, marketingRows] = await Promise.all([
-    fetchAllRows("barm_meesho_ads", (q) => q.gte("report_date", range.start).lte("report_date", endDate)).catch(() => []),
-    fetchAllRows("barm_meesho_orders", (q) => q.gte("order_date", range.start).lte("order_date", endDate)).catch(() => []),
+    // barm_meesho_ads was dropped (29 Sep 2026); barm_daily_ms_barm_ads is the
+    // combined upload's "MS BARM ads" copy with the same columns and rows.
+    fetchAllRows("barm_daily_ms_barm_ads", (q) => q.gte("report_date", range.start).lte("report_date", endDate)).catch(() => []),
+    // Orders come from meesho_barm_ord (see meeshoBarmOrd.ts), normalised to
+    // the barm_meesho_orders column names used below.
+    fetchMeeshoOrderRowsInRange(range.start, endDate).catch(() => []),
     // meesho_price_marketing (scripts/meesho_price_marketing_table.sql) holds
     // the live scraped Meesho listing price per SKU — the same role
     // barm_amazon_price_listing/barm_flipkart_listings play for the other two
@@ -1313,8 +1318,8 @@ async function fetchSocialMediaAdSpend(
 // ── Google (direct/website) orders ──────────────────────────────────────────
 // Like Social Media above, a lightweight add-on, NOT a real `Platform` — this
 // channel has no ad campaign export of any kind (no Spend/CPC/ACOS to show),
-// only realised Orders and Sales (Quantity x Price), from the seller's own
-// hand-kept "B-Arm Orders" workbook (see googleOrdersUpload.ts). Feeds one
+// only realised Orders and Sales, from the barm_online_orders table (see
+// barmOnlineOrders.ts). Feeds one
 // extra Summary-sheet row and a small Product/Quantity/Price/Sales section
 // at the end of the "Ad spend report" sheet — never the SKU Wise Report, Ad
 // Status Report, Action Sheet or Low Spend Campaigns, none of which have
@@ -1332,60 +1337,60 @@ async function fetchSocialMediaAdSpend(
 // table is meant to list every product active across the window, not just
 // today's; only the Summary sheet's own Total Orders/Total Sales (both the
 // day block and the range block) and Overall Sales QTS/Value change.
+// Source (29 Sep 2026): the Supabase table barm_online_orders — see barmOnlineOrders.ts for the
+// seller's rules. Sales = each order's Order Total Amount, counted once per order. A
+// single-product order's total is that product's sale (price = total ÷ quantity, what the customer
+// actually paid); a multi-product order is listed as ONE row of its own ("Order <no> — N products:
+// …") carrying its total, never split across its products, so the rows still add up to the total.
 async function fetchGoogleOrders(range: { start: string; end: string }, endDate: string): Promise<{
-  perProduct: { name: string; quantity: number; price: number }[];
-  // One row per (order_date, product) across the full 7-day range — for the "B Arm orders" sheet,
-  // which (per the seller's later, explicit instruction) now shows Google's orders exclusively,
-  // replacing the Amazon/Flipkart/Meesho merge that used to live there, spanning the full range
-  // window with its own Date column rather than a single-day or a date-less range total. Kept
-  // separate from `perProduct` above (still range-scoped but aggregated across every date into one
-  // row per product, unchanged) since that one still feeds the Ad spend report sheet's own Google
-  // detail table.
-  dailyPerProduct: { name: string; date: string; quantity: number; price: number }[];
+  perProduct: { name: string; quantity: number; price: number; sales: number }[];
+  // One row per (order_date, product) across the full range — for the "B Arm orders" sheet.
+  dailyPerProduct: { name: string; date: string; quantity: number; price: number; sales: number }[];
   dayUnits: number;
   dayValue: number;
   rangeUnits: number;
   rangeValue: number;
 }> {
-  const rows = (await fetchAllRows("barm_daily_google_orders", (q) =>
-    q.gte("order_date", range.start).lte("order_date", range.end)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ).catch(() => [])) as any[];
-  const byProduct = new Map<string, { quantity: number; priceSum: number; priceCount: number }>();
-  const byDateProduct = new Map<string, { date: string; name: string; quantity: number; priceSum: number; priceCount: number }>();
+  const orders = (await fetchBarmOnlineOrders().catch(() => [])).filter(
+    (o) => o.order_date >= range.start && o.order_date <= range.end
+  );
+  const byProduct = new Map<string, { quantity: number; sales: number; multi: boolean }>();
+  const byDateProduct = new Map<string, { date: string; name: string; quantity: number; sales: number; multi: boolean }>();
   let dayUnits = 0;
   let dayValue = 0;
   let rangeUnits = 0;
   let rangeValue = 0;
-  rows.forEach((r) => {
-    const name = r.product_name || "(no product name)";
-    const date = r.order_date || "";
-    const qty = num(r.quantity);
-    const price = num(r.price);
-    const value = qty * price;
+  orders.forEach((o) => {
+    const qty = o.lines.reduce((t, l) => t + l.quantity, 0);
+    const multi = o.lines.length > 1;
+    const name = multi
+      ? `Order ${o.order_number} — ${o.lines.length} products: ${o.lines.map((l) => l.sku || l.name).join(", ")}`
+      : o.lines[0].name;
     rangeUnits += qty;
-    rangeValue += value;
-    const acc = byProduct.get(name) || { quantity: 0, priceSum: 0, priceCount: 0 };
-    acc.quantity += qty;
-    if (price > 0) { acc.priceSum += price; acc.priceCount += 1; }
-    byProduct.set(name, acc);
-    if (r.order_date === endDate) {
+    rangeValue += o.total;
+    if (o.order_date === endDate) {
       dayUnits += qty;
-      dayValue += value;
+      dayValue += o.total;
     }
-    const dateKey = `${date}\u0000${name}`;
-    const dateAcc = byDateProduct.get(dateKey) || { date, name, quantity: 0, priceSum: 0, priceCount: 0 };
+    const acc = byProduct.get(name) || { quantity: 0, sales: 0, multi };
+    acc.quantity += qty;
+    acc.sales += o.total;
+    byProduct.set(name, acc);
+    const dateKey = `${o.order_date}|${name}`;
+    const dateAcc = byDateProduct.get(dateKey) || { date: o.order_date, name, quantity: 0, sales: 0, multi };
     dateAcc.quantity += qty;
-    if (price > 0) { dateAcc.priceSum += price; dateAcc.priceCount += 1; }
+    dateAcc.sales += o.total;
     byDateProduct.set(dateKey, dateAcc);
   });
+  // A multi-product order's total isn't split, so it has no per-unit price of its own (0 -> blank).
+  const priceOf = (acc: { quantity: number; sales: number; multi: boolean }) => (!acc.multi && acc.quantity ? acc.sales / acc.quantity : 0);
   const dailyPerProduct = [...byDateProduct.values()]
-    .map((acc) => ({ name: acc.name, date: acc.date, quantity: acc.quantity, price: acc.priceCount ? acc.priceSum / acc.priceCount : 0 }))
+    .map((acc) => ({ name: acc.name, date: acc.date, quantity: acc.quantity, price: priceOf(acc), sales: acc.sales }))
     .sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
   return {
     perProduct: [...byProduct.entries()]
-      .map(([name, acc]) => ({ name, quantity: acc.quantity, price: acc.priceCount ? acc.priceSum / acc.priceCount : 0 }))
-      .sort((a, b) => b.quantity * b.price - a.quantity * a.price),
+      .map(([name, acc]) => ({ name, quantity: acc.quantity, price: priceOf(acc), sales: acc.sales }))
+      .sort((a, b) => b.sales - a.sales),
     dailyPerProduct,
     dayUnits, dayValue: Math.round(dayValue * 100) / 100,
     rangeUnits, rangeValue: Math.round(rangeValue * 100) / 100,
@@ -2448,7 +2453,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   if (socialMediaRow !== null) styleLabel(wsSummary, XLSX.utils.encode_cell({ r: socialMediaRow, c: 0 }), "1877F2");
   // Google isn't a real `Platform` either (see the comment where googleRow is built) — same
   // treatment as Social Media above, Google's own brand blue, no dashboard hyperlink (there's no
-  // dedicated Google analytics page, just the /dashboard/google/upload upload page).
+  // dedicated Google analytics page; its orders come from barm_online_orders).
   if (googleRow !== null) styleLabel(wsSummary, XLSX.utils.encode_cell({ r: googleRow, c: 0 }), "4285F4");
   wsSummary["!cols"] = [
     { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 60 }, { wch: 10 },
@@ -2530,7 +2535,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     detailAoa.push(["Google"]);
     googleDetailHeaderRow = detailAoa.length;
     detailAoa.push(["Product", "Quantity", "Price", "Sales"]);
-    googleOrders.perProduct.forEach((p) => detailAoa.push([p.name, p.quantity, round2(p.price), round2(p.quantity * p.price)]));
+    googleOrders.perProduct.forEach((p) => detailAoa.push([p.name, p.quantity, p.price ? round2(p.price) : "", round2(p.sales)]));
     detailAoa.push([]);
   }
 
@@ -2772,7 +2777,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const bArmAoa: (string | number)[][] = [["Product", "Date", "Quantity", "Price", "Sales"]];
   googleOrders.dailyPerProduct
     .filter((p) => p.quantity > 0)
-    .forEach((p) => bArmAoa.push([p.name, dotDate(p.date), p.quantity, round2(p.price), round2(p.quantity * p.price)]));
+    .forEach((p) => bArmAoa.push([p.name, dotDate(p.date), p.quantity, p.price ? round2(p.price) : "", round2(p.sales)]));
   const wsBArm = XLSX.utils.aoa_to_sheet(bArmAoa);
   styleHeader(wsBArm, 0, 5, "6B7280");
   wsBArm["!cols"] = [{ wch: 60 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 14 }];

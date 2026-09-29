@@ -2,31 +2,30 @@
 
 import { useState, useEffect } from "react";
 import { UploadOnlyOverview } from "@/components/marketplace/UploadOnlyOverview";
-import { fetchGoogleOrdersDataInfo, type GoogleOrdersDataInfo } from "@/lib/googleOrdersUpload";
+import { fetchBarmOnlineOrdersDataInfo } from "@/lib/barmOnlineOrders";
 
 export default function BarmOverviewPage() {
-  const [info, setInfo] = useState<GoogleOrdersDataInfo | null>(null);
+  const [info, setInfo] = useState<Awaited<ReturnType<typeof fetchBarmOnlineOrdersDataInfo>> | null>(null);
 
   useEffect(() => {
-    fetchGoogleOrdersDataInfo().then(setInfo);
+    fetchBarmOnlineOrdersDataInfo().then(setInfo);
   }, []);
 
   return (
     <UploadOnlyOverview
       title="BARM Overview"
-      subtitle="BARM (Google) · Uploaded data at a glance"
-      uploadHref="/dashboard/google/upload"
+      subtitle="BARM (Google) · Data on file at a glance"
       downloadHref="/dashboard/barm/reports"
       dataOnFile={[
         {
-          label: "B-Arm Orders (Google)",
+          label: "B-Arm Online Orders (barm_online_orders)",
           value: !info
             ? null
             : info.error
             ? `Couldn't check — ${info.error}`
-            : info.rowCount
-            ? `${info.minDate ?? "?"} to ${info.maxDate ?? "?"} (${info.rowCount.toLocaleString("en-IN")} rows)`
-            : "No data uploaded yet",
+            : info.orderCount
+            ? `${info.minDate ?? "?"} to ${info.maxDate ?? "?"} (${info.orderCount.toLocaleString("en-IN")} orders)`
+            : "No data yet",
         },
       ]}
     />

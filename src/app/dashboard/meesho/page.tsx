@@ -9,7 +9,7 @@ import {
   type MeeshoReportDataInfo,
 } from "@/lib/meeshoReportUpload";
 
-const TYPES: MeeshoUploadReportType[] = ["ads", "orders"];
+const TYPES: MeeshoUploadReportType[] = ["orders"];
 
 export default function MeeshoOverviewPage() {
   const [info, setInfo] = useState<Record<MeeshoUploadReportType, MeeshoReportDataInfo> | null>(null);
@@ -21,8 +21,7 @@ export default function MeeshoOverviewPage() {
   return (
     <UploadOnlyOverview
       title="Meesho Overview"
-      subtitle="Meesho · Uploaded data at a glance"
-      uploadHref="/dashboard/meesho/upload"
+      subtitle="Meesho · Data on file at a glance"
       downloadHref="/dashboard/meesho/reports"
       dataOnFile={TYPES.map((t) => {
         const i = info?.[t];

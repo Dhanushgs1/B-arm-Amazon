@@ -13,7 +13,7 @@ export type UploadOnlyTab = "meesho" | "barm";
 export type MarketplaceTab = MarketplaceId | UploadOnlyTab | "compare";
 
 export const UPLOAD_ONLY_TAB_META: Record<UploadOnlyTab, { label: string; tagline: string; color: string; home: string }> = {
-  meesho: { label: "Meesho", tagline: "Meesho · Overview, Upload & Download", color: "#9F2089", home: "/dashboard/meesho" },
+  meesho: { label: "Meesho", tagline: "Meesho · Overview & Download", color: "#9F2089", home: "/dashboard/meesho" },
   // BARM Upload reuses the existing Google Orders (B-Arm) upload page.
   barm: { label: "BARM", tagline: "BARM (Google) · Overview, Upload & Download", color: "#10B981", home: "/dashboard/barm" },
 };

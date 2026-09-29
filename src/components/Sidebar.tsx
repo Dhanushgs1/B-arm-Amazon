@@ -138,17 +138,16 @@ function marketplaceNavSections(marketplace: "flipkart"): SidebarNavSection[] {
   ];
 }
 
-// Shown on the Meesho and BARM tabs — those channels only have Overview,
-// Upload and Download pages, so each tab lists just its own three items (like Flipkart's
-// sidebar lists only Flipkart pages). Active state is matched on the full
-// path, since BARM's Upload lives under /dashboard/google.
+// Shown on the Meesho and BARM tabs — both have only Overview and Download
+// (their orders come from Supabase tables meesho_barm_ord / barm_online_orders,
+// no upload page), so each tab lists just its own items (like Flipkart's
+// sidebar lists only Flipkart pages). Active state is matched on the full path.
 const UPLOAD_ONLY_NAV_SECTIONS: Record<"meesho" | "barm", SidebarNavSection[]> = {
   meesho: [
     {
       label: "Meesho",
       items: [
         { id: "ms-overview", label: "Overview", icon: LayoutDashboard, path: "/dashboard/meesho" },
-        { id: "ms-upload", label: "Upload", icon: UploadCloud, path: "/dashboard/meesho/upload" },
         { id: "ms-reports", label: "Download", icon: BarChart3, path: "/dashboard/meesho/reports" },
       ],
     },
@@ -158,7 +157,6 @@ const UPLOAD_ONLY_NAV_SECTIONS: Record<"meesho" | "barm", SidebarNavSection[]> =
       label: "BARM (Google)",
       items: [
         { id: "barm-overview", label: "Overview", icon: LayoutDashboard, path: "/dashboard/barm" },
-        { id: "barm-upload", label: "Upload", icon: UploadCloud, path: "/dashboard/google/upload" },
         { id: "barm-reports", label: "Download", icon: BarChart3, path: "/dashboard/barm/reports" },
       ],
     },

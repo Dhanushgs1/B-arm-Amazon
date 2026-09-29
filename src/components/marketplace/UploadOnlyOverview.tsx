@@ -22,7 +22,8 @@ export function UploadOnlyOverview({
   title: string;
   subtitle: string;
   dataOnFile: DataOnFileItem[];
-  uploadHref: string;
+  /** Omitted for a channel whose data arrives outside this app (Meesho — see meeshoBarmOrd.ts). */
+  uploadHref?: string;
   downloadHref: string;
 }) {
   return (
@@ -49,12 +50,14 @@ export function UploadOnlyOverview({
       </div>
 
       <div className="flex flex-wrap gap-3">
-        <Link
-          href={uploadHref}
-          className="px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold rounded-lg transition-colors flex items-center gap-2 shadow-md"
-        >
-          <UploadCloud size={14} /> Go to Upload
-        </Link>
+        {uploadHref && (
+          <Link
+            href={uploadHref}
+            className="px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold rounded-lg transition-colors flex items-center gap-2 shadow-md"
+          >
+            <UploadCloud size={14} /> Go to Upload
+          </Link>
+        )}
         <Link
           href={downloadHref}
           className="px-4 py-2 border border-border hover:border-primary/50 text-foreground text-xs font-bold rounded-lg transition-colors flex items-center gap-2"

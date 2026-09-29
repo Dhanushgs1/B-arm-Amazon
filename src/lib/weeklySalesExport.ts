@@ -18,20 +18,68 @@ function weekLabel(start: string, end: string): string {
   return `${fmtDot(start)}-${fmtDot(end)}`;
 }
 
+/** The per-SKU per-period data every sheet below reads — loadAmazonSkuPeriodData's shape. Other
+ *  channels (meeshoSkuPeriodData.ts) build the same shape so their weekly report runs through the
+ *  exact same sheets and formulas. */
+export type WeeklySkuPeriodData = Pick<
+  Awaited<ReturnType<typeof loadAmazonSkuPeriodData>>,
+  | "dataPulledAt" | "dataThrough" | "staleDays" | "returnCoverageWarnings"
+  | "visibleRows" | "rowsByCategory" | "catBySku" | "categoryAgg" | "periodTotals"
+  | "stockOf" | "adsOf" | "hasAdData" | "orderCountOf" | "orderIdsBySkuPeriod"
+>;
+
+/** What differs between channels: names, the listing-check wording, and the Notes sheet's
+ *  source-specific lines. */
+export interface WeeklyChannel {
+  name: string;
+  /** Header of the per-SKU sheet's sales column (defaults to "Total Sales"). */
+  salesHeader?: string;
+  listingCheck: string;
+  pulledAtNote: (dataPulledAt: string) => string;
+  methodNotes: string[];
+}
+
+const AMAZON_CHANNEL: WeeklyChannel = {
+  name: "Amazon",
+  listingCheck: "listing status, buy box and search visibility",
+  pulledAtNote: (dataPulledAt) =>
+    `Data pulled at: ${dataPulledAt} (compare against the Historical Analysis Report's own "Data pulled at" — a per-SKU difference between the two files is expected, not a bug, when they were generated far enough apart to see different uploads).`,
+  methodNotes: [
+    "Orders/returns are bucketed by IST calendar day (purchase_datetime / return_date shifted +5:30), matching the Historical Analysis Report's convention, not by the raw UTC date — an order or return from the last ~5.5 hours of the UTC day would otherwise land on the wrong day in one report but not the other.",
+    "All Returns = AM returns + FBA returns + SellerFlex returns (each SF return counted once — the MIS table stores repeat uploads of the same return). Customer Returns excludes courier RTO / undelivered parcels from all three.",
+    "Total Orders = Orders − All Returns, left UNCLAMPED — it can go negative for a SKU that had a return recorded this period with no matching order in it (the order belongs to an earlier period). Matches the Historical Analysis Report's 'Final' column, which is unclamped for the same reason.",
+  ],
+};
+
+export function weeklyPeriods(thisWeek: { start: string; end: string }, lastWeek: { start: string; end: string }): PeriodWindow[] {
+  return [
+    { label: weekLabel(lastWeek.start, lastWeek.end), start: lastWeek.start, end: lastWeek.end },
+    { label: weekLabel(thisWeek.start, thisWeek.end), start: thisWeek.start, end: thisWeek.end },
+  ];
+}
+
 export async function buildWeeklySalesWorkbookFromHistorical(opts: {
   thisWeek: { start: string; end: string };
   lastWeek: { start: string; end: string };
 }) {
-  const { thisWeek, lastWeek } = opts;
-  const periods: PeriodWindow[] = [
-    { label: weekLabel(lastWeek.start, lastWeek.end), start: lastWeek.start, end: lastWeek.end },
-    { label: weekLabel(thisWeek.start, thisWeek.end), start: thisWeek.start, end: thisWeek.end },
-  ];
+  const periods = weeklyPeriods(opts.thisWeek, opts.lastWeek);
+  const data = await loadAmazonSkuPeriodData({ periods });
+  return renderWeeklySalesWorkbook({ ...opts, periods, data, channel: AMAZON_CHANNEL });
+}
+
+export function renderWeeklySalesWorkbook(opts: {
+  thisWeek: { start: string; end: string };
+  lastWeek: { start: string; end: string };
+  periods: PeriodWindow[];
+  data: WeeklySkuPeriodData;
+  channel: WeeklyChannel;
+}) {
+  const { thisWeek, lastWeek, periods, channel } = opts;
   const {
     dataPulledAt, dataThrough, staleDays, returnCoverageWarnings,
     visibleRows, rowsByCategory, catBySku, categoryAgg, periodTotals,
     stockOf, adsOf, hasAdData, orderCountOf, orderIdsBySkuPeriod,
-  } = await loadAmazonSkuPeriodData({ periods });
+  } = opts.data;
 
   // ═══════════════════════════════════════════════════════════════════════
   // ── Shared per-SKU/category deltas — computed once here (not inside any one sheet's block)
@@ -167,7 +215,7 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
     if (d.thisSales === 0 && d.lastSales > 0 && (d.stock === undefined || d.stock >= 15)) {
       out.push({
         reason: "Listing Issue — no sales at all this week while stock was available",
-        action: `Check ${d.name}'s listing status, buy box and search visibility`,
+        action: `Check ${d.name}'s ${channel.listingCheck}`,
         impact: d.lastSales,
       });
     }
@@ -327,7 +375,7 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
   const headerRow2: any[] = ["", "", ""];
   periods.forEach(() => {
     headerRow1.push(...Array(COLS_PER_PERIOD).fill(""));
-    headerRow2.push("Orders", "All Returns", "Customer Returns", "Total Orders", "Price", "Total Sales", "Growth %");
+    headerRow2.push("Orders", "All Returns", "Customer Returns", "Total Orders", "Price", channel.salesHeader ?? "Total Sales", "Growth %");
   });
   periods.forEach((pd, i) => { headerRow1[LEAD_COLS + i * COLS_PER_PERIOD] = pd.label; });
 
@@ -1136,7 +1184,7 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
     ws["!ref"] = XLSX.utils.encode_range(existingRange);
   }
 
-  XLSX.utils.book_append_sheet(wb, ws, "Amazon Sales");
+  XLSX.utils.book_append_sheet(wb, ws, `${channel.name} Sales`);
 
   // ═══════════════════════════════════════════════════════════════════════
   // ── Sheet 4: Executive Dashboard ──
@@ -1645,24 +1693,22 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
   // ═══════════════════════════════════════════════════════════════════════
   {
     const wsNote = XLSX.utils.aoa_to_sheet([
-      ["Amazon Weekly Sales Report"],
+      [`${channel.name} Weekly Sales Report`],
       [`Last week: ${lastLabel}    This week: ${thisLabel}`],
-      [`Data pulled at: ${dataPulledAt} (compare against the Historical Analysis Report's own "Data pulled at" — a per-SKU difference between the two files is expected, not a bug, when they were generated far enough apart to see different uploads).`],
+      [channel.pulledAtNote(dataPulledAt)],
       [""],
       ...(staleDays > 0
         ? [[`⚠ READ THIS FIRST — the uploaded/synced Orders data only reaches ${fmtDot(dataThrough!)}, but "this week" runs to ${fmtDot(thisWeek.end)}. So this week is measured over ${Math.max(0, 7 - staleDays)} day(s) of data against a full 7 for last week, and EVERY Growth % below is therefore far more negative than reality. This is missing data, not falling demand. Either sync/upload newer orders, or set the dashboard end date to ${fmtDot(dataThrough!)} and regenerate.`]]
         : []),
       ...returnCoverageWarnings.map((w) => [w]),
-      ["Orders/returns are bucketed by IST calendar day (purchase_datetime / return_date shifted +5:30), matching the Historical Analysis Report's convention, not by the raw UTC date — an order or return from the last ~5.5 hours of the UTC day would otherwise land on the wrong day in one report but not the other."],
-      ["All Returns = AM returns + FBA returns + SellerFlex returns (each SF return counted once — the MIS table stores repeat uploads of the same return). Customer Returns excludes courier RTO / undelivered parcels from all three."],
-      ["Total Orders = Orders − All Returns, left UNCLAMPED — it can go negative for a SKU that had a return recorded this period with no matching order in it (the order belongs to an earlier period). Matches the Historical Analysis Report's 'Final' column, which is unclamped for the same reason."],
+      ...channel.methodNotes.map((n) => [n]),
     ]);
     wsNote["!cols"] = [{ wch: 110 }];
     if (wsNote.A1) wsNote.A1.s = { font: { bold: true, sz: 13, color: { rgb: "312E81" } } };
     XLSX.utils.book_append_sheet(wb, wsNote, "Notes");
   }
 
-  const filename = `Amazon_Weekly_Sales_Report_${lastWeek.start}_to_${thisWeek.end}.xlsx`;
+  const filename = `${channel.name}_Weekly_Sales_Report_${lastWeek.start}_to_${thisWeek.end}.xlsx`;
   // The same visible rows, with the Product Master name/department the sheets use, so the email's
   // movers and department lines can't diverge from the attachment either.
   const productPeriods = visibleRows.map((p) => ({ sku: p.sku, name: p.name, category: catBySku.get(p.sku) || "Other", periods: p.periods }));

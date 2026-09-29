@@ -24,11 +24,6 @@ import {
   fetchSocialMediaReportDataInfo,
   type SocialMediaReportDataInfo,
 } from "@/lib/socialMediaReportUpload";
-import {
-  uploadGoogleOrdersFile,
-  fetchGoogleOrdersDataInfo,
-  type GoogleOrdersDataInfo,
-} from "@/lib/googleOrdersUpload";
 import Link from "next/link";
 
 const AD_ORDER_REPORT_TYPES: UploadReportType[] = [
@@ -246,11 +241,12 @@ function CombinedAdSpendUploadCard({ onUploaded, dataInfo }: { onUploaded: () =>
       <p className="text-xs text-muted-foreground mb-4">
         Drop the client&apos;s combined &quot;Last 7 days&quot; workbook here — this now feeds the{" "}
         <Link href="/dashboard/reports" className="underline hover:text-foreground">Ad Spend Report</Link> directly:
-        AM ads / AM ord / FK ads / FK ord / MS BARM ads / MS BARM ord write straight into the real report tables (as
+        AM ads / AM ord / FK ads / FK ord / MS BARM ads write straight into the real report tables (as
         well as an archived raw copy of every sheet). <b>Sponsored Brands and Sponsored Display are the one thing this
         file never contains</b> — Amazon doesn&apos;t offer those two combined with Sponsored Products, so they still
-        need their own upload with the cards below. MS MW ads/ord (Millwright) only get archived, not reported —
-        that store isn&apos;t wired into the Ad Spend Report yet.
+        need their own upload with the cards below. MS BARM ord is only archived, since Meesho orders now come from
+        the meesho_barm_ord table. MS MW ads/ord (Millwright) are also only archived — that store isn&apos;t wired into
+        the Ad Spend Report yet.
       </p>
 
       <label
@@ -385,112 +381,6 @@ function SocialMediaUploadCard({ onUploaded, dataInfo }: { onUploaded: () => voi
         id="social-media-ad-spend-upload"
         type="file"
         accept=".xlsx,.xls"
-        className="hidden"
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) handleFile(f);
-          e.target.value = "";
-        }}
-      />
-
-      <div className="mt-3 text-xs min-h-[1.25rem]">
-        {state.status === "parsing" && (
-          <span className="flex items-center gap-1.5 text-muted-foreground">
-            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Reading sheet &amp; saving to Supabase…
-          </span>
-        )}
-        {state.status === "done" && (
-          <span className="flex items-center gap-1.5 text-green-600 dark:text-green-400 font-semibold">
-            <CheckCircle2 size={14} /> {state.message}
-          </span>
-        )}
-        {state.status === "error" && (
-          <span className="flex items-center gap-1.5 text-red-600 dark:text-red-400 font-semibold">
-            <XCircle size={14} /> {state.message}
-          </span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-interface GoogleOrdersState {
-  status: "idle" | "parsing" | "done" | "error";
-  fileName?: string;
-  message?: string;
-}
-
-// The seller's own hand-kept "B-Arm Orders" workbook — direct/Google-driven sales that don't come
-// through Amazon, Flipkart or Meesho at all (S no, Invoice, Product, Qty, Price; no date column, no
-// ad-spend data of any kind). Feeds the Ad Spend Report's Summary sheet "Google" row and the Ad
-// spend report sheet's Google section — see googleOrdersUpload.ts / fetchGoogleOrders in
-// adSpendReportExport.ts. Needs scripts/google_orders_table.sql run once in Supabase first.
-function GoogleOrdersUploadCard({ onUploaded, dataInfo }: { onUploaded: () => void; dataInfo: GoogleOrdersDataInfo | undefined }) {
-  const [state, setState] = useState<GoogleOrdersState>({ status: "idle" });
-  const [dragOver, setDragOver] = useState(false);
-
-  const handleFile = async (file: File) => {
-    setState({ status: "parsing", fileName: file.name });
-    try {
-      const res = await uploadGoogleOrdersFile(file);
-      const message = `${res.savedRows} rows saved${res.skippedRows ? `, ${res.skippedRows} skipped` : ""} (of ${res.totalRows})`;
-      setState({ status: "done", fileName: file.name, message });
-      onUploaded();
-    } catch (err) {
-      setState({ status: "error", fileName: file.name, message: err instanceof Error ? err.message : String(err) });
-    }
-  };
-
-  return (
-    <div className="glass rounded-2xl border-2 border-primary/30 p-6 shadow-sm">
-      <div className="flex items-center gap-3 mb-2">
-        <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary">
-          <FileSpreadsheet size={20} />
-        </div>
-        <div>
-          <h3 className="font-bold text-sm text-foreground">Google Orders (B-Arm)</h3>
-          <span className="text-[10px] text-muted-foreground uppercase font-black tracking-wider">CSV / XLSX</span>
-        </div>
-      </div>
-      <p className="text-xs text-muted-foreground mb-4">
-        Drop the seller&apos;s own &quot;B-Arm Orders&quot; workbook here (S no, Invoice, Product, Qty, Price — no
-        ad spend data for this channel). Feeds the{" "}
-        <Link href="/dashboard/reports" className="underline hover:text-foreground">Ad Spend Report</Link>&apos;s
-        Summary sheet &quot;Google&quot; row.
-      </p>
-
-      <label
-        htmlFor="google-orders-upload"
-        className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl py-8 cursor-pointer transition-colors ${
-          dragOver ? "border-primary" : "border-border hover:border-primary/50"
-        }`}
-        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragOver(false);
-          const f = e.dataTransfer.files?.[0];
-          if (f) handleFile(f);
-        }}
-      >
-        <UploadCloud size={24} className="text-muted-foreground" />
-        <span className="text-xs text-muted-foreground px-2 text-center truncate max-w-full">
-          {state.fileName || "Click or drop the \"B-Arm Orders\" .xlsx here"}
-        </span>
-      </label>
-      {dataInfo && (
-        <p className="text-[10px] text-muted-foreground mt-1">
-          {dataInfo.error
-            ? `Table not ready — ${dataInfo.error}`
-            : dataInfo.rowCount > 0
-              ? `Data: ${dataInfo.minDate ?? "?"} to ${dataInfo.maxDate ?? "?"} · ${dataInfo.totalUnits.toLocaleString("en-IN")} units, ₹${dataInfo.totalValue.toLocaleString("en-IN")} (${dataInfo.rowCount} rows)`
-              : "No data"}
-        </p>
-      )}
-      <input
-        id="google-orders-upload"
-        type="file"
-        accept=".csv,.xlsx,.xls"
         className="hidden"
         onChange={(e) => {
           const f = e.target.files?.[0];
@@ -844,20 +734,13 @@ export default function UploadReportsPage() {
     setSocialMediaDataInfo(info);
   }, []);
 
-  const [googleDataInfo, setGoogleDataInfo] = useState<GoogleOrdersDataInfo | undefined>(undefined);
-  const refreshGoogleMeta = useCallback(async () => {
-    const info = await fetchGoogleOrdersDataInfo();
-    setGoogleDataInfo(info);
-  }, []);
-
   useEffect(() => {
     refreshMeta();
     refreshCombinedMeta();
     refreshMisMeta();
     refreshProductMarketingMeta();
     refreshSocialMediaMeta();
-    refreshGoogleMeta();
-  }, [refreshMeta, refreshCombinedMeta, refreshMisMeta, refreshProductMarketingMeta, refreshSocialMediaMeta, refreshGoogleMeta]);
+  }, [refreshMeta, refreshCombinedMeta, refreshMisMeta, refreshProductMarketingMeta, refreshSocialMediaMeta]);
 
   const handleFile = async (type: UploadReportType, file: File) => {
     setCardState((prev) => ({ ...prev, [type]: { status: "parsing", fileName: file.name } }));
@@ -913,7 +796,6 @@ export default function UploadReportsPage() {
       <CombinedAdSpendUploadCard onUploaded={refreshCombinedMeta} dataInfo={combinedDataInfo} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-        <GoogleOrdersUploadCard onUploaded={refreshGoogleMeta} dataInfo={googleDataInfo} />
         <SocialMediaUploadCard onUploaded={refreshSocialMediaMeta} dataInfo={socialMediaDataInfo} />
       </div>
 

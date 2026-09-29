@@ -615,13 +615,11 @@ export default function ReportsPage() {
         <p className="text-xs text-muted-foreground mb-4">
           Amazon + Flipkart + Meesho ad spend, side by side: Spend, Spend+Tax, Orders, CPC and ACOS per product for
           the single day selected above ({endDate || "yesterday"}) and its trailing 7 days, plus a cross-platform Ad
-          Status Report and a Low Spend Campaigns list. Built from the data uploaded on the Amazon, Flipkart, and{" "}
-          <a href="/dashboard/meesho/upload" className="underline hover:text-foreground">Meesho</a>{" "}
-          Upload pages (Meesho needs scripts/meesho_tables.sql run once in Supabase first), plus a Social Media
+          Status Report and a Low Spend Campaigns list. Built from the data uploaded on the Amazon and Flipkart
+          Upload pages and Meesho orders from the meesho_barm_ord table in Supabase, plus a Social Media
           (Meta Ads) Summary row from the Upload page&apos;s &quot;Social Media Ad Spend&quot; card, and a Google
-          Summary row (Orders/Sales only — no ad spend data exists for this channel) from the{" "}
-          <a href="/dashboard/google/upload" className="underline hover:text-foreground">Google</a>{" "}
-          Upload page (needs scripts/google_orders_table.sql run once in Supabase first). Google Ads campaign spend
+          Summary row (Orders/Sales only — no ad spend data exists for this channel) from the
+          barm_online_orders table in Supabase. Google Ads campaign spend
           itself still isn&apos;t included — no sample export has been seen for it yet.
         </p>
         <div className="flex flex-wrap gap-2">

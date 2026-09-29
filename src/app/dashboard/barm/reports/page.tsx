@@ -2,26 +2,26 @@
 
 import { useState, useEffect } from "react";
 import { PendingReportCard } from "@/components/marketplace/PendingReportCard";
-import { fetchGoogleOrdersDataInfo, type GoogleOrdersDataInfo } from "@/lib/googleOrdersUpload";
+import { fetchBarmOnlineOrdersDataInfo } from "@/lib/barmOnlineOrders";
 
-// Mirrors /dashboard/flipkart/reports. BARM = the seller's own Google Orders
-// (B-Arm) channel, uploaded on /dashboard/google/upload. The BARM Weekly
+// Mirrors /dashboard/flipkart/reports. BARM = the seller's own website orders,
+// read from the barm_online_orders table (see barmOnlineOrders.ts). The BARM Weekly
 // Sales Report's formulas haven't been specified yet, so the button stays
 // disabled.
 export default function BarmReportsPage() {
-  const [info, setInfo] = useState<GoogleOrdersDataInfo | null>(null);
+  const [info, setInfo] = useState<Awaited<ReturnType<typeof fetchBarmOnlineOrdersDataInfo>> | null>(null);
 
   useEffect(() => {
-    fetchGoogleOrdersDataInfo().then(setInfo);
+    fetchBarmOnlineOrdersDataInfo().then(setInfo);
   }, []);
 
   const caption = !info
     ? "Checking what's on file…"
     : info.error
     ? `Couldn't check — ${info.error}`
-    : info.rowCount
-    ? `Uploaded B-Arm Orders: ${info.minDate ?? "?"} to ${info.maxDate ?? "?"} (${info.rowCount.toLocaleString("en-IN")} rows)`
-    : "No B-Arm Orders uploaded yet";
+    : info.orderCount
+    ? `B-Arm Online Orders: ${info.minDate ?? "?"} to ${info.maxDate ?? "?"} (${info.orderCount.toLocaleString("en-IN")} orders)`
+    : "No B-Arm online orders yet";
 
   return (
     <div className="space-y-8 pb-10">
@@ -33,10 +33,7 @@ export default function BarmReportsPage() {
       <PendingReportCard
         title="BARM Weekly Sales Report (SKU-wise)"
         description={
-          <>
-            Week-by-week BARM report built from the B-Arm Orders workbook uploaded on the{" "}
-            <a href="/dashboard/google/upload" className="underline hover:text-foreground">BARM Upload</a> page.
-          </>
+          <>Week-by-week BARM report built from the barm_online_orders table in Supabase.</>
         }
         dataCaption={caption}
       />
