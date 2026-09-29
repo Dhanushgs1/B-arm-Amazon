@@ -34,6 +34,8 @@ export interface WeeklyChannel {
   name: string;
   /** Header of the per-SKU sheet's sales column (defaults to "Total Sales"). */
   salesHeader?: string;
+  /** False when the channel has no returns data — the per-SKU sheet's return cells then read "Not tracked" instead of 0. */
+  returnsTracked?: boolean;
   listingCheck: string;
   pulledAtNote: (dataPulledAt: string) => string;
   methodNotes: string[];
@@ -399,7 +401,8 @@ export function renderWeeklySalesWorkbook(opts: {
       const price = stat?.price || 0;
       const totalSales = stat?.totalSales || 0;
       const growth = prevTotalSales !== null && prevTotalSales !== 0 ? (totalSales - prevTotalSales) / prevTotalSales : "";
-      rowData.push(orders, allReturns, returns, totalOrders, price, totalSales, growth);
+      const noReturns = channel.returnsTracked === false ? "Not tracked" : null;
+      rowData.push(orders, noReturns ?? allReturns, noReturns ?? returns, totalOrders, price, totalSales, growth);
       prevTotalSales = totalSales;
     });
     aoa.push(rowData);
