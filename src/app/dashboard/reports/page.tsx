@@ -618,8 +618,9 @@ export default function ReportsPage() {
           Status Report and a Low Spend Campaigns list. Built from the data uploaded on the Amazon and Flipkart
           Upload pages and Meesho orders from the meesho_barm_ord table in Supabase, plus a Social Media
           (Meta Ads) Summary row from the Upload page&apos;s &quot;Social Media Ad Spend&quot; card, and a Google
-          Summary row (Orders/Sales only — no ad spend data exists for this channel) from the
-          barm_online_orders table in Supabase. Google Ads campaign spend
+          Summary row (Orders/Sales only — no ad spend data exists for this channel) from the Upload page&apos;s{" "}
+          <a href="/dashboard/upload" className="underline hover:text-foreground">Google Orders (B-Arm)</a>{" "}
+          card (needs scripts/google_orders_table.sql run once in Supabase first). Google Ads campaign spend
           itself still isn&apos;t included — no sample export has been seen for it yet.
         </p>
         <div className="flex flex-wrap gap-2">
