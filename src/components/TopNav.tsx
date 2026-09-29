@@ -137,7 +137,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
     : "from-emerald-500 to-teal-600";
 
   return (
-    <header className="flex items-center gap-3 px-3 sm:px-6 py-3 bg-white/75 dark:bg-slate-950/70 backdrop-blur-xl backdrop-saturate-150 border-b border-slate-200/70 dark:border-slate-800/70 shadow-[0_1px_0_rgba(15,23,42,0.02)] sticky top-0 z-30 flex-wrap">
+    <header className="flex items-center gap-3 px-3 sm:px-6 py-3 bg-white/75 dark:bg-slate-950/70 backdrop-blur-xl backdrop-saturate-150 border-b border-slate-200/70 dark:border-slate-800/70 shadow-[0_1px_0_rgba(15,23,42,0.02)] sticky top-0 z-30 flex-wrap xl:flex-nowrap">
       {/* Mobile Sidebar Toggle */}
       <button
         onClick={onOpenMobileNav}
@@ -161,7 +161,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
       <MarketplaceSwitcher />
 
       {/* Global Search */}
-      <div className="hidden sm:block relative flex-1 min-w-[160px] max-w-[360px]">
+      <div className="hidden sm:block relative flex-1 min-w-0 max-w-[360px]">
         <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
         <input
           placeholder="Search workspace..."
@@ -169,7 +169,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
         />
       </div>
 
-      <div className="flex-grow" />
+      <div className="flex-grow hidden xl:block" />
 
       {/* Date Range Picker */}
       <DateRangePicker lastDataDate={lastDataDate || undefined} />

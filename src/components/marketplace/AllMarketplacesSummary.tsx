@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useQueries } from "@tanstack/react-query";
-import { Loader2, TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { Loader2, TrendingUp, TrendingDown, Minus, Sparkles } from "lucide-react";
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from "recharts";
 import { useDashboard } from "@/lib/DashboardContext";
 import { KPICard } from "@/components/KPICard";
 import {
@@ -64,10 +65,36 @@ export function AllMarketplacesSummary() {
   };
   const range = loaded[0]?.s;
   const best = [...loaded].sort((a, b) => (b.s!.current.sales || 0) - (a.s!.current.sales || 0))[0];
-  const fastest = [...loaded]
-    .map((r) => ({ r, g: growth(r.s!.current.sales || 0, r.s!.previous.sales || 0) }))
-    .filter((x) => x.g !== undefined)
-    .sort((a, b) => (b.g as number) - (a.g as number))[0];
+
+  const insights: string[] = [];
+  if (allLoaded && totals.sales > 0) {
+    const share = (r: (typeof loaded)[number]) => ((r.s!.current.sales || 0) / totals.sales) * 100;
+    if (best) insights.push(`${best.label} is the biggest marketplace at ${cur(best.s!.current.sales || 0)} — ${share(best).toFixed(0)}% of all gross sales.`);
+    const overall = growth(totals.sales, totals.salesPrev);
+    if (overall !== undefined) insights.push(`All marketplaces together: ${cur(totals.sales)}, ${overall >= 0 ? "up" : "down"} ${Math.abs(overall).toFixed(1)}% vs the previous period (${cur(totals.salesPrev)}).`);
+    const movers = loaded
+      .map((r) => ({ r, g: growth(r.s!.current.sales || 0, r.s!.previous.sales || 0) }))
+      .filter((x): x is { r: (typeof loaded)[number]; g: number } => x.g !== undefined);
+    const up = movers.filter((x) => x.g > 0).sort((a, b) => b.g - a.g);
+    const down = movers.filter((x) => x.g < 0).sort((a, b) => a.g - b.g);
+    if (up.length) insights.push(`Growing: ${up.map((x) => `${x.r.label} (+${x.g.toFixed(1)}%)`).join(", ")}.`);
+    if (down.length) insights.push(`Declining: ${down.map((x) => `${x.r.label} (${x.g.toFixed(1)}%)`).join(", ")}.`);
+    const rr = loaded
+      .filter((r) => r.s!.returnsTracked !== false && r.s!.current.units > 0)
+      .map((r) => ({ r, v: (r.s!.current.allReturns / r.s!.current.units) * 100 }))
+      .sort((a, b) => b.v - a.v);
+    if (rr.length) insights.push(`Highest return rate: ${rr[0].r.label} — ${rr[0].v.toFixed(1)}% of units returned (${num(rr[0].r.s!.current.allReturns)} of ${num(rr[0].r.s!.current.units)}).`);
+    const tacos = loaded
+      .filter((r) => r.s!.current.adSpendTax !== null && (r.s!.current.sales || 0) > 0)
+      .map((r) => ({ r, v: ((r.s!.current.adSpendTax || 0) / (r.s!.current.sales || 1)) * 100 }))
+      .sort((a, b) => a.v - b.v);
+    if (tacos.length > 1) insights.push(`Ad spend efficiency (ad spend ÷ gross sales): ${tacos.map((x) => `${x.r.label} ${x.v.toFixed(1)}%`).join(" · ")} — lowest is most efficient.`);
+    const stale = loaded.filter((r) => r.s!.dataThrough && r.s!.dataThrough < r.s!.currentRange.end);
+    if (stale.length) insights.push(`⚠ ${stale.map((r) => `${r.label} data only goes up to ${dot(r.s!.dataThrough!)}`).join("; ")} — its last days read as zero, so its growth looks lower than reality.`);
+  }
+  const chartData = allLoaded
+    ? rows.map((r) => ({ name: r.label, "This period": Math.round(r.s!.current.sales || 0), "Previous period": Math.round(r.s!.previous.sales || 0) }))
+    : [];
 
   return (
     <div className="glass rounded-2xl border border-border p-5 shadow-sm space-y-5">
@@ -86,31 +113,29 @@ export function AllMarketplacesSummary() {
       </div>
 
       {!allLoaded && (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading {rows.filter((r) => !r.s && !r.q.error).map((r) => r.label).join(", ") || "…"} — totals update as each marketplace arrives.
+        <div className="flex items-center gap-2 text-xs text-muted-foreground rounded-xl border border-dashed border-border px-4 py-3">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading {rows.filter((r) => !r.s && !r.q.error).map((r) => r.label).join(", ") || "…"} ({loaded.length} of {rows.length} ready) — the combined totals appear once every marketplace has loaded. Amazon takes the longest.
         </div>
       )}
 
-      {loaded.length > 0 && (
+      {allLoaded && insights.length > 0 && (
+        <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 px-4 py-3 space-y-1.5">
+          <p className="text-[10px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-300 flex items-center gap-1.5">
+            <Sparkles className="w-3 h-3" /> Insights
+          </p>
+          {insights.map((t) => (
+            <p key={t} className="text-xs text-foreground">• {t}</p>
+          ))}
+        </div>
+      )}
+
+      {allLoaded && (
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
           <KPICard title="Total Gross Sales" value={cur(totals.sales)} subtitle={`Last period ${cur(totals.salesPrev)}`} trend={growth(totals.sales, totals.salesPrev)} accent="green" />
           <KPICard title="Orders" value={num(totals.units)} subtitle={`units · ${num(totals.orders)} orders`} trend={growth(totals.units, totals.unitsPrev)} accent="blue" />
           <KPICard title="Returns" value={num(totals.returns)} subtitle="BARM not tracked" trend={growth(totals.returns, totals.returnsPrev)} inverseTrend accent="orange" />
           <KPICard title="Net Orders" value={num(totals.net)} subtitle="Orders − Returns" trend={growth(totals.net, totals.netPrev)} accent="cyan" />
           <KPICard title="Ad Spend" value={cur(totals.spend)} subtitle={totals.sales > 0 ? `${((totals.spend / totals.sales) * 100).toFixed(1)}% of gross sales (TACOS)` : "incl. 18% GST"} trend={growth(totals.spend, totals.spendPrev)} inverseTrend accent="pink" />
-        </div>
-      )}
-
-      {allLoaded && best && (
-        <div className="flex flex-wrap gap-2 text-[11px]">
-          <span className="rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 px-3 py-1 font-bold">
-            🏆 Biggest: {best.label} — {cur(best.s!.current.sales || 0)} ({totals.sales > 0 ? (((best.s!.current.sales || 0) / totals.sales) * 100).toFixed(0) : 0}% of sales)
-          </span>
-          {fastest && (
-            <span className="rounded-full bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 px-3 py-1 font-bold">
-              🚀 Fastest growing: {fastest.r.label} ({(fastest.g as number) > 0 ? "+" : ""}{(fastest.g as number).toFixed(1)}%)
-            </span>
-          )}
         </div>
       )}
 
@@ -155,7 +180,7 @@ export function AllMarketplacesSummary() {
                           <div className="h-1.5 flex-1 rounded-full bg-muted overflow-hidden">
                             <div className="h-full rounded-full" style={{ width: `${Math.round(share * 100)}%`, background: r.color }} />
                           </div>
-                          <span className="w-8 text-right text-muted-foreground">{Math.round(share * 100)}%</span>
+                          <span className="w-8 text-right text-muted-foreground">{share > 0 && share < 0.01 ? "<1" : Math.round(share * 100)}%</span>
                         </div>
                       </td>
                       <td className="py-2.5 pr-3 text-right">{num(s.current.units)} <span className="text-muted-foreground">({num(s.current.orders)})</span></td>
@@ -179,6 +204,25 @@ export function AllMarketplacesSummary() {
           </tbody>
         </table>
       </div>
+      {allLoaded && (
+        <div>
+          <h4 className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-2">Gross Sales — this period vs previous</h4>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={chartData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148,163,184,0.25)" />
+                <XAxis dataKey="name" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => (v >= 100000 ? `₹${(v / 100000).toFixed(1)}L` : `₹${Math.round(v / 1000)}k`)} width={56} />
+                <Tooltip formatter={(v) => cur(Number(v))} cursor={{ fill: "rgba(99,102,241,0.06)" }} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Bar dataKey="Previous period" fill="#CBD5E1" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="This period" fill="#6366F1" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
       <p className="text-[11px] text-muted-foreground">
         Gross Sales basis — Amazon: order item prices · Flipkart: listing price × units (computed) · Meesho: Quantity × Supplier Listed Price · BARM: Order Total Amount once per order. Returns include courier RTO; BARM has no returns data. Ad Spend includes 18% GST. An amber &quot;Data up to&quot; date means that marketplace&apos;s data stops before the end of the selected range.
       </p>
