@@ -3,7 +3,8 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { mcp } from "@/lib/api";
-import { getMarketplaceTab } from "@/lib/marketplace";
+import { getMarketplaceTab, type MarketplaceTab } from "@/lib/marketplace";
+import { fetchChannelLastDataDate } from "@/lib/channelLastDataDate";
 
 type Account = {
   id: string;
@@ -27,8 +28,8 @@ type DashboardState = {
   selectedAsin: string | null;
   setSelectedCampaignName: (name: string | null) => void;
   setSelectedAsin: (asin: string | null) => void;
+  /** Last date with data for the active marketplace tab — see channelLastDataDate.ts. */
   lastDataDate: string | null;
-  setLastDataDate: (date: string | null) => void;
 };
 
 const DashboardContext = createContext<DashboardState | undefined>(undefined);
@@ -87,7 +88,20 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [dateLabel, setDateLabel] = useState("Last 30 Days");
-  const [lastDataDate, setLastDataDate] = useState<string | null>(null);
+  // The date-range presets end on the last date that actually has data for the ACTIVE tab
+  // (Meesho/BARM: their orders table; Flipkart/Amazon: the date most of their sources reach —
+  // see channelLastDataDate.ts), so each tab gets its own date instead of one shared one.
+  const activeTab: MarketplaceTab | null = onDashboard ? getMarketplaceTab(pathname) : null;
+  const [lastDataDateByTab, setLastDataDateByTab] = useState<Partial<Record<MarketplaceTab, string | null>>>({});
+  const lastDataDate = activeTab ? lastDataDateByTab[activeTab] ?? null : null;
+  useEffect(() => {
+    if (!activeTab || activeTab in lastDataDateByTab) return;
+    let cancelled = false;
+    fetchChannelLastDataDate(activeTab).then((d) => {
+      if (!cancelled) setLastDataDateByTab((prev) => ({ ...prev, [activeTab]: d }));
+    });
+    return () => { cancelled = true; };
+  }, [activeTab, lastDataDateByTab]);
 
   useEffect(() => {
     const savedStart = localStorage.getItem('ppc_startDate');
@@ -125,16 +139,17 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
   // The effect above restores the saved *absolute* dates together with the saved
   // label. For a relative label that goes stale: pick "Last 7 Days" today, come
   // back in a fortnight, and the header still reads "Last 7 Days" over a window
-  // that ended two weeks ago. Re-anchor it once per mount, using the same rule
-  // the picker itself uses (end at the last date that actually has data, which
-  // trails today by Amazon's reporting lag). Guarded by a ref because changing
-  // the range refetches the trend, which is what produces lastDataDate.
-  const reanchoredRef = useRef(false);
+  // that ended two weeks ago. Re-anchor it once per tab per last-data date,
+  // using the same rule the picker itself uses (end at the last date that
+  // actually has data for the active tab) — so switching from Amazon to BARM
+  // moves a "Last 14 Days" window to BARM's own last date.
+  const reanchoredRef = useRef<string | null>(null);
   useEffect(() => {
-    if (reanchoredRef.current || !lastDataDate) return;
+    const key = `${activeTab}|${lastDataDate}`;
+    if (reanchoredRef.current === key || !lastDataDate) return;
     const days = RELATIVE_PRESET_DAYS[dateLabel];
     if (!days) return;
-    reanchoredRef.current = true;
+    reanchoredRef.current = key;
 
     const [y, m, d] = lastDataDate.split("-").map(Number);
     const end = new Date(y, m - 1, d);
@@ -148,7 +163,7 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     setEndDate(nextEnd);
     localStorage.setItem('ppc_startDate', nextStart);
     localStorage.setItem('ppc_endDate', nextEnd);
-  }, [lastDataDate, dateLabel, startDate, endDate]);
+  }, [activeTab, lastDataDate, dateLabel, startDate, endDate]);
 
   // Load user context (workspace + account IDs) for a given slot
   const loadContext = async (slot: "A" | "B") => {
@@ -258,7 +273,6 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
         setSelectedCampaignName,
         setSelectedAsin,
         lastDataDate,
-        setLastDataDate,
       }}
     >
       {children}

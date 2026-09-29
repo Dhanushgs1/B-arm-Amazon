@@ -57,7 +57,7 @@ const pctChange = (current: number, previous: number): number | undefined => {
 
 export default function DashboardOverview() {
   const router = useRouter();
-  const { keySlot, startDate, endDate, account, contextLoading, setSelectedCampaignName, setSelectedAsin, setLastDataDate } = useDashboard();
+  const { keySlot, startDate, endDate, account, contextLoading, setSelectedCampaignName, setSelectedAsin } = useDashboard();
   const [trendGranularity, setTrendGranularity] = useState<'daily' | 'weekly' | 'monthly'>('daily');
   const [searchTermTab, setSearchTermTab] = useState<'top' | 'wasted'>('top');
   const [campaignTab, setCampaignTab] = useState<'top' | 'down'>('top');
@@ -96,16 +96,6 @@ export default function DashboardOverview() {
     () => aggregateTrend(dailyTrend || [], trendGranularity),
     [dailyTrend, trendGranularity]
   );
-
-  // Update context with the last date that has actual data
-  useEffect(() => {
-    if (dailyTrend && dailyTrend.length > 0) {
-      const sorted = [...dailyTrend].sort((a, b) => b.rawDate.localeCompare(a.rawDate));
-      if (sorted[0]) {
-        setLastDataDate(sorted[0].rawDate);
-      }
-    }
-  }, [dailyTrend, setLastDataDate]);
 
   const { data: inventoryData, isLoading: inventoryLoading, isError: inventoryError, refetch: refetchInventory } = useQuery({
     queryKey: ["inventory", keySlot, account?.id],
