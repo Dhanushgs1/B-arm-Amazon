@@ -36,6 +36,13 @@ export interface WeeklyChannel {
   salesHeader?: string;
   /** False when the channel has no returns data — the per-SKU sheet's return cells then read "Not tracked" instead of 0. */
   returnsTracked?: boolean;
+  /** When set, the per-SKU sheet gets an extra gross column (PeriodStats.grossSales) before the
+   *  sales column, and the summary sheets show gross next to the (net) sales every decision uses. */
+  grossSalesHeader?: string;
+  /** Adds a TOTAL row under the per-SKU sheet. */
+  totalRow?: boolean;
+  /** Replaces the word "Revenue" in the summary sheets (e.g. "Net Sales"). */
+  revenueLabel?: string;
   listingCheck: string;
   pulledAtNote: (dataPulledAt: string) => string;
   methodNotes: string[];
@@ -364,20 +371,33 @@ export function renderWeeklySalesWorkbook(opts: {
   const growthConsistency = scoredCats.length > 0 ? Math.max(growingCatsCount, decliningCatsCount) / scoredCats.length : 0;
   const growthConfidencePct = Math.round(30 + growthConsistency * 40);
 
+  // Gross (before returns) totals — only for a channel with a separate gross column (Meesho);
+  // every score/decision above stays on totalSales (net for that channel).
+  const hasGross = !!channel.grossSalesHeader;
+  const grossOf = (label: string) => visibleRows.reduce((t, p) => t + (p.periods[label]?.grossSales || 0), 0);
+  const totalThisGross = grossOf(thisLabel);
+  const totalLastGross = grossOf(lastLabel);
+  const grossGrowth = totalLastGross > 0 ? totalThisGross / totalLastGross - 1 : totalThisGross > 0 ? 1 : 0;
+
   // ═══════════════════════════════════════════════════════════════════════
   // ── Main "Amazon Sales" sheet ──
   // Column 0 = Product, column 1 = SKU, column 2 = Category, then 7 columns per period
   // (Orders, All Returns, Customer Returns, Total Orders, Price, Total Sales, Growth %).
   // ═══════════════════════════════════════════════════════════════════════
-  const COLS_PER_PERIOD = 7;
+  const COLS_PER_PERIOD = hasGross ? 8 : 7;
   const LEAD_COLS = 3;
+  // Column positions within a period (the gross column, when present, sits before the sales one).
+  const POS_PRICE = 4;
+  const POS_GROSS = hasGross ? 5 : -1;
+  const POS_SALES = hasGross ? 6 : 5;
+  const POS_GROWTH = hasGross ? 7 : 6;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const headerRow1: any[] = ["Product", "SKU", "Category"];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const headerRow2: any[] = ["", "", ""];
   periods.forEach(() => {
     headerRow1.push(...Array(COLS_PER_PERIOD).fill(""));
-    headerRow2.push("Orders", "All Returns", "Customer Returns", "Total Orders", "Price", channel.salesHeader ?? "Total Sales", "Growth %");
+    headerRow2.push("Orders", "All Returns", "Customer Returns", "Total Orders", "Price", ...(hasGross ? [channel.grossSalesHeader] : []), channel.salesHeader ?? "Total Sales", "Growth %");
   });
   periods.forEach((pd, i) => { headerRow1[LEAD_COLS + i * COLS_PER_PERIOD] = pd.label; });
 
@@ -402,11 +422,29 @@ export function renderWeeklySalesWorkbook(opts: {
       const totalSales = stat?.totalSales || 0;
       const growth = prevTotalSales !== null && prevTotalSales !== 0 ? (totalSales - prevTotalSales) / prevTotalSales : "";
       const noReturns = channel.returnsTracked === false ? "Not tracked" : null;
-      rowData.push(orders, noReturns ?? allReturns, noReturns ?? returns, totalOrders, price, totalSales, growth);
+      rowData.push(orders, noReturns ?? allReturns, noReturns ?? returns, totalOrders, price, ...(hasGross ? [stat?.grossSales || 0] : []), totalSales, growth);
       prevTotalSales = totalSales;
     });
     aoa.push(rowData);
   });
+  const totalRowIndex = channel.totalRow ? aoa.length : -1;
+  if (channel.totalRow) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const row: any[] = ["TOTAL", "", ""];
+    let prev: number | null = null;
+    periods.forEach((pd) => {
+      const sum = (f: (s: (typeof visibleRows)[number]["periods"][string]) => number) =>
+        rowsByCategory.reduce((t, p) => t + (p.periods[pd.label] ? f(p.periods[pd.label]) : 0), 0);
+      const sales = sum((s) => s.totalSales);
+      const noReturns = channel.returnsTracked === false ? "Not tracked" : null;
+      row.push(
+        sum((s) => s.orders), noReturns ?? sum((s) => s.allReturns), noReturns ?? sum((s) => s.returns), sum((s) => s.totalOrders), "",
+        ...(hasGross ? [sum((s) => s.grossSales || 0)] : []), sales, prev !== null && prev !== 0 ? (sales - prev) / prev : ""
+      );
+      prev = sales;
+    });
+    aoa.push(row);
+  }
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   const totalCols = LEAD_COLS + periods.length * COLS_PER_PERIOD;
@@ -468,16 +506,25 @@ export function renderWeeklySalesWorkbook(opts: {
         if (posInPeriod === 3 && typeof cell.v === "number" && cell.v < 0) {
           style.font = { color: { rgb: "B91C1C" }, bold: true };
         }
-        if (posInPeriod === 4) style.numFmt = "#,##0.00"; // Price
-        if (posInPeriod === 5) {
+        if (posInPeriod === POS_PRICE) style.numFmt = "#,##0.00"; // Price
+        if (posInPeriod === POS_GROSS) {
+          style.numFmt = "#,##0.00"; // Gross sales
+          style.font = { color: { rgb: "0F766E" } };
+        }
+        if (posInPeriod === POS_SALES) {
           style.numFmt = "#,##0.00"; // Total Sales
           style.font = { color: { rgb: "059669" }, bold: true };
         }
-        if (posInPeriod === 6 && typeof cell.v === "number") {
+        if (posInPeriod === POS_GROWTH && typeof cell.v === "number") {
           style.numFmt = "0.0%";
           if (cell.v > 0) style.font = { color: { rgb: "047857" }, bold: true };
           else if (cell.v < 0) style.font = { color: { rgb: "B91C1C" }, bold: true };
         }
+      }
+      if (r === totalRowIndex) {
+        style.font = { ...(style.font || {}), bold: true };
+        style.fill = { fgColor: { rgb: "EEF2FF" } };
+        style.border = { ...style.border, top: { style: "medium", color: { rgb: "4F46E5" } } };
       }
       cell.s = style;
     }
@@ -485,7 +532,7 @@ export function renderWeeklySalesWorkbook(opts: {
 
   const wscols = [{ wch: 42 }, { wch: 16 }, { wch: 20 }];
   periods.forEach(() => {
-    wscols.push({ wch: 10 }, { wch: 11 }, { wch: 15 }, { wch: 12 }, { wch: 10 }, { wch: 13 }, { wch: 10 });
+    wscols.push({ wch: 10 }, { wch: 11 }, { wch: 15 }, { wch: 12 }, { wch: 10 }, ...(hasGross ? [{ wch: 16 }] : []), { wch: 13 }, { wch: 10 });
   });
   ws["!cols"] = wscols;
   ws["!views"] = [{ state: "frozen", xSplit: 3, ySplit: 2 }];
@@ -553,6 +600,13 @@ export function renderWeeklySalesWorkbook(opts: {
       { label: "Revenue Difference", value: `${totalThisRev - totalLastRev >= 0 ? "+" : ""}${inr(totalThisRev - totalLastRev)}`, tone: totalThisRev >= totalLastRev ? "good" : "bad" },
     ]);
     sAoA.push(blankRow());
+    if (hasGross) {
+      pushKpiRow([
+        { label: "Gross Sales (This Wk, before returns)", value: `${inr(totalThisGross)} (last wk ${inr(totalLastGross)})` },
+        { label: "Gross Sales Growth %", value: `${arrow(grossGrowth)} ${pctStr(grossGrowth)}`, tone: grossGrowth >= 0 ? "good" : "bad" },
+      ]);
+      sAoA.push(blankRow());
+    }
     pushKpiRow([
       { label: "Orders Growth %", value: `${arrow(ordersGrowthPct)} ${pctStr(ordersGrowthPct)}`, tone: ordersGrowthPct >= 0 ? "good" : "bad" },
       { label: "Units Growth %", value: `${arrow(unitsGrowthPct)} ${pctStr(unitsGrowthPct)}`, tone: unitsGrowthPct >= 0 ? "good" : "bad" },
@@ -1127,6 +1181,11 @@ export function renderWeeklySalesWorkbook(opts: {
     pushSalesRow("Total Revenue (This Wk)", inr(totalThisRev));
     pushSalesRow("Total Revenue (Last Wk)", inr(totalLastRev));
     pushSalesRow("Revenue Growth %", `${arrow(overallGrowth)} ${pctStr(overallGrowth)}`, undefined, overallGrowth >= 0 ? "good" : "bad");
+    if (hasGross) {
+      pushSalesRow("Gross Sales (This Wk, before returns)", inr(totalThisGross));
+      pushSalesRow("Gross Sales (Last Wk, before returns)", inr(totalLastGross));
+      pushSalesRow("Gross Sales Growth %", `${arrow(grossGrowth)} ${pctStr(grossGrowth)}`, undefined, grossGrowth >= 0 ? "good" : "bad");
+    }
     pushSalesRow("Total Orders (This Wk)", totalThisOrders.toLocaleString("en-IN"));
     pushSalesRow("Total Units (This Wk)", totalThisUnits.toLocaleString("en-IN"));
     pushSalesRow("Average Order Value", inr(avgOrderValue));
@@ -1247,6 +1306,14 @@ export function renderWeeklySalesWorkbook(opts: {
       { label: "Revenue Growth %", value: `${arrow(overallGrowth)} ${pctStr(overallGrowth)}`, tone: overallGrowth >= 0 ? "good" : "bad" },
     ]);
     pushBlank();
+    if (hasGross) {
+      pushKpiRow([
+        { label: "Gross Sales (This Wk, before returns)", value: inr(totalThisGross) },
+        { label: "Gross Sales (Last Wk, before returns)", value: inr(totalLastGross) },
+        { label: "Gross Sales Growth %", value: `${arrow(grossGrowth)} ${pctStr(grossGrowth)}`, tone: grossGrowth >= 0 ? "good" : "bad" },
+      ]);
+      pushBlank();
+    }
     pushKpiRow([
       { label: "Total Orders (This Wk)", value: totalThisOrders.toLocaleString("en-IN") },
       { label: "Total Units (This Wk)", value: totalThisUnits.toLocaleString("en-IN") },
@@ -1467,6 +1534,9 @@ export function renderWeeklySalesWorkbook(opts: {
     pushSection("CEO INSIGHTS");
     [
       `Business generated ${inr(totalThisRev)} this week, ${overallGrowth >= 0 ? "up" : "down"} ${pctStr(overallGrowth)} vs ${inr(totalLastRev)} last week.`,
+      ...(hasGross
+        ? [`Before returns (gross), sales were ${inr(totalThisGross)} vs ${inr(totalLastGross)} last week (${pctStr(grossGrowth)}); every decision on this sheet uses the net figure above.`]
+        : []),
       highestRevCategory ? `${highestRevCategory.cat} is the primary revenue engine at ${inr(highestRevCategory.thisRev)} (${(totalThisRev > 0 ? (highestRevCategory.thisRev / totalThisRev) * 100 : 0).toFixed(0)}% of total).` : "No category data available.",
       `Top 5 products account for ${(revenueConcentrationPct * 100).toFixed(0)}% of revenue — ${revenueConcentrationPct >= 0.5 ? "a concentration level worth actively managing" : "a reasonably diversified base"}.`,
       `Overall business health is ${healthBand(businessHealthScore).label} (${businessHealthScore}/100).`,
@@ -1709,6 +1779,24 @@ export function renderWeeklySalesWorkbook(opts: {
     wsNote["!cols"] = [{ wch: 110 }];
     if (wsNote.A1) wsNote.A1.s = { font: { bold: true, sz: 13, color: { rgb: "312E81" } } };
     XLSX.utils.book_append_sheet(wb, wsNote, "Notes");
+  }
+
+  // A channel whose sales figure isn't revenue in the Amazon sense (Meesho: net sales) renames
+  // "Revenue" throughout the summary sheets, so no label says one thing while the number is another.
+  if (channel.revenueLabel) {
+    const word = channel.revenueLabel;
+    ["Growth Summary", "Category Breakdown", `${channel.name} Sales`, "Executive Dashboard", "CEO Decision Center"].forEach((name) => {
+      const sheet = wb.Sheets[name];
+      if (!sheet) return;
+      Object.keys(sheet).forEach((addr) => {
+        if (addr.startsWith("!")) return;
+        const cell = sheet[addr];
+        if (cell && typeof cell.v === "string" && /revenue/i.test(cell.v)) {
+          cell.v = cell.v.replace(/REVENUE/g, word.toUpperCase()).replace(/Revenue/g, word).replace(/revenue/g, word.toLowerCase());
+          if (cell.w) delete cell.w;
+        }
+      });
+    });
   }
 
   const filename = `${channel.name}_Weekly_Sales_Report_${lastWeek.start}_to_${thisWeek.end}.xlsx`;

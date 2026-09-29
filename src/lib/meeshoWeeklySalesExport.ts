@@ -4,22 +4,26 @@ import { loadMeeshoSkuPeriodData } from "@/lib/meeshoSkuPeriodData";
 
 // Meesho Weekly Sales Report — calculated and laid out exactly like the Amazon Weekly Sales
 // Report (the seller's instruction, 29 Sep 2026): same six sheets (Growth Summary, Category
-// Breakdown, Meesho Sales, Executive Dashboard, CEO Decision Center, Notes) and the same formulas —
-// except Total Sales, which is Quantity × Supplier Listed Price per the seller —
+// Breakdown, Meesho Sales, Executive Dashboard, CEO Decision Center, Notes) and the same formulas,
 // by running Meesho's per-SKU data (meeshoSkuPeriodData.ts) through weeklySalesExport.ts's own
-// sheet builder.
+// sheet builder. The Meesho Sales sheet shows both Gross (Quantity × Supplier Listed Price) and
+// Net (Price × Total Orders) sales; Growth % and every decision use Net.
 
 const MEESHO_CHANNEL: WeeklyChannel = {
   name: "Meesho",
-  salesHeader: "Total Sales (Quantity × Supplier Listed Price)",
+  grossSalesHeader: "Total Sales (Quantity × Supplier Listed Price)",
+  salesHeader: "Net Sales (Price × Total Orders)",
+  totalRow: true,
+  revenueLabel: "Net Sales",
   listingCheck: "listing status and search visibility",
   pulledAtNote: (dataPulledAt) => `Data pulled at: ${dataPulledAt}.`,
   methodNotes: [
     "Sources (Supabase): meesho_barm_ord (Orders, Price), meesho_barm_return_intransit / _ofd / _delivered (Returns), barm_daily_ms_barm_ads (ad spend/clicks, used only for the 'Campaign Performance' reason).",
     "Orders = units ordered, by Order Date, every status except CANCELLED. meesho_barm_ord holds repeat loads of the same file, so each Sub Order No is counted once, at its latest status.",
     "All Returns = every return in the three return tables (in transit, out for delivery, delivered), each Suborder Number once, by Return Created Date — customer returns AND courier RTO. Customer Returns = only the 'Customer Return' type (courier RTO excluded).",
-    "Total Orders = Orders − All Returns, left UNCLAMPED — it can go negative for a SKU that had a return recorded this period with no matching order in it (the order belongs to an earlier period). Same rule as the Amazon report.",
-    "Total Sales = Quantity × Supplier Listed Price (Incl. GST + Commission), summed over that week's non-cancelled order rows (the seller's rule — returns do NOT reduce it, unlike the Amazon report's Price × Total Orders). Price = Total Sales ÷ Orders. Growth % compares Total Sales week over week.",
+    "Total Orders = Orders − All Returns, floored at 0 per SKU (a return can land in a week with no matching order — the order belongs to an earlier week).",
+    "GROSS vs NET: 'Total Sales (Quantity × Supplier Listed Price)' is GROSS — every non-cancelled order row's Quantity × Supplier Listed Price (Incl. GST + Commission), before returns. 'Net Sales (Price × Total Orders)' is NET — Price × Total Orders, i.e. after returns. Price = Gross ÷ Orders (average listed price per unit). The gap between the two is the value of the week's returns.",
+    "Growth %, the health scores and every recommendation (Growth Summary, Category Breakdown, Executive Dashboard, CEO Decision Center) use NET sales; those sheets call it 'Net Sales' and show Gross alongside for reference.",
     "Meesho has no stock data here, so the 'Low Stock' reason never appears. Discontinued and uncategorised SKUs are excluded, as in the Amazon report.",
   ],
 };

@@ -54,12 +54,16 @@ function periodsFor(start: string, end: string): PeriodWindow[] {
   ];
 }
 
-function summarize(data: WeeklySkuPeriodData, label: string): PeriodSummary {
+function summarize(data: WeeklySkuPeriodData, label: string, basis: "total" | "gross" = "total"): PeriodSummary {
   const t = data.periodTotals.find((p) => p.label === label)!;
   let orders = 0;
-  data.visibleRows.forEach((p) => { orders += data.orderCountOf(p.sku, label); });
+  let gross = 0;
+  data.visibleRows.forEach((p) => {
+    orders += data.orderCountOf(p.sku, label);
+    gross += p.periods[label]?.grossSales || 0;
+  });
   return {
-    sales: t.totalSales,
+    sales: basis === "gross" ? gross : t.totalSales,
     units: t.orders,
     orders,
     allReturns: t.allReturns,
@@ -79,14 +83,15 @@ export async function fetchMeeshoSummary(start: string, end: string): Promise<Ch
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (adRows as any[]).filter((r) => r.report_date >= p.start && r.report_date <= p.end).reduce((t, r) => t + (Number(r.spend) || 0), 0) * DEFAULT_GST_MULTIPLIER;
   return {
-    current: { ...summarize(data, "current"), adSpendTax: spendIn(periods[1]) },
-    previous: { ...summarize(data, "previous"), adSpendTax: spendIn(periods[0]) },
+    // Gross, same as the weekly report's "Total Sales (Quantity × Supplier Listed Price)" column.
+    current: { ...summarize(data, "current", "gross"), adSpendTax: spendIn(periods[1]) },
+    previous: { ...summarize(data, "previous", "gross"), adSpendTax: spendIn(periods[0]) },
     currentRange: { start, end },
     previousRange: periods[0],
     dataThrough: data.dataThrough,
     // Gross: returns are not deducted — the same figure as the Meesho Weekly Sales Report's Total Sales column.
     salesLabel: "Gross Sales",
-    note: "Gross Sales = Quantity × Supplier Listed Price, before returns (same as the Meesho Weekly Sales Report's Total Sales). Returns include courier RTO; Customer Returns excludes it. Ad Spend includes 18% GST.",
+    note: "Gross Sales = Quantity × Supplier Listed Price, before returns (the Meesho Weekly Sales Report's 'Total Sales' column; its Net Sales column is after returns). Returns include courier RTO; Customer Returns excludes it. Ad Spend includes 18% GST.",
   };
 }
 

@@ -29,6 +29,8 @@ export interface PeriodStats {
   totalOrders: number;
   price: number;
   totalSales: number;
+  /** Only for channels whose weekly report shows a separate gross column (Meesho). */
+  grossSales?: number;
 }
 
 export interface ProductRow {

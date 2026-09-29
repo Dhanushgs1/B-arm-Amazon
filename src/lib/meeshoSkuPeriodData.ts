@@ -15,11 +15,11 @@ import type { WeeklySkuPeriodData } from "@/lib/weeklySalesExport";
 //   All Returns      = units in meesho_barm_return_intransit / _ofd / _delivered, each Suborder
 //                      Number once, by Return Created Date (customer returns and courier RTO).
 //   Customer Returns = the "Customer Return" rows of All Returns (courier RTO excluded), like Amazon.
-//   Total Orders     = Orders − All Returns, unclamped (same as Amazon).
-//   Total Sales      = Σ Quantity × Supplier Listed Price (Incl. GST + Commission) over that
-//                      period's non-cancelled order rows — the seller's rule (29 Sep 2026), NOT
-//                      Amazon's Price × Total Orders, so returns don't reduce it.
-//   Price            = Total Sales ÷ Orders (average listed price per unit).
+//   Total Orders     = Orders − All Returns, floored at 0 per SKU.
+//   Gross Sales      = Σ Quantity × Supplier Listed Price (Incl. GST + Commission) over that
+//                      period's non-cancelled order rows (PeriodStats.grossSales).
+//   Price            = Gross Sales ÷ Orders (average listed price per unit).
+//   Total Sales      = NET = Price × Total Orders — what Growth % and every decision use.
 // Distinct orders are counted by the order number before the "_n" line suffix of Sub Order No.
 // Meesho has no stock data here, so stockOf is always undefined (the Low Stock reason never fires).
 
@@ -143,10 +143,12 @@ export async function loadMeeshoSkuPeriodData(opts: { periods: PeriodWindow[] })
     periods.forEach((pd) => {
       const raw = periodMap.get(pd.label);
       if (!raw) return;
-      const totalOrders = raw.orders - raw.allReturns;
+      // Net Sales = Price × Total Orders, Total Orders floored at 0 (the seller's rule, 29 Sep
+      // 2026); gross (Quantity × Supplier Listed Price, before returns) is kept alongside.
+      const totalOrders = Math.max(0, raw.orders - raw.allReturns);
       const price = raw.orders > 0 ? raw.totalSales / raw.orders : 0;
-      const totalSales = raw.totalSales;
-      p.periods[pd.label] = { orders: raw.orders, allReturns: raw.allReturns, returns: raw.returns, totalOrders, price, totalSales };
+      const totalSales = price * totalOrders;
+      p.periods[pd.label] = { orders: raw.orders, allReturns: raw.allReturns, returns: raw.returns, totalOrders, price, totalSales, grossSales: raw.totalSales };
       p.grandTotalSales += totalSales;
     });
     // Display-only price backfill for a period with no orders, same as Amazon.
