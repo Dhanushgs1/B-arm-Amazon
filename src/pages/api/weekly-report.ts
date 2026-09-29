@@ -8,8 +8,8 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { buildWeeklySalesWorkbookFromHistorical } from "@/lib/weeklySalesExport";
 import { fetchAllRows } from "@/lib/historicalAnalysisReportExport";
-import { buildOrphanSpendDivisor, istDayWindowUtc, isStandardOrderId, isGenuineFbaReturn } from "@/lib/amazonReportShared";
-import { fetchMisAmazonOrders, fetchMisFbaReturns } from "@/lib/misAdapters";
+import { buildOrphanSpendDivisor, istDayWindowUtc, isStandardOrderId } from "@/lib/amazonReportShared";
+import { fetchMisAmazonOrders } from "@/lib/misAdapters";
 import { categorizeTitle, resolveProductName } from "@/lib/categoryMap";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
 import * as XLSX from "xlsx-js-style";
@@ -22,8 +22,8 @@ export const config = {
 };
 
 // Every KPI in this email (Total Sales, Units Ordered, Ad Spend, Ad Sales, ROAS, ACOS, Returns) is
-// sourced from the app's own synced/uploaded data — the MIS tables (fetchMisAmazonOrders,
-// fetchMisFbaReturns) and the barm_amazon_sp/sb/sd_campaign ad-spend tables — never from a live
+// sourced from the app's own synced/uploaded data — the MIS tables (fetchMisAmazonOrders; Returns
+// via the Weekly Sales Report builder's AM + FBA + SellerFlex returns) and the barm_amazon_sp/sb/sd_campaign ad-spend tables — never from a live
 // SellerMate API call. This used to call SellerMate's get_retail_product_performance /
 // get_fba_customer_returns for these numbers; that was replaced after confirming (see the
 // ppc-dashboard-sellermate-summary-bug finding) that get_retail_product_performance is inflated
@@ -115,14 +115,6 @@ async function retailMapBySku(start: string, end: string) {
   return map;
 }
 
-// FBA returns in the window, same "genuine return" filter (excludes courier RTO/undeliverable
-// parcels) the Historical Analysis Report and Weekly Sales Report attachment already use — counts
-// return events (rows), matching what the old get_fba_customer_returns total_count represented.
-async function returnsCount(start: string, end: string): Promise<number> {
-  const rows = await fetchMisFbaReturns((q: any) => q.gte("return_date", start).lte("return_date", end));
-  return rows.filter((r: any) => isGenuineFbaReturn(r)).length;
-}
-
 // Same fixed distribution list as send-ad-spend-email.ts / send-historical-email.ts — used only
 // when the caller doesn't pass `to` (the Reports page's own manual "Send" button, which — like
 // those two — has no per-account Settings row to read a recipient from). The cron and the Settings
@@ -178,8 +170,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const roas = (a: { spend: number; adSales: number }) => (a.spend > 0 ? a.adSales / a.spend : 0);
     const acos = (a: { spend: number; adSales: number }) => (a.adSales > 0 ? (a.spend / a.adSales) * 100 : 0);
 
-    const retThis = await returnsCount(T.start, T.end);
-    const retLast = await returnsCount(L.start, L.end);
+    // Returns KPI = the attached Weekly Sales Report's Customer Returns total (AM + FBA + SellerFlex,
+    // courier RTO excluded), so the email and its attachment share one calculation. The workbook is
+    // built once here and reused for the attachment below. Best-effort: if it fails, the email still
+    // goes out, with Returns shown as "n/a" and no attachment.
+    let weeklyWorkbook: Awaited<ReturnType<typeof buildWeeklySalesWorkbookFromHistorical>> | null = null;
+    try {
+      weeklyWorkbook = await buildWeeklySalesWorkbookFromHistorical({ thisWeek: T, lastWeek: L });
+    } catch (err) {
+      console.error("[Marketplace360] Weekly Amazon Sales Report build failed:", err);
+    }
+    const retThis = weeklyWorkbook?.customerReturns.this ?? 0;
+    const retLast = weeklyWorkbook?.customerReturns.last ?? 0;
+    const retStr = (v: number) => (weeklyWorkbook ? String(v) : "n/a");
 
     const money = (v: number) => (currency === "INR" ? "₹" : "$") + new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(v || 0));
     const compare = [
@@ -189,7 +192,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       { label: "Ad Sales", lastStr: money(lAd.adSales), thisStr: money(tAd.adSales), deltaPct: pctChange(lAd.adSales, tAd.adSales), goodUp: true },
       { label: "ROAS", lastStr: roas(lAd).toFixed(2) + "x", thisStr: roas(tAd).toFixed(2) + "x", deltaPct: pctChange(roas(lAd), roas(tAd)), goodUp: true },
       { label: "ACOS", lastStr: acos(lAd).toFixed(1) + "%", thisStr: acos(tAd).toFixed(1) + "%", deltaPct: pctChange(acos(lAd), acos(tAd)), goodUp: false },
-      { label: "Returns", lastStr: String(retLast), thisStr: String(retThis), deltaPct: pctChange(retLast, retThis), goodUp: false },
+      { label: "Returns", lastStr: retStr(retLast), thisStr: retStr(retThis), deltaPct: weeklyWorkbook ? pctChange(retLast, retThis) : 0, goodUp: false },
     ];
 
     // Per-product movers: only products with meaningful sales in either week
@@ -257,12 +260,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // exactly with the email body. Sourced from uploaded data (barm_amazon_am_orders/returns),
     // not the live API. Best-effort: a failure here must not block the email itself.
     let attachments: any[] | undefined;
-    try {
-      const { wb, filename } = await buildWeeklySalesWorkbookFromHistorical({ thisWeek: T, lastWeek: L });
-      const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
-      attachments = [{ filename, content: buf.toString("base64"), encoding: "base64" }];
-    } catch (err) {
-      console.error("[Marketplace360] Weekly Amazon Sales Report attachment failed:", err);
+    if (weeklyWorkbook) {
+      try {
+        const buf = XLSX.write(weeklyWorkbook.wb, { type: "buffer", bookType: "xlsx" });
+        attachments = [{ filename: weeklyWorkbook.filename, content: buf.toString("base64"), encoding: "base64" }];
+      } catch (err) {
+        console.error("[Marketplace360] Weekly Amazon Sales Report attachment failed:", err);
+      }
     }
 
     let emailResult: any = null;

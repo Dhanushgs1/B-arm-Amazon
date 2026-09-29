@@ -2046,7 +2046,11 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
   }
 
   const filename = `Amazon_Weekly_Sales_Report_${lastWeek.start}_to_${thisWeek.end}.xlsx`;
-  return { wb, filename, dataThrough, staleDays };
+  // Customer Returns column total per week, over the same rows the Amazon Sales sheet shows —
+  // the weekly email's Returns KPI reads this so the email and its attachment always agree.
+  const customerReturnsOf = (label: string) => visibleRows.reduce((sum, p) => sum + (p.periods[label]?.returns || 0), 0);
+  const customerReturns = { last: customerReturnsOf(lastLabel), this: customerReturnsOf(thisLabel) };
+  return { wb, filename, dataThrough, staleDays, customerReturns };
 }
 
 // Browser entry point (Upload Reports page) — same "this week vs last week" windows the email
