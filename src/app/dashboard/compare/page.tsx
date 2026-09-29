@@ -16,6 +16,7 @@ import { fetchFlipkartOverview } from "@/lib/flipkartData";
 import { Loader2, Trophy, TrendingUp, TrendingDown, ArrowRight, FlaskConical, ShieldCheck, Wand2, ShoppingBag, DollarSign, Package, CheckCircle2, Sliders, Sparkles, Brain, Zap, Bot, GitCompare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
+import { AllMarketplacesSummary } from "@/components/marketplace/AllMarketplacesSummary";
 
 const num = (val: number) => new Intl.NumberFormat("en-IN").format(Math.round(val || 0));
 const curWith = (sym: string) => (val: number) => `${sym}${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(val || 0))}`;
@@ -256,7 +257,7 @@ export default function ComparePage() {
               <span className="text-indigo-300 text-[10px] font-black uppercase tracking-widest">Combined Overview</span>
             </div>
             <h1 className="text-2xl font-black tracking-tight text-white">Marketplace Intelligence Dashboard</h1>
-            <p className="text-indigo-300/80 text-xs mt-1 font-semibold">{startDate} – {endDate} · Amazon + Flipkart Aggregated</p>
+            <p className="text-indigo-300/80 text-xs mt-1 font-semibold">{startDate} – {endDate} · Amazon, Flipkart, Meesho &amp; BARM</p>
           </div>
           <Link
             href="/dashboard/ai"
@@ -283,6 +284,9 @@ export default function ComparePage() {
           </div>
         )}
       </div>
+
+      {/* All four marketplaces (Amazon, Flipkart, Meesho, BARM) on one basis */}
+      <AllMarketplacesSummary />
 
       {/* Combined Top KPI Strip */}
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1, duration: 0.5 }}>

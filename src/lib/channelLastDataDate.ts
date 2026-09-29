@@ -39,6 +39,8 @@ async function compute(tab: MarketplaceTab): Promise<string | null> {
   if (tab === "flipkart") {
     return majorityDate(
       await Promise.all([
+        // Full read on purpose: fk_orders has no index on order_date, so an "ORDER BY order_date
+        // DESC LIMIT 1" query hits the database's statement timeout.
         settledMax(fetchMisFkOrdersInfo()),
         settledMax(fetchMisFkReturnsInfo()),
         maxDateOf("barm_flipkart_fsn_report", "report_date"),
@@ -51,6 +53,11 @@ async function compute(tab: MarketplaceTab): Promise<string | null> {
       maxDateOf("barm_amazon_sp_advertised_product", "report_date"),
     ]);
     return majorityDate([mis.am_orders?.maxDate, mis.am_returns?.maxDate, mis.fba_returns?.maxDate, mis.sf_return?.maxDate, spAds]);
+  }
+  if (tab === "compare") {
+    // The "All" tab: the date most of the four marketplaces reach.
+    const tabs: MarketplaceTab[] = ["amazon", "flipkart", "meesho", "barm"];
+    return majorityDate(await Promise.all(tabs.map((t) => fetchChannelLastDataDate(t))));
   }
   return null;
 }

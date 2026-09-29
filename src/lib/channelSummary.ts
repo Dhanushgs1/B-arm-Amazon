@@ -56,16 +56,18 @@ function periodsFor(start: string, end: string): PeriodWindow[] {
 
 function summarize(data: WeeklySkuPeriodData, label: string, basis: "total" | "gross" = "total"): PeriodSummary {
   const t = data.periodTotals.find((p) => p.label === label)!;
-  let orders = 0;
+  // Distinct orders across all SKUs — an order holding two SKUs is one order, not two (same as the
+  // weekly report's own order count).
+  const orderIds = new Set<string>();
   let gross = 0;
   data.visibleRows.forEach((p) => {
-    orders += data.orderCountOf(p.sku, label);
+    data.orderIdsBySkuPeriod.get(`${p.sku}|${label}`)?.forEach((id) => orderIds.add(id));
     gross += p.periods[label]?.grossSales || 0;
   });
   return {
     sales: basis === "gross" ? gross : t.totalSales,
     units: t.orders,
-    orders,
+    orders: orderIds.size,
     allReturns: t.allReturns,
     customerReturns: t.customerReturns,
     netOrders: t.totalOrders,
@@ -157,5 +159,60 @@ export async function fetchFlipkartOrderSummary(start: string, end: string): Pro
     previousRange: periods[0],
     dataThrough: dates.length ? dates[dates.length - 1].slice(0, 10) : null,
     note: "From the Flipkart order and returns reports. Sales = listing price × units (computed, like the Flipkart Weekly Sales Report — not settled revenue). Returns include courier returns; Customer Returns excludes them.",
+  };
+}
+
+// ── "All" tab (/dashboard/compare) ──────────────────────────────────────────
+// One row per marketplace on the SAME basis so they can be added up: Gross Sales = sales before
+// returns (Amazon: order item prices; Flipkart: listing price × units; Meesho: Quantity × Supplier
+// Listed Price; BARM: Order Total Amount once per order). Ad spend includes 18% GST.
+
+async function spendTaxIn(table: string, col: string, start: string, end: string): Promise<number> {
+  const rows = await fetchAllRows(table, (q) => q.gte("report_date", start).lte("report_date", end)).catch(() => []);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (rows as any[]).reduce((t, r) => t + (Number(r[col]) || 0), 0) * DEFAULT_GST_MULTIPLIER;
+}
+
+/** Amazon, from the same MIS tables and rules as the Amazon Weekly Sales Report. */
+export async function fetchAmazonSummary(start: string, end: string): Promise<ChannelSummary> {
+  const periods = periodsFor(start, end);
+  const { loadAmazonSkuPeriodData } = await import("@/lib/amazonSkuPeriodData");
+  const [data, spendCur, spendPrev] = await Promise.all([
+    loadAmazonSkuPeriodData({ periods, includeAds: false }),
+    spendTaxIn("barm_amazon_sp_advertised_product", "spend", start, end),
+    spendTaxIn("barm_amazon_sp_advertised_product", "spend", periods[0].start, periods[0].end),
+  ]);
+  const gross = (label: string) => data.visibleRows.reduce((t, p) => { const s = p.periods[label]; return t + (s ? s.price * s.orders : 0); }, 0);
+  return {
+    current: { ...summarize(data, "current"), sales: gross("current"), adSpendTax: spendCur },
+    previous: { ...summarize(data, "previous"), sales: gross("previous"), adSpendTax: spendPrev },
+    currentRange: { start, end },
+    previousRange: periods[0],
+    dataThrough: data.dataThrough,
+    salesLabel: "Gross Sales",
+    note: "Amazon: order item prices before returns; returns = AM + FBA + SellerFlex; Sponsored Products spend.",
+  };
+}
+
+export interface MarketplaceSummaryRow {
+  id: "amazon" | "flipkart" | "meesho" | "barm";
+  label: string;
+  summary: ChannelSummary;
+}
+
+/** Flipkart for the All tab: the Overview's order summary plus FSN-report ad spend. */
+export async function fetchFlipkartAllSummary(start: string, end: string): Promise<ChannelSummary> {
+  const prev = previousRange(start, end);
+  const [s, cur, before] = await Promise.all([
+    fetchFlipkartOrderSummary(start, end),
+    spendTaxIn("barm_flipkart_fsn_report", "ad_spend", start, end),
+    spendTaxIn("barm_flipkart_fsn_report", "ad_spend", prev.start, prev.end),
+  ]);
+  return {
+    ...s,
+    current: { ...s.current, adSpendTax: cur },
+    previous: { ...s.previous, adSpendTax: before },
+    salesLabel: "Gross Sales",
+    note: "Flipkart: listing price × units (computed); returns from the returns report; FSN ad spend.",
   };
 }
