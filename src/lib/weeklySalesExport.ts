@@ -43,6 +43,8 @@ export interface WeeklyChannel {
   totalRow?: boolean;
   /** Replaces the word "Revenue" in the summary sheets (e.g. "Net Sales"). */
   revenueLabel?: string;
+  /** CEO Decision Center text when the channel has no ad data (defaults to Amazon's Sponsored Products wording). */
+  noAdDataNote?: string;
   listingCheck: string;
   pulledAtNote: (dataPulledAt: string) => string;
   methodNotes: string[];
@@ -264,7 +266,9 @@ export function renderWeeklySalesWorkbook(opts: {
     const growers = ds.filter((d) => d.delta > 0).length;
     const breadthPts = ds.length > 0 ? 20 * (growers / ds.length) : 10;
     const returnRate = units > 0 ? returns / units : 0;
-    const returnPts = 20 * clamp01(1 - returnRate / 0.1);
+    // No returns data at all (channel.returnsTracked === false) is unknown, not "0% returns" —
+    // neutral 10, the same treatment unknown stock gets below.
+    const returnPts = channel.returnsTracked === false ? 10 : 20 * clamp01(1 - returnRate / 0.1);
     const known = ds.filter((d) => d.stock !== undefined);
     const healthyRev = known.filter((d) => (d.stock as number) >= 15).reduce((a, d) => a + d.thisSales, 0);
     const knownRev = known.reduce((a, d) => a + d.thisSales, 0);
@@ -1626,7 +1630,7 @@ export function renderWeeklySalesWorkbook(opts: {
 
     pushSection("ADVERTISING RECOMMENDATIONS");
     if (!hasAdData) {
-      pushWideText("No Sponsored Products data uploaded for this window — advertising recommendations need that export to be generated.");
+      pushWideText(channel.noAdDataNote ?? "No Sponsored Products data uploaded for this window — advertising recommendations need that export to be generated.");
     } else {
       const adDrops = reasonsOfType("Campaign Performance");
       if (adDrops.length === 0) pushWideText("No product's decline this week was attributed to reduced ad spend.");

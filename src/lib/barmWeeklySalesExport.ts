@@ -11,6 +11,7 @@ const BARM_CHANNEL: WeeklyChannel = {
   name: "BARM",
   salesHeader: "Total Sales (Order Total Amount)",
   returnsTracked: false,
+  noAdDataNote: "BARM has no ad data (website orders only), so there are no advertising recommendations.",
   listingCheck: "website listing and search visibility",
   pulledAtNote: (dataPulledAt) => `Data pulled at: ${dataPulledAt}.`,
   methodNotes: [
@@ -19,6 +20,7 @@ const BARM_CHANNEL: WeeklyChannel = {
     "Total Sales = Order Total Amount, counted once per order (it includes shipping). A single-product order's total is that product's sale. Multi-product orders can't be split without guessing, so each week's multi-product orders are summed into one 'Multi-product orders (not split)' row, with Price 0. Price = Total Sales ÷ Orders.",
     "All Returns / Customer Returns read 'Not tracked' — barm_online_orders has no returns data — so Total Orders = Orders.",
     "No stock or ad data exists for BARM, so the 'Low Stock' and 'Campaign Performance' reasons never appear. SKUs with no category are listed as 'Uncategorised' instead of being hidden.",
+    "Health scores: the Returns part (20 of 100 points) is scored a neutral 10 because returns aren't tracked — the same way unknown stock is scored — instead of being treated as 0% returns.",
   ],
 };
 
