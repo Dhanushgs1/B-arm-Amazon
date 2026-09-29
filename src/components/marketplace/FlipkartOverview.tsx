@@ -7,6 +7,8 @@ import { useDashboard } from "@/lib/DashboardContext";
 import { KPICard } from "@/components/KPICard";
 import { TrendChart } from "@/components/TrendChart";
 import { fetchFlipkartOverview } from "@/lib/flipkartData";
+import { ChannelSummaryStrip } from "@/components/marketplace/ChannelSummaryStrip";
+import { fetchFlipkartOrderSummary } from "@/lib/channelSummary";
 import { cn } from "@/lib/utils";
 
 const cur = (val: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(val || 0))}`;
@@ -97,6 +99,8 @@ export function FlipkartOverview() {
         <KPICard title="Ad Sales" value={cur(overview.adSales)} subtitle="Ads-attributed" delay={0.06} accent="blue" />
         <KPICard title="Organic Sales" value={cur(overview.organicSales)} subtitle="Non-ads revenue" delay={0.08} accent="orange" />
       </div>
+
+      <ChannelSummaryStrip channel="Flipkart" fetcher={fetchFlipkartOrderSummary} title="Sales, Orders & Returns" />
 
       {/* Charts Row */}
       <div className="grid grid-cols-1 xl:grid-cols-4 gap-4">

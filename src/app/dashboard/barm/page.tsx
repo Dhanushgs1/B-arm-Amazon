@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { UploadOnlyOverview } from "@/components/marketplace/UploadOnlyOverview";
+import { ChannelSummaryStrip } from "@/components/marketplace/ChannelSummaryStrip";
+import { fetchBarmSummary } from "@/lib/channelSummary";
 import { fetchBarmOnlineOrdersDataInfo } from "@/lib/barmOnlineOrders";
 
 export default function BarmOverviewPage() {
@@ -16,6 +18,7 @@ export default function BarmOverviewPage() {
       title="BARM Overview"
       subtitle="BARM (Google) · Data on file at a glance"
       downloadHref="/dashboard/barm/reports"
+      summary={<ChannelSummaryStrip channel="BARM" fetcher={fetchBarmSummary} />}
       dataOnFile={[
         {
           label: "B-Arm Online Orders (barm_online_orders)",

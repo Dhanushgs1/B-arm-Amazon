@@ -1,4 +1,5 @@
 import { fetchAllRows } from "@/lib/amazonReportShared";
+import { sharedFetch } from "@/lib/sharedFetch";
 
 // Meesho orders now come from the Supabase table meesho_barm_ord (filled
 // outside this app), replacing the old /dashboard/meesho/upload page's
@@ -57,7 +58,11 @@ export interface MeeshoOrderRow {
 }
 
 /** Every Meesho order in meesho_barm_ord, one row per Sub Order No (latest batch wins). */
-export async function fetchMeeshoOrderRows(): Promise<MeeshoOrderRow[]> {
+export function fetchMeeshoOrderRows(): Promise<MeeshoOrderRow[]> {
+  return sharedFetch(MEESHO_ORDERS_TABLE, loadMeeshoOrderRows);
+}
+
+async function loadMeeshoOrderRows(): Promise<MeeshoOrderRow[]> {
   const raw = await fetchAllRows(MEESHO_ORDERS_TABLE, (q) => q);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const latest = new Map<string, any>();
@@ -150,7 +155,11 @@ function readReturnDate(value: unknown, dayFirst: boolean): string | null {
 }
 
 /** Every Meesho return across the three stage tables, one row per Suborder Number. */
-export async function fetchMeeshoReturnRows(): Promise<MeeshoReturnRow[]> {
+export function fetchMeeshoReturnRows(): Promise<MeeshoReturnRow[]> {
+  return sharedFetch("meesho_barm_return_*", loadMeeshoReturnRows);
+}
+
+async function loadMeeshoReturnRows(): Promise<MeeshoReturnRow[]> {
   const tables = await Promise.all(MEESHO_RETURN_TABLES.map((t) => fetchAllRows(t.table, (q) => q)));
   const best = new Map<string, { row: MeeshoReturnRow; rank: number; createdAt: string }>();
   MEESHO_RETURN_TABLES.forEach((t, i) => {

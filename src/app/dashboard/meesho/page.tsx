@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { UploadOnlyOverview } from "@/components/marketplace/UploadOnlyOverview";
+import { ChannelSummaryStrip } from "@/components/marketplace/ChannelSummaryStrip";
+import { fetchMeeshoSummary } from "@/lib/channelSummary";
 import {
   fetchAllMeeshoReportDataInfo,
   MS_REPORT_LABEL,
@@ -23,6 +25,7 @@ export default function MeeshoOverviewPage() {
       title="Meesho Overview"
       subtitle="Meesho · Data on file at a glance"
       downloadHref="/dashboard/meesho/reports"
+      summary={<ChannelSummaryStrip channel="Meesho" fetcher={fetchMeeshoSummary} />}
       dataOnFile={TYPES.map((t) => {
         const i = info?.[t];
         return {

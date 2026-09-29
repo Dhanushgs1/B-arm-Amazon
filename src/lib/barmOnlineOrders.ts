@@ -1,5 +1,6 @@
 import { fetchAllRows } from "@/lib/amazonReportShared";
 import { resolveProductName } from "@/lib/categoryMap";
+import { sharedFetch } from "@/lib/sharedFetch";
 
 // BARM (website) orders now come from the Supabase table barm_online_orders
 // (filled outside this app), replacing the old BARM Upload page and its
@@ -46,7 +47,11 @@ const num = (v: unknown) => {
 };
 
 /** Every Received BARM website order, one entry per Order Number with its lines. */
-export async function fetchBarmOnlineOrders(): Promise<BarmOnlineOrder[]> {
+export function fetchBarmOnlineOrders(): Promise<BarmOnlineOrder[]> {
+  return sharedFetch(BARM_ONLINE_ORDERS_TABLE, loadBarmOnlineOrders);
+}
+
+async function loadBarmOnlineOrders(): Promise<BarmOnlineOrder[]> {
   const raw = await fetchAllRows(BARM_ONLINE_ORDERS_TABLE, (q) => q);
   // Same (order, SKU) loaded twice -> keep the latest load.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
