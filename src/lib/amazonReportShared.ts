@@ -1,4 +1,5 @@
 import { supabasePublic } from "@/lib/amazonReportUpload";
+import { isCourierRtoReturnType } from "@/lib/amazonSpendRules";
 
 // Small helpers shared by every report that reads the manually-uploaded Amazon
 // tables (barm_amazon_*) — split out from historicalAnalysisReportExport.ts so
@@ -83,10 +84,11 @@ export function isStandardOrderId(orderId: string | undefined): boolean {
 export function isGenuineFbaReturn(r: { reason?: string }): boolean {
   return !String(r.reason || "").toUpperCase().startsWith("UNDELIVERABLE");
 }
-// AM returns (Seller Central return-requests export) signals the same thing
-// via "Return type" = "Undelivered" instead of a reason-code prefix.
+// AM returns (Seller Central return-requests export) signal the same thing via "Return type":
+// "Undelivered", "Rejected" and "Undelivered/Rejected" are all courier RTO (Rejected by the seller's
+// decision of 24 Sep 2026, matching FBA's UNDELIVERABLE_REFUSED). SellerFlex's "UNDELIVERED" too.
 export function isGenuineAmReturn(r: { return_type?: string }): boolean {
-  return String(r.return_type || "").toLowerCase() !== "undelivered";
+  return !isCourierRtoReturnType(r.return_type);
 }
 
 // Amazon's Orders/FBA-returns exports carry a timestamp (with time-of-day) in

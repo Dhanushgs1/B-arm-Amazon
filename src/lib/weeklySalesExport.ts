@@ -1,7 +1,8 @@
 import * as XLSX from "xlsx-js-style";
 import { fetchAllRows, isGenuineAmReturn, isGenuineFbaReturn } from "@/lib/historicalAnalysisReportExport";
 import { buildOrphanSpendDivisor, istDayWindowUtc, istDateOnly, isStandardOrderId } from "@/lib/amazonReportShared";
-import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns } from "@/lib/misAdapters";
+import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns } from "@/lib/misAdapters";
+import { dedupeSellerFlexReturns } from "@/lib/amazonSpendRules";
 import { categorizeTitle, resolveProductName, CATEGORY_COLORS } from "@/lib/categoryMap";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog } from "@/lib/masterProductSkuid";
@@ -85,12 +86,16 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
 
   // Fetch every relevant row once across the combined 2-week span, split by date in memory below —
   // same "fetch once, filter twice" approach historicalAnalysisReportExport.ts uses for its 30/7-day windows.
-  const [orderRows, amReturnRows, fbaReturnRows, priceListingRows, ledgerRows, adRows, productMaster, masterSkuid, masterSkuidCatalog, productMarketing] = await Promise.all([
+  const [orderRows, amReturnRows, fbaReturnRows, sfReturnRows, priceListingRows, ledgerRows, adRows, productMaster, masterSkuid, masterSkuidCatalog, productMarketing] = await Promise.all([
     fetchMisAmazonOrders((q) => q.gte("purchase_datetime", ordersWindow.gte).lt("purchase_datetime", ordersWindow.lt)),
     fetchMisAmazonReturns((q) => q.gte("return_request_date", lastWeek.start).lte("return_request_date", thisWeek.end)),
     fetchMisFbaReturns((q) =>
       q.gte("return_date", fbaReturnsWindow.gte).lt("return_date", fbaReturnsWindow.lt)
     ),
+    // SellerFlex (self-fulfilled) returns — a separate export from AM/FBA returns, with no order
+    // overlap between them. Previously never fetched here, so SF-heavy SKUs (Insemination kit,
+    // Ovulation thermometer) under-reported All Returns and over-reported Total Orders.
+    fetchMisSellerFlexReturns((q) => q.gte("pickup_date", lastWeek.start).lte("pickup_date", thisWeek.end)),
     fetchAllRows("barm_amazon_price_listing", (q) => q),
     // The ledger is a point-in-time snapshot of stock on hand, not a per-day history — it holds
     // whichever date the last upload covered, which is normally AFTER the report window. Filtering
@@ -241,6 +246,19 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
     const s = ensurePeriodStat(r.sku, pd.label);
     s.allReturns += qty;
     if (isGenuineFbaReturn(r)) s.returns += qty;
+  });
+  // The MIS amazon_seller_flex_return table holds each return several times over (one copy per
+  // re-upload), so each (order, shipment, mSKU) counts once — see dedupeSellerFlexReturns.
+  // pickup_date is already an IST calendar date.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dedupeSellerFlexReturns(sfReturnRows as any[]).forEach((r: any) => {
+    const pd = periodForDate(r.pickup_date);
+    if (!pd) return;
+    const qty = r.units || 0;
+    const s = ensurePeriodStat(r.msku, pd.label);
+    s.allReturns += qty;
+    // SF's "Return Type" uses the same UNDELIVERED / CUSTOMER_RETURN split as AM returns.
+    if (isGenuineAmReturn(r)) s.returns += qty;
   });
 
   // ── Stock-on-hand (best-effort — only used for the Growth Summary's "Low stock" reason) ──
@@ -2019,6 +2037,7 @@ export async function buildWeeklySalesWorkbookFromHistorical(opts: {
         ? [[`⚠ READ THIS FIRST — the uploaded/synced Orders data only reaches ${fmtDot(dataThrough!)}, but "this week" runs to ${fmtDot(thisWeek.end)}. So this week is measured over ${Math.max(0, 7 - staleDays)} day(s) of data against a full 7 for last week, and EVERY Growth % below is therefore far more negative than reality. This is missing data, not falling demand. Either sync/upload newer orders, or set the dashboard end date to ${fmtDot(dataThrough!)} and regenerate.`]]
         : []),
       ["Orders/returns are bucketed by IST calendar day (purchase_datetime / return_date shifted +5:30), matching the Historical Analysis Report's convention, not by the raw UTC date — an order or return from the last ~5.5 hours of the UTC day would otherwise land on the wrong day in one report but not the other."],
+      ["All Returns = AM returns + FBA returns + SellerFlex returns (each SF return counted once — the MIS table stores repeat uploads of the same return). Customer Returns excludes courier RTO / undelivered parcels from all three."],
       ["Total Orders = Orders − All Returns, left UNCLAMPED — it can go negative for a SKU that had a return recorded this period with no matching order in it (the order belongs to an earlier period). Matches the Historical Analysis Report's 'Final' column, which is unclamped for the same reason."],
     ]);
     wsNote["!cols"] = [{ wch: 110 }];
