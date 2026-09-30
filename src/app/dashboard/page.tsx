@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { useDashboard } from "@/lib/DashboardContext";
 import { mcp, mcpAllPages, mcpAllInventory, fetchUnifiedDailyTrend, aggregateTrend } from "@/lib/api";
 import { fetchMissingCampaignHistory, injectMissingCampaignsAsPaused } from "@/lib/campaignPersistence";
+import { fetchLknOrdersSummary, fetchLknOrderUnitsIst } from "@/lib/lknOrders";
 import { KPICard } from "@/components/KPICard";
 import { QueryErrorState } from "@/components/QueryErrorState";
 import { TrendChart, UnifiedTrendChart } from "@/components/TrendChart";
@@ -203,10 +204,19 @@ export default function DashboardOverview() {
     return isoDate(d);
   }, [endDate]);
 
+  // LKN (slot "A") only: get_orders_report's end_date turned out to be INCLUSIVE for
+  // this account (verified live — the +1 above summed a whole extra day, e.g. 26–27
+  // Sep read ₹3,66,564 instead of ~₹2,36,906), so LKN goes through lknOrders.ts
+  // instead. Barm (slot "B") stays on the path above, unchanged.
+  const isLkn = keySlot === "A";
+  const ordersBase = { amazon_account_id: account?.id, workspace_id: account?.workspace_id };
+
   // Fetch state-wise order breakdown
   const { data: ordersReportData } = useQuery({
     queryKey: ["orders_report_states", keySlot, account?.id, startDate, endDate],
-    queryFn: () => mcp("get_orders_report", { ...baseArgs, end_date: ordersEndDateExclusive, top_states: 100 }, keySlot),
+    queryFn: () => isLkn
+      ? fetchLknOrdersSummary(ordersBase, startDate, endDate, keySlot)
+      : mcp("get_orders_report", { ...baseArgs, end_date: ordersEndDateExclusive, top_states: 100 }, keySlot),
     enabled: !!account,
   });
 
@@ -246,6 +256,7 @@ export default function DashboardOverview() {
   const { data: ordersUnitsFallback } = useQuery({
     queryKey: ["orders_units_fallback", keySlot, account?.id, startDate, ordersEndDateExclusive],
     queryFn: async () => {
+      if (isLkn) return (await fetchLknOrderUnitsIst(ordersBase, startDate, endDate, keySlot)).units;
       let total = 0;
       for (let page = 0; page < 40; page++) {
         const res = await mcp("get_orders_report", {
@@ -267,6 +278,22 @@ export default function DashboardOverview() {
   });
   const totalUnits = rs.totalUnitsOrdered || ordersUnitsFallback || 0;
 
+  // LKN only: the previous-window baseline goes through the same corrected orders
+  // logic, so a trend badge never compares a fixed current value against a stale or
+  // inflated one. Gated on the same retail-missing checks as the current window.
+  const prevRetailSalesMissing = prevRetailData !== undefined && !prevRetailData?.summary?.totalSales;
+  const prevRetailUnitsMissing = prevRetailData !== undefined && !prevRetailData?.summary?.totalUnitsOrdered;
+  const { data: prevLknOrders } = useQuery({
+    queryKey: ["orders_summary_prev_lkn", keySlot, account?.id, prevRange.start, prevRange.end],
+    queryFn: () => fetchLknOrdersSummary(ordersBase, prevRange.start, prevRange.end, keySlot),
+    enabled: !!account && isLkn && !!prevRange.start && prevRetailSalesMissing,
+  });
+  const { data: prevLknUnits } = useQuery({
+    queryKey: ["orders_units_prev_lkn", keySlot, account?.id, prevRange.start, prevRange.end],
+    queryFn: async () => (await fetchLknOrderUnitsIst(ordersBase, prevRange.start, prevRange.end, keySlot)).units,
+    enabled: !!account && isLkn && !!prevRange.start && prevRetailUnitsMissing,
+  });
+
   // Same derivations against the previous window, so every trend badge compares
   // like with like. While these queries are in flight the values are 0 and
   // pctChange returns undefined, which renders no badge rather than a wrong one.
@@ -275,10 +302,10 @@ export default function DashboardOverview() {
   const prevCtr = ps.totalImpressions ? (ps.totalClicks / ps.totalImpressions) * 100 : 0;
   const prevCpc = ps.totalClicks ? ps.totalSpend / ps.totalClicks : 0;
   const prevCvr = ps.totalClicks ? (ps.totalOrders / ps.totalClicks) * 100 : 0;
-  const prevTotalSales = prs.totalSales || 0;
+  const prevTotalSales = prs.totalSales || (isLkn ? prevLknOrders?.summary?.totalValue : 0) || 0;
   const prevAdSales = prs.totalAdSales || ps.totalSales || 0;
   const prevOrganicSales = Math.max(0, prevTotalSales - prevAdSales);
-  const prevTotalUnits = prs.totalUnitsOrdered || 0;
+  const prevTotalUnits = prs.totalUnitsOrdered || (isLkn ? prevLknUnits : 0) || 0;
   const prevTacos = prs.overallTacos || 0;
 
   // Shown on the badge tooltip so the number is self-explanatory.
