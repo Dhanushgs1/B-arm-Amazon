@@ -154,7 +154,17 @@ export async function parseGoogleOrdersFile(file: File): Promise<GoogleOrdersPar
     rows = parsed.rows as unknown as Record<string, unknown>[];
     rowsWithoutPrice = parsed.rowsWithoutPrice;
   } else {
-    rows = rawRows.map(mapOrderRow).filter((r) => REQUIRED_FIELDS.every((f) => r[f as keyof typeof r] !== null && r[f as keyof typeof r] !== undefined && r[f as keyof typeof r] !== ""));
+    // Newer copies of this workbook drop the Invoice column (S no, Date, sku, Qty, Price) — such a
+    // row is keyed "ORDER-<date>-<SKU>-<n>" (n = 1st, 2nd … line for that SKU on that date, file
+    // order) like the offline layout, so re-uploading the same file updates rows in place.
+    const occurrence = new Map<string, number>();
+    rows = rawRows.map(mapOrderRow).map((r) => {
+      if (r.invoice || !r.order_date || !r.product_name) return r;
+      const key = `${r.order_date}|${r.product_name}`;
+      const n = (occurrence.get(key) || 0) + 1;
+      occurrence.set(key, n);
+      return { ...r, invoice: `ORDER-${r.order_date}-${r.product_name}-${n}` };
+    }).filter((r) => REQUIRED_FIELDS.every((f) => r[f as keyof typeof r] !== null && r[f as keyof typeof r] !== undefined && r[f as keyof typeof r] !== ""));
   }
   const dates = rows.map((r) => r.order_date as string | null).filter((d): d is string => !!d).sort();
   return {
