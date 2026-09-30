@@ -137,6 +137,8 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
   // extra row appended after the real platform rows below — same column shape as a one-product
   // platform block, just built from a differently-shaped object (no topProducts/allProducts list,
   // since there's only ever the one product).
+  // Orders/CPC/ACOS render as "-": Meta's export has spend only, and borrowing the promoted
+  // product's Amazon orders double-credited them to two channels (seller's explicit instruction).
   const socialMedia = data.socialMediaSummary;
   const socialMediaRowHtml = socialMedia
     ? `
@@ -148,14 +150,14 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
           <td ${td}>${socialMedia.price ? money(socialMedia.price) : "-"}</td>
           <td ${td}>${money(socialMedia.day.spend)}</td>
           <td ${td}>${money(socialMedia.day.spendTax)}</td>
-          <td ${td}>${socialMedia.day.orders}</td>
-          <td ${td}>${num(socialMedia.day.cpc)}</td>
-          <td class="aspd-td ${acosClass(socialMedia.day.acos)}">${acosPct(socialMedia.day.acos)}</td>
+          <td ${td}>-</td>
+          <td ${td}>-</td>
+          <td ${td}>-</td>
           <td ${td}>${money(socialMedia.range.spend)}</td>
           <td ${td}>${money(socialMedia.range.spendTax)}</td>
-          <td ${td}>${socialMedia.range.orders}</td>
-          <td ${td}>${num(socialMedia.range.cpc)}</td>
-          <td class="aspd-td ${acosClass(socialMedia.range.acos)}">${acosPct(socialMedia.range.acos)}</td>
+          <td ${td}>-</td>
+          <td ${td}>-</td>
+          <td ${td}>-</td>
           <td ${td}>-</td>
           <td ${td}>-</td>
         </tr>`
