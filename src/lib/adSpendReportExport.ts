@@ -3,7 +3,6 @@ import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } fr
 import { spCampaignDays, isSplitCoveredCampaignRow } from "@/lib/amazonSpendRules";
 import { upsertInChunks } from "@/lib/amazonReportUpload";
 import { toDate as parseFlexibleDate } from "@/lib/meeshoReportUpload";
-import { fetchMeeshoOrderRowsInRange } from "@/lib/meeshoBarmOrd";
 import { resolveProductName } from "@/lib/categoryMap";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog, fetchMasterSkuidsByName, gstMultiplierFromTax, DEFAULT_GST_MULTIPLIER } from "@/lib/masterProductSkuid";
@@ -20,8 +19,8 @@ import { SITE_URL } from "@/lib/siteUrl";
 // Sourced entirely from manually-uploaded tables — no live API call anywhere.
 // Amazon/Flipkart read the same barm_amazon_*/barm_flipkart_* tables the
 // Historical Analysis Report reads; Meesho reads ad spend from barm_daily_ms_barm_ads
-// (combined upload sheet "MS BARM ads") and orders from meesho_barm_ord
-// (see src/lib/meeshoBarmOrd.ts). Google Ads
+// and orders from barm_daily_ms_barm_orders (combined upload sheets "MS BARM ads" /
+// "MS BARM ord"). Google Ads
 // and social-media (Meta) spend are not included — no sample export has been
 // seen for either yet, so there's no column layout to build a parser from.
 //
@@ -1082,10 +1081,25 @@ export async function fetchFlipkartListingPriceMap(): Promise<Map<string, number
 // ── Meesho ───────────────────────────────────────────────────────────────────
 // barm_daily_ms_barm_ads is filled by the combined upload (combinedAdSpendUpload.ts) from the
 // seller's own hand-assembled workbook column names (see that file's header
-// comment); orders come from meesho_barm_ord via src/lib/meeshoBarmOrd.ts. A
+// comment), and so is barm_daily_ms_barm_orders (see fetchMeeshoDailyOrderRows). A
 // failed fetch doesn't take down the Amazon/Flipkart report, but it is never
 // passed off as "no Meesho data" either: each failure is kept in loadErrors and
 // shown on the Summary, the Meesho sheets, Notes, the dashboard and the email.
+// Meesho orders for this report: the "MS BARM ord" sheet the combined upload writes to
+// barm_daily_ms_barm_orders every day — by the seller's choice of 30 Sep 2026, since
+// meesho_barm_ord is loaded from outside the app and ran days behind (it stopped at 24 Sep
+// while the daily upload had orders through 29 Sep). Renamed to the column names used below.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function fetchMeeshoDailyOrderRows(start: string, end: string): Promise<any[]> {
+  const rows = await fetchAllRows("barm_daily_ms_barm_orders", (q) => q.gte("report_date", start).lte("report_date", end));
+  return rows.map((r) => ({
+    ...r,
+    order_date: r.report_date,
+    supplier_listed_price: r.listed_price,
+    supplier_discounted_price: r.discounted_price,
+  }));
+}
+
 export async function fetchMeeshoProducts(
   range: { start: string; end: string },
   endDate: string
@@ -1111,9 +1125,7 @@ export async function fetchMeeshoProducts(
     // barm_meesho_ads was dropped (29 Sep 2026); barm_daily_ms_barm_ads is the
     // combined upload's "MS BARM ads" copy with the same columns and rows.
     fetchAllRows("barm_daily_ms_barm_ads", (q) => q.gte("report_date", range.start).lte("report_date", endDate)).catch(loadFailed("barm_daily_ms_barm_ads")),
-    // Orders come from meesho_barm_ord (see meeshoBarmOrd.ts), normalised to
-    // the barm_meesho_orders column names used below.
-    fetchMeeshoOrderRowsInRange(range.start, endDate).catch(loadFailed("meesho_barm_ord")),
+    fetchMeeshoDailyOrderRows(range.start, endDate).catch(loadFailed("barm_daily_ms_barm_orders")),
     // meesho_price_marketing (scripts/meesho_price_marketing_table.sql) holds
     // the live scraped Meesho listing price per SKU — the same role
     // barm_amazon_price_listing/barm_flipkart_listings play for the other two
@@ -2780,7 +2792,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     header: ["Product", "Quantity", "Price", "Sales"],
     rows: meeshoLeaderboardRows,
     currencyCols: [2, 3],
-  }, meeshoEmptyText("meesho_barm_ord"));
+  }, meeshoEmptyText("barm_daily_ms_barm_orders"));
 
   // ── B Arm orders — Google's own Product/Date/Quantity/Price/Sales
   // breakdown, one row per day per product across the full 7-day range —
