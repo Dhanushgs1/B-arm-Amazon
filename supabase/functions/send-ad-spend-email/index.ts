@@ -235,6 +235,19 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
           </table>
         </td></tr>`
     : "";
+  // A Meesho table that failed to load (see adSpendReportExport.ts's dataLoadErrors) — red, not
+  // amber: those figures are missing, not just late, and must not read as a quiet day.
+  const dataLoadErrors: { platform: string; error: string }[] = data.dataLoadErrors || [];
+  const loadErrorBanner = dataLoadErrors.length
+    ? `<tr><td style="padding-bottom:16px;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fee2e2;border:1px solid #dc2626;border-radius:10px;">
+            <tr><td style="padding:12px 14px;">
+              <p style="margin:0 0 4px;color:#991b1b;font-size:12.5px;font-weight:800;">&#9888; Some data could not be loaded — these figures are missing, not zero</p>
+              ${dataLoadErrors.map((d) => `<p style="margin:0;color:#991b1b;font-size:11.5px;font-weight:600;">${d.platform}: ${d.error}</p>`).join("")}
+            </td></tr>
+          </table>
+        </td></tr>`
+    : "";
 
   // Full per-product breakdown for Amazon and Flipkart specifically — matching the manual
   // mail's separate "Here is the Amazon/Flipkart platform's ad spend report" tables, which
@@ -303,6 +316,7 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
             Here is the summary of the ad spend report.
           </p>
         </td></tr>
+        ${loadErrorBanner}
         ${incompleteBanner}
         <tr><td style="padding-top:6px;">
           <div style="overflow-x:auto;">
@@ -402,6 +416,7 @@ Deno.serve(async (req: Request) => {
         endDate: string; rangeStart: string; filename: string; productCount: number;
         platformTotals: unknown; platformSummaries: unknown; socialMediaSummary: unknown; googleSummary: unknown; lowSpendCampaignCount: number;
         incompleteDates: unknown;
+        dataLoadErrors?: unknown;
       };
       // dmy(): 'YYYY-MM-DD' -> 'DD-MM-YYYY' — same as adSpendReportExport.ts's
       // dotDate/send-ad-spend-email.ts's dmy, ported identically.
@@ -421,6 +436,7 @@ Deno.serve(async (req: Request) => {
         productCount: result.productCount,
         lowSpendCampaignCount: result.lowSpendCampaignCount,
         incompleteDates: result.incompleteDates,
+        dataLoadErrors: result.dataLoadErrors,
       }), escapeHtml(to));
 
       const info = await transporter.sendMail({

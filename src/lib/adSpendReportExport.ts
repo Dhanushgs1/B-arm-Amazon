@@ -1082,11 +1082,10 @@ export async function fetchFlipkartListingPriceMap(): Promise<Map<string, number
 // ── Meesho ───────────────────────────────────────────────────────────────────
 // barm_daily_ms_barm_ads is filled by the combined upload (combinedAdSpendUpload.ts) from the
 // seller's own hand-assembled workbook column names (see that file's header
-// comment); orders come from meesho_barm_ord via src/lib/meeshoBarmOrd.ts. All
-// three fetches are wrapped in .catch(() => []) because their tables may not
-// exist yet (scripts/meesho_tables.sql / scripts/meesho_price_marketing_table.sql
-// not run) — that must degrade to "no Meesho data" / "no marketing price"
-// rather than take down the whole report.
+// comment); orders come from meesho_barm_ord via src/lib/meeshoBarmOrd.ts. A
+// failed fetch doesn't take down the Amazon/Flipkart report, but it is never
+// passed off as "no Meesho data" either: each failure is kept in loadErrors and
+// shown on the Summary, the Meesho sheets, Notes, the dashboard and the email.
 export async function fetchMeeshoProducts(
   range: { start: string; end: string },
   endDate: string
@@ -1101,21 +1100,27 @@ export async function fetchMeeshoProducts(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows: any[];
   revenueRangeBySku: Map<string, number>;
+  loadErrors: string[];
 }> {
+  const loadErrors: string[] = [];
+  const loadFailed = (table: string) => (e: unknown): never[] => {
+    loadErrors.push(`${table}: ${e instanceof Error ? e.message : String(e)}`);
+    return [];
+  };
   const [adsRows, orderRows, marketingRows] = await Promise.all([
     // barm_meesho_ads was dropped (29 Sep 2026); barm_daily_ms_barm_ads is the
     // combined upload's "MS BARM ads" copy with the same columns and rows.
-    fetchAllRows("barm_daily_ms_barm_ads", (q) => q.gte("report_date", range.start).lte("report_date", endDate)).catch(() => []),
+    fetchAllRows("barm_daily_ms_barm_ads", (q) => q.gte("report_date", range.start).lte("report_date", endDate)).catch(loadFailed("barm_daily_ms_barm_ads")),
     // Orders come from meesho_barm_ord (see meeshoBarmOrd.ts), normalised to
     // the barm_meesho_orders column names used below.
-    fetchMeeshoOrderRowsInRange(range.start, endDate).catch(() => []),
+    fetchMeeshoOrderRowsInRange(range.start, endDate).catch(loadFailed("meesho_barm_ord")),
     // meesho_price_marketing (scripts/meesho_price_marketing_table.sql) holds
     // the live scraped Meesho listing price per SKU — the same role
     // barm_amazon_price_listing/barm_flipkart_listings play for the other two
-    // platforms. Wrapped in .catch(() => []) like the tables above: if this
-    // table hasn't been created yet, Meesho just falls all the way back to
-    // its old order-derived price below rather than breaking the report.
-    fetchAllRows("meesho_price_marketing", (q) => q).catch(() => []),
+    // platforms. A failure is recorded like the tables above, and Meesho
+    // falls back to its order-derived price below rather than breaking the
+    // report.
+    fetchAllRows("meesho_price_marketing", (q) => q).catch(loadFailed("meesho_price_marketing")),
   ]);
 
   const isCancelled = (status: unknown) => String(status || "").toUpperCase().startsWith("CANCEL");
@@ -1256,7 +1261,7 @@ export async function fetchMeeshoProducts(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   adsRows.forEach((r: any) => { if (r.report_date) reportDates.add(r.report_date); });
 
-  return { products, overallDay, overallRange, campaigns, reportDates, adsRows, orderRows, revenueRangeBySku: revenueBySku };
+  return { products, overallDay, overallRange, campaigns, reportDates, adsRows, orderRows, revenueRangeBySku: revenueBySku, loadErrors };
 }
 
 // ── Social Media (Meta Ads) ──────────────────────────────────────────────────
@@ -1708,7 +1713,8 @@ function rawRowsToSheet(
   sheetName: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   rows: any[],
-  sideBlock?: SideBlock
+  sideBlock?: SideBlock,
+  emptyText = "(no data in range)"
 ): void {
   const rawRows: Record<string, unknown>[] = rows.map((r) => r?.raw).filter((r): r is Record<string, unknown> => !!r);
   const writeSideBlock = (ws: XLSX.WorkSheet, colStart: number) => {
@@ -1725,7 +1731,7 @@ function rawRowsToSheet(
     wsCols.push({ wch: 40 }, ...sideBlock.header.slice(1).map(() => ({ wch: 12 })));
   };
   if (!rawRows.length) {
-    const ws = XLSX.utils.aoa_to_sheet([["(no data in range)"]]);
+    const ws = XLSX.utils.aoa_to_sheet([[emptyText]]);
     writeSideBlock(ws, 2);
     XLSX.utils.book_append_sheet(wb, ws, sheetName);
     return;
@@ -1933,6 +1939,9 @@ export interface AdSpendReportResult {
   // zero rows at all (Meesho not yet onboarded, say) is a different problem
   // and not reported here.
   incompleteDates: { platform: Platform; missingDates: string[] }[];
+  // A platform table that failed to load (query/database error) — kept apart from "no data" so a
+  // broken read is never mistaken for a quiet day. Only Meesho reports these today.
+  dataLoadErrors: { platform: Platform; error: string }[];
 }
 
 // Persists one row per product per platform into barm_ad_spend_history (see
@@ -2086,7 +2095,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   if (!amz.products.size && !fk.products.size && !ms.products.size) {
     throw new Error(
       `No uploaded Amazon, Flipkart or Meesho ad/order data in ${dotDate(range.start)} to ${dotDate(endDate)}. ` +
-        `Upload the reports for that period on the Upload pages first.`
+        `Upload the reports for that period on the Upload pages first.` +
+        (ms.loadErrors.length ? ` Meesho data could not be loaded: ${ms.loadErrors.join("; ")}` : "")
     );
   }
 
@@ -2347,7 +2357,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
         ]);
       });
     } else {
-      sumAoa.push([platform, 0, 0, "(no ad spend in range)", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", overallDay.units, round2(overallDay.value)]);
+      sumAoa.push([platform, 0, 0, platform === "Meesho" && ms.loadErrors.length ? "⚠ Meesho data could not be loaded — see Notes" : "(no ad spend in range)", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", overallDay.units, round2(overallDay.value)]);
     }
     if (blockRows > 1) {
       [0, 1, 2, 19, 20].forEach((c) => sumMerges.push({ s: { r: blockStart, c }, e: { r: blockStart + blockRows - 1, c } }));
@@ -2423,6 +2433,13 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     googleSummary = { totalUnits: googleOrders.dayUnits, totalValue: round2(googleOrders.dayValue) };
   }
 
+  // A Meesho table that failed to load must never pass for a quiet day (see fetchMeeshoProducts).
+  let meeshoErrorRow: number | null = null;
+  if (ms.loadErrors.length) {
+    meeshoErrorRow = sumAoa.length + 1;
+    sumAoa.push([], [`⚠ Meesho data could not be loaded (database/query error, not an empty day) — Meesho figures above are missing or incomplete: ${ms.loadErrors.join("; ")}`]);
+  }
+
   // Optimization suggestions (Gemini) — replaces the Action Sheet's generic tiered text with a
   // real per-campaign bid-cut/negative-keyword recommendation, for both Amazon and Flipkart rows,
   // matching the seller's own request. One Gemini call per platform covers every flagged campaign
@@ -2454,6 +2471,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // treatment as Social Media above, Google's own brand blue, no dashboard hyperlink (there's no
   // dedicated Google analytics page, just the Upload page's Google Orders (B-Arm) card).
   if (googleRow !== null) styleLabel(wsSummary, XLSX.utils.encode_cell({ r: googleRow, c: 0 }), "4285F4");
+  const meeshoErrorCell = meeshoErrorRow !== null ? wsSummary[XLSX.utils.encode_cell({ r: meeshoErrorRow, c: 0 })] : undefined;
+  if (meeshoErrorCell) meeshoErrorCell.s = { font: { bold: true, color: { rgb: "B91C1C" } } };
   wsSummary["!cols"] = [
     { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 60 }, { wch: 10 },
     { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 24 }, { wch: 13 }, { wch: 13 }, { wch: 13 }, // day block: Spend, Spend(with tax), Total Orders, Total Sales (wider header), CPC, ACOS, Ad Sales
@@ -2744,7 +2763,11 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   rawRowsToSheet(wb, "Amazon orders", amz.orderRows);
   rawRowsToSheet(wb, "Flipkart Spend", fk.fsnRows);
   rawRowsToSheet(wb, "Flipkart Orders", fk.orderRows);
-  rawRowsToSheet(wb, "Meesho (B Arm) Spend", ms.adsRows);
+  const meeshoEmptyText = (table: string): string | undefined => {
+    const err = ms.loadErrors.find((e) => e.startsWith(`${table}:`));
+    return err ? `⚠ Could not load Meesho data — ${err}. This is a database/query error, not an empty day: regenerate the report once it's fixed.` : undefined;
+  };
+  rawRowsToSheet(wb, "Meesho (B Arm) Spend", ms.adsRows, undefined, meeshoEmptyText("barm_daily_ms_barm_ads"));
   // Meesho orders also gets a Product/Quantity/Price/Sales leaderboard next to
   // the raw dump — same shape and formula (Sales = Price x range Quantity) as
   // the cross-platform "B Arm orders" sheet below, scoped to just Meesho here,
@@ -2757,7 +2780,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     header: ["Product", "Quantity", "Price", "Sales"],
     rows: meeshoLeaderboardRows,
     currencyCols: [2, 3],
-  });
+  }, meeshoEmptyText("meesho_barm_ord"));
 
   // ── B Arm orders — Google's own Product/Date/Quantity/Price/Sales
   // breakdown, one row per day per product across the full 7-day range —
@@ -2800,6 +2823,13 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           [""],
         ]
       : []),
+    ...(ms.loadErrors.length
+      ? [
+          ["⚠ MEESHO DATA COULD NOT BE LOADED — a database/query error, not an empty day. Every Meesho figure in this report is missing or understated until it's fixed and the report is regenerated:"],
+          ...ms.loadErrors.map((e) => [`  ${e}`]),
+          [""],
+        ]
+      : []),
     ["Spend (with tax) = raw ad spend x 1.18 (a flat 18% GST for every product), applied once after summing — never a per-row multiply."],
     ["CPC = Spend(with tax) / Orders. When Orders = 0, CPC = Spend(with tax) (undefined ratio, shown as the spend itself rather than blank)."],
     ["ACOS (23 Sep 2026 rule — every ACOS column on the Summary, Ad spend report and SKU Wise sheets, and the email; the Action Sheet keeps its own ranking ACOS): Spend (without tax) / the SKU's own ad-attributed sales — Amazon: raw Sponsored Products Spend / \"7 Day Total Sales\" (no GST); Flipkart: its ads-export Total Revenue; Meesho: its ad-attributed order count x price — ONLY when the window has real Orders > 0 AND ad-attributed sales > 0. In every other case ACOS = CPC / Price, where CPC = Spend (with tax) / Orders (Spend (with tax) when Orders = 0) and Price is the listing price on file (barm_amazon_price_listing / barm_flipkart_listings / meesho_price_marketing), else the report price. ACOS is blank only for a row with spend but no price on file anywhere."],
@@ -2839,6 +2869,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     lowSpendCampaignCount: lowSpend.length,
     historyRowsSaved,
     incompleteDates,
+    dataLoadErrors: ms.loadErrors.map((error) => ({ platform: "Meesho" as const, error })),
   };
 }
 

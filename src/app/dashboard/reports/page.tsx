@@ -116,7 +116,10 @@ export default function ReportsPage() {
       // A real generation — the one place besides the daily job that records history.
       const res = await exportAdSpendReport({ endDate, accountName: account?.name, persistHistory: true });
       const parts = res.platformTotals.map((p) => `${p.platform} ₹${p.rangeSpendTax.toFixed(0)}`).join(", ");
-      setAdSpendMsg(`Downloaded ${res.filename} — ${res.productCount} products, range spend ${parts}${res.lowSpendCampaignCount ? `, ${res.lowSpendCampaignCount} low-spend campaigns flagged` : ""}${res.historyRowsSaved ? ` · ${res.historyRowsSaved} rows saved to history` : " · history not saved (run scripts/ad_spend_history_table.sql?)"}.`);
+      const loadWarning = res.dataLoadErrors.length
+        ? ` ⚠ ${res.dataLoadErrors.map((e) => `${e.platform} data could not be loaded (${e.error})`).join("; ")} — its figures in this file are missing, not zero. Regenerate once it's fixed.`
+        : "";
+      setAdSpendMsg(`Downloaded ${res.filename} — ${res.productCount} products, range spend ${parts}${res.lowSpendCampaignCount ? `, ${res.lowSpendCampaignCount} low-spend campaigns flagged` : ""}${res.historyRowsSaved ? ` · ${res.historyRowsSaved} rows saved to history` : " · history not saved (run scripts/ad_spend_history_table.sql?)"}.${loadWarning}`);
     } catch (err) {
       setAdSpendMsg("Failed: " + (err instanceof Error ? err.message : String(err)));
     } finally { setAdSpendGenerating(false); }
