@@ -2398,12 +2398,15 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     const dayAgg: WindowAgg = { spend: socialMedia.daySpend, units: socialProduct?.day.units ?? 0 };
     const rangeAgg: WindowAgg = { spend: socialMedia.rangeSpend, units: socialProduct?.range.units ?? 0 };
     socialMediaRow = sumAoa.length;
+    // Total Sales stays blank (both blocks), per the seller's explicit instruction: these Orders are
+    // Amazon's own orders for the promoted product, not sales Meta reported, so a Price x Orders
+    // figure here reads as Meta revenue that doesn't exist.
     sumAoa.push([
       "Social Media",
       round2(socialMedia.daySpend), round2(spendTax(dayAgg)),
       socialProduct?.name ?? SOCIAL_MEDIA_PRODUCT_NAME, price,
-      round2(dayAgg.spend), round2(spendTax(dayAgg)), dayAgg.units, round2(price * dayAgg.units), round2(computeCpc(dayAgg)), acosCell(dayAgg, price, listingPrice), null,
-      round2(rangeAgg.spend), round2(spendTax(rangeAgg)), rangeAgg.units, round2(price * rangeAgg.units), round2(computeCpc(rangeAgg)), acosCell(rangeAgg, price, listingPrice), null,
+      round2(dayAgg.spend), round2(spendTax(dayAgg)), dayAgg.units, "", round2(computeCpc(dayAgg)), acosCell(dayAgg, price, listingPrice), null,
+      round2(rangeAgg.spend), round2(spendTax(rangeAgg)), rangeAgg.units, "", round2(computeCpc(rangeAgg)), acosCell(rangeAgg, price, listingPrice), null,
       "", "",
     ]);
     // Same figures as the Summary-sheet row above, reshaped for the emailed daily digest (see

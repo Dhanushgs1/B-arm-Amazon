@@ -57,7 +57,11 @@ function makePicker(row: RawRow) {
 async function readRows(file: File): Promise<RawRow[]> {
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: "array" });
-  return XLSX.utils.sheet_to_json<RawRow>(wb.Sheets[wb.SheetNames[0]], { defval: "", raw: true });
+  // Every sheet, not just the first: the seller's workbook often carries a single-day sheet and a
+  // 7-day sheet side by side (e.g. "meta adspend sept 29" + "meta adspend sept 23-29"), and reading
+  // only SheetNames[0] silently dropped the range total. A sheet with no Meta columns just yields
+  // rows that mapRow can't date, which the filter in uploadSocialMediaReportFile drops.
+  return wb.SheetNames.flatMap((name) => XLSX.utils.sheet_to_json<RawRow>(wb.Sheets[name], { defval: "", raw: true }));
 }
 
 interface MappedRow {
@@ -103,7 +107,13 @@ export async function uploadSocialMediaReportFile(file: File): Promise<SocialMed
   const mapped = rawRows.map(mapRow);
   // The blank-campaign "Total" row (and any row missing a usable date) is
   // dropped here rather than stored — see the module comment above.
-  const valid = mapped.filter((r) => r.campaign_name && r.report_start && r.report_end);
+  // Deduped on the upsert key (last one wins) — two sheets can repeat the same campaign/window, and
+  // Postgres rejects an upsert batch that touches the same row twice.
+  const byKey = new Map<string, MappedRow>();
+  mapped
+    .filter((r) => r.campaign_name && r.report_start && r.report_end)
+    .forEach((r) => byKey.set(`${r.report_start}|${r.report_end}|${r.campaign_name}`, r));
+  const valid = [...byKey.values()];
 
   if (!valid.length) {
     return { totalRows: rawRows.length, savedRows: 0, skippedRows: rawRows.length, minDate: null, maxDate: null };
