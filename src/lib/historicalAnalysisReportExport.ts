@@ -792,7 +792,11 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     : NO_MISSING_DATA;
 
   const buildAvailCells = (m: SkuMeta): (string | number)[] => {
-    if (!m.isFba && m.fbaTotal <= 0) return ["0", "", "", "", ""];
+    if (!m.isFba && m.fbaTotal <= 0) {
+      // nothing in an Amazon warehouse yet — but a first shipment can already be on its way
+      const inb = hasUploadedFbaInv ? (inboundShippedBySku.get(m.sku) || 0) : 0;
+      return ["0", "", inb > 0 ? inb : "", "", ""];
+    }
     const withStock = [...m.stateBalances.entries()].filter(([, v]) => v > 0).map(([st]) => st).sort();
     const available = withStock.length ? withStock.join(", ") : "0";
     // Same COUNTIF(states,0) semantic as the FBA status sheet's formula below:
@@ -1635,7 +1639,21 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     "afn-inbound-shipped-quantity", "afn-inbound-receiving-quantity", "afn-researching-quantity",
     "afn-reserved-future-supply", "afn-future-supply-buyable", "store",
   ];
-  XLSX.utils.book_append_sheet(wb, buildRawSheet(fbaInventoryRows, FBA_INVENTORY_HEADERS), "FBA inventory");
+  // Amazon's newer "FBA Inventory" (planning) export names these columns differently (available,
+  // Total Reserved Quantity, …); the uploader normalises both formats into the typed columns, so fall
+  // back to those when the raw file doesn't carry the Manage-Inventory header.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const typed = (col: string) => (r: any, get: (h: string) => unknown) => get(col.replace(/_/g, "-")) ?? r[col];
+  XLSX.utils.book_append_sheet(wb, buildRawSheet(fbaInventoryRows, FBA_INVENTORY_HEADERS, {
+    "afn-fulfillable-quantity": typed("afn_fulfillable_quantity"),
+    "afn-unsellable-quantity": typed("afn_unsellable_quantity"),
+    "afn-reserved-quantity": typed("afn_reserved_quantity"),
+    "afn-total-quantity": typed("afn_total_quantity"),
+    "afn-inbound-working-quantity": typed("afn_inbound_working_quantity"),
+    "afn-inbound-shipped-quantity": typed("afn_inbound_shipped_quantity"),
+    "afn-inbound-receiving-quantity": typed("afn_inbound_receiving_quantity"),
+    "mfn-fulfillable-quantity": typed("mfn_fulfillable_quantity"),
+  }), "FBA inventory");
 
   // ═══════════════════════════════════════════════════════════════════════
   // ── State-level demand vs. supply analysis (feeds Key Insights below) ──

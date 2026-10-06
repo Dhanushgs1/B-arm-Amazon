@@ -31,6 +31,8 @@ import {
   Star,
   Sparkles,
   Database,
+  CalendarRange,
+  Radio,
   type LucideIcon
 } from "lucide-react";
 import { MARKETPLACE_META, UPLOAD_ONLY_TAB_META, getMarketplaceTab, isUploadOnlyTab } from "@/lib/marketplace";
@@ -74,6 +76,7 @@ const NAV_SECTIONS: SidebarNavSection[] = [
     items: [
       { id: "products", label: "Products", icon: Package },
       { id: "inventory", label: "Inventory", icon: Box },
+      { id: "live", label: "Live Inventory", icon: Radio, path: "/dashboard/inventory/live" },
       { id: "marketshare", label: "Market Share", icon: TrendingUp },
       { id: "master", label: "Master", icon: Database },
     ],
@@ -82,6 +85,7 @@ const NAV_SECTIONS: SidebarNavSection[] = [
     label: "Intelligence",
     items: [
       { id: "ratings-reviews", label: "⭐ Ratings & Reviews Intelligence", icon: Star },
+      { id: "seasonal", label: "Seasonal Analytics", icon: CalendarRange, path: "/dashboard/seasonal" },
       { id: "daily-ad-spend", label: "Daily Ad Spend", icon: Sparkles, path: "/dashboard/daily-ad-spend" },
       { id: "ai", label: "AI Assistant", icon: Bot },
       { id: "settings", label: "Settings", icon: Settings },
@@ -129,6 +133,7 @@ function marketplaceNavSections(marketplace: "flipkart"): SidebarNavSection[] {
         { id: "ratings-reviews", label: "⭐ Ratings & Reviews Intelligence", icon: Star, path: `/dashboard/${marketplace}/ratings-reviews` },
         // Cross-platform (Amazon+Flipkart+Meesho together) — same shared page
         // as the Amazon-view sidebar, not a per-marketplace route.
+        { id: "seasonal", label: "Seasonal Analytics", icon: CalendarRange, path: "/dashboard/seasonal" },
         { id: "daily-ad-spend", label: "Daily Ad Spend", icon: Sparkles, path: "/dashboard/daily-ad-spend" },
         { id: "ai", label: "AI Assistant", icon: Bot, path: `/dashboard/${marketplace}/ai` },
         { id: "compare", label: "Combined Overall View", icon: GitCompare, path: "/dashboard/compare" },
@@ -180,6 +185,7 @@ const COMPARE_NAV_SECTIONS: SidebarNavSection[] = [
   {
     label: "Intelligence & Settings",
     items: [
+      { id: "seasonal", label: "Seasonal Analytics", icon: CalendarRange, path: "/dashboard/seasonal" },
       { id: "daily-ad-spend", label: "Daily Ad Spend", icon: Sparkles, path: "/dashboard/daily-ad-spend" },
       { id: "ai", label: "✨ AI Assistant", icon: Bot, path: "/dashboard/ai" },
       { id: "optimization", label: "Amazon Rules Engine", icon: Wand2, path: "/dashboard/optimization" },

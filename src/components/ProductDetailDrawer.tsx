@@ -7,6 +7,8 @@ import { X, Loader2, Sparkles, Box, TrendingUp, RefreshCw, AlertTriangle } from 
 import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { resolveProductName } from "@/lib/categoryMap";
+import { fetchAllRows } from "@/lib/amazonReportShared";
+import { buildInventory, type FbaReportRow } from "@/lib/inventoryStock";
 
 const cur = (val: number, currency?: string) => {
   const sym = currency === "INR" ? "₹" : "$";
@@ -70,6 +72,24 @@ export function ProductDetailDrawer() {
 
   const productPerf = (productPerfData?.data || []).find((p: any) => p.adAsin === selectedAsin || p.asin === selectedAsin);
   const inventoryItem = (inventoryItems || []).find((i: any) => i.asin === selectedAsin);
+
+  // Stock uses the same definition as the Inventory page (src/lib/inventoryStock.ts): FBA Available,
+  // Inbound, Reserved, Unfulfillable from Amazon's FBA Inventory report. SellerMate does not send
+  // inbound/reserved at all — reading fba.inTransitOrWorking / pendingCustomerOrderQuantity from it
+  // showed "0 units" for every product.
+  const { data: fbaReport } = useQuery({
+    queryKey: ["fba_inventory_report"],
+    queryFn: () => fetchAllRows("barm_amazon_fba_inventory", (q) => q).catch(() => []) as Promise<FbaReportRow[]>,
+    enabled: !!selectedAsin,
+  });
+  const stockResult = inventoryItems ? buildInventory(inventoryItems, {}, fbaReport || []) : null;
+  const stockRow = stockResult?.rows.find((r) => r.asin === selectedAsin) ?? null;
+  const stock = {
+    fba: stockRow?.fbaAvailable ?? 0,
+    fbaKnown: stockRow?.fbaAvailable !== null && stockRow?.fbaAvailable !== undefined,
+    fbm: stockRow?.fbmQty ?? 0,
+  };
+  const qty = (v: number | null | undefined) => (v === null || v === undefined ? "—" : `${num(v)} units`);
   const displayName = resolveProductName(productPerf?.adProductName || inventoryItem?.itemName, inventoryItem?.sku)
     || productPerf?.adProductName || inventoryItem?.itemName || selectedAsin;
 
@@ -78,8 +98,8 @@ export function ProductDetailDrawer() {
     .slice(0, 5);
 
   const generateInstantFallback = () => {
-    const fbaQty = inventoryItem?.fba?.endingWarehouseBalance || 0;
-    const fbmQty = inventoryItem?.fbm?.quantity || 0;
+    const fbaQty = stock.fba;
+    const fbmQty = stock.fbm;
     const totalStock = fbaQty + fbmQty;
     const spendVal = productPerf?.spend || 0;
     const salesVal = productPerf?.sales || 0;
@@ -136,8 +156,8 @@ export function ProductDetailDrawer() {
       });
     }, 400);
 
-    const fbaQty = inventoryItem?.fba?.endingWarehouseBalance || 0;
-    const fbmQty = inventoryItem?.fbm?.quantity || 0;
+    const fbaQty = stock.fba;
+    const fbmQty = stock.fbm;
     const totalStock = fbaQty + fbmQty;
     const price = inventoryItem?.price || 0;
     const daysOfStock = productPerf?.orders && totalStock ? Math.round(totalStock / (productPerf.orders / 30)) : null;
@@ -235,8 +255,8 @@ Provide analysis in 4 clear sections using bullet points:
   const ctr = impressions ? (clicks / impressions) * 100 : 0;
   const cpc = clicks ? spend / clicks : 0;
   const cvr = clicks ? (orders / clicks) * 100 : 0;
-  const fbaQty = inventoryItem?.fba?.endingWarehouseBalance || 0;
-  const fbmQty = inventoryItem?.fbm?.quantity || 0;
+  const fbaQty = stock.fba;
+  const fbmQty = stock.fbm;
   const totalStock = fbaQty + fbmQty;
   const price = inventoryItem?.price || 0;
   const totalValue = totalStock * price;
@@ -373,8 +393,8 @@ Provide analysis in 4 clear sections using bullet points:
                 <div className="space-y-6">
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div className="glass p-4 rounded-xl border border-border">
-                      <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">FBA Warehouse Balance</p>
-                      <p className="text-lg font-black mt-1 text-foreground">{num(fbaQty)} units</p>
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{stockResult?.fbaSource === "amazon_report" ? "FBA Available" : "FBA (ledger)"}</p>
+                      <p className="text-lg font-black mt-1 text-foreground">{stock.fbaKnown ? `${num(fbaQty)} units` : "—"}</p>
                     </div>
                     <div className="glass p-4 rounded-xl border border-border">
                       <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">FBM Merchant Stock</p>
@@ -385,7 +405,7 @@ Provide analysis in 4 clear sections using bullet points:
                       <p className="text-lg font-black mt-1 text-emerald-600 dark:text-emerald-400">{cur(totalValue, currency)}</p>
                     </div>
                   </div>
-                  {inventoryItem?.fba && (
+                  {stockRow && (
                     <div className="glass rounded-xl border border-border overflow-hidden">
                       <div className="p-4 border-b border-border bg-card/20">
                         <h3 className="font-bold text-sm">FBA Detailed Stock</h3>
@@ -393,16 +413,28 @@ Provide analysis in 4 clear sections using bullet points:
                       <table className="w-full text-left text-xs divide-y divide-border">
                         <tbody className="divide-y divide-border bg-card/5">
                           <tr className="hover:bg-muted/10 transition-colors">
-                            <td className="px-4 py-3 font-semibold text-muted-foreground w-1/3">Warehouse Balance</td>
-                            <td className="px-4 py-3 font-bold">{num(inventoryItem.fba.endingWarehouseBalance)} units</td>
+                            <td className="px-4 py-3 font-semibold text-muted-foreground w-1/3">Available</td>
+                            <td className="px-4 py-3 font-bold">{qty(stockRow.fbaAvailable)}</td>
                           </tr>
                           <tr className="hover:bg-muted/10 transition-colors">
-                            <td className="px-4 py-3 font-semibold text-muted-foreground">In Transit</td>
-                            <td className="px-4 py-3 font-bold">{num(inventoryItem.fba.inTransitOrWorking)} units</td>
+                            <td className="px-4 py-3 font-semibold text-muted-foreground">Inbound (working + shipped + receiving)</td>
+                            <td className="px-4 py-3 font-bold">{qty(stockRow.fbaInbound)}</td>
                           </tr>
                           <tr className="hover:bg-muted/10 transition-colors">
-                            <td className="px-4 py-3 font-semibold text-muted-foreground">Customer Orders Reserved</td>
-                            <td className="px-4 py-3 font-bold">{num(inventoryItem.fba.pendingCustomerOrderQuantity)} units</td>
+                            <td className="px-4 py-3 font-semibold text-muted-foreground">Reserved</td>
+                            <td className="px-4 py-3 font-bold">{qty(stockRow.fbaReserved)}</td>
+                          </tr>
+                          <tr className="hover:bg-muted/10 transition-colors">
+                            <td className="px-4 py-3 font-semibold text-muted-foreground">Unfulfillable</td>
+                            <td className="px-4 py-3 font-bold">{qty(stockRow.fbaUnfulfillable)}</td>
+                          </tr>
+                          <tr className="hover:bg-muted/10 transition-colors">
+                            <td className="px-4 py-3 font-semibold text-muted-foreground">Ledger balance (SellerMate, reference)</td>
+                            <td className="px-4 py-3 text-muted-foreground">{qty(stockRow.ledgerBalance)}{stockResult?.ledgerAsOf ? ` · ${stockResult.ledgerAsOf}` : ""}</td>
+                          </tr>
+                          <tr className="hover:bg-muted/10 transition-colors">
+                            <td className="px-4 py-3 font-semibold text-muted-foreground">Data as of</td>
+                            <td className="px-4 py-3 text-muted-foreground">{stockResult?.fbaSource === "amazon_report" ? `${stockResult.reportAsOf ?? "unknown"} (Amazon FBA Inventory report, daily snapshot)` : "SellerMate ledger — Amazon report not on file for this account"}{stockRow.fbaNote ? ` · ${stockRow.fbaNote}` : ""}</td>
                           </tr>
                         </tbody>
                       </table>

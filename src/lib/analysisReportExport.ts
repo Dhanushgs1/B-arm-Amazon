@@ -405,7 +405,7 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
   // same tables.
   const coveragePromise = fetchAllMisReportDataInfo();
   const [
-    spRows30, orderRows30, amReturnRows30, fbaReturnRows30, sfReturnRows30, inventory, catalog, masterSkuid, productMarketing,
+    spRows30, orderRows30, amReturnRows30, fbaReturnRows30, sfReturnRows30, inventory, catalog, masterSkuid, productMarketing, fbaReportRows,
   ] = await Promise.all([
     fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", start30).lte("report_date", end)),
     fetchMisAmazonOrders((q) => q.gte("purchase_datetime", win30Ist.gte).lt("purchase_datetime", win30Ist.lt)),
@@ -416,7 +416,16 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
     fetchFullCatalog(call, baseArgs).catch(() => []),
     fetchMasterSkuidMap(),
     fetchProductMarketingMap(),
+    // Amazon's FBA Inventory report — the only source of inbound quantities (SellerMate sends none)
+    fetchAllRows("barm_amazon_fba_inventory", (q) => q).catch(() => []),
   ]);
+  const inboundShippedBySku = new Map<string, number>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (fbaReportRows as any[]).forEach((r) => {
+    if (!r.sku) return;
+    inboundShippedBySku.set(r.sku, (inboundShippedBySku.get(r.sku) || 0) + (r.afn_inbound_shipped_quantity || 0));
+  });
+  const hasFbaReport = inboundShippedBySku.size > 0;
   const { resolveTax: resolveSkuidTax, resolveName: resolveSkuidNameRaw } = buildMasterSkuidResolver(masterSkuid);
   const { resolveName: resolveMarketingName } = buildProductMarketingResolver(productMarketing);
   // master_product_marketing is the marketing team's freshest, most current master — checked
@@ -552,10 +561,16 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
   const AVAIL_COLS = ["Available", "Grand Total", "Inbound-shipped-quantity", "Number of FBA Not Available", "All FBA"];
   const LEAD_COLS = ["Product", "SKU ID", "FBA/MFN", "Price"];
 
-  // Inbound-shipped-quantity is not exposed by the SellerMate / SP-API inventory
-  // feed (only the ledger warehouse balance is synced — not inbound/in-transit),
-  // so this column is present for layout fidelity but shown as "—".
+  // Inbound-shipped-quantity is not in the SellerMate feed (only the ledger warehouse balance is
+  // synced), so it comes from the uploaded Amazon FBA Inventory report — same source and definition
+  // as the Historical Analysis Report — and shows "—" only when no such report is on file.
   const INBOUND_NA = "—";
+  const inboundFor = (p: ProductRow) => {
+    if (!hasFbaReport) return INBOUND_NA;
+    let n = 0;
+    p.skus.forEach((s) => { n += inboundShippedBySku.get(s.sku) || 0; });
+    return n;
+  };
 
   // Availability cells for a whole ASIN (Excel cols X–AB), aggregated across every
   // SKU it carries — unlike sales, stock-on-hand is genuinely known per SKU/FC, so
@@ -570,11 +585,15 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
       fbaTotal += s.fbaTotal;
       s.stateBalances.forEach((v, st) => stateBalances.set(st, (stateBalances.get(st) || 0) + v));
     });
-    if (!anyFba && fbaTotal <= 0) return ["0", "", "", "", ""];
+    if (!anyFba && fbaTotal <= 0) {
+      // nothing in an Amazon warehouse yet — but a first shipment can already be on its way
+      const inb = inboundFor(p);
+      return ["0", "", typeof inb === "number" && inb > 0 ? inb : "", "", ""];
+    }
     const withStock = [...stateBalances.entries()].filter(([, v]) => v > 0).map(([st]) => st).sort();
     const available = withStock.length ? withStock.join(", ") : "0";
     const notAvailable = Math.max(0, accountStates.size - withStock.length);
-    return [available, fbaTotal, INBOUND_NA, notAvailable, notAvailable > 0 ? "No" : "Yes"];
+    return [available, fbaTotal, inboundFor(p), notAvailable, notAvailable > 0 ? "No" : "Yes"];
   };
 
   const header0: any[] = [...LEAD_COLS];                 // group row
@@ -792,7 +811,9 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
     ["One row per ASIN (product) - matches the Weekly Sales Report. Ad + retail sales are only ever known per ASIN, never per SKU, so when a product has multiple SKUs only one (the primary: FBA listing preferred, then most stock, then price) is shown as the SKU ID / FBA-MFN / Price for that row."],
     ["FBA availability (Available / Grand Total / Number of FBA Not Available / All FBA) is summed across every SKU of the product, not just the primary one - stock levels are genuinely known per SKU, unlike sales."],
     ["Price and FBA/MFN come from the live product listing (All-Listings feed) - the listing price and its fulfillment channel (AMAZON_IN = FBA, DEFAULT = MFN) of the primary SKU."],
-    ["Inbound-shipped-quantity shows '—': Amazon's inbound / in-transit quantity is not exposed by the SP-API inventory feed (only the ledger warehouse balance is synced)."],
+    [hasFbaReport
+      ? "Inbound-shipped-quantity comes from the uploaded Amazon FBA Inventory report (inbound-shipped units, summed across the product's SKUs)."
+      : "Inbound-shipped-quantity shows '—': no Amazon FBA Inventory report has been uploaded (SellerMate does not provide inbound quantities)."],
     ["Returns = AM + FBA + SellerFlex returns for the product's SKUs, every return reported (courier RTO / undeliverable included). The three sources share no orders, so adding them never double-counts; each SellerFlex return counts once despite repeat uploads."],
     ["Both windows end on the date selected on the dashboard. The most recent 1-2 days can look low - that's Amazon's own reporting sync lag, not a real drop."],
   ]);

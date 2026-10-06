@@ -77,6 +77,13 @@ const REPLACE_DATE_FIELD: Partial<Record<UploadReportType, string>> = {
   inventory_ledger: "ledger_date",
   sf_return: "pickup_date",
 };
+// Of those, the ledger DOES have a unique natural key — one row per day × FNSKU × MSKU × disposition ×
+// warehouse, enforced by a unique constraint. Two ledger files uploaded at the same moment used to
+// both run "delete range" before either inserted, storing the overlapping days twice; upserting on
+// the key after the range delete makes concurrent and repeated uploads converge instead.
+const REPLACE_UPSERT_KEY: Partial<Record<UploadReportType, string>> = {
+  inventory_ledger: "ledger_date,fnsku,msku,disposition,location",
+};
 // fba_returns.return_date is a timestamptz; the others are plain dates.
 const REPLACE_IS_TIMESTAMP: Partial<Record<UploadReportType, boolean>> = {
   fba_returns: true,
@@ -426,7 +433,30 @@ function mapPriceListingRow(row: RawRow) {
   };
 }
 
-function mapFbaInventoryRow(row: RawRow) {
+// Amazon has two FBA stock exports with different column names for the same quantities:
+//   "Manage FBA Inventory"  — afn-fulfillable-quantity, afn-reserved-quantity, afn-unsellable-quantity,
+//                             afn-inbound-{working,shipped,receiving}-quantity, mfn-fulfillable-quantity
+//   "FBA Inventory" (planning) — available, Total Reserved Quantity, unfulfillable-quantity,
+//                             inbound-{working,shipped,received}, snapshot-date
+// Reading only the first set silently stored 0 for every quantity of the second. Each field takes
+// whichever column the file has; a column neither format has stays null (unknown), never 0.
+function pickInt(row: RawRow, ...res: RegExp[]): number | null {
+  for (const re of res) {
+    if (Object.keys(row).some((k) => re.test(k))) return toInt(pick(row, re));
+  }
+  return null;
+}
+
+export function mapFbaInventoryRow(row: RawRow) {
+  const fulfillable = pickInt(row, /^afn-fulfillable-quantity$/i, /^available$/i);
+  const reserved = pickInt(row, /^afn-reserved-quantity$/i, /^Total Reserved Quantity$/i);
+  const unsellable = pickInt(row, /^afn-unsellable-quantity$/i, /^unfulfillable-quantity$/i);
+  const inWorking = pickInt(row, /^afn-inbound-working-quantity$/i, /^inbound-working$/i);
+  const inShipped = pickInt(row, /^afn-inbound-shipped-quantity$/i, /^inbound-shipped$/i);
+  const inReceiving = pickInt(row, /^afn-inbound-receiving-quantity$/i, /^inbound-received$/i);
+  const total = pickInt(row, /^afn-total-quantity$/i)
+    ?? [fulfillable, reserved, unsellable, inWorking, inShipped, inReceiving].reduce<number>((a, v) => a + (v ?? 0), 0);
+  const snapshot = pick(row, /^snapshot-date$/i);
   return {
     sku: pick(row, /^sku$/i),
     fnsku: pick(row, /^fnsku$/i),
@@ -434,14 +464,16 @@ function mapFbaInventoryRow(row: RawRow) {
     product_name: pick(row, /^product-name$/i),
     condition: pick(row, /^condition$/i),
     your_price: toNum(pick(row, /^your-price$/i)),
-    mfn_fulfillable_quantity: toInt(pick(row, /^mfn-fulfillable-quantity$/i)),
-    afn_fulfillable_quantity: toInt(pick(row, /^afn-fulfillable-quantity$/i)),
-    afn_total_quantity: toInt(pick(row, /^afn-total-quantity$/i)),
-    afn_unsellable_quantity: toInt(pick(row, /^afn-unsellable-quantity$/i)),
-    afn_reserved_quantity: toInt(pick(row, /^afn-reserved-quantity$/i)),
-    afn_inbound_working_quantity: toInt(pick(row, /^afn-inbound-working-quantity$/i)),
-    afn_inbound_shipped_quantity: toInt(pick(row, /^afn-inbound-shipped-quantity$/i)),
-    afn_inbound_receiving_quantity: toInt(pick(row, /^afn-inbound-receiving-quantity$/i)),
+    mfn_fulfillable_quantity: pickInt(row, /^mfn-fulfillable-quantity$/i),
+    afn_fulfillable_quantity: fulfillable ?? 0,
+    afn_total_quantity: total,
+    afn_unsellable_quantity: unsellable ?? 0,
+    afn_reserved_quantity: reserved ?? 0,
+    afn_inbound_working_quantity: inWorking ?? 0,
+    afn_inbound_shipped_quantity: inShipped ?? 0,
+    afn_inbound_receiving_quantity: inReceiving ?? 0,
+    // the date Amazon took the snapshot; null for the Manage-Inventory export, which carries none
+    snapshot_date: /^\d{4}-\d{2}-\d{2}/.test(snapshot) ? snapshot.slice(0, 10) : null,
     raw: row,
   };
 }
@@ -737,7 +769,14 @@ export async function uploadReportFile(type: UploadReportType, file: File): Prom
     const minDate = dates[0].slice(0, 10);
     const maxDate = dates[dates.length - 1].slice(0, 10);
     await replaceDateRange(table, replaceDateField, !!REPLACE_IS_TIMESTAMP[type], minDate, maxDate);
-    await insertInChunks(table, deduped);
+    const naturalKey = REPLACE_UPSERT_KEY[type];
+    if (naturalKey) {
+      // last row wins per key (one upsert chunk may not touch the same key twice)
+      const byKey = new Map(deduped.map((r) => [naturalKey.split(",").map((f) => String(r[f] ?? "")).join("|"), r]));
+      await upsertInChunks(table, [...byKey.values()], naturalKey);
+    } else {
+      await insertInChunks(table, deduped);
+    }
     if (PRUNE_TO_UPLOAD_RANGE[type]) {
       await pruneOutsideRange(table, replaceDateField, minDate, maxDate);
     }
