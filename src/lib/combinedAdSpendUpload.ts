@@ -594,22 +594,31 @@ async function replaceKeyRows(table: string, keyCol: string, rows: Record<string
   return `${insertRows.length} rows -> ${table}`;
 }
 
-async function writeReportTable(ws: XLSX.WorkSheet, spec: ReportTableSpec): Promise<string> {
+async function writeReportTable(ws: XLSX.WorkSheet, spec: ReportTableSpec): Promise<{ detail: string; rows: Record<string, unknown>[] }> {
   const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" });
   let mapped = raw.map(spec.buildRow).filter((r): r is Record<string, unknown> => r !== null);
-  if (!mapped.length) return `0/${raw.length} rows usable for the report`;
+  if (!mapped.length) return { detail: `0/${raw.length} rows usable for the report`, rows: [] };
   if (spec.strategy === "upsert" && spec.mergeSumFields) {
     mapped = mergeByConflictKey(mapped, spec.onConflict!.split(","), spec.mergeSumFields);
   }
-  if (spec.strategy === "upsert") return upsertRows(spec.table, mapped, spec.onConflict!);
-  if (spec.strategy === "replaceKeys") return replaceKeyRows(spec.table, spec.replaceBy!, mapped);
-  return replaceRangeRows(spec.table, spec.dateCol, mapped);
+  const detail = spec.strategy === "upsert" ? await upsertRows(spec.table, mapped, spec.onConflict!)
+    : spec.strategy === "replaceKeys" ? await replaceKeyRows(spec.table, spec.replaceBy!, mapped)
+    : await replaceRangeRows(spec.table, spec.dateCol, mapped);
+  return { detail, rows: mapped };
 }
 
-export async function uploadCombinedWorkbook(file: File): Promise<SheetUploadOutcome[]> {
+export interface CombinedUploadResult {
+  results: SheetUploadOutcome[];
+  /** "AM ads" rows as saved to barm_amazon_sp_advertised_product — the upload page runs the High
+   *  ACOS alert (src/lib/uploadAcosAlert.ts) on these, same as the separate SP report upload does. */
+  spAdsRows: Record<string, unknown>[];
+}
+
+export async function uploadCombinedWorkbook(file: File): Promise<CombinedUploadResult> {
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: "array" });
   const results: SheetUploadOutcome[] = [];
+  let spAdsRows: Record<string, unknown>[] = [];
 
   for (const sheet of Object.keys(SHEET_LABELS)) {
     const ws = findSheet(wb, sheet);
@@ -624,12 +633,13 @@ export async function uploadCombinedWorkbook(file: File): Promise<SheetUploadOut
         results.push({ sheet, label: SHEET_LABELS[sheet], status: mirror.status, detail: mirror.detail });
         continue;
       }
-      const reportDetail = await writeReportTable(ws, reportSpec);
-      results.push({ sheet, label: SHEET_LABELS[sheet], status: mirror.status, detail: `${mirror.detail} · Ad Spend Report: ${reportDetail}.` });
+      const report = await writeReportTable(ws, reportSpec);
+      if (sheet === "AM ads") spAdsRows = report.rows;
+      results.push({ sheet, label: SHEET_LABELS[sheet], status: mirror.status, detail: `${mirror.detail} · Ad Spend Report: ${report.detail}.` });
     } catch (err) {
       results.push({ sheet, label: SHEET_LABELS[sheet], status: "error", detail: err instanceof Error ? err.message : String(err) });
     }
   }
 
-  return results;
+  return { results, spAdsRows };
 }

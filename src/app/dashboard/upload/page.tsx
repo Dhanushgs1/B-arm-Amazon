@@ -208,6 +208,8 @@ interface CombinedState {
   fileName?: string;
   results?: SheetUploadOutcome[];
   error?: string;
+  /** High ACOS alert outcome for the "AM ads" sheet — filled in after the upload finishes. */
+  acosNote?: { ok: boolean; text: string };
 }
 
 const SHEET_STATUS_STYLE: Record<SheetUploadOutcome["status"], string> = {
@@ -217,16 +219,31 @@ const SHEET_STATUS_STYLE: Record<SheetUploadOutcome["status"], string> = {
   error: "text-red-600 dark:text-red-400",
 };
 
-function CombinedAdSpendUploadCard({ onUploaded, dataInfo }: { onUploaded: () => void; dataInfo: ReportDataInfo | undefined }) {
+function CombinedAdSpendUploadCard({ onUploaded, dataInfo, keySlot }: { onUploaded: () => void; dataInfo: ReportDataInfo | undefined; keySlot: string }) {
   const [state, setState] = useState<CombinedState>({ status: "idle" });
   const [dragOver, setDragOver] = useState(false);
 
   const handleFile = async (file: File) => {
     setState({ status: "parsing", fileName: file.name });
     try {
-      const results = await uploadCombinedWorkbook(file);
+      const { results, spAdsRows } = await uploadCombinedWorkbook(file);
       setState({ status: "done", fileName: file.name, results });
       onUploaded();
+      // This is the daily "Last 7 days" upload, so it must send the High ACOS alert too — it used to
+      // fire only from the separate SP report card below, which isn't used day to day any more.
+      // Runs after "done" so a slow Gemini/email round-trip never holds up the upload result.
+      if (spAdsRows.length) {
+        setState((prev) => ({ ...prev, acosNote: { ok: true, text: "Checking high-ACOS campaigns…" } }));
+        maybeAlertHighAcos("sp_advertised_product", spAdsRows, keySlot)
+          .then((a) => {
+            const n = `${a.highAcosCount} high-ACOS campaign${a.highAcosCount === 1 ? "" : "s"}`;
+            const acosNote = a.error ? { ok: false, text: `High ACOS alert: ${n} found, email not sent — ${a.error}` }
+              : a.highAcosCount === 0 ? { ok: true, text: "High ACOS alert: no campaign above your ACOS threshold — no email needed." }
+              : { ok: true, text: `High ACOS alert: ${n} emailed to ${a.to}.` };
+            setState((prev) => ({ ...prev, acosNote }));
+          })
+          .catch((e) => setState((prev) => ({ ...prev, acosNote: { ok: false, text: `High ACOS alert failed: ${e instanceof Error ? e.message : String(e)}` } })));
+      }
     } catch (err) {
       setState({ status: "error", fileName: file.name, error: err instanceof Error ? err.message : String(err) });
     }
@@ -305,6 +322,12 @@ function CombinedAdSpendUploadCard({ onUploaded, dataInfo }: { onUploaded: () =>
                 <span><span className="font-semibold">{r.label}:</span> {r.detail}</span>
               </div>
             ))}
+            {state.acosNote && (
+              <div className={`flex items-start gap-1.5 ${state.acosNote.ok ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
+                {state.acosNote.ok ? <CheckCircle2 size={14} className="mt-0.5 shrink-0" /> : <XCircle size={14} className="mt-0.5 shrink-0" />}
+                <span className="font-semibold">{state.acosNote.text}</span>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -911,7 +934,7 @@ export default function UploadReportsPage() {
         </p>
       </div>
 
-      <CombinedAdSpendUploadCard onUploaded={refreshCombinedMeta} dataInfo={combinedDataInfo} />
+      <CombinedAdSpendUploadCard onUploaded={refreshCombinedMeta} dataInfo={combinedDataInfo} keySlot={keySlot} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         <GoogleOrdersUploadCard onUploaded={refreshGoogleMeta} dataInfo={googleDataInfo} />

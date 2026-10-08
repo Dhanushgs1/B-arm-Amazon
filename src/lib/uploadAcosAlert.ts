@@ -282,7 +282,9 @@ export async function maybeAlertHighAcos(type: UploadReportType, rows: any[], ke
     const campaigns = aggregateCampaigns(type, rows)
       .filter((c) => c.spend >= MIN_SPEND && c.acos >= acosThreshold)
       .sort((a, b) => b.spend - a.spend)
-      .slice(0, 10);
+      // Every campaign over the threshold (was top 10, which silently dropped 11 of 21 on the
+      // 2026-10-01..07 upload). 40 is only a guard on email/Gemini prompt size.
+      .slice(0, 40);
 
     if (campaigns.length === 0) return { checked: true, highAcosCount: 0, emailed: false };
     if (!notifEmail) {
