@@ -10,8 +10,14 @@
 // @supabase/supabase-js client, matching the rest of this codebase's style of
 // calling external HTTP APIs directly instead of pulling in an SDK.
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+// Same resolution order as src/lib/supabaseLazy.ts (NEXT_PUBLIC_* first). This file used to read
+// only SUPABASE_URL / SUPABASE_ANON_KEY, which were never updated on Vercel after the 2026-08-31
+// Supabase project move — so production read settings from the OLD project, got {} back, and the
+// daily cron silently skipped the Daily Digest, Live Alerts and every other per-account email from
+// 2026-09-01 on (no email_settings read reached the current project at cron time; the last
+// campaign snapshot written by the Vercel cron is 2026-08-31).
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
 
 function headers() {
   return {

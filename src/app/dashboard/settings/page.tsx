@@ -107,6 +107,7 @@ export default function SettingsPage() {
   const [weeklySummary, setWeeklySummary] = useState(true);
   const [dailySummary, setDailySummary] = useState(false);
   const [liveAlerts, setLiveAlerts] = useState(false);
+  const [fbaWarehouseAlerts, setFbaWarehouseAlerts] = useState(true);
   const [monthlySummary, setMonthlySummary] = useState(false);
   const [aiEnabled, setAiEnabled] = useState(true);
   const [autoInsights, setAutoInsights] = useState(true);
@@ -173,6 +174,7 @@ export default function SettingsPage() {
         setWeeklySummary(p.weeklySummary ?? true);
         setDailySummary(p.dailySummary ?? false);
         setLiveAlerts(p.liveAlerts ?? false);
+        setFbaWarehouseAlerts(p.fbaWarehouseAlerts ?? keySlot === "B");
         setMonthlySummary(p.monthlySummary ?? false);
         setAiEnabled(p.aiEnabled ?? true);
         setAutoInsights(p.autoInsights ?? true);
@@ -235,7 +237,7 @@ export default function SettingsPage() {
       emailAlerts, notifEmail, ccEmail, slackAlerts, slackUrl, acosThreshold, lowStockThreshold,
       syncSchedule, twoFactor, ipRestrict, whitelistIps,
       timezone, defaultRange, pushAlerts, roasAlerts, inventoryAlerts,
-      weeklySummary, dailySummary, liveAlerts, monthlySummary, aiEnabled, autoInsights, smartAlerts,
+      weeklySummary, dailySummary, liveAlerts, fbaWarehouseAlerts, monthlySummary, aiEnabled, autoInsights, smartAlerts,
       forecastWindow, recMode, autoPause, autoNegatives, autoBudget,
       roasTarget, compactMode, theme,
       flipkartApiKey, flipkartSellerId,
@@ -261,8 +263,9 @@ export default function SettingsPage() {
       const activeAlerts = [
         roasAlerts && "ROAS / ACOS Alerts",
         inventoryAlerts && "Inventory Alerts",
-        dailySummary && "Daily Digest (10:00 AM IST)",
+        dailySummary && "Daily Digest (9:00 AM IST)",
         liveAlerts && "Live Alerts (spend spike / stockout forecast / buy box / conversion)",
+        fbaWarehouseAlerts && "FBA Warehouse Low Stock (below 20 in 8 major FBA cities, 9:00 AM IST)",
         weeklySummary && "Weekly Summary (Monday 9:00 AM IST)",
         monthlySummary && "Monthly Summary (1st, 9:00 AM IST)",
         slackAlerts && "Slack Alerts",
@@ -693,20 +696,23 @@ export default function SettingsPage() {
                 <SettingRow title="Live Alerts" desc="Spend spikes, stockout forecasts, buy box losses and conversion drops — emailed only when something new fires.">
                   <Toggle checked={liveAlerts} onChange={setLiveAlerts} />
                 </SettingRow>
+                <SettingRow title="FBA Warehouse Low Stock" desc="Daily 9:00 AM IST: SKUs that newly drop below 20 units in Bangalore, Mumbai, Chennai, Hyderabad, Delhi, West Bengal, Lucknow or Coimbatore (Live Inventory).">
+                  <Toggle checked={fbaWarehouseAlerts} onChange={setFbaWarehouseAlerts} />
+                </SettingRow>
                 <SettingRow title="Weekly Summary" desc="Sent every Monday at 9:00 AM IST.">
                   <Toggle checked={weeklySummary} onChange={setWeeklySummary} />
                 </SettingRow>
                 <SettingRow title="Monthly Summary" desc="Sent on the 1st of every month at 9:00 AM IST.">
                   <Toggle checked={monthlySummary} onChange={setMonthlySummary} />
                 </SettingRow>
-                {(dailySummary || liveAlerts || weeklySummary || monthlySummary) && (
+                {(dailySummary || liveAlerts || fbaWarehouseAlerts || weeklySummary || monthlySummary) && (
                   <div className="mt-1 mb-2 px-3 py-2.5 bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 rounded-xl">
                     <p className="text-[11px] font-extrabold text-indigo-600 dark:text-indigo-400 flex items-center gap-1.5">
                       <span>📬</span> Reports will be sent to: <span className="font-black">{notifEmail || "—"}</span>
                       {ccEmail && <span className="font-semibold">(cc: {ccEmail})</span>}
                     </p>
                     <p className="text-[10px] text-indigo-500/80 font-semibold mt-0.5">
-                      {[dailySummary && "Daily digest 10AM", liveAlerts && "Live alerts (when they fire)", weeklySummary && "Weekly Monday", monthlySummary && "Monthly 1st"].filter(Boolean).join(" · ")}
+                      {[dailySummary && "Daily digest 9AM", liveAlerts && "Live alerts (when they fire)", fbaWarehouseAlerts && "FBA low stock (when new)", weeklySummary && "Weekly Monday", monthlySummary && "Monthly 1st"].filter(Boolean).join(" · ")}
                     </p>
                   </div>
                 )}

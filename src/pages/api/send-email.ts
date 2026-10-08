@@ -19,25 +19,19 @@ const transporter = nodemailer.createTransport({
 });
 
 // Every email carries a channel badge in the header naming which marketplace the numbers came
-// from, plus a muted "Flipkart · soon" chip beside it. Today everything below is Amazon, and
-// nothing in the body says so — once Flipkart data lands, a reader looking back through their
-// inbox would have no way to tell which channel an old mail described. Pass `channel` in the
-// email data to change the active label; add more entries to CHANNELS as they go live.
+// from. Nothing in the body says which channel it is, so without the badge a reader looking back
+// through their inbox could not tell which channel an old mail described. Only the active channel
+// is shown (the muted "Flipkart · soon" chip was removed on request). Pass `channel` in the email
+// data to change it; add entries to CHANNELS as they go live.
 const CHANNELS: { key: string; label: string }[] = [
   { key: "amazon", label: "Amazon" },
   { key: "flipkart", label: "Flipkart" },
 ];
 
 function channelBar(active = "amazon") {
-  const chips = CHANNELS.map(({ key, label }) => {
-    const live = key === active;
-    return `<span style="display:inline-block;padding:3px 11px;border-radius:999px;font-size:11px;font-weight:800;margin-right:6px;${
-      live
-        ? "background:#ffffff;color:#6D5EF8;"
-        : "background:rgba(255,255,255,0.14);color:rgba(255,255,255,0.65);"
-    }">${label}${live ? "" : " &#183; soon"}</span>`;
-  }).join("");
-  return `<p style="margin:10px 0 0;">${chips}</p>`;
+  const label = CHANNELS.find((c) => c.key === active)?.label;
+  if (!label) return "";
+  return `<p style="margin:10px 0 0;"><span style="display:inline-block;padding:3px 11px;border-radius:999px;font-size:11px;font-weight:800;background:#ffffff;color:#6D5EF8;">${label}</span></p>`;
 }
 
 function wrap(body: string, channel: string | null = "amazon", headExtra = "") {
@@ -821,6 +815,51 @@ export function buildHtml(type: string, data: Record<string, any>, toEmail: stri
       </table>`);
   }
 
+  // FBA warehouse low stock (src/pages/api/fba-warehouse-alerts.ts) — SKU × city pairs that newly
+  // fell below the threshold. Compact table rows on purpose: the first run mails every pair that is
+  // already low (~500), and Gmail clips a message past ~100KB.
+  if (type === "fbaWarehouseLow") {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const drops: any[] = data.drops || [];
+    const cities = [...new Set(drops.map((d) => d.city))];
+    // No per-cell inline styles: at ~500 rows they alone came to ~270KB. Styling sits on the table.
+    const sections = cities.map((city) => {
+      const rows = drops.filter((d) => d.city === city).map((d) =>
+        `<tr><td>${d.sku}</td><td>${d.name}</td><td align="right"><b${d.units <= 0 ? ' style="color:#b91c1c"' : ""}>${d.units}</b></td><td>${(d.fcs || []).map((f: { location: string; units: number }) => `${f.location} ${f.units}`).join(", ")}</td></tr>`
+      ).join("");
+      const n = drops.filter((d) => d.city === city).length;
+      return `
+      <tr><td style="padding:16px 0 6px;font-size:14px;font-weight:800;color:#111;">&#128230; ${city} <span style="color:#6b7280;font-weight:600;font-size:12px;">· ${n} SKU${n === 1 ? "" : "s"}</span></td></tr>
+      <tr><td><table width="100%" cellpadding="4" cellspacing="0" border="0" style="font-size:12px;color:#374151;border:1px solid #e5e7eb;">
+        <tr style="background:#f3f4f6;color:#111;"><th align="left">SKU</th><th align="left">Product</th><th align="right">Units</th><th align="left">FC-wise</th></tr>
+        ${rows}
+      </table></td></tr>`;
+    }).join("");
+
+    return w(`
+      <table width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr><td style="padding-bottom:6px;">
+          <h2 style="margin:0;color:#111;font-size:20px;font-weight:800;">&#9888;&#65039; ${drops.length} SKU${drops.length === 1 ? "" : "s"} below ${data.threshold} units in FBA warehouses</h2>
+          <p style="margin:4px 0 0;color:#6b7280;font-size:12px;font-weight:600;">
+            ${data.accountName || "B-ARM"} &nbsp;&#183;&nbsp; ${cities.length} cit${cities.length === 1 ? "y" : "ies"}
+            ${data.ledgerDate ? `&nbsp;&#183;&nbsp; SellerMate ledger ${data.ledgerDate}` : ""}
+          </p>
+        </td></tr>
+        ${data.firstRun ? `<tr><td style="padding-top:8px;"><p style="margin:0;padding:10px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;color:#1e40af;font-size:12px;font-weight:600;line-height:1.5;">First run: this lists everything that is below ${data.threshold} right now. From tomorrow you'll only get SKUs that newly drop below ${data.threshold}.</p></td></tr>` : ""}
+        ${sections}
+        <tr><td align="center" style="padding-top:22px;">
+          <a href="${SITE_URL}/dashboard/inventory/live" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Live Inventory &#8594;</a>
+        </td></tr>
+        <tr><td style="padding-top:16px;">
+          <p style="margin:0;color:#9ca3af;font-size:11px;line-height:1.6;">
+            Units = SKU total across that city's FCs (SellerMate warehouse balance, daily ledger).
+            Each SKU is mailed once per city; it is mailed again only after it goes back to ${data.threshold}+ and drops again.
+            ${data.stillLow ? `${data.stillLow} other SKU × city pairs are still below ${data.threshold} from earlier alerts.` : ""}
+          </p>
+        </td></tr>
+      </table>`);
+  }
+
   if (type === "historicalReport") {
     // The attached workbook still carries the full per-campaign/SKU breakdown across both
     // windows — this body adds just enough to be worth opening before the attachment: total
@@ -980,9 +1019,8 @@ export function buildHtml(type: string, data: Record<string, any>, toEmail: stri
         </tr>`).join("");
     }).join("");
 
-    // No channelBar here: unlike the single-platform templates above (where
-    // "Amazon live / Flipkart · soon" is accurate today), this report already
-    // covers Amazon + Flipkart + Meesho together, so that badge would flatly
+    // No channelBar here: unlike the single-platform templates above, this report
+    // covers Amazon + Flipkart + Meesho together, so a single-channel badge would
     // contradict the Flipkart/Meesho numbers sitting right below it.
     const incompleteDates: { platform: string; missingDates: string[] }[] = data.incompleteDates || [];
     const incompleteBanner = incompleteDates.length
@@ -1169,6 +1207,7 @@ const SUBJECTS: Record<string, string> = {
   adAlert: "⚠️ Marketplace360 - Ad Alert",
   dailyDigest: "📊 Marketplace360 - Daily Digest",
   liveAlerts: "⚡ Marketplace360 - Needs Attention",
+  fbaWarehouseLow: "📦 Marketplace360 - FBA Warehouse Low Stock",
   weeklyReport: "📈 Marketplace360 - Weekly Performance Report",
   adSpendDaily: "📈 Ad spend Report",
   historicalReport: "📊 Marketplace360 - Historical 7/30 Day Analysis Report",

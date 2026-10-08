@@ -232,6 +232,24 @@ export function buildLiveInventory(
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type SellerMateCaller = (tool: string, args: Record<string, unknown>) => Promise<any>;
 
+const SELLERMATE_TOOLS = "https://api.sellermate.ai/public/v1/tools";
+
+/** A SellerMateCaller over the public API, retrying 429 / 5xx (honouring Retry-After). */
+export function sellerMateCaller(key: string): SellerMateCaller {
+  return async (tool, args) => {
+    for (let attempt = 0; ; attempt++) {
+      const res = await fetch(`${SELLERMATE_TOOLS}/${tool}`, { method: "POST", headers: { "x-api-key": key, "Content-Type": "application/json" }, body: JSON.stringify(args), cache: "no-store" });
+      if (res.ok) return res.json();
+      const text = await res.text();
+      const retryable = res.status === 429 || res.status >= 500;
+      if (attempt >= 4 || !retryable) throw new Error(`SellerMate ${tool} failed (${res.status}): ${text.slice(0, 200)}`);
+      // rate-limited / transient: honour Retry-After when given, else back off
+      const after = Number(res.headers.get("retry-after"));
+      await new Promise((r) => setTimeout(r, Number.isFinite(after) && after > 0 ? after * 1000 : 800 * (attempt + 1)));
+    }
+  };
+}
+
 /** Runs tasks with at most `limit` in flight — SellerMate answers HTTP 429 when ~16 calls land at once. */
 async function pooled<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
   const out = new Array<T>(tasks.length);

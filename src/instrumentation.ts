@@ -104,6 +104,9 @@ export async function register() {
           console.log(`[Marketplace360] [${slot}] Running live alerts...`);
           await runAlertEndpoint("/api/live-alerts", { ...acct }, `[${slot}] Live alerts`);
         }
+        if (s.fbaWarehouseAlerts ?? slot === "B") {
+          await runAlertEndpoint("/api/fba-warehouse-alerts", { ...acct }, `[${slot}] FBA warehouse low stock`);
+        }
       }
     }, { timezone: "UTC" });
 

@@ -70,6 +70,7 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
       wouldSend: {
         dailyDigest: !!s.dailySummary,
         liveAlerts: !!s.liveAlerts,
+        fbaWarehouseLow: !!(s.fbaWarehouseAlerts ?? slot === "B"),
         weekly: isMonday && !!s.weeklySummary,
         monthly: isFirstOfMonth && !!s.monthlySummary,
       },
@@ -118,6 +119,11 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
     // Once a day is the honest cadence: every detector compares whole days, so a second run
     // would re-scan identical numbers. Emails nothing unless something new fired.
     results.liveAlerts = await callReportEndpoint(req, "/api/live-alerts", acct, `[${slot}] Live alerts`);
+  }
+  // FBA warehouse low stock — SKUs newly below 20 in the 8 major FBA cities. On by default for
+  // B-ARM only (the account those cities were chosen for); Settings can switch it either way.
+  if (s.fbaWarehouseAlerts ?? slot === "B") {
+    results.fbaWarehouseLow = await callReportEndpoint(req, "/api/fba-warehouse-alerts", acct, `[${slot}] FBA warehouse low stock`);
   }
   if (isMonday && s.weeklySummary) {
     results.weekly = await callReportEndpoint(req, "/api/weekly-report", acct, `[${slot}] Weekly report`);
