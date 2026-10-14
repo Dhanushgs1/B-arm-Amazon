@@ -243,6 +243,59 @@ export function weeklyInputs(rfq: WeeklyRfqRow[], components: WeeklyComponentRow
   };
 }
 
+// Restock inputs upload (user, 2026-10-14): the tool's own exports, given every Friday —
+//   "Stock Purchase Sheet.xlsx"  Marketplace | Product | SKU ID | … | Stock intransit | Order placed | Suggested RFQ
+//                                one row per SKU; the values are per product, repeated on each SKU row
+//   "Components Sheet.xlsx"      Component | Product Entity | Quantities required | RFQ |
+//                                Required Component Quantity | Current Stock | Final Components required quantity
+// The kind is told by the headers. Rows come out in the Monday snapshot's shape, so weeklyInputs()
+// turns either source into the same restock inputs and combo needs.
+export type RestockUploadRow = WeeklyRfqRow & { product: string };
+export type ComponentUploadRow = WeeklyComponentRow & { product: string | null; qty_per_unit: number | null; rfq: number | null };
+export type RestockUpload =
+  | { kind: "purchase"; rfq: RestockUploadRow[]; components: [] }
+  | { kind: "components"; rfq: []; components: ComponentUploadRow[] };
+
+const cleanName = (v: unknown) => String(v ?? "").replace(/\s+/g, " ").trim();
+const headKey = (v: unknown) => cleanName(v).toLowerCase();
+
+export function parseRestockRows(rows: unknown[][]): RestockUpload {
+  for (let h = 0; h < Math.min(rows.length, 10); h++) {
+    const head = (rows[h] ?? []).map(headKey);
+    const at = (name: string) => head.indexOf(name);
+    const body = rows.slice(h + 1);
+    const [prod, transit, ordered, rfq] = [at("product"), at("stock intransit"), at("order placed"), at("suggested rfq")];
+    if (prod >= 0 && transit >= 0 && ordered >= 0 && rfq >= 0) {
+      const by = new Map<string, RestockUploadRow>();
+      for (const r of body) {
+        const product = cleanName(r[prod]);
+        if (!product || by.has(productKey(product))) continue;
+        by.set(productKey(product), { product, stock_intransit: numOrNull(r[transit]), order_placed: numOrNull(r[ordered]), suggested_rfq: numOrNull(r[rfq]) });
+      }
+      if (!by.size) throw new Error("Stock Purchase Sheet has no product rows.");
+      return { kind: "purchase", rfq: [...by.values()], components: [] };
+    }
+    const [comp, entity, per, crfq, req, stock] = [at("component"), at("product entity"), at("quantities required"), at("rfq"), at("required component quantity"), at("current stock")];
+    if (comp >= 0 && req >= 0 && stock >= 0) {
+      const components = body.filter((r) => cleanName(r[comp])).map((r) => ({
+        component: cleanName(r[comp]), product: entity >= 0 ? cleanName(r[entity]) || null : null,
+        qty_per_unit: per >= 0 ? numOrNull(r[per]) : null, rfq: crfq >= 0 ? numOrNull(r[crfq]) : null,
+        required_qty: numOrNull(r[req]), component_stock: numOrNull(r[stock]),
+      }));
+      if (!components.length) throw new Error("Components Sheet has no product rows.");
+      return { kind: "components", rfq: [], components };
+    }
+  }
+  throw new Error('Not a restock file — upload the tool\'s "Stock Purchase Sheet.xlsx" or "Components Sheet.xlsx".');
+}
+
+/** Newest wins (user, 2026-10-14): the Friday upload until the next Monday snapshot is captured. */
+export function newerRestockSource(snapshot: { capturedAt: string | null } | null, upload: { uploadedAt: string } | null): "snapshot" | "upload" | null {
+  const snapAt = snapshot?.capturedAt ? Date.parse(snapshot.capturedAt) : null;
+  if (!upload) return snapAt !== null ? "snapshot" : null;
+  return snapAt !== null && snapAt > Date.parse(upload.uploadedAt) ? "snapshot" : "upload";
+}
+
 /** The 10 latest dates with data, oldest first (DAY 10 … DAY 1). */
 export function lastDates(daily: { date: string }[], n = CONSOLIDATED_DAYS): string[] {
   return [...new Set(daily.map((d) => d.date))].sort().slice(-n);
@@ -297,6 +350,9 @@ export const runningOut = (rows: ConsolidatedRow[], limit = RUNNING_OUT_DAYS) =>
 export const salesDropped = (rows: ConsolidatedRow[]) =>
   rows.filter((r) => { const [d3, d2, d1] = r.days.slice(-3).map((v) => v ?? 0); return r.days.length >= 3 && d3 > d2 && d2 > d1; });
 
-/** Nothing shipped in any of the days, stock on hand, not discontinued. Most stock first. */
+/** No sales list leaves out products holding fewer than this many units (user, 2026-10-14). */
+export const NO_SALES_MIN_STOCK = 5;
+
+/** Nothing shipped in any of the days, at least NO_SALES_MIN_STOCK in stock, not discontinued. Most stock first. */
 export const noSales = (rows: ConsolidatedRow[]) =>
-  rows.filter((r) => !r.discontinued && r.currentStock > 0 && r.days.every((v) => !v)).sort((a, b) => b.currentStock - a.currentStock);
+  rows.filter((r) => !r.discontinued && r.currentStock >= NO_SALES_MIN_STOCK && r.days.every((v) => !v)).sort((a, b) => b.currentStock - a.currentStock);

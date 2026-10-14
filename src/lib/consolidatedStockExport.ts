@@ -4,7 +4,7 @@
 // days in light red with dark red text (the client's conditional formats, applied as fixed colours).
 
 import * as XLSX from "xlsx-js-style";
-import { runningOut, salesDropped, noSales, RUNNING_OUT_DAYS, CONSOLIDATED_DAYS, type ConsolidatedRow } from "@/lib/consolidatedStock";
+import { runningOut, salesDropped, noSales, NO_SALES_MIN_STOCK, RUNNING_OUT_DAYS, CONSOLIDATED_DAYS, type ConsolidatedRow } from "@/lib/consolidatedStock";
 import { NOT_LISTED_PRODUCTS } from "@/lib/notListedProducts";
 import type { Coverage, ProductAnalytics } from "@/lib/godownAnalytics";
 
@@ -50,7 +50,10 @@ const coverCell = (d: number | null) => n(d === null ? null : d, "0", d !== null
 /** Peak sales: best single day over every godown day up to the sheet's date (blank = never shipped). */
 const peakCells = (r: ConsolidatedRow) => [n(r.peakQty), s(r.peakDate ? r.peakDate.split("-").reverse().join("-") : "")];
 
-type WeeklyInfo = { weekStart: string; status: "ok" | "missing" | "failed"; capturedAt: string | null; error: string | null };
+/** Where one restock input came from: the Friday upload or the Monday snapshot, whichever is newer. */
+export type RestockSource = { from: "snapshot" | "upload" | "none"; date: string | null; at: string | null };
+/** status: the Monday snapshot's, or "ok" once every input has a source (upload or snapshot). */
+type WeeklyInfo = { weekStart: string; status: "ok" | "missing" | "failed"; capturedAt: string | null; error: string | null; purchase?: RestockSource; components?: RestockSource };
 /** Godown Stock Analytics over the same products (src/lib/godownAnalytics.ts), for the "Seasonal Analytics" sheet. */
 export type SeasonalSheetData = { coverage: Coverage; products: ProductAnalytics[] };
 export type ConsolidatedExportData = { snapshotDate: string | null; dates: string[]; rows: ConsolidatedRow[]; weekly?: WeeklyInfo | null; seasonal?: SeasonalSheetData | null };
@@ -58,12 +61,25 @@ export type ConsolidatedExportData = { snapshotDate: string | null; dates: strin
 const dmy = (iso: string) => iso.split("-").reverse().join("-");
 const istStamp = (ts: string) => new Date(ts).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) + " IST";
 
-/** One line for the page and the workbook: which Monday copy the Stock Purchase / Components columns use. */
+/** One line for the page and the workbook: where the Stock Purchase / Components columns come from. */
 export function weeklyLabel(w: WeeklyInfo | null | undefined): string {
   if (!w) return "Stock Purchase / Components: no week (no godown data)";
-  if (w.status === "ok") return `Stock Purchase / Components: Monday ${dmy(w.weekStart)} snapshot, captured ${w.capturedAt ? istStamp(w.capturedAt) : "?"}`;
-  return `WARNING: no Monday ${dmy(w.weekStart)} snapshot (${w.status === "failed" ? "capture failed" + (w.error ? ": " + w.error : "") : "not captured"}). `
-    + "Stock Intransit, Order placed, Stock purchase sheet qty and Combo show 0; Final qty is the 180-day need only.";
+  const snapText = `Monday ${dmy(w.weekStart)} snapshot, captured ${w.capturedAt ? istStamp(w.capturedAt) : "?"}`;
+  const p = w.purchase, c = w.components;
+  const allSnapshot = (!p || p.from === "snapshot") && (!c || c.from === "snapshot");
+  if (w.status === "ok" && allSnapshot) return `Stock Purchase / Components: ${snapText}`;
+  const src = (x: RestockSource) => (x.from === "upload" ? `uploaded file of ${dmy(x.date!)} (${istStamp(x.at!)})` : snapText);
+  const parts = [p && p.from !== "none" ? `Stock Purchase: ${src(p)}` : "", c && c.from !== "none" ? `Components: ${src(c)}` : ""].filter(Boolean);
+  if (w.status === "ok") return parts.join(" · ");
+  const why = `no Monday ${dmy(w.weekStart)} snapshot (${w.status === "failed" ? "capture failed" + (w.error ? ": " + w.error : "") : "not captured"})`;
+  if (!parts.length) {
+    return `WARNING: ${why} and no restock upload. `
+      + "Stock Intransit, Order placed, Stock purchase sheet qty and Combo show 0; Final qty is the 180-day need only.";
+  }
+  const missing = p?.from === "none"
+    ? "no Stock Purchase Sheet upload. Stock Intransit, Order placed and Stock purchase sheet qty show 0; Final qty is the 180-day need only."
+    : "no Components Sheet upload. Combo shows 0.";
+  return `WARNING: ${why} and ${missing} ${parts.join(" · ")}`;
 }
 
 export function buildConsolidatedWorkbook(data: ConsolidatedExportData) {
@@ -235,7 +251,7 @@ function summarySheet(data: ConsolidatedExportData, finalCol: string, statusCol:
   );
   lines.push(
     ["Sales dropped 3 days in a row (Day 3 > Day 2 > Day 1)", f(`COUNTA(${q("Sales dropped products")}!A:A)-1`, salesDropped(rows).length), "Sales dropped products"],
-    ["No sales in 10 days (with stock, not discontinued)", f(`COUNTA(${q("No Sales products")}!A:A)-1`, noSales(rows).length), "No Sales products"],
+    [`No sales in 10 days (stock ${NO_SALES_MIN_STOCK}+, not discontinued)`, f(`COUNTA(${q("No Sales products")}!A:A)-1`, noSales(rows).length), "No Sales products"],
     ["Total final qty to restock (units)", f(`SUM(Consolidated!${finalCol}:${finalCol})`, restock, "#,##0"), "Consolidated → Final Qty to be restocked"],
   );
   if (data.seasonal) lines.push(["Unusual Stock Out days flagged (kept in totals)", f(`COUNTA(${q("Unusual Stock Out days")}!A:A)-1`, a.reduce((t, p) => t + p.unusual.length, 0)), "Unusual Stock Out days"]);

@@ -121,3 +121,16 @@ test("Summary first: every figure is a formula over a detail sheet and its value
   assert.match(xml(2), /<pane xSplit="1" ySplit="1" topLeftCell="B2" activePane="bottomRight" state="frozen"\/>/); // Consolidated
   assert.doesNotMatch(xml(1), /<pane /);                                                                          // Summary
 });
+
+test("label names the source of each restock input: Friday upload or Monday snapshot (newest wins)", () => {
+  const up = { from: "upload" as const, date: "2026-10-17", at: "2026-10-17T06:00:00Z" };
+  const snap = { from: "snapshot" as const, date: "2026-10-12", at: "2026-10-12T04:30:00Z" };
+  const none = { from: "none" as const, date: null, at: null };
+  const base = { weekStart: "2026-10-12", capturedAt: "2026-10-12T04:30:00Z", error: null };
+  assert.equal(weeklyLabel({ ...base, status: "ok", purchase: snap, components: snap }), "Stock Purchase / Components: Monday 12-10-2026 snapshot, captured 12 Oct 2026, 10:00 am IST");
+  assert.equal(weeklyLabel({ ...base, status: "ok", purchase: up, components: snap }),
+    "Stock Purchase: uploaded file of 17-10-2026 (17 Oct 2026, 11:30 am IST) · Components: Monday 12-10-2026 snapshot, captured 12 Oct 2026, 10:00 am IST");
+  const w = weeklyLabel({ ...base, status: "missing", capturedAt: null, purchase: up, components: none });
+  assert.match(w, /^WARNING: no Monday 12-10-2026 snapshot \(not captured\) and no Components Sheet upload\. Combo shows 0\. /i);
+  assert.match(w, /Stock Purchase: uploaded file of 17-10-2026/);
+});
