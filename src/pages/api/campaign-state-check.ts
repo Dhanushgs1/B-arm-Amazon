@@ -4,7 +4,7 @@
 //  - scheduled-reports.ts (once a day, unconditionally, no `to`) — history logging
 //    only, so the dashboard can keep showing a campaign as Paused instead of losing
 //    it. Deliberately silent regardless of email settings.
-//  - cron/campaign-monitor.ts (every 30 min, passes `to`/`cc`) — the near-real-time
+//  - cron/campaign-monitor.ts (every 30 min; passes `to`/`cc` only when Settings `campaignPauseEmails` is on) — the near-real-time
 //    pause alert: if this call's own detection finds a fresh transition, it emails
 //    immediately. A transition already caught by an earlier run (either cadence)
 //    won't re-fire here, since checkCampaignStateChanges only reports state that

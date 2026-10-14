@@ -2,7 +2,7 @@ import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { supabasePublic } from "@/lib/amazonReportUpload";
 import { toDate as parseFlexibleDate } from "@/lib/meeshoReportUpload";
-import { detectBarmOrdersLayout, findBarmOrdersHeader, mapBarmOfflineRows, type BarmOrdersLayout } from "@/lib/barmOfflineOrderRules";
+import { detectBarmOrdersLayout, fillDownBarmDates, findBarmOrdersHeader, mapBarmOfflineRows, mergeDuplicateBarmInvoices, type BarmOrdersLayout } from "@/lib/barmOfflineOrderRules";
 
 // Google (direct/website) orders upload — the seller's own hand-kept "B-Arm
 // Orders" workbook for direct/Google-driven sales that don't come through
@@ -117,7 +117,8 @@ function mapOrderRow(row: RawRow) {
     // only in case a future version of the sheet adds a real name column.
     product_name: str(p("Product", "Sku", "SKU")),
     quantity: int(p("Qty", "Quantity")),
-    price: num(p("Price")),
+    // A blank / 0 price is saved as null (never ₹0, never a guess) and flagged on the upload card.
+    price: num(p("Price")) > 0 ? num(p("Price")) : null,
     raw: row,
   };
 }
@@ -138,8 +139,10 @@ export interface GoogleOrdersParseResult {
   /** Rows ready for barm_daily_google_orders, in file order. */
   rows: Record<string, unknown>[];
   skippedRows: number;
-  /** Offline layout only: saved rows whose file gives no price (price saved as null). */
+  /** Saved rows whose file gives no price (price saved as null). */
   rowsWithoutPrice: number;
+  /** 1-based data-row positions (below the header) of the rows counted in rowsWithoutPrice. */
+  linesWithoutPrice: number[];
   minDate: string | null;
   maxDate: string | null;
 }
@@ -148,23 +151,30 @@ export interface GoogleOrdersParseResult {
 export async function parseGoogleOrdersFile(file: File): Promise<GoogleOrdersParseResult> {
   const { layout, rows: rawRows } = await readRows(file);
   let rows: Record<string, unknown>[];
-  let rowsWithoutPrice = 0;
+  let linesWithoutPrice: number[];
   if (layout === "offline") {
     const parsed = mapBarmOfflineRows(rawRows);
     rows = parsed.rows as unknown as Record<string, unknown>[];
-    rowsWithoutPrice = parsed.rowsWithoutPrice;
+    // The offline rules set serial_no to the row's 1-based data-row position.
+    linesWithoutPrice = parsed.rows.filter((r) => r.price === null).map((r) => r.serial_no);
   } else {
     // Newer copies of this workbook drop the Invoice column (S no, Date, sku, Qty, Price) — such a
     // row is keyed "ORDER-<date>-<SKU>-<n>" (n = 1st, 2nd … line for that SKU on that date, file
     // order) like the offline layout, so re-uploading the same file updates rows in place.
+    // Same SKU on two lines = 2 units (Google-only rule): a blank-Date line takes the date above it,
+    // and lines sharing an Invoice are summed/re-keyed instead of overwriting each other on upsert.
     const occurrence = new Map<string, number>();
-    rows = rawRows.map(mapOrderRow).map((r) => {
+    const mapped = fillDownBarmDates(rawRows.map((raw, i) => ({ ...mapOrderRow(raw), line: i + 1 })));
+    const kept = mergeDuplicateBarmInvoices(mapped.map((r) => {
       if (r.invoice || !r.order_date || !r.product_name) return r;
       const key = `${r.order_date}|${r.product_name}`;
       const n = (occurrence.get(key) || 0) + 1;
       occurrence.set(key, n);
       return { ...r, invoice: `ORDER-${r.order_date}-${r.product_name}-${n}` };
-    }).filter((r) => REQUIRED_FIELDS.every((f) => r[f as keyof typeof r] !== null && r[f as keyof typeof r] !== undefined && r[f as keyof typeof r] !== ""));
+    }).filter((r) => REQUIRED_FIELDS.every((f) => r[f as keyof typeof r] !== null && r[f as keyof typeof r] !== undefined && r[f as keyof typeof r] !== "")));
+    // `line` is only for the upload message — it isn't a barm_daily_google_orders column.
+    rows = kept.map((r) => { const row: Record<string, unknown> = { ...r }; delete row.line; return row; });
+    linesWithoutPrice = kept.filter((r) => r.price === null).map(({ line }) => line);
   }
   const dates = rows.map((r) => r.order_date as string | null).filter((d): d is string => !!d).sort();
   return {
@@ -172,7 +182,8 @@ export async function parseGoogleOrdersFile(file: File): Promise<GoogleOrdersPar
     totalRows: rawRows.length,
     rows,
     skippedRows: rawRows.length - rows.length,
-    rowsWithoutPrice,
+    rowsWithoutPrice: linesWithoutPrice.length,
+    linesWithoutPrice,
     minDate: dates[0] ?? null,
     maxDate: dates[dates.length - 1] ?? null,
   };
@@ -184,14 +195,19 @@ export interface GoogleOrdersUploadResult {
   skippedRows: number;
   layout: BarmOrdersLayout | null;
   rowsWithoutPrice: number;
+  linesWithoutPrice: number[];
   minDate: string | null;
   maxDate: string | null;
 }
 
+/** Throws (nothing saved) when the file is blank or none of its rows can be saved, so the upload
+ *  card shows it as a problem instead of a green "0 rows saved". */
 export async function uploadGoogleOrdersFile(file: File): Promise<GoogleOrdersUploadResult> {
   const parsed = await parseGoogleOrdersFile(file);
   const { rows, ...summary } = parsed;
-  if (!rows.length) return { ...summary, savedRows: 0, skippedRows: parsed.totalRows };
+  if (!parsed.layout) throw new Error("No \"S no\" or \"Date / Quantity / SKU ID\" header row found — nothing saved. Check the file.");
+  if (!parsed.totalRows) throw new Error("The file has no order rows (blank) — nothing saved.");
+  if (!rows.length) throw new Error(`None of the ${parsed.totalRows} rows could be saved — each row needs a Date, a SKU and a Qty. Nothing saved.`);
 
   await upsertInChunks("barm_daily_google_orders", rows, "invoice");
 

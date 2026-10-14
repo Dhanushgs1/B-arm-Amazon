@@ -71,6 +71,8 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
         dailyDigest: !!s.dailySummary,
         liveAlerts: !!s.liveAlerts,
         fbaWarehouseLow: !!(s.fbaWarehouseAlerts ?? slot === "B"),
+        highAcosTrend: !!s.highAcosDaily,
+        ratingDrop: isMonday && !!(s.ratingDropAlerts ?? slot === "B"),
         weekly: isMonday && !!s.weeklySummary,
         monthly: isFirstOfMonth && !!s.monthlySummary,
       },
@@ -115,23 +117,39 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
       `[${slot}] Daily digest`
     );
   }
+  // The four emails below are the client's daily list (sheet "Mail to be triggered", 2026-10-11):
+  // each goes out on any day it has something to report — never as an empty mail (user, 2026-10-11).
   if (s.liveAlerts) {
-    // Once a day is the honest cadence: every detector compares whole days, so a second run
-    // would re-scan identical numbers. Emails nothing unless something new fired.
-    results.liveAlerts = await callReportEndpoint(req, "/api/live-alerts", acct, `[${slot}] Live alerts`);
+    // "Things need attention": everything firing today (conversion drops and products running out
+    // within stockoutWarnDays first), new items marked NEW.
+    results.liveAlerts = await callReportEndpoint(
+      req, "/api/live-alerts", { ...acct, daily: true, warnDays: Number(s.stockoutWarnDays) || 10 }, `[${slot}] Things need attention`
+    );
   }
-  // FBA warehouse low stock — SKUs newly below 20 in the 8 major FBA cities. On by default for
-  // B-ARM only (the account those cities were chosen for); Settings can switch it either way.
+  // FBA stock — every SKU failing the 24-FC rule (under 8 FCs stocked, or a stocked FC at 20 units or
+  // less), newly failing ones marked NEW, plus every SKU's stock per FC as a CSV. On by default for
+  // B-ARM only (the account the FC list was made for); Settings can switch it either way.
   if (s.fbaWarehouseAlerts ?? slot === "B") {
-    results.fbaWarehouseLow = await callReportEndpoint(req, "/api/fba-warehouse-alerts", acct, `[${slot}] FBA warehouse low stock`);
+    results.fbaWarehouseLow = await callReportEndpoint(req, "/api/fba-warehouse-alerts", { ...acct, daily: true }, `[${slot}] FBA stock`);
+  }
+  // High ACOS — campaigns above highAcosThreshold (default 14%) over the last 7 days, ACOS per day.
+  // Sends only if yesterday's Last 7 days upload is already in, at most once per date; otherwise the
+  // Upload page / 30-minute monitor send it after the upload (see high-acos-report.ts).
+  if (s.highAcosDaily) {
+    results.highAcosTrend = await callReportEndpoint(
+      req, "/api/high-acos-report", { ...acct, threshold: Number(s.highAcosThreshold) || 14 }, `[${slot}] High ACOS`
+    );
+  }
+  // Rating drop — listings that fell from 4★+ to below 4★ since the last ratings snapshot.
+  // Mondays, only if this week's ratings upload is already in and not yet mailed; otherwise the
+  // Ratings & Reviews upload sends it (see rating-drop-alert.ts). On by default for B-ARM.
+  if (isMonday && (s.ratingDropAlerts ?? slot === "B")) {
+    results.ratingDrop = await callReportEndpoint(req, "/api/rating-drop-alert", acct, `[${slot}] Rating drop`);
   }
   if (isMonday && s.weeklySummary) {
     results.weekly = await callReportEndpoint(req, "/api/weekly-report", acct, `[${slot}] Weekly report`);
   }
-  // Historical 7/30 Day Analysis Report and Daily Ad Spend Report (SKU-wise) are
-  // handled OUTSIDE this per-slot loop, in handler() below — unlike everything else
-  // here, both are single fixed-distribution-list sends (not scoped to one Amazon
-  // account/Settings row), so running them once per slot here would double-send them.
+  // The Historical 7/30 Day Analysis Report and Daily Ad Spend Report stay manual-only — see handler() below.
   if (isFirstOfMonth && s.monthlySummary) {
     try {
       await sendMonthlyPlaceholder(req, s.notifEmail, s.ccEmail);
@@ -174,16 +192,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
   }
 
-  // Historical 7/30 Day Analysis Report and Daily Ad Spend Report (SKU-wise) used
-  // to piggyback on this route's daily 9:00 AM IST cron trigger, auto-sending to a
-  // hardcoded distribution list (kaviyapriyabarm@gmail.com + a 7-address CC list)
-  // with no on/off toggle anywhere — unlike every other send in this file, which at
-  // least checks a Settings flag. That surprised the recipients with an unwanted
-  // daily email nobody had asked for. Both are manual-only now — use the "Send"
-  // button on the Reports page (calls the same /api/send-ad-spend-email and
-  // /api/send-historical-email routes) when you actually want one sent.
-  const adSpendDaily = { skipped: "auto-send disabled — use the Reports page's Send button" };
-  const historical = { skipped: "auto-send disabled — use the Reports page's Send button" };
+  // Historical 7/30 Day Analysis Report and Daily Ad Spend Report (SKU-wise) used to piggyback on
+  // this route's daily trigger, auto-sending to a hardcoded distribution list with no on/off toggle,
+  // which surprised the recipients. Both are manual-only — the Reports page's Send button (confirmed
+  // again for the ad spend report by the user, 2026-10-11).
+  const adSpendDaily = { skipped: "manual only — use the Reports page's Send button" };
+  const historical = { skipped: "manual only — use the Reports page's Send button" };
 
   return res.status(200).json({ ranAt: now.toISOString(), isMonday, isFirstOfMonth, dryRun, bySlot, adSpendDaily, historical });
 }

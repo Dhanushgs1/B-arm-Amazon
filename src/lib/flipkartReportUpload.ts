@@ -686,6 +686,9 @@ async function deleteDateRange(table: string, dateCol: string, minDate: string, 
 // a current-moment snapshot with no date column, where every upload supersedes
 // the last one entirely. Mirrors truncateAndInsert in amazonReportUpload.ts.
 async function truncateAndInsert(table: string, rows: Record<string, unknown>[]): Promise<void> {
+  // A file with zero usable rows (wrong report, renamed columns) must never wipe the
+  // existing snapshot — the delete below would otherwise leave the table empty.
+  if (rows.length === 0) throw new Error("No valid rows found in this file — check it is the right report. Existing data was left unchanged.");
   const { error } = await supabasePublic.from(table).delete().gte("id", 0);
   if (error) throw new Error(`Truncate ${table} failed: ${error.message}`);
   await insertInChunks(table, rows);

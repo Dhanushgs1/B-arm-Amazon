@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { detectBarmOrdersLayout, findBarmOrdersHeader, offlineRowPrice, mapBarmOfflineRows } from "./barmOfflineOrderRules.ts";
+import { detectBarmOrdersLayout, findBarmOrdersHeader, offlineRowPrice, mapBarmOfflineRows, fillDownBarmDates, mergeDuplicateBarmInvoices } from "./barmOfflineOrderRules.ts";
 
 const OFFLINE_HEADER = ["Date", "Product", "Quantity", "Price per Product", "Total Price", "SKU ID"];
 
@@ -74,4 +74,33 @@ test("rows without a date, SKU or quantity are skipped with a reason; blank line
     { line: 2, reason: "no SKU" },
     { line: 3, reason: "no quantity" },
   ]);
+});
+
+test("legacy: a same-SKU line with a blank Date takes the date above it (1 + 1 = 2 units)", () => {
+  const out = fillDownBarmDates([
+    { order_date: "2026-10-06", product_name: "Sensory brush", quantity: 1 },
+    { order_date: null, product_name: "Sensory brush", quantity: 1 },
+    { order_date: null, product_name: "", quantity: 0 },
+  ]);
+  assert.deepEqual(out.map((r) => r.order_date), ["2026-10-06", "2026-10-06", null]);
+  assert.equal(fillDownBarmDates([{ order_date: null, product_name: "X", quantity: 1 }])[0].order_date, null);
+});
+
+test("legacy: same invoice + same SKU sums to one line; other SKUs on it get their own key", () => {
+  const out = mergeDuplicateBarmInvoices([
+    { invoice: "B1500", product_name: "Sensory brush", quantity: 1, price: 399 },
+    { invoice: "B1500", product_name: "sensory  brush", quantity: 1, price: 399 },
+    { invoice: "B1501", product_name: "Sensory brush", quantity: 1, price: 399 },
+    { invoice: "B1501", product_name: "OT DT", quantity: 1, price: 599 },
+    { invoice: "B1502", product_name: "10PIC KIT", quantity: 1, price: 2699 },
+    { invoice: "", product_name: "Sensory brush", quantity: 1, price: 399 },
+  ]);
+  assert.deepEqual(out.map((r) => [r.invoice, r.quantity]), [
+    ["B1500", 2],
+    ["B1501-Sensory brush", 1],
+    ["B1501-OT DT", 1],
+    ["B1502", 1],
+    ["", 1],
+  ]);
+  assert.equal(out.reduce((s, r) => s + r.quantity, 0), 6);
 });

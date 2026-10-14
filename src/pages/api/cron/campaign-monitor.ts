@@ -39,12 +39,35 @@ async function checkSlot(req: NextApiRequest, slot: string) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         slot, amazon_account_id: s.amazonAccountId, workspace_id: s.workspaceId,
-        to: s.notifEmail, cc: s.ccEmail || undefined,
+        // The "Campaign Paused" email is off unless Settings turns it on (user, 2026-10-11: only the
+        // daily emails go out). Without `to`, pauses are still detected and logged, just not mailed.
+        ...(s.campaignPauseEmails ? { to: s.notifEmail, cc: s.ccEmail || undefined } : {}),
       }),
     });
     const j = await r.json().catch(() => ({}));
     console.log(`[Marketplace360 Cron] ${r.ok ? "✅" : "❌"} [${slot}] Campaign monitor (30min):`, JSON.stringify(j).slice(0, 300));
-    return { ok: r.ok, result: j };
+    // High ACOS: goes out once yesterday's Last 7 days upload has landed (high-acos-report.ts sends
+    // at most once per date). The Upload page triggers it right after the upload; this is the backup
+    // from 9:00 IST in case that call did not finish.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let highAcos: any;
+    if (s.emailAlerts && s.highAcosDaily && s.notifEmail && new Date(Date.now() + 5.5 * 3_600_000).getUTCHours() >= 9) {
+      try {
+        const hr = await internalFetch(`${internalOrigin()}/api/high-acos-report`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            slot, amazon_account_id: s.amazonAccountId, workspace_id: s.workspaceId, to: s.notifEmail, cc: s.ccEmail || undefined,
+            currency: s.currency || "INR", threshold: Number(s.highAcosThreshold) || 14,
+          }),
+        });
+        const hj = await hr.json().catch(() => ({}));
+        highAcos = { ok: hr.ok, emailed: hj.emailed, skipped: hj.skipped, error: hj.error };
+      } catch (err: any) {
+        highAcos = { ok: false, error: err?.message || String(err) };
+      }
+    }
+    return { ok: r.ok, result: j, highAcos };
   } catch (err: any) {
     console.error(`[Marketplace360 Cron] ❌ [${slot}] Campaign monitor (30min) failed:`, err);
     return { ok: false, error: err?.message || String(err) };

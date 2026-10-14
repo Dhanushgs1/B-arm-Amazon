@@ -120,3 +120,48 @@ export function mapBarmOfflineRows(rows: RawRow[]): BarmOfflineParseResult {
 
   return { rows: out, skipped, rowsWithoutPrice };
 }
+
+// ── Legacy "B-Arm Orders" layout: same-SKU lines ────────────────────────────
+// Google-only rule from the seller: a SKU written on two lines ("Sensory brush" 1, then "Sensory
+// brush" 1 again) is 2 units — never 1. Two ways the legacy upload used to lose the second line:
+//  • the second line left its Date blank (written once for the block) → skipped as "no date";
+//  • both lines carried the same Invoice → the upsert key collided and one line was dropped.
+
+/** A line with a SKU and a Qty but a blank Date belongs to the date written above it. */
+export function fillDownBarmDates<T extends { order_date: string | null; product_name: string; quantity: number }>(rows: T[]): T[] {
+  let last: string | null = null;
+  return rows.map((r) => {
+    if (r.order_date) { last = r.order_date; return r; }
+    return last && r.product_name && r.quantity > 0 ? { ...r, order_date: last } : r;
+  });
+}
+
+/** Lines sharing an Invoice: the same SKU (ignoring case/spacing) at the same price is summed into
+ *  one line; an invoice that still has several lines (different SKUs/prices) keys each one
+ *  "<invoice>-<SKU>[-n]" so none overwrites another. A unique invoice keeps its key unchanged, so
+ *  re-uploading an older file still updates the same rows. */
+export function mergeDuplicateBarmInvoices<T extends { invoice: string; product_name: string; quantity: number; price: number | null }>(rows: T[]): T[] {
+  // Same SKU match as the Ad Spend Report's Google grouping: "10PIC KIT" = "10pickit".
+  const skuKey = (s: string) => s.toLowerCase().replace(/[\s\-_.]+/g, "");
+  const merged: T[] = [];
+  const byLine = new Map<string, T>();
+  for (const r of rows) {
+    if (!r.invoice) { merged.push(r); continue; }
+    const k = `${r.invoice}\u0000${skuKey(r.product_name)}\u0000${r.price ?? ""}`;
+    const hit = byLine.get(k);
+    if (hit) { hit.quantity += r.quantity; continue; }
+    const copy = { ...r };
+    byLine.set(k, copy);
+    merged.push(copy);
+  }
+  const perInvoice = new Map<string, number>();
+  merged.forEach((r) => { if (r.invoice) perInvoice.set(r.invoice, (perInvoice.get(r.invoice) || 0) + 1); });
+  const seen = new Map<string, number>();
+  return merged.map((r) => {
+    if (!r.invoice || perInvoice.get(r.invoice) === 1) return r;
+    const base = `${r.invoice}-${r.product_name.replace(/\s+/g, " ").trim()}`;
+    const n = (seen.get(base) || 0) + 1;
+    seen.set(base, n);
+    return { ...r, invoice: n === 1 ? base : `${base}-${n}` };
+  });
+}

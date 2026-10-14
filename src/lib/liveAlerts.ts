@@ -19,6 +19,7 @@
 
 import { fetchAsinSkuMap } from "@/lib/adAlerts";
 import { resolveProductName } from "@/lib/categoryMap";
+import { fbaFeedOk } from "@/lib/stockout";
 
 const SELLERMATE_BASE_URL = "https://api.sellermate.ai/public/v1/tools";
 
@@ -159,6 +160,8 @@ export async function findStockoutForecasts(
   // an ASIN across pages, and summing those repeats inflated stock on hand, which pushed days of
   // cover up and made the alert count wander between runs (9, then 6, then 8 on identical input).
   const invByAsin = new Map<string, { name: string; sku: string; units: number }>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const invItemsSeen: any[] = [];
   let offset = 0;
   for (let i = 0; i < 10; i++) {
     const inv = await callTool(
@@ -168,6 +171,7 @@ export async function findStockoutForecasts(
     );
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const items: any[] = inv.items || [];
+    invItemsSeen.push(...items);
     for (const it of items) {
       if (!it.asin) continue;
       const units = (it.fbm?.quantity || 0) + (it.fba?.endingWarehouseBalance || 0);
@@ -176,6 +180,9 @@ export async function findStockoutForecasts(
     if (items.length === 0 || offset + items.length >= (inv.total || 0)) break;
     offset += items.length;
   }
+  // SellerMate's FBA feed down (no FBA stock anywhere) — FBM-only counts would forecast false
+  // stockouts, so say nothing (user, 2026-10-12).
+  if (!fbaFeedOk(invItemsSeen)) return [];
 
   const perf = await callTool(
     "get_retail_product_performance",

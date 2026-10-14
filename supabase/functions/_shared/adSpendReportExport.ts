@@ -453,6 +453,10 @@ export interface AdSpendReportOpts {
    *  only the real generations (the Reports-page download and the daily generate-ad-spend-report
    *  job) pass true, so a preview/audit build can never overwrite production history. */
   persistHistory?: boolean;
+  /** Upsert ONLY the 30D figures into barm_ad_spend_history_30d, leaving barm_ad_spend_history
+   *  untouched — for backfilling past report dates (supabase/scripts/backfill_ad_spend_history_30d.ts).
+   *  Implied by persistHistory. */
+  persistHistory30dOnly?: boolean;
   /** Ask Gemini to word the Action Sheet suggestions (the rule-based text is always written first).
    *  Defaults to true; audits pass false so a build makes no external calls. */
   aiSuggestions?: boolean;
@@ -1324,14 +1328,17 @@ async function fetchSocialMediaAdSpend(
   rows
     .filter((r) => r.report_start >= range.start && r.report_end <= endDate) // fully inside the window only
     .forEach((r) => {
-      const list = byCampaign.get(r.campaign_name) ?? [];
+      // Same campaign matched ignoring case/spacing (same rule as the upload, socialMediaRules.ts),
+      // so "Camp A" daily rows and a "camp a" whole-window row are never both summed.
+      const key = String(r.campaign_name || "").replace(/\s+/g, " ").trim().toLowerCase();
+      const list = byCampaign.get(key) ?? [];
       list.push(r);
-      byCampaign.set(r.campaign_name, list);
+      byCampaign.set(key, list);
     });
   let rangeSpend = 0;
   byCampaign.forEach((campaignRows) => {
-    const wideRow = campaignRows.find((r) => r.report_start === range.start && r.report_end === endDate);
-    rangeSpend += wideRow ? num(wideRow.spend) : campaignRows.reduce((s, r) => s + num(r.spend), 0);
+    const wideRows = campaignRows.filter((r) => r.report_start === range.start && r.report_end === endDate);
+    rangeSpend += (wideRows.length ? wideRows : campaignRows).reduce((s, r) => s + num(r.spend), 0);
   });
 
   return { daySpend: round2(daySpend), rangeSpend: round2(rangeSpend) };
@@ -1378,29 +1385,33 @@ async function fetchGoogleOrders(range: { start: string; end: string }, endDate:
     q.gte("order_date", range.start).lte("order_date", range.end)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ).catch(() => [])) as any[];
-  const byProduct = new Map<string, { quantity: number; priceSum: number; priceCount: number }>();
+  const byProduct = new Map<string, { name: string; quantity: number; priceSum: number; priceCount: number }>();
   const byDateProduct = new Map<string, { date: string; name: string; quantity: number; priceSum: number; priceCount: number }>();
   let dayUnits = 0;
   let dayValue = 0;
   let rangeUnits = 0;
   let rangeValue = 0;
   rows.forEach((r) => {
-    const name = r.product_name || "(no product name)";
+    const name = String(r.product_name || "").replace(/\s+/g, " ").trim() || "(no product name)";
+    // The B-Arm workbook is hand-typed: the same SKU on two lines ("10PIC KIT" 1 + "10pickit" 1)
+    // must add up to one 2-unit line, not two 1-unit lines — so lines are grouped by the SKU
+    // ignoring case, spaces, "-", "_" and ".", shown under the first spelling seen. Google-only rule.
+    const nameKey = name.toLowerCase().replace(/[\s\-_.]+/g, "");
     const date = r.order_date || "";
     const qty = num(r.quantity);
     const price = num(r.price);
     const value = qty * price;
     rangeUnits += qty;
     rangeValue += value;
-    const acc = byProduct.get(name) || { quantity: 0, priceSum: 0, priceCount: 0 };
+    const acc = byProduct.get(nameKey) || { name, quantity: 0, priceSum: 0, priceCount: 0 };
     acc.quantity += qty;
     if (price > 0) { acc.priceSum += price; acc.priceCount += 1; }
-    byProduct.set(name, acc);
+    byProduct.set(nameKey, acc);
     if (r.order_date === endDate) {
       dayUnits += qty;
       dayValue += value;
     }
-    const dateKey = `${date}\u0000${name}`;
+    const dateKey = `${date}\u0000${nameKey}`;
     const dateAcc = byDateProduct.get(dateKey) || { date, name, quantity: 0, priceSum: 0, priceCount: 0 };
     dateAcc.quantity += qty;
     if (price > 0) { dateAcc.priceSum += price; dateAcc.priceCount += 1; }
@@ -1410,8 +1421,8 @@ async function fetchGoogleOrders(range: { start: string; end: string }, endDate:
     .map((acc) => ({ name: acc.name, date: acc.date, quantity: acc.quantity, price: acc.priceCount ? acc.priceSum / acc.priceCount : 0 }))
     .sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
   return {
-    perProduct: [...byProduct.entries()]
-      .map(([name, acc]) => ({ name, quantity: acc.quantity, price: acc.priceCount ? acc.priceSum / acc.priceCount : 0 }))
+    perProduct: [...byProduct.values()]
+      .map((acc) => ({ name: acc.name, quantity: acc.quantity, price: acc.priceCount ? acc.priceSum / acc.priceCount : 0 }))
       .sort((a, b) => b.quantity * b.price - a.quantity * a.price),
     dailyPerProduct,
     dayUnits, dayValue: Math.round(dayValue * 100) / 100,
@@ -2014,6 +2025,56 @@ async function saveAdSpendHistory(
   }
 }
 
+// The 30-day companion to saveAdSpendHistory, stored in barm_ad_spend_history_30d (see
+// scripts/ad_spend_history_30d_table.sql) and read by acos_interval_summary_v. Summing
+// barm_ad_spend_history's day_* columns can't stand in for this: a report saved before that day's
+// ad data was uploaded stores Day = 0. So the same per-platform fetchers run again over the 30
+// days ending on endDate, with the same name/GST resolution (resolveProducts) and the same
+// spendTax/computeCpc/acosCell formulas as the 7D range. Only runs on persisted generations.
+async function saveAdSpendHistory30d(
+  endDate: string,
+  flipkartListingPriceMap: Map<string, number>,
+  resolveProducts: (products: Map<string, ProductRow>) => void,
+  listingPriceFor: (platform: Platform, sku: string) => number | undefined
+): Promise<number> {
+  try {
+    const range30 = getDateWindow(endDate, 30);
+    const [amz, fk, ms] = await Promise.all([
+      fetchAmazonProducts(range30, endDate),
+      fetchFlipkartProducts(range30, endDate, flipkartListingPriceMap),
+      fetchMeeshoProducts(range30, endDate),
+    ]);
+    const rows: Record<string, unknown>[] = [];
+    ([["Amazon", amz.products], ["Flipkart", fk.products], ["Meesho", ms.products]] as [Platform, Map<string, ProductRow>][])
+      .forEach(([platform, products]) => {
+        resolveProducts(products);
+        products.forEach((p) => {
+          if (spendTax(p.range) <= 0 && p.range.units <= 0) return;
+          rows.push({
+            report_date: endDate,
+            range30_start: range30.start,
+            platform,
+            sku: p.sku,
+            product_name: p.name,
+            price: p.price,
+            spend: round2(p.range.spend),
+            spend_tax: round2(spendTax(p.range)),
+            orders: p.range.units,
+            cpc: round2(computeCpc(p.range)),
+            acos: acosCell(p.range, p.price, listingPriceFor(platform, p.sku)),
+          });
+        });
+      });
+    if (!rows.length) return 0;
+    await upsertInChunks("barm_ad_spend_history_30d", rows, "report_date,platform,sku");
+    return rows.length;
+  } catch (err) {
+    // Same as saveAdSpendHistory: never break report generation over the 30D history.
+    console.error("[adSpendReportExport] Failed to save 30D ad spend history:", err);
+    return 0;
+  }
+}
+
 export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promise<AdSpendReportResult> {
   const { endDate, accountName } = opts;
   const aiSuggestions = opts.aiSuggestions !== false;
@@ -2080,7 +2141,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // rows just because only some of them have a master_product_marketing entry (see
   // groupProductsByName's skuToMasterSkuidName param comment for the full explanation).
   const skuToMasterSkuidName = new Map<string, string>([...masterSkuid.entries()].map(([sku, entry]) => [sku, entry.name]));
-  [amz.products, fk.products, ms.products].forEach((products) => {
+  // Also applied to the 30D history fetch (saveAdSpendHistory30d), so its names and GST match.
+  const resolveProducts = (products: Map<string, ProductRow>) => {
     products.forEach((p) => {
       p.name = resolveName(p.sku, p.name);
       // Tagged onto both windows here, once per product, rather than looked up
@@ -2090,7 +2152,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       p.day.gstMultiplier = gst;
       p.range.gstMultiplier = gst;
     });
-  });
+  };
+  [amz.products, fk.products, ms.products].forEach(resolveProducts);
 
   // Seed a zero-activity row for every known Amazon catalog SKU with no spend/order data at all
   // this window, so "B Arm orders" (the one sheet here that isn't ad-spend-scoped — see its own
@@ -2150,7 +2213,12 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     .map(({ platform, reportDates }) => ({ platform, missingDates: missingDates(reportDates, range.start, endDate) }))
     .filter(({ missingDates }) => missingDates.length > 0);
 
-  const historyRowsSaved = opts.persistHistory ? await saveAdSpendHistory(platforms, endDate, range.start, listingPriceFor) : 0;
+  const [historyRowsSaved] = await Promise.all([
+    opts.persistHistory ? saveAdSpendHistory(platforms, endDate, range.start, listingPriceFor) : 0,
+    opts.persistHistory || opts.persistHistory30dOnly
+      ? saveAdSpendHistory30d(endDate, flipkartListingPriceMap, resolveProducts, listingPriceFor)
+      : 0,
+  ]);
 
   const wb = XLSX.utils.book_new();
 

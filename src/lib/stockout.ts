@@ -27,6 +27,10 @@ async function callTool(tool: string, args: Record<string, any>, apiKey: string)
 
 const toDateStr = (d: Date) => d.toISOString().slice(0, 10);
 
+/** SellerMate's FBA feed is usable only if at least one get_inventory item has FBA stock above 0.
+ *  Empty, all-null or all-0 FBA means the feed is down, so stock-based alerts must say nothing. */
+export const fbaFeedOk = (items: any[]): boolean => items.some((it) => (it?.fba?.endingWarehouseBalance || 0) > 0);
+
 export async function findStockoutAdSpend(opts: {
   apiKey: string;
   amazon_account_id: string;
@@ -42,10 +46,12 @@ export async function findStockoutAdSpend(opts: {
 
   // 1. Inventory: all pages → ASIN map
   const invByAsin = new Map<string, { name: string; sku: string; image: string; units: number }>();
+  const invItemsSeen: any[] = [];
   let offset = 0;
   for (let i = 0; i < 10; i++) {
     const inv = await callTool("get_inventory", { amazon_account_id, workspace_id, limit: 200, offset }, apiKey);
     const items: any[] = inv.items || [];
+    invItemsSeen.push(...items);
     for (const it of items) {
       const units = (it.fbm?.quantity || 0) + (it.fba?.endingWarehouseBalance || 0);
       invByAsin.set(it.asin, { name: it.itemName || it.asin, sku: it.sku || it.asin, image: it.mainImageUrl || "", units });
@@ -53,6 +59,9 @@ export async function findStockoutAdSpend(opts: {
     if (items.length === 0 || offset + items.length >= (inv.total || 0)) break;
     offset += items.length;
   }
+  // No ASIN with FBA stock above 0 means SellerMate's FBA feed is down, not that everything is out
+  // of stock — FBM-only counts would flag stocked products as OUT (user, 2026-10-12).
+  if (!fbaFeedOk(invItemsSeen)) return [];
 
   // 2. Ad spend by ASIN + campaign over the lookback window
   const end = now;

@@ -1,4 +1,6 @@
 -- scripts/ad_spend_report_pg_cron.sql
+-- SUPERSEDED (2026-10-09) by scripts/ad_spend_report_catchup.sql, which unschedules this job and
+-- runs a 30-minute catch-up instead. Kept for history; do not re-run.
 -- Daily trigger for the Daily Ad Spend Report generation Edge Function,
 -- replacing the old Vercel Cron -> heavy-computation path. Runs at 04:00 UTC
 -- (matches the retired vercel.json cron's own "0 4 * * *" schedule) for

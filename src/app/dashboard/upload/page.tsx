@@ -229,20 +229,23 @@ function CombinedAdSpendUploadCard({ onUploaded, dataInfo, keySlot }: { onUpload
       const { results, spAdsRows } = await uploadCombinedWorkbook(file);
       setState({ status: "done", fileName: file.name, results });
       onUploaded();
-      // This is the daily "Last 7 days" upload, so it must send the High ACOS alert too — it used to
-      // fire only from the separate SP report card below, which isn't used day to day any more.
-      // Runs after "done" so a slow Gemini/email round-trip never holds up the upload result.
+      // This is the daily "Last 7 days" upload, which is what releases the daily High ACOS email (7-day
+      // ACOS per campaign, src/pages/api/high-acos-report.ts — at most one per day, recipients and
+      // threshold from Settings). Runs after "done" so the email round-trip never holds up the result.
       if (spAdsRows.length) {
         setState((prev) => ({ ...prev, acosNote: { ok: true, text: "Checking high-ACOS campaigns…" } }));
-        maybeAlertHighAcos("sp_advertised_product", spAdsRows, keySlot)
-          .then((a) => {
-            const n = `${a.highAcosCount} high-ACOS campaign${a.highAcosCount === 1 ? "" : "s"}`;
-            const acosNote = a.error ? { ok: false, text: `High ACOS alert: ${n} found, email not sent — ${a.error}` }
-              : a.highAcosCount === 0 ? { ok: true, text: "High ACOS alert: no campaign above your ACOS threshold — no email needed." }
-              : { ok: true, text: `High ACOS alert: ${n} emailed to ${a.to}.` };
+        fetch("/api/high-acos-report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keySlot }) })
+          .then(async (r) => {
+            const a = await r.json().catch(() => ({}));
+            const n = `${a.campaigns ?? 0} campaign${a.campaigns === 1 ? "" : "s"} above ${a.threshold ?? 14}% ACOS`;
+            const acosNote = !r.ok ? { ok: false, text: `High ACOS email failed: ${a.error || r.status}` }
+              : a.skipped ? { ok: true, text: `High ACOS email: ${a.skipped}.` }
+              : a.emailError ? { ok: false, text: `High ACOS email: ${n}, not sent — ${a.emailError}` }
+              : a.emailed ? { ok: true, text: `High ACOS email sent: ${n} (last 7 days).` }
+              : { ok: true, text: `High ACOS email: ${n} — no email needed.` };
             setState((prev) => ({ ...prev, acosNote }));
           })
-          .catch((e) => setState((prev) => ({ ...prev, acosNote: { ok: false, text: `High ACOS alert failed: ${e instanceof Error ? e.message : String(e)}` } })));
+          .catch((e) => setState((prev) => ({ ...prev, acosNote: { ok: false, text: `High ACOS email failed: ${e instanceof Error ? e.message : String(e)}` } })));
       }
     } catch (err) {
       setState({ status: "error", fileName: file.name, error: err instanceof Error ? err.message : String(err) });
@@ -439,7 +442,7 @@ function SocialMediaUploadCard({ onUploaded, dataInfo }: { onUploaded: () => voi
 }
 
 interface GoogleOrdersState {
-  status: "idle" | "parsing" | "done" | "error";
+  status: "idle" | "parsing" | "done" | "warning" | "error";
   fileName?: string;
   message?: string;
 }
@@ -457,8 +460,13 @@ function GoogleOrdersUploadCard({ onUploaded, dataInfo }: { onUploaded: () => vo
     setState({ status: "parsing", fileName: file.name });
     try {
       const res = await uploadGoogleOrdersFile(file);
-      const message = `${res.savedRows} rows saved${res.skippedRows ? `, ${res.skippedRows} skipped` : ""} (of ${res.totalRows})`;
-      setState({ status: "done", fileName: file.name, message });
+      const problems: string[] = [];
+      if (res.rowsWithoutPrice) {
+        problems.push(`Price missing on ${res.rowsWithoutPrice} row${res.rowsWithoutPrice === 1 ? "" : "s"} (line ${res.linesWithoutPrice.join(", ")}) — Sales for them stays blank; fill the Price and upload again`);
+      }
+      if (res.skippedRows) problems.push(`${res.skippedRows} row${res.skippedRows === 1 ? "" : "s"} skipped (no Date, SKU or Qty)`);
+      const message = `${res.savedRows} rows saved (of ${res.totalRows})${problems.length ? ` — ${problems.join("; ")}` : ""}`;
+      setState({ status: problems.length ? "warning" : "done", fileName: file.name, message });
       onUploaded();
     } catch (err) {
       setState({ status: "error", fileName: file.name, message: err instanceof Error ? err.message : String(err) });
@@ -532,6 +540,11 @@ function GoogleOrdersUploadCard({ onUploaded, dataInfo }: { onUploaded: () => vo
         {state.status === "done" && (
           <span className="flex items-center gap-1.5 text-green-600 dark:text-green-400 font-semibold">
             <CheckCircle2 size={14} /> {state.message}
+          </span>
+        )}
+        {state.status === "warning" && (
+          <span className="flex items-start gap-1.5 text-amber-600 dark:text-amber-400 font-semibold">
+            <span aria-hidden>&#9888;</span> {state.message}
           </span>
         )}
         {state.status === "error" && (

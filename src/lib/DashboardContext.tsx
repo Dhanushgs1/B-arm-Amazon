@@ -5,6 +5,7 @@ import { useRouter, usePathname } from "next/navigation";
 import { mcp } from "@/lib/api";
 import { getMarketplaceTab, type MarketplaceTab } from "@/lib/marketplace";
 import { fetchChannelLastDataDate } from "@/lib/channelLastDataDate";
+import { supabase } from "@/lib/supabaseClient";
 
 type Account = {
   id: string;
@@ -164,6 +165,21 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('ppc_startDate', nextStart);
     localStorage.setItem('ppc_endDate', nextEnd);
   }, [activeTab, lastDataDate, dateLabel, startDate, endDate]);
+
+  // Mirror the selected end date into public."ACOS Intervals" (scripts/acos_intervals_table.sql),
+  // so acos_interval_summary_v follows whatever date the dashboard is on — the same way
+  // "Intervals" drives product_forecast_summary_v. BARM only: the table holds BARM's ad spend
+  // window, and an LKN session must not move it. Debounced so restore + re-anchor on load, or
+  // clicking through the picker, end in one write.
+  useEffect(() => {
+    if (!onDashboard || loggedInUser !== "Barm" || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) return;
+    const t = setTimeout(() => {
+      supabase.rpc("set_acos_interval", { p_report_date: endDate }).then(({ error }) => {
+        if (error) console.error("[DashboardContext] set_acos_interval failed:", error);
+      });
+    }, 800);
+    return () => clearTimeout(t);
+  }, [onDashboard, loggedInUser, endDate]);
 
   // Load user context (workspace + account IDs) for a given slot
   const loadContext = async (slot: "A" | "B") => {

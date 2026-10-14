@@ -18,11 +18,11 @@
 // broken cron stays visible in the Vercel logs even though no confusing mail goes out.
 //
 // POST body: { slot?, amazon_account_id, workspace_id, to, cc?, currency?, date?, send?,
-//              acosThreshold?, minSpend?, lookbackDays?, lowStockThreshold?, attachWorkbook? }
+//              acosThreshold?, minSpend?, lookbackDays?, lowStockThreshold?, attachWorkbook?, preview? }
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import { findBleedingCampaigns, findWastedSearchTerms, resolveSellerMateKey, fetchAsinSkuMap } from "@/lib/adAlerts";
-import { findStockoutAdSpend } from "@/lib/stockout";
+import { findStockoutAdSpend, fbaFeedOk } from "@/lib/stockout";
 import { buildAmazonSalesWorkbook } from "@/lib/amazonSalesExport";
 import { resolveProductName } from "@/lib/categoryMap";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
@@ -86,6 +86,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // tables) — a thinner second copy of the same figures — so the digest ships as a body-only
     // email by default. Pass attachWorkbook:true to get it back for a one-off.
     attachWorkbook = false,
+    // preview: render the email and return its HTML (send-email preview), send nothing.
+    preview = false,
   } = req.body || {};
 
   if (!amazon_account_id || !workspace_id) {
@@ -141,26 +143,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // omit the trend arrow instead of rendering a misleading "-100%" against a blank baseline.
     const pct = (nowV: number, prevV: number): number | undefined => (prevV > 0 ? (nowV - prevV) / prevV : undefined);
     const previousMetrics = {
-      totalSales: prevRs.totalSales || prevCs.totalSales || 0,
+      totalSales: prevRs.totalSales || 0,
       adSpend: prevCs.totalSpend || 0,
+      adSales: prevCs.totalSales || 0,
       orders: prevCs.totalOrders || 0,
       units: prevRs.totalUnitsOrdered || 0,
     };
 
+    // Overall sales (every order, from the retail report) and ad sales (sales attributed to ads,
+    // from the campaign report) are different numbers and are never substituted for each other.
+    // The retail report often syncs a day or two after the ad report; until it lands, overall sales
+    // and units are null and the email says "not available yet" instead of showing ₹0 — or, as it
+    // used to, silently showing ad sales under the "Total Sales" label.
+    const overallAvailable = (rs.totalSales || 0) > 0;
     const metrics = {
-      totalSales: rs.totalSales || cs.totalSales || 0,
+      totalSales: overallAvailable ? rs.totalSales : null,
+      units: overallAvailable ? rs.totalUnitsOrdered || 0 : null,
       adSpend: cs.totalSpend || 0,
-      adSales: rs.totalAdSales || cs.totalSales || 0,
+      adSales: cs.totalSales || 0,
       roas: cs.overallRoas || 0,
       acos: cs.overallAcos || 0,
       orders: cs.totalOrders || 0,
-      units: rs.totalUnitsOrdered || 0,
     };
     const deltas = {
-      totalSales: pct(metrics.totalSales, previousMetrics.totalSales),
+      totalSales: metrics.totalSales == null ? undefined : pct(metrics.totalSales, previousMetrics.totalSales),
       adSpend: pct(metrics.adSpend, previousMetrics.adSpend),
+      adSales: pct(metrics.adSales, previousMetrics.adSales),
       orders: pct(metrics.orders, previousMetrics.orders),
-      units: pct(metrics.units, previousMetrics.units),
+      units: metrics.units == null ? undefined : pct(metrics.units, previousMetrics.units),
     };
 
     const topCampaigns = [...cpRows]
@@ -189,6 +199,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       totalValue += q * (it.price || 0);
       if (q === 0) outOfStock++; else if (q <= 5) low++;
     }
+    // SellerMate FBA feed down → the stock figures above are FBM-only and wrong; the email says
+    // "not available" for stock instead of showing them (user, 2026-10-12).
+    const stockAvailable = fbaFeedOk(invItems);
 
     const wastedTerms = wasted.terms || [];
     const emailData = {
@@ -196,6 +209,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       stockoutItems, bleedingItems, wastedTerms,
       topCampaigns, topProducts, topTerms,
       inventory: { outOfStock, low, totalValue },
+      stockAvailable,
     };
 
     // Full per-SKU workbook, same as the Reports page's Amazon Daily Sales download. Best-effort:
@@ -219,7 +233,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // All four headline numbers at zero means SellerMate had nothing for this single day —
     // see the file header comment. Sending anyway is what produced a "₹0 sales, ₹89,906 at
     // risk" email that read as broken rather than quiet.
-    const hasRealData = metrics.totalSales > 0 || metrics.adSpend > 0 || metrics.adSales > 0 || metrics.orders > 0;
+    const hasRealData = (metrics.totalSales || 0) > 0 || metrics.adSpend > 0 || metrics.adSales > 0 || metrics.orders > 0;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let emailResult: any = null;
@@ -227,7 +241,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const r = await internalFetch(`${internalOrigin()}/api/send-email`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "dailyDigest", to, cc, data: emailData, attachments }),
+        body: JSON.stringify({ type: "dailyDigest", to, cc, data: emailData, attachments, preview: preview || undefined }),
       });
       emailResult = await r.json().catch(() => ({}));
       if (!r.ok) emailResult = { error: emailResult?.error || "send-email failed" };
@@ -241,7 +255,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       date: day, dateLabel,
       counts: { stockout: stockoutItems.length, bleeding: bleedingItems.length, wastedTerms: wastedTerms.length },
       attached: !!attachments,
-      emailed: !!(send && to && hasRealData),
+      emailed: !preview && !!(send && to && hasRealData && emailResult && !emailResult.error),
       skippedNoData: !!(send && to && !hasRealData),
       emailResult,
     });

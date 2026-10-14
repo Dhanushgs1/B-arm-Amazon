@@ -101,11 +101,14 @@ export async function register() {
           );
         }
         if (s.liveAlerts) {
-          console.log(`[Marketplace360] [${slot}] Running live alerts...`);
-          await runAlertEndpoint("/api/live-alerts", { ...acct }, `[${slot}] Live alerts`);
+          console.log(`[Marketplace360] [${slot}] Running things need attention...`);
+          await runAlertEndpoint("/api/live-alerts", { ...acct, daily: true, warnDays: Number(s.stockoutWarnDays) || 10 }, `[${slot}] Things need attention`);
         }
         if (s.fbaWarehouseAlerts ?? slot === "B") {
-          await runAlertEndpoint("/api/fba-warehouse-alerts", { ...acct }, `[${slot}] FBA warehouse low stock`);
+          await runAlertEndpoint("/api/fba-warehouse-alerts", { ...acct, daily: true }, `[${slot}] FBA stock`);
+        }
+        if (s.highAcosDaily) {
+          await runAlertEndpoint("/api/high-acos-report", { ...acct, threshold: Number(s.highAcosThreshold) || 14 }, `[${slot}] High ACOS`);
         }
       }
     }, { timezone: "UTC" });
@@ -146,15 +149,7 @@ export async function register() {
       }
     }, { timezone: "UTC" });
 
-    // ── Daily Ad Spend Report (SKU-wise) — every day at 9:00 AM IST. Mailed straight
-    //    to the fixed distribution list (send-ad-spend-email.ts), not per-account
-    //    Settings, for the same reason as the Historical report above. Production
-    //    piggybacks this on scheduled-reports.ts's own 9:00 AM route too — see that
-    //    file's handler() — this separate local timer is dev-testing-only. ──
-    cron.schedule("30 3 * * *", async () => {
-      console.log("[Marketplace360] Sending Daily Ad Spend Report (SKU-wise)...");
-      await runAlertEndpoint("/api/send-ad-spend-email", {}, "Daily ad spend report"); // endDate omitted → yesterday
-    }, { timezone: "UTC" });
+    // (The Daily Ad Spend Report is manual-only — the Reports page's Send button — so it has no timer.)
 
     // ── Campaign pause monitor — every 30 minutes, independent of the daily
     //    report/alert schedule above. Mirrors src/pages/api/cron/campaign-monitor.ts,

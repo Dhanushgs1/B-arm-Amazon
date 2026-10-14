@@ -108,6 +108,11 @@ export default function SettingsPage() {
   const [dailySummary, setDailySummary] = useState(false);
   const [liveAlerts, setLiveAlerts] = useState(false);
   const [fbaWarehouseAlerts, setFbaWarehouseAlerts] = useState(true);
+  const [highAcosDaily, setHighAcosDaily] = useState(false);
+  const [campaignPauseEmails, setCampaignPauseEmails] = useState(false);
+  const [ratingDropAlerts, setRatingDropAlerts] = useState(true);
+  const [highAcosThreshold, setHighAcosThreshold] = useState(14);
+  const [stockoutWarnDays, setStockoutWarnDays] = useState(10);
   const [monthlySummary, setMonthlySummary] = useState(false);
   const [aiEnabled, setAiEnabled] = useState(true);
   const [autoInsights, setAutoInsights] = useState(true);
@@ -175,6 +180,11 @@ export default function SettingsPage() {
         setDailySummary(p.dailySummary ?? false);
         setLiveAlerts(p.liveAlerts ?? false);
         setFbaWarehouseAlerts(p.fbaWarehouseAlerts ?? keySlot === "B");
+        setHighAcosDaily(p.highAcosDaily ?? false);
+        setCampaignPauseEmails(p.campaignPauseEmails ?? false);
+        setRatingDropAlerts(p.ratingDropAlerts ?? keySlot === "B");
+        setHighAcosThreshold(p.highAcosThreshold ?? 14);
+        setStockoutWarnDays(p.stockoutWarnDays ?? 10);
         setMonthlySummary(p.monthlySummary ?? false);
         setAiEnabled(p.aiEnabled ?? true);
         setAutoInsights(p.autoInsights ?? true);
@@ -238,6 +248,7 @@ export default function SettingsPage() {
       syncSchedule, twoFactor, ipRestrict, whitelistIps,
       timezone, defaultRange, pushAlerts, roasAlerts, inventoryAlerts,
       weeklySummary, dailySummary, liveAlerts, fbaWarehouseAlerts, monthlySummary, aiEnabled, autoInsights, smartAlerts,
+      highAcosDaily, highAcosThreshold, stockoutWarnDays, campaignPauseEmails, ratingDropAlerts,
       forecastWindow, recMode, autoPause, autoNegatives, autoBudget,
       roasTarget, compactMode, theme,
       flipkartApiKey, flipkartSellerId,
@@ -264,8 +275,11 @@ export default function SettingsPage() {
         roasAlerts && "ROAS / ACOS Alerts",
         inventoryAlerts && "Inventory Alerts",
         dailySummary && "Daily Digest (9:00 AM IST)",
-        liveAlerts && "Live Alerts (spend spike / stockout forecast / buy box / conversion)",
-        fbaWarehouseAlerts && "FBA Warehouse Low Stock (below 20 in 8 major FBA cities, 9:00 AM IST)",
+        liveAlerts && `Things Need Attention (conversion drops, running out within ${stockoutWarnDays} days, spend spikes, buy box — daily 9:00 AM IST)`,
+        fbaWarehouseAlerts && "FBA Stock (products under 8 warehouses stocked or any at ≤20 units, with every product's warehouse stock attached — daily 9:00 AM IST)",
+        campaignPauseEmails && "Campaign Paused (within 30 minutes of a campaign pausing)",
+        highAcosDaily && `High ACOS (Amazon, Flipkart and Meesho campaigns above ${highAcosThreshold}% ACOS, day by day for 7 days, from the uploaded ads reports — daily, once the Last 7 days report is uploaded)`,
+        ratingDropAlerts && "Rating Drop (listings that fell from 4★+ to below 4★ — Mondays, once that week's ratings are uploaded)",
         weeklySummary && "Weekly Summary (Monday 9:00 AM IST)",
         monthlySummary && "Monthly Summary (1st, 9:00 AM IST)",
         slackAlerts && "Slack Alerts",
@@ -693,11 +707,20 @@ export default function SettingsPage() {
                 <SettingRow title="Daily Digest" desc="One morning email: KPIs, out-of-stock ad spend, bleeding campaigns and wasted search terms.">
                   <Toggle checked={dailySummary} onChange={setDailySummary} />
                 </SettingRow>
-                <SettingRow title="Live Alerts" desc="Spend spikes, stockout forecasts, buy box losses and conversion drops — emailed only when something new fires.">
+                <SettingRow title="Things Need Attention" desc="Daily 9:00 AM IST: conversion drops, products running out within the days set below, spend spikes and buy box losses. Sent only on days when something fires; new items are marked NEW.">
                   <Toggle checked={liveAlerts} onChange={setLiveAlerts} />
                 </SettingRow>
-                <SettingRow title="FBA Warehouse Low Stock" desc="Daily 9:00 AM IST: SKUs that newly drop below 20 units in Bangalore, Mumbai, Chennai, Hyderabad, Delhi, West Bengal, Lucknow or Coimbatore (Live Inventory).">
+                <SettingRow title="FBA Stock" desc="Daily 9:00 AM IST, across all 24 eligible FBA warehouses: every product with stock in fewer than 8 warehouses or a warehouse at 20 units or less (new ones marked NEW), plus a CSV of every product's stock per warehouse. Not sent when every product passes or stock data is unavailable.">
                   <Toggle checked={fbaWarehouseAlerts} onChange={setFbaWarehouseAlerts} />
+                </SettingRow>
+                <SettingRow title="High ACOS" desc="Once a day, after the Last 7 days report is uploaded (at upload, or 9:00 AM IST if already uploaded): every Amazon, Flipkart and Meesho (B-ARM) campaign above the High ACOS limit set below, with its ACOS for each of the last 7 days, read from the uploaded ads reports. Not sent when no campaign is above the limit.">
+                  <Toggle checked={highAcosDaily} onChange={setHighAcosDaily} />
+                </SettingRow>
+                <SettingRow title="Campaign Paused" desc="An email within 30 minutes whenever a campaign stops running. Pauses are always recorded on the dashboard; this only controls the email.">
+                  <Toggle checked={campaignPauseEmails} onChange={setCampaignPauseEmails} />
+                </SettingRow>
+                <SettingRow title="Rating Drop" desc="Mondays, once that week's ratings are uploaded (at upload, or 9:00 AM IST if already uploaded): every listing that was 4★ or higher last week and is now below 4★. Product names link to the Amazon / Flipkart page. Not sent when nothing dropped below 4★.">
+                  <Toggle checked={ratingDropAlerts} onChange={setRatingDropAlerts} />
                 </SettingRow>
                 <SettingRow title="Weekly Summary" desc="Sent every Monday at 9:00 AM IST.">
                   <Toggle checked={weeklySummary} onChange={setWeeklySummary} />
@@ -705,14 +728,14 @@ export default function SettingsPage() {
                 <SettingRow title="Monthly Summary" desc="Sent on the 1st of every month at 9:00 AM IST.">
                   <Toggle checked={monthlySummary} onChange={setMonthlySummary} />
                 </SettingRow>
-                {(dailySummary || liveAlerts || fbaWarehouseAlerts || weeklySummary || monthlySummary) && (
+                {(dailySummary || liveAlerts || fbaWarehouseAlerts || highAcosDaily || ratingDropAlerts || weeklySummary || monthlySummary) && (
                   <div className="mt-1 mb-2 px-3 py-2.5 bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 rounded-xl">
                     <p className="text-[11px] font-extrabold text-indigo-600 dark:text-indigo-400 flex items-center gap-1.5">
                       <span>📬</span> Reports will be sent to: <span className="font-black">{notifEmail || "—"}</span>
                       {ccEmail && <span className="font-semibold">(cc: {ccEmail})</span>}
                     </p>
                     <p className="text-[10px] text-indigo-500/80 font-semibold mt-0.5">
-                      {[dailySummary && "Daily digest 9AM", liveAlerts && "Live alerts (when they fire)", fbaWarehouseAlerts && "FBA low stock (when new)", weeklySummary && "Weekly Monday", monthlySummary && "Monthly 1st"].filter(Boolean).join(" · ")}
+                      {[dailySummary && "Daily digest 9AM", liveAlerts && "Things need attention 9AM", fbaWarehouseAlerts && "FBA stock 9AM", highAcosDaily && "High ACOS after upload", ratingDropAlerts && "Rating drop Monday", weeklySummary && "Weekly Monday", monthlySummary && "Monthly 1st"].filter(Boolean).join(" · ")}
                     </p>
                   </div>
                 )}
@@ -783,6 +806,20 @@ export default function SettingsPage() {
                       <span className="text-primary font-extrabold">{lowStockThreshold} units</span>
                     </div>
                     <input type="range" min="5" max="100" value={lowStockThreshold} onChange={(e) => setLowStockThreshold(parseInt(e.target.value))} className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-[#6C63FF]" />
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-xs font-bold">
+                      <span className="text-muted-foreground">High ACOS email: campaigns above</span>
+                      <span className="text-primary font-extrabold">{highAcosThreshold}%</span>
+                    </div>
+                    <input type="range" min="5" max="100" value={highAcosThreshold} onChange={(e) => setHighAcosThreshold(parseInt(e.target.value))} className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-[#6C63FF]" />
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-xs font-bold">
+                      <span className="text-muted-foreground">Things need attention: running out within</span>
+                      <span className="text-primary font-extrabold">{stockoutWarnDays} days</span>
+                    </div>
+                    <input type="range" min="3" max="30" value={stockoutWarnDays} onChange={(e) => setStockoutWarnDays(parseInt(e.target.value))} className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-[#6C63FF]" />
                   </div>
                 </div>
               </Card>

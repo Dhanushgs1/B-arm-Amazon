@@ -8,6 +8,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { supabase } from "@/lib/supabaseClient";
 import { findJob } from "@/lib/adSpendJobs";
 import { checkSessionOrInternal, edgeFunctionHeaders, guard, isInternalRequest } from "@/lib/apiAuth";
+import { emailSendingPaused, EMAIL_PAUSED_ERROR } from "@/lib/emailPause";
 
 const DEFAULT_TO = "kaviyapriyabarm@gmail.com";
 const DEFAULT_CC = [
@@ -23,6 +24,9 @@ const DEFAULT_CC = [
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  // Global kill switch (src/lib/emailPause.ts) — this route mails via the Edge Function, not
+  // /api/send-email, so it needs its own check.
+  if (emailSendingPaused()) return res.status(503).json({ error: EMAIL_PAUSED_ERROR, paused: true });
   // Browser-facing (Reports page "Send"): requires the signed-in dashboard session.
   if (!guard(req, res, checkSessionOrInternal)) return;
   const edgeHeaders = edgeFunctionHeaders();

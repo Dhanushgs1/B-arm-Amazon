@@ -4,6 +4,7 @@ import { SITE_URL } from "@/lib/siteUrl";
 import { decideSend } from "@/lib/emailSendPolicy";
 import { escapeEmailData, escapeHtml } from "@/lib/htmlEscape";
 import { readEmailSettings } from "@/lib/emailSettingsStore";
+import { emailSendingPaused, EMAIL_PAUSED_ERROR } from "@/lib/emailPause";
 
 // Reverted from Resend back to Gmail SMTP by the seller's own request: Resend needs a verified
 // domain to send to real recipients (sandboxed to the signup email otherwise), and while that
@@ -594,6 +595,8 @@ export function buildHtml(type: string, data: Record<string, any>, toEmail: stri
     const clip = (s: string, len = 40) => ((s || "").length > len ? (s || "").slice(0, len) + "…" : s || "");
     const m = data.metrics || {};
     const inv = data.inventory || {};
+    // false when SellerMate's FBA feed is down — stock figures would be FBM-only, so none are shown.
+    const stockOk = data.stockAvailable !== false;
     const dl = data.deltas || {};
     // A bare "Total Sales ₹1,70,815" doesn't say whether that's a good day — the trend arrow
     // against yesterday does. Omitted (not "0%") when the prior day has no comparable data.
@@ -613,15 +616,21 @@ export function buildHtml(type: string, data: Record<string, any>, toEmail: stri
       bleedingItems.reduce((a, i) => a + (i.spend || 0), 0) +
       wastedTerms.reduce((a, i) => a + (i.spend || 0), 0);
 
-    const kpi = (label: string, val: string, bg: string, color: string) => `
+    const kpi = (label: string, val: string, bg: string, color: string, sub = "") => `
       <td width="33%" style="padding:4px;">
         <table width="100%" cellpadding="14" cellspacing="0" border="0" style="background:${bg};border-radius:12px;">
           <tr><td>
             <p style="margin:0;color:#6b7280;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.04em;">${label}</p>
             <p style="margin:5px 0 0;color:${color};font-size:20px;font-weight:900;">${val}</p>
+            ${sub ? `<p style="margin:3px 0 0;color:#6b7280;font-size:10px;font-weight:600;">${sub}</p>` : ""}
           </td></tr>
         </table>
       </td>`;
+    // Overall sales come from Amazon's retail report, which can sync after the ad report — null
+    // means it has not arrived yet (see daily-digest.ts), and is shown as such, never as ₹0.
+    const overallReady = m.totalSales != null;
+    const notYet = `<span style="color:#9ca3af;font-size:14px;">Not available yet</span>`;
+    const groupHead = (text: string) => `<tr><td colspan="3" style="padding:0 4px 4px;"><p style="margin:0;color:#374151;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;">${text}</p></td></tr>`;
 
     const acosBadge = (acos: number | null) => {
       if (acos == null) return `<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:800;">no sale</span>`;
@@ -699,7 +708,7 @@ export function buildHtml(type: string, data: Record<string, any>, toEmail: stri
                   ? `<p style="margin:6px 0 0;font-size:13px;color:#b91c1c;font-weight:700;line-height:1.7;">
                        <strong style="font-size:16px;">${money(atRisk)}</strong> of ad spend at risk right now<br>
                        <span style="font-weight:600;font-size:12px;">
-                         &#128230; ${n(stockoutItems.length)} out-of-stock products still advertising &nbsp;|&nbsp;
+                         ${stockOk ? `&#128230; ${n(stockoutItems.length)} out-of-stock products still advertising &nbsp;|&nbsp;` : ""}
                          &#128680; ${n(bleedingItems.length)} bleeding campaigns &nbsp;|&nbsp;
                          &#128184; ${n(wastedTerms.length)} wasted search terms
                        </span>
@@ -712,21 +721,24 @@ export function buildHtml(type: string, data: Record<string, any>, toEmail: stri
 
         <tr><td style="padding-top:16px;">
           <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            ${groupHead("Overall sales &#8212; every order")}
             <tr>
-              ${kpi("Total Sales", money(m.totalSales) + trend(dl.totalSales), "#f0fdf4", "#059669")}
-              ${kpi("Ad Spend", money(m.adSpend) + trend(dl.adSpend), "#fef2f2", "#dc2626")}
-              ${kpi("Ad Sales", money(m.adSales), "#eff6ff", "#2563eb")}
+              ${kpi("Overall Sales", overallReady ? money(m.totalSales) + trend(dl.totalSales) : notYet, "#f0fdf4", "#059669")}
+              ${kpi("Units Sold", overallReady ? n(m.units) + trend(dl.units) : notYet, "#f0f9ff", "#0891b2")}
+              ${kpi("Ad Share of Sales", overallReady && m.totalSales > 0 ? Math.round((m.adSales / m.totalSales) * 100) + "%" : notYet, "#f9fafb", "#374151", "ad sales &#247; overall sales")}
             </tr>
-            <tr><td colspan="3" style="height:8px;"></td></tr>
+            ${overallReady ? "" : `<tr><td colspan="3" style="padding:6px 4px 0;"><p style="margin:0;padding:9px 12px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;color:#92400e;font-size:12px;font-weight:700;line-height:1.5;">Overall sales for ${data.dateLabel || "this day"} have not come in from Amazon yet &#8212; that report usually syncs a day or two after the ad report. The ad figures below are complete.</p></td></tr>`}
+            <tr><td colspan="3" style="height:14px;"></td></tr>
+            ${groupHead("Ads &#8212; spend and the sales it brought in")}
             <tr>
-              ${kpi("ROAS", (m.roas || 0).toFixed(2) + "x", "#f5f3ff", "#6D5EF8")}
-              ${kpi("ACOS", (m.acos || 0).toFixed(1) + "%", "#fffbeb", "#d97706")}
-              ${kpi("Orders / Units", `${n(m.orders)} / ${n(m.units)}`, "#f0f9ff", "#0891b2")}
+              ${kpi("Ad Spend", money(m.adSpend) + trend(dl.adSpend), "#fef2f2", "#dc2626", "spent on Amazon ads")}
+              ${kpi("Ad Sales", money(m.adSales) + trend(dl.adSales), "#eff6ff", "#2563eb", `from ${n(m.orders)} ad order${m.orders === 1 ? "" : "s"}`)}
+              ${kpi("ACOS / ROAS", `${(m.acos || 0).toFixed(1)}% <span style="color:#6D5EF8;font-size:14px;">/ ${(m.roas || 0).toFixed(2)}x</span>`, "#fffbeb", "#d97706", "ad spend &#247; ad sales")}
             </tr>
           </table>
         </td></tr>
 
-        ${section("&#128230;", "Ad Spend on Out-of-Stock Products", "Pause these campaigns — the product cannot ship.", ["Product", "Stock", "Spend (7d)", "Campaigns"], stockoutRows, "No out-of-stock product is being advertised.")}
+        ${section("&#128230;", "Ad Spend on Out-of-Stock Products", "Pause these campaigns — the product cannot ship.", ["Product", "Stock", "Spend (7d)", "Campaigns"], stockoutRows, stockOk ? "No out-of-stock product is being advertised." : "Stock data not available from SellerMate today — not checked.")}
         ${section("&#128680;", "Bleeding Campaigns", "High ACOS or no orders — review bids or pause.", ["Campaign", "Spend", "Sales", "ACOS", "Orders"], bleedingRows, "No campaign is bleeding spend.")}
         ${section("&#128184;", "Wasted Search Terms", "Spend with zero orders — add as negative keywords.", ["Search Term", "Spend", "Clicks", "Orders"], wastedRows, "No search term wasted spend.")}
         ${section("&#127942;", "Top 5 Campaigns", "", ["Campaign", "Sales", "ACOS"], topCampaigns, "No campaign sales recorded.")}
@@ -738,10 +750,11 @@ export function buildHtml(type: string, data: Record<string, any>, toEmail: stri
         </td></tr>
         <tr><td>
           <table width="100%" cellpadding="0" cellspacing="0" border="0">
-            <tr>
+            <tr>${stockOk ? `
               ${kpi("Out of Stock", n(inv.outOfStock || 0), "#fef2f2", "#dc2626")}
               ${kpi("Low Stock", n(inv.low || 0), "#fffbeb", "#d97706")}
-              ${kpi("Inventory Value", money(inv.totalValue || 0), "#f0fdf4", "#059669")}
+              ${kpi("Inventory Value", money(inv.totalValue || 0), "#f0fdf4", "#059669")}` : `
+              <td style="padding:12px;font-size:12px;color:#6b7280;font-weight:600;">FBA stock data not available from SellerMate today.</td>`}
             </tr>
           </table>
         </td></tr>
@@ -773,16 +786,28 @@ export function buildHtml(type: string, data: Record<string, any>, toEmail: stri
       return `<span style="background:${bg};color:${cl};padding:2px 9px;border-radius:999px;font-size:10px;font-weight:800;">${txt}</span>`;
     };
 
-    const cards = alerts.map((a) => {
+    // Daily mode: a section heading wherever the alert type changes (the route sorts by type).
+    const SECTION: Record<string, string> = {
+      conversionDrop: "Conversion drop",
+      stockoutForecast: `Running out within ${Number(data.warnDays) || 10} days`,
+      spendSpike: "Ad spend spike",
+      buyBoxLoss: "Buy Box loss",
+    };
+    const countOf = (type: string) => alerts.filter((x) => x.type === type).length;
+    const cards = alerts.map((a, i) => {
       const t = TONE[a.type] || TONE.spendSpike;
-      return `
+      const section = data.daily && (i === 0 || alerts[i - 1].type !== a.type)
+        ? `<tr><td style="padding:${i === 0 ? 0 : 8}px 0 8px;"><p style="margin:0;color:${t.color};font-size:14px;font-weight:800;">${t.emoji} ${SECTION[a.type] || t.label} &#8212; ${countOf(a.type)}</p></td></tr>`
+        : "";
+      const newChip = data.daily && a.isNew ? `<span style="background:#6D5EF8;color:#ffffff;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:800;margin-right:4px;">NEW</span>` : "";
+      return `${section}
       <tr><td style="padding:0 0 12px;">
         <table width="100%" cellpadding="14" cellspacing="0" border="0" style="background:${t.bg};border:1px solid ${t.border};border-radius:12px;">
           <tr><td>
             <table width="100%" cellpadding="0" cellspacing="0" border="0">
               <tr>
                 <td style="font-size:10px;font-weight:800;color:${t.color};text-transform:uppercase;letter-spacing:0.05em;">${t.emoji} ${t.label}</td>
-                <td align="right">${sevChip(a.severity || 1)}</td>
+                <td align="right">${newChip}${sevChip(a.severity || 1)}</td>
               </tr>
             </table>
             <p style="margin:8px 0 0;font-size:14px;font-weight:800;color:#111;line-height:1.35;">${a.title}</p>
@@ -796,68 +821,316 @@ export function buildHtml(type: string, data: Record<string, any>, toEmail: stri
     return w(`
       <table width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr><td style="padding-bottom:14px;">
-          <h2 style="margin:0;color:#111;font-size:20px;font-weight:800;">&#9889; ${alerts.length} thing${alerts.length === 1 ? "" : "s"} need${alerts.length === 1 ? "s" : ""} attention</h2>
+          <h2 style="margin:0;color:#111;font-size:20px;font-weight:800;">&#9889; ${alerts.length ? `${alerts.length} thing${alerts.length === 1 ? "" : "s"} need${alerts.length === 1 ? "s" : ""} attention` : "Nothing needs attention today"}</h2>
           <p style="margin:4px 0 0;color:#6b7280;font-size:12px;font-weight:600;">
-            ${data.accountName || "B-ARM"} &nbsp;&#183;&nbsp; about <strong style="color:#b91c1c;">${money(totalImpact)}</strong> at stake
+            ${data.accountName || "B-ARM"}${alerts.length ? ` &nbsp;&#183;&nbsp; about <strong style="color:#b91c1c;">${money(totalImpact)}</strong> at stake` : ""}
+            ${data.daily ? `&nbsp;&#183;&nbsp; ${countOf("conversionDrop")} conversion drop${countOf("conversionDrop") === 1 ? "" : "s"} &nbsp;&#183;&nbsp; ${countOf("stockoutForecast")} running out &nbsp;&#183;&nbsp; ${Number(data.newCount) || 0} new` : ""}
             ${data.windowNote ? `&nbsp;&#183;&nbsp; ${data.windowNote}` : ""}
           </p>
         </td></tr>
+        ${(data.failedDetectors || []).length ? `<tr><td style="padding-bottom:12px;"><p style="margin:0;padding:10px 12px;background:#fee2e2;border:1px solid #fecaca;border-radius:8px;color:#991b1b;font-size:12px;font-weight:700;line-height:1.5;">These checks could not run today (SellerMate error), so they are missing from this email, not clear: ${(data.failedDetectors || []).map((f: string) => SECTION[f] || f).join(", ")}.</p></td></tr>` : ""}
+        ${data.daily && !alerts.length ? `<tr><td><p style="margin:0;padding:12px 14px;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:10px;color:#065f46;font-size:13px;font-weight:700;line-height:1.5;">No conversion drops, no product running out within ${Number(data.warnDays) || 10} days, no spend spikes and no Buy Box losses today.</p></td></tr>` : ""}
         <tr><td><table width="100%" cellpadding="0" cellspacing="0" border="0">${cards}</table></td></tr>
         <tr><td align="center" style="padding-top:18px;">
           <a href="${SITE_URL}/dashboard" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Dashboard &#8594;</a>
         </td></tr>
         <tr><td style="padding-top:16px;">
           <p style="margin:0;color:#9ca3af;font-size:11px;line-height:1.6;">
-            You are seeing each of these once. The same alert for the same product or campaign will not repeat
-            for ${data.cooldownHours || 24} hours unless it gets materially worse.
+            ${data.daily
+              ? `Sent every morning with everything firing today. NEW marks items that were not in an earlier mail in the last ${data.cooldownHours || 24} hours (or got worse).
+            Conversion drop: sessions held over the last 7 days but conversion fell 40%+ against the 7 days before. Running out: units on hand &#247; the last 14 days' daily sales is ${Number(data.warnDays) || 10} days or less.`
+              : `You are seeing each of these once. The same alert for the same product or campaign will not repeat
+            for ${data.cooldownHours || 24} hours unless it gets materially worse.`}
           </p>
         </td></tr>
       </table>`);
   }
 
-  // FBA warehouse low stock (src/pages/api/fba-warehouse-alerts.ts) — SKU × city pairs that newly
-  // fell below the threshold. Compact table rows on purpose: the first run mails every pair that is
-  // already low (~500), and Gmail clips a message past ~100KB.
+  // FBA inventory-based ad status alert (src/pages/api/fba-warehouse-alerts.ts), in the client's two
+  // terms, with product-level status labels (2026-10-09):
+  //   - fewer than `minFcs` (8) eligible warehouses have stock. Per product: "OUT OF STOCK" only when
+  //     no eligible warehouse has positive stock (and none was unreported); otherwise "LOW STOCK"
+  //     with the warehouses that do have stock. The heading names whichever of the two is present.
+  //   - 8+ have stock, but one or more hold `threshold` (20) units or less → "URGENT: Very low stock"
+  //     with those warehouses and quantities.
+  // Data-quality warnings (SKUs with no usable SellerMate data) are deliberately not in this email;
+  // the route still computes and reports them.
+  // Gmail clips a message past ~102KB, so stock rows are added only while they fit ROW_BUDGET bytes;
+  // the rest are counted, and the attached CSV (built by the route) always carries every row.
   if (type === "fbaWarehouseLow") {
+    const ROW_BUDGET = 80_000;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const drops: any[] = data.drops || [];
-    const cities = [...new Set(drops.map((d) => d.city))];
-    // No per-cell inline styles: at ~500 rows they alone came to ~270KB. Styling sits on the table.
-    const sections = cities.map((city) => {
-      const rows = drops.filter((d) => d.city === city).map((d) =>
-        `<tr><td>${d.sku}</td><td>${d.name}</td><td align="right"><b${d.units <= 0 ? ' style="color:#b91c1c"' : ""}>${d.units}</b></td><td>${(d.fcs || []).map((f: { location: string; units: number }) => `${f.location} ${f.units}`).join(", ")}</td></tr>`
-      ).join("");
-      const n = drops.filter((d) => d.city === city).length;
-      return `
-      <tr><td style="padding:16px 0 6px;font-size:14px;font-weight:800;color:#111;">&#128230; ${city} <span style="color:#6b7280;font-weight:600;font-size:12px;">· ${n} SKU${n === 1 ? "" : "s"}</span></td></tr>
-      <tr><td><table width="100%" cellpadding="4" cellspacing="0" border="0" style="font-size:12px;color:#374151;border:1px solid #e5e7eb;">
-        <tr style="background:#f3f4f6;color:#111;"><th align="left">SKU</th><th align="left">Product</th><th align="right">Units</th><th align="left">FC-wise</th></tr>
-        ${rows}
-      </table></td></tr>`;
+    const products: any[] = data.products || [];
+    const t = Number(data.threshold) || 20;
+    const m = Number(data.minFcs) || 8;
+    const nEligible = Number(data.eligibleFcs) || 24;
+    const few = products.filter((p) => p.reason === "fewFcs");
+    const lowU = products.filter((p) => p.reason !== "fewFcs");
+    const list = (xs: { fc: string; units: number }[]) => xs.map((x) => `${x.fc}:&nbsp;${x.units}`).join(" | ");
+    const unk = (p: { unknownFcs?: string[] }) => ((p.unknownFcs || []).length ? `<br><i>Not reported by SellerMate (excluded): ${(p.unknownFcs || []).join(", ")}</i>` : "");
+    const newChip = `<span style="background:#6D5EF8;color:#ffffff;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:800;">NEW</span> `;
+    const head = (p: { name: string; sku: string; isNew?: boolean }) => `${p.isNew ? newChip : ""}<b>${p.name}</b> <span style="color:#6b7280;font-size:11px;">${p.sku}</span>`;
+    let used = 0;
+    let omitted = 0;
+    const fit = (row: string) => {
+      const n = Buffer.byteLength(row);
+      if (used + n > ROW_BUDGET) { omitted++; return ""; }
+      used += n;
+      return row;
+    };
+    const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+    const red = (text: string) => `<b style="color:#b91c1c;">${text}</b>`;
+    // OUT OF STOCK is a claim about every eligible warehouse, so it needs zero positive stock AND no
+    // unreported warehouse; a product with unreported warehouses says so instead.
+    // Stock sitting outside the eligible list (e.g. VSNC) is not out of stock — it is labelled as such
+    // (user, 2026-10-12: 32 of 33 "out of stock" products had their stock at VSNC).
+    type Away = { elsewhere?: { fc: string; units: number }[] };
+    const away = (p: Away) => p.elsewhere || [];
+    const isAway = (p: Away & { stockedCount: number }) => p.stockedCount === 0 && away(p).length > 0;
+    const isOut = (p: Away & { stockedCount: number; unknownFcs?: string[] }) => p.stockedCount === 0 && !(p.unknownFcs || []).length && !away(p).length;
+    const orange = (text: string) => `<b style="color:#c2410c;">${text}</b>`;
+    const awayNote = (p: Away) => (away(p).length ? `<br>Also outside the ${nEligible} warehouses: ${list(away(p))}` : "");
+    const fewRows = few.map((p) => fit(`<tr><td>${head(p)}<br>${
+      isOut(p)
+        ? `${red("OUT OF STOCK")} &#8212; No stock available in any of the ${nEligible} eligible warehouses.`
+        : isAway(p)
+          ? `${orange(`NOT IN THE ${nEligible} WAREHOUSES`)} &#8212; none in the ${nEligible} eligible warehouses; stock only at ${list(away(p))}.`
+          : p.stockedCount === 0
+            ? `${red("NO STOCK FOUND")} in any reported warehouse.`
+            : `${red("LOW STOCK")} &#8212; Available in only ${p.stockedCount} of ${nEligible} warehouses.<br>${list(p.stocked || [])}${awayNote(p)}`
+    }${unk(p)}</td></tr>`)).join("");
+    const lowRows = lowU.map((p) => {
+      const nLow = (p.low || []).length;
+      return fit(`<tr><td>${head(p)}<br>${red(`URGENT: Very low stock in ${plural(nLow, "warehouse")}.`)}<br>${list(p.low || [])}${unk(p)}</td></tr>`);
     }).join("");
+    const nOut = few.filter(isOut).length;
+    const nAway = few.filter(isAway).length;
+    const fewHeading = [nOut && "OUT OF STOCK", nAway && `NOT IN THE ${nEligible} WAREHOUSES`, few.length - nOut - nAway && "LOW STOCK"].filter(Boolean).join(" / ");
+    const table = (rows: string) => `<table width="100%" cellpadding="7" cellspacing="0" border="1" style="font-size:12px;color:#374151;line-height:1.55;border-collapse:collapse;border-color:#eeeeee;">${rows}</table>`;
+    const h3 = (text: string, color: string) => `<p style="margin:18px 0 6px;color:${color};font-size:14px;font-weight:800;">${text}</p>`;
 
     return w(`
       <table width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr><td style="padding-bottom:6px;">
-          <h2 style="margin:0;color:#111;font-size:20px;font-weight:800;">&#9888;&#65039; ${drops.length} SKU${drops.length === 1 ? "" : "s"} below ${data.threshold} units in FBA warehouses</h2>
+          <h2 style="margin:0;color:#111;font-size:20px;font-weight:800;">&#128230; ${products.length} product${products.length === 1 ? "" : "s"} need FBA stock attention</h2>
           <p style="margin:4px 0 0;color:#6b7280;font-size:12px;font-weight:600;">
-            ${data.accountName || "B-ARM"} &nbsp;&#183;&nbsp; ${cities.length} cit${cities.length === 1 ? "y" : "ies"}
-            ${data.ledgerDate ? `&nbsp;&#183;&nbsp; SellerMate ledger ${data.ledgerDate}` : ""}
+            ${data.accountName || "B-ARM"} &nbsp;&#183;&nbsp; ${nOut} out of stock &nbsp;&#183;&nbsp; ${nAway ? `${nAway} only outside the ${nEligible} warehouses &nbsp;&#183;&nbsp; ` : ""}${few.length - nOut - nAway} low stock &nbsp;&#183;&nbsp; ${lowU.length} very low stock
+            ${data.daily ? `&nbsp;&#183;&nbsp; ${Number(data.passing) || 0} OK &nbsp;&#183;&nbsp; ${Number(data.newCount) || 0} new since the last mail` : ""}
+            ${data.ledgerDate ? `&nbsp;&#183;&nbsp; SellerMate stock as of ${data.ledgerDate}` : ""}
           </p>
         </td></tr>
-        ${data.firstRun ? `<tr><td style="padding-top:8px;"><p style="margin:0;padding:10px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;color:#1e40af;font-size:12px;font-weight:600;line-height:1.5;">First run: this lists everything that is below ${data.threshold} right now. From tomorrow you'll only get SKUs that newly drop below ${data.threshold}.</p></td></tr>` : ""}
-        ${sections}
+        ${data.firstRun && !data.daily ? `<tr><td style="padding-top:8px;"><p style="margin:0;padding:10px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;color:#1e40af;font-size:12px;font-weight:600;line-height:1.5;">First run: this lists every product failing the rule right now. After this you'll only get products that newly fail.</p></td></tr>` : ""}
+        <tr><td>
+          ${few.length ? h3(`${fewHeading} &#8212; ${few.length} PRODUCT${few.length === 1 ? "" : "S"}`, "#b91c1c") + table(fewRows) : ""}
+          ${lowU.length ? h3(`URGENT: Very low stock &#8212; ${plural(lowU.length, "product")}`, "#b45309") + table(lowRows) : ""}
+          ${omitted ? `<p style="margin:8px 0 0;color:#374151;font-size:12px;font-weight:700;">+ ${omitted} more product${omitted === 1 ? "" : "s"} not shown, to keep this email readable &#8212; every row is in the attached CSV.</p>` : ""}
+        </td></tr>
         <tr><td align="center" style="padding-top:22px;">
           <a href="${SITE_URL}/dashboard/inventory/live" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Live Inventory &#8594;</a>
         </td></tr>
         <tr><td style="padding-top:16px;">
           <p style="margin:0;color:#9ca3af;font-size:11px;line-height:1.6;">
-            Units = SKU total across that city's FCs (SellerMate warehouse balance, daily ledger).
-            Each SKU is mailed once per city; it is mailed again only after it goes back to ${data.threshold}+ and drops again.
-            ${data.stillLow ? `${data.stillLow} other SKU × city pairs are still below ${data.threshold} from earlier alerts.` : ""}
-          </p>
+            Rule, checked across all ${nEligible} eligible FBA warehouses (marked Yes in the warehouse sheet) together: alert when fewer than ${m}
+            have stock, or when ${m}+ have stock but any of them holds ${t} units or less. No alert only when ${m}+ have stock and every one holds more than ${t}.
+            A missing stock row counts as 0 only when SellerMate reported that warehouse in the same snapshot (SellerMate warehouse balance, daily ledger).
+            Stock at locations outside the ${nEligible} (such as VSNC) does not count towards the rule; it is shown so those products are not mistaken for out of stock.
+            ${data.daily
+              ? `This email lists every product failing the rule today; NEW marks products that were not in an earlier mail. The fba-stock-by-warehouse CSV has every product's units in each of the ${nEligible} warehouses (blank = not reported by SellerMate).`
+              : `A product is mailed again only after it has passed the rule and then fails it again. The attached CSV lists every product in this email.
+            ${data.stillFailing ? `${data.stillFailing} other product${data.stillFailing === 1 ? " is" : "s are"} still failing from earlier mails.` : ""}`}          </p>
         </td></tr>
       </table>`);
+  }
+
+  // Daily High ACOS trend (src/pages/api/high-acos-report.ts, src/lib/highAcosTrend.ts): one row per
+  // campaign above the threshold, one column per day. Sent every day — a day with nothing above the
+  // limit says so. Rows stop at ROW_BUDGET bytes (Gmail clips past ~102KB); the CSV has every row.
+  if (type === "highAcosTrend") {
+    // 80KB of rows keeps the whole mail (≈93KB with three channels) under Gmail's ~102KB clip.
+    const ROW_BUDGET = 80_000;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const campaigns: any[] = data.campaigns || [];
+    const dates: string[] = data.dates || [];
+    const t = Number(data.threshold) || 14;
+    const currency = data.currency === "INR" ? "₹" : "$";
+    const money = (v: number) => currency + new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(v || 0));
+    const dayLabel = (d: string) => new Date(d + "T00:00:00Z").toLocaleDateString("en-IN", { day: "numeric", month: "short", timeZone: "UTC" });
+    const clip = (s: string, len = 38) => ((s || "").length > len ? (s || "").slice(0, len).trimEnd() + "…" : s || "");
+    const cellStyle = "padding:6px 5px;border:1px solid #e5e7eb;font-size:11px;text-align:center;white-space:nowrap;";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const acosCell = (d: any) => {
+      if (d.noSales) return `<td style="${cellStyle}background:#fee2e2;color:#991b1b;font-weight:800;">No sale</td>`;
+      if (d.acos == null) return `<td style="${cellStyle}color:#9ca3af;">–</td>`;
+      const v = Number(d.acos);
+      const [bg, cl] = v > t * 2 ? ["#fee2e2", "#991b1b"] : v > t ? ["#fef3c7", "#92400e"] : ["#ecfdf5", "#065f46"];
+      return `<td style="${cellStyle}background:${bg};color:${cl};font-weight:700;">${Math.round(v)}%</td>`;
+    };
+    const TREND: Record<string, string> = {
+      worse: `<span style="color:#b91c1c;font-weight:800;">&#9650; Worse</span>`,
+      better: `<span style="color:#047857;font-weight:800;">&#9660; Better</span>`,
+      flat: `<span style="color:#6b7280;font-weight:700;">&#9654; Flat</span>`,
+      new: `<span style="color:#6D5EF8;font-weight:700;">New</span>`,
+    };
+    // One mail, one section per channel (high-acos-report.ts sends data.channels). Older callers send a
+    // single channel's fields at the top level — render those as one Amazon section.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const channels: any[] = Array.isArray(data.channels) ? data.channels : [{
+      key: data.channel || "amazon", label: "Amazon", color: "#c2410c", campaigns, totalSpend: data.totalSpend,
+      flaggedSpend: data.flaggedSpend, minSpend: data.minSpend, uploaded: true,
+    }];
+    const multi = Array.isArray(data.channels);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rowHtml = (c: any) => `<tr>
+        <td style="padding:6px 6px;border:1px solid #e5e7eb;font-size:11px;color:#111;font-weight:700;">${clip(c.name)}<br><span style="color:#6b7280;font-weight:600;">${money(c.spend)} spend &#183; ${c.orders} orders</span></td>
+        ${(c.days || []).map(acosCell).join("")}
+        <td style="${cellStyle}font-weight:800;color:#111;">${c.acos == null ? "No sale" : Math.round(c.acos) + "%"}</td>
+        <td style="${cellStyle}">${TREND[c.trend] || ""}<br><span style="color:#6b7280;">${c.daysAbove}/${dates.length} days</span></td>
+      </tr>`;
+    // Share ROW_BUDGET across channels so the last one is never the one cut: smallest channel first,
+    // each taking at most an even share of what is left. A channel's cut rows are counted under it.
+    const rendered = channels.map((ch) => ((ch.campaigns || []) as unknown[]).map(rowHtml));
+    const kept: string[][] = rendered.map(() => []);
+    const omittedBy: number[] = rendered.map(() => 0);
+    let left = ROW_BUDGET;
+    const order = rendered.map((_, i) => i).sort((a, b) => rendered[a].length - rendered[b].length);
+    order.forEach((i, k) => {
+      const share = left / (order.length - k);
+      let used = 0;
+      for (const row of rendered[i]) {
+        const n = Buffer.byteLength(row);
+        if (used + n > share) { omittedBy[i]++; continue; }
+        used += n;
+        kept[i].push(row);
+      }
+      left -= used;
+    });
+    const omitted = omittedBy.reduce((a, b) => a + b, 0);
+    const rowsFor = (i: number) => kept[i].join("")
+      + (omittedBy[i] ? `<tr><td colspan="${dates.length + 3}" style="padding:8px 6px;border:1px solid #e5e7eb;font-size:12px;color:#374151;font-weight:700;">+ ${omittedBy[i]} more campaign${omittedBy[i] === 1 ? "" : "s"} &#8212; in the attached CSV.</td></tr>` : "");
+    const range = dates.length ? `${dayLabel(dates[0])} – ${dayLabel(dates[dates.length - 1])}` : "";
+    const lastLabel = dates.length ? dayLabel(dates[dates.length - 1]) : "";
+    const total = channels.reduce((a, c) => a + (c.campaigns || []).length, 0);
+    const acosPct = (spend: number, sales: number) => (sales > 0 ? `${Math.round((spend / sales) * 100)}%` : "–");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const section = (ch: any, i: number) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const list: any[] = ch.campaigns || [];
+      const worse = list.filter((c) => c.trend === "worse").length;
+      const pill = multi ? `<p style="margin:0 0 8px;"><span style="display:inline-block;padding:4px 12px;border-radius:999px;font-size:12px;font-weight:800;color:#ffffff;background:${ch.color || "#6D5EF8"};">${ch.label}</span>${ch.key === "meesho" ? `<span style="margin-left:8px;font-size:11px;color:#6b7280;font-weight:600;">sales estimated: orders &#215; average Meesho selling price</span>` : ""}</p>` : "";
+      const notUploaded = multi && ch.uploaded === false
+        ? `<p style="margin:0 0 8px;padding:10px 12px;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;color:#92400e;font-size:12px;font-weight:700;">${ch.label} ads for ${lastLabel} were not in the upload &#8212; the days below may be incomplete.</p>` : "";
+      return `
+        <tr><td style="padding:${multi ? "22px" : "0"} 0 14px;">
+          ${pill}${notUploaded}
+          <h2 style="margin:0;color:#111;font-size:${multi ? 17 : 20}px;font-weight:800;">&#128200; ${list.length ? `${list.length} campaign${list.length === 1 ? "" : "s"} above ${t}% ACOS` : `No campaign above ${t}% ACOS`}</h2>
+          <p style="margin:4px 0 0;color:#6b7280;font-size:12px;font-weight:600;">
+            ${data.accountName || "B-ARM"}${multi ? ` &#183; ${ch.label}` : ""} &nbsp;&#183;&nbsp; ${range}
+            ${list.length ? `&nbsp;&#183;&nbsp; <strong style="color:#b91c1c;">${money(ch.flaggedSpend)}</strong> of ${money(ch.totalSpend)} ad spend &nbsp;&#183;&nbsp; ${worse} getting worse` : ""}
+          </p>
+        </td></tr>
+        ${list.length ? `<tr><td style="overflow-x:auto;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+            <tr>
+              <th style="padding:6px 6px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:10px;text-align:left;text-transform:uppercase;">${ch.key === "meesho" ? "Product" : "Campaign"}</th>
+              ${dates.map((d) => `<th style="${cellStyle}background:#f3f4f6;font-size:10px;">${dayLabel(d)}</th>`).join("")}
+              <th style="${cellStyle}background:#f3f4f6;font-size:10px;">7-day</th>
+              <th style="${cellStyle}background:#f3f4f6;font-size:10px;">Trend</th>
+            </tr>
+            ${rowsFor(i)}
+          </table>
+        </td></tr>` : `<tr><td><p style="margin:0;padding:12px 14px;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:10px;color:#065f46;font-size:13px;font-weight:700;">Every ${multi ? ch.label + " " : ""}campaign that spent ${money(ch.minSpend || 0)}+ over these ${dates.length} days stayed at or under ${t}% ACOS.</p></td></tr>`}`;
+    };
+
+    const tiles = multi ? `
+        <tr><td style="padding-bottom:6px;">
+          <h2 style="margin:0;color:#111;font-size:20px;font-weight:800;">&#128200; High ACOS &#8212; last ${dates.length} days (${range})</h2>
+          <p style="margin:4px 0 12px;color:#6b7280;font-size:12px;font-weight:600;">${total} campaign${total === 1 ? "" : "s"} above ${t}% ACOS across ${channels.length} channels, from the uploaded ads reports. Biggest spend first.</p>
+          <table width="100%" cellpadding="0" cellspacing="6" border="0"><tr>
+            ${channels.map((c) => `<td style="padding:10px;border:1px solid #e5e7eb;border-radius:10px;vertical-align:top;width:${Math.floor(100 / channels.length)}%;">
+              <p style="margin:0;font-size:11px;font-weight:800;color:${c.color};text-transform:uppercase;">${c.label}</p>
+              <p style="margin:4px 0 0;font-size:20px;font-weight:800;color:#111;">${(c.campaigns || []).length}</p>
+              <p style="margin:2px 0 0;font-size:11px;color:#6b7280;font-weight:600;">above ${t}%<br>${money(c.flaggedSpend)} of ${money(c.totalSpend)} spend<br>overall ACOS ${acosPct(Number(c.totalSpend) || 0, Number(c.totalSales) || 0)}</p>
+            </td>`).join("")}
+          </tr></table>
+        </td></tr>` : "";
+
+    return wrap(`
+      <table width="100%" cellpadding="0" cellspacing="0" border="0">
+        ${tiles}
+        ${channels.map(section).join("")}
+        <tr><td align="center" style="padding-top:20px;">
+          <a href="${SITE_URL}/dashboard/campaigns" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Campaigns &#8594;</a>
+        </td></tr>
+        <tr><td style="padding-top:16px;">
+          <p style="margin:0;color:#9ca3af;font-size:11px;line-height:1.6;">
+            Campaigns whose ${dates.length}-day ACOS (spend &#247; ad sales) is above ${t}%, or that spent with no sales, and spent at least the channel's minimum in the period${multi ? ` (${channels.map((c) => `${c.label} ${money(c.minSpend || 0)}`).join(", ")})` : ` (${money(data.minSpend || 0)})`}. Biggest spend first.
+            Each day's cell is that day's ACOS: green at or under ${t}%, amber above, red above ${t * 2}%, "No sale" when it spent with no sales, "–" when it did not spend.
+            Trend compares the last 3 days with the 4 before them. "x/${dates.length} days" counts the days above ${t}%.
+            ${multi ? `Source: the uploaded "Last 7 days" ads reports &#8212; Amazon Sponsored Products (7-day attributed sales), Flipkart ads (revenue), Meesho B-ARM ads (orders &#215; average selling price).` : "Source: SellerMate campaign performance (all statuses); the most recent day can still be filling in."}
+          </p>
+        </td></tr>
+      </table>`, multi ? null : data.channel || "amazon");
+  }
+
+  // Weekly rating drop (src/pages/api/rating-drop-alert.ts): listings that were 4★+ last snapshot and
+  // are below 4★ now. Each product name links to its Amazon / Flipkart page. Only sent when non-empty.
+  if (type === "ratingDrop") {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const drops: any[] = data.drops || [];
+    const dayLabel = (d: string) => (d ? new Date(d + "T00:00:00Z").toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }) : "");
+    const plats = [...new Set(drops.map((d) => String(d.platform)))];
+    const badge = plats.length === 1 && /^(amazon|flipkart)$/i.test(plats[0]) ? plats[0].toLowerCase() : null;
+    const perPlat = plats.map((p) => `${drops.filter((d) => d.platform === p).length} ${p}`).join(", ");
+    const cell = "padding:8px 6px;border:1px solid #e5e7eb;font-size:12px;text-align:center;white-space:nowrap;";
+    const head = "padding:7px 6px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:10px;text-transform:uppercase;";
+    const rows = drops.map((d) => {
+      const name = d.url
+        ? `<a href="${d.url}" style="color:#111;text-decoration:underline;text-decoration-color:#c4b5fd;">${d.name}</a>`
+        : d.name;
+      const fall = Math.round((Number(d.prevRating) - Number(d.rating)) * 10) / 10;
+      const newReviews = d.prevReviews == null ? "" : Number(d.reviews) - Number(d.prevReviews) > 0 ? `+${Number(d.reviews) - Number(d.prevReviews)} new` : "no new";
+      return `<tr>
+        <td style="padding:8px;border:1px solid #e5e7eb;font-size:12px;color:#111;font-weight:700;">${name}<br><span style="color:#6b7280;font-weight:600;font-size:10px;">${(d.skus || []).join(", ")}</span></td>
+        <td style="${cell}font-size:11px;font-weight:700;color:${/flipkart/i.test(d.platform) ? "#1d4ed8" : "#c2410c"};">${d.platform}</td>
+        <td style="${cell}"><span style="color:#6b7280;">${Number(d.prevRating).toFixed(1)}</span> &#8594; <strong style="color:${Number(d.rating) < 3.5 ? "#b91c1c" : "#d97706"};">${Number(d.rating).toFixed(1)}&#9733;</strong><br><span style="color:#b91c1c;font-size:11px;font-weight:800;">&#9660; ${fall.toFixed(1)}</span></td>
+        <td style="${cell}">${d.prevReviews == null ? "" : `${d.prevReviews} &#8594; `}${d.reviews}${newReviews ? `<br><span style="color:#6b7280;font-size:11px;">${newReviews}</span>` : ""}</td>
+      </tr>`;
+    }).join("");
+    return wrap(`
+      <table width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr><td style="padding-bottom:14px;">
+          <h2 style="margin:0;color:#111;font-size:20px;font-weight:800;">&#11088; ${drops.length} listing${drops.length === 1 ? "" : "s"} dropped below 4&#9733;</h2>
+          <p style="margin:4px 0 0;color:#6b7280;font-size:12px;font-weight:600;">
+            ${data.accountName || "B-ARM"} &nbsp;&#183;&nbsp; snapshot ${dayLabel(data.snapshotDate)} compared with ${dayLabel(data.previousDate)} &nbsp;&#183;&nbsp; ${perPlat}
+          </p>
+        </td></tr>
+        <tr><td style="padding-bottom:16px;">
+          <p style="margin:0;padding:12px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;color:#991b1b;font-size:13px;font-weight:700;line-height:1.6;">
+            These were rated 4&#9733; or higher last week and are now below 4&#9733;. Listings under 4&#9733; usually convert worse &#8212; read the latest reviews and fix the cause (quality, packaging, listing content) before the rating drops further.
+          </p>
+        </td></tr>
+        <tr><td style="overflow-x:auto;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+            <tr>
+              <th style="${head}text-align:left;">Product</th>
+              <th style="${head}">Channel</th>
+              <th style="${head}">Rating</th>
+              <th style="${head}">Reviews</th>
+            </tr>
+            ${rows}
+          </table>
+        </td></tr>
+        <tr><td align="center" style="padding-top:20px;">
+          <a href="${SITE_URL}/dashboard/ratings-reviews" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Ratings &amp; Reviews &#8594;</a>
+        </td></tr>
+        <tr><td style="padding-top:16px;">
+          <p style="margin:0;color:#9ca3af;font-size:11px;line-height:1.6;">
+            Listings rated 4.0&#9733; or higher in the previous weekly snapshot (${dayLabel(data.previousDate)}) and below 4.0&#9733; in the latest one (${dayLabel(data.snapshotDate)})${Number(data.minReviews) > 1 ? `, with at least ${data.minReviews} reviews` : ""}. Variants of one listing are shown once. Lowest rating first. Click a product name to open its Amazon or Flipkart page.
+            Sent on Mondays once that week's ratings are uploaded &#8212; a listing is mailed again only if it recovers to 4&#9733;+ and drops again.
+          </p>
+        </td></tr>
+      </table>`, badge);
   }
 
   if (type === "historicalReport") {
@@ -1206,8 +1479,10 @@ const SUBJECTS: Record<string, string> = {
   confirmation: "Marketplace360 - Alert Settings Saved & Active",
   adAlert: "⚠️ Marketplace360 - Ad Alert",
   dailyDigest: "📊 Marketplace360 - Daily Digest",
-  liveAlerts: "⚡ Marketplace360 - Needs Attention",
-  fbaWarehouseLow: "📦 Marketplace360 - FBA Warehouse Low Stock",
+  liveAlerts: "⚡ Marketplace360 - Things Need Attention",
+  fbaWarehouseLow: "📦 Marketplace360 - FBA Stock",
+  highAcosTrend: "📈 Marketplace360 - High ACOS (last 7 days)",
+  ratingDrop: "⭐ Marketplace360 - Listings dropped below 4★",
   weeklyReport: "📈 Marketplace360 - Weekly Performance Report",
   adSpendDaily: "📈 Ad spend Report",
   historicalReport: "📊 Marketplace360 - Historical 7/30 Day Analysis Report",
@@ -1251,6 +1526,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // templates, with production recipients taken from saved settings — see emailSendPolicy.ts.
   const decision = decideSend(req.headers, body);
   if (!decision.ok) return res.status(decision.status).json({ error: decision.error });
+
+  // preview: render and return the HTML, send nothing (signed server calls only). Allowed while
+  // paused because nothing leaves the server — used to review a template before sending resumes.
+  if (body.preview === true && decision.internal) {
+    const html = buildHtml(type, escapeEmailData(type, data, true), escapeHtml(String(body.to || "")));
+    return res.status(200).json({ preview: true, subject: subject || SUBJECTS[type] || "Marketplace360 Notification", html });
+  }
+
+  // Global kill switch (src/lib/emailPause.ts) — checked before anything can send.
+  if (emailSendingPaused()) return res.status(503).json({ error: EMAIL_PAUSED_ERROR, paused: true });
 
   let { to, cc } = body;
   if (decision.recipients === "saved") {

@@ -7,10 +7,17 @@
 // a product going from "10 days of cover" to "2 days" should interrupt, a product sitting at
 // "8 days" for a week should not.
 //
+// Daily mode (daily: true — what the 9:00 AM cron sends since 2026-10-11, sheet "Mail to be
+// triggered" row 5 "Things need attention"): mails every run where anything fires, listing
+// everything firing today grouped by type (conversion drops and running-out first), with items not
+// in an earlier mail marked NEW. Nothing firing sends nothing (no empty mails). State is recorded the same way.
+//
 // POST body: { slot?, amazon_account_id, workspace_id, to, cc?, currency?, send?,
-//              cooldownHours?, types?, dryRun? }
+//              cooldownHours?, types?, warnDays?, daily?, dryRun? }
+//   warnDays: stockoutForecast fires at this many days of cover or fewer (default 10, Settings)
 //   types:  optional subset of ["spendSpike","stockoutForecast","buyBoxLoss","conversionDrop"]
 //   dryRun: detect and report, but neither email nor record state (safe to call repeatedly)
+//   preview: render the email and return its HTML, send nothing, record no state
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import { resolveSellerMateKey } from "@/lib/adAlerts";
@@ -29,7 +36,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const {
     slot = "B", amazon_account_id, workspace_id, to, cc, currency = "INR",
-    send = true, cooldownHours = 24, types, dryRun = false, accountName = "B-ARM",
+    send = true, cooldownHours = 24, types, dryRun = false, accountName = "B-ARM", daily = false, warnDays = 10, preview = false,
   } = req.body || {};
 
   if (!amazon_account_id || !workspace_id) {
@@ -47,7 +54,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // looks identical in the response and is the opposite in meaning.
     const allRunners: { type: AlertType; run: () => Promise<LiveAlert[]> }[] = [
       { type: "spendSpike", run: () => findSpendSpikes(ctx) },
-      { type: "stockoutForecast", run: () => findStockoutForecasts(ctx) },
+      { type: "stockoutForecast", run: () => findStockoutForecasts(ctx, { warnDays: Number(warnDays) || 10 }) },
       { type: "buyBoxLoss", run: () => findBuyBoxLosses(ctx) },
       { type: "conversionDrop", run: () => findConversionDrops(ctx) },
     ];
@@ -100,21 +107,31 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       failedDetectors: failed,
     };
 
+    // Daily mode lists everything firing today, not just what is new; NEW marks the fresh ones.
+    const freshKeys = new Set(fresh.map((a) => `${a.type}|${a.entityId}`));
+    const TYPE_ORDER: AlertType[] = ["conversionDrop", "stockoutForecast", "spendSpike", "buyBoxLoss"];
+    const listed = daily
+      ? found
+        .map((a) => ({ ...a, isNew: freshKeys.has(`${a.type}|${a.entityId}`) }))
+        .sort((a, b) => TYPE_ORDER.indexOf(a.type) - TYPE_ORDER.indexOf(b.type) || b.severity - a.severity || b.impact - a.impact)
+      : fresh;
+
     if (dryRun) {
-      return res.status(200).json({ ...summary, dryRun: true, alerts: fresh, suppressedDetail: suppressed });
+      return res.status(200).json({ ...summary, dryRun: true, daily, alerts: listed, suppressedDetail: suppressed });
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let emailResult: any = null;
-    if (send && to && fresh.length > 0) {
+    if (send && to && (daily ? listed.length > 0 : fresh.length > 0)) {
       const r = await internalFetch(`${internalOrigin()}/api/send-email`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          type: "liveAlerts", to, cc,
+          type: "liveAlerts", to, cc, preview: preview || undefined,
           data: {
-            alerts: fresh, currency, accountName, cooldownHours, channel: "amazon",
+            alerts: listed, currency, accountName, cooldownHours, channel: "amazon",
             windowNote: "compared against the previous equal-length window",
+            daily, warnDays: Number(warnDays) || 10, newCount: fresh.length, failedDetectors: failed.map((f) => f.type),
           },
         }),
       });
@@ -124,8 +141,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // Record state only for what actually went out — a failed send must be retried next run,
     // not silently marked as delivered.
-    const delivered = !!(send && to && fresh.length > 0 && emailResult && !emailResult.error);
-    if (delivered) {
+    const delivered = !preview && !!(send && to && (daily ? listed.length > 0 : fresh.length > 0) && emailResult && !emailResult.error);
+    if (delivered && fresh.length) {
       const rows = fresh.map((a) => ({
         key_slot: slot,
         alert_type: a.type,
@@ -138,7 +155,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (upErr) console.error("[Marketplace360] alert state write failed:", upErr.message);
     }
 
-    return res.status(200).json({ ...summary, emailed: delivered, emailResult, alerts: fresh });
+    return res.status(200).json({ ...summary, emailed: delivered, emailResult, alerts: listed });
   } catch (err) {
     return res.status(500).json({ error: err instanceof Error ? err.message : "live-alerts failed" });
   }

@@ -83,6 +83,9 @@ function mapRow(row: RawRow): { sku: string; product_name: string; category: str
 const TABLE = "barm_product_master";
 
 async function truncateAndInsert(rows: Record<string, unknown>[]): Promise<void> {
+  // A file with zero usable rows (wrong report, renamed columns) must never wipe the
+  // existing snapshot — the delete below would otherwise leave the table empty.
+  if (rows.length === 0) throw new Error("No valid rows found in this file — check it is the right report. Existing data was left unchanged.");
   // No natural "this run's rows" filter to delete by (unlike the date-scoped
   // tables) — a snapshot upload always fully replaces the prior one.
   const { error: delErr } = await supabasePublic.from(TABLE).delete().not("sku", "is", null);

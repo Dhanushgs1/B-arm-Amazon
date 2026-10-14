@@ -92,7 +92,7 @@ for (const route of ["pages/api/cron/scheduled-reports.ts", "pages/api/cron/camp
 }
 
 // ── Internal-only routes ─────────────────────────────────────────────────────────────────────
-for (const route of ["daily-digest", "live-alerts", "campaign-state-check", "stockout-alert", "ad-alerts"]) {
+for (const route of ["daily-digest", "live-alerts", "campaign-state-check", "stockout-alert", "ad-alerts", "fba-warehouse-alerts"]) {
   const rel = `pages/api/${route}.ts`;
   test(`${route}: no signature / invalid signature / browser session -> 401`, async () => {
     assert.equal((await call(rel)).statusCode, 401);
@@ -106,6 +106,15 @@ for (const route of ["daily-digest", "live-alerts", "campaign-state-check", "sto
     assert.deepEqual(fetchCalls, []);
   });
 }
+
+// high-acos-report: signed server calls, or the signed-in Upload page (Settings-driven, see the route).
+test("high-acos-report: no signature / forged -> 401; signed passes the gate (stops at missing recipient)", async () => {
+  const rel = "pages/api/high-acos-report.ts";
+  assert.equal((await call(rel)).statusCode, 401);
+  assert.equal((await call(rel, { headers: forged() })).statusCode, 401);
+  assert.equal((await call(rel, { headers: signed(), body: {} })).statusCode, 400);
+  assert.deepEqual(fetchCalls, []);
+});
 
 // ── send-email ───────────────────────────────────────────────────────────────────────────────
 const SE = "pages/api/send-email.ts";
@@ -136,6 +145,40 @@ test("send-email: signed internal request may use custom (stops at unconfigured 
   assert.deepEqual(fetchCalls, []);
 });
 
+test("send-email: signed preview returns the HTML and sends nothing, even while paused", async () => {
+  const prev = process.env.EMAIL_SENDING_PAUSED;
+  process.env.EMAIL_SENDING_PAUSED = "true";
+  try {
+    const r = await call(SE, { headers: signed(), body: { type: "highAcosTrend", to: "a@example.com", preview: true, data: { campaigns: [], dates: ["2026-10-10"], threshold: 14 } } });
+    assert.equal(r.statusCode, 200);
+    assert.equal(r.body.preview, true);
+    assert.match(r.body.html, /No campaign above 14% ACOS/);
+    assert.deepEqual(fetchCalls, []);
+  } finally {
+    if (prev === undefined) delete process.env.EMAIL_SENDING_PAUSED; else process.env.EMAIL_SENDING_PAUSED = prev;
+  }
+});
+test("send-email: browser preview is not a preview (falls through to the normal gates)", async () => {
+  const r = await call(SE, { headers: session(), body: { type: "weeklyReport", preview: true } });
+  assert.equal(r.statusCode, 403);
+});
+
+test("dailyDigest: missing overall sales reads \"Not available yet\", never ₹0 or ad sales", async () => {
+  const { buildHtml } = (await load(SE)) as any;
+  const base = { currency: "INR", dateLabel: "Sat, 10 Oct 2026", deltas: {}, inventory: {}, stockoutItems: [], bleedingItems: [], wastedTerms: [], topCampaigns: [], topProducts: [], topTerms: [] };
+  const pending = buildHtml("dailyDigest", { ...base, metrics: { totalSales: null, units: null, adSpend: 12345, adSales: 45678, acos: 27, roas: 3.7, orders: 40 } }, "x@example.com");
+  assert.match(pending, /Not available yet/);
+  assert.match(pending, /have not come in from Amazon yet/);
+  assert.match(pending, /Ad Spend/);
+  assert.match(pending, /₹12,345/);
+  assert.match(pending, /₹45,678/);
+  assert.match(pending, /from 40 ad orders/);
+  const ready = buildHtml("dailyDigest", { ...base, metrics: { totalSales: 100000, units: 500, adSpend: 12345, adSales: 45678, acos: 27, roas: 3.7, orders: 40 } }, "x@example.com");
+  assert.doesNotMatch(ready, /Not available yet/);
+  assert.match(ready, /₹1,00,000/);
+  assert.match(ready, /46%/); // ad share of sales
+});
+
 // ── Template escaping ────────────────────────────────────────────────────────────────────────
 const stripClock = (html: string) => html.replace(/>[^<]* IST<\/p>/, ">IST</p>");
 test("templates: malicious accountName, alert label, campaign name and recipient are escaped", async () => {
@@ -147,6 +190,9 @@ test("templates: malicious accountName, alert label, campaign name and recipient
     render("weeklyReport", { accountName: bad, compare: [], gainers: [], losers: [], bestSellers: [], platforms: [], departments: [] }),
     render("dailyDigest", { accountName: bad, dateLabel: bad, metrics: {}, deltas: {}, inventory: {}, stockoutItems: [], bleedingItems: [], wastedTerms: [], topCampaigns: [], topProducts: [], topTerms: [] }),
     render("liveAlerts", { accountName: bad, alerts: [] }),
+    render("liveAlerts", { accountName: bad, daily: true, alerts: [{ type: "conversionDrop", title: bad, detail: bad, action: bad, severity: 2, impact: 1, isNew: true }] }),
+    render("highAcosTrend", { accountName: bad, dates: ["2026-10-10"], threshold: 14, campaigns: [{ name: bad, days: [{ date: "2026-10-10", acos: 20, noSales: false }], spend: 1, sales: 1, orders: 0, acos: 20, daysAbove: 1, trend: "worse" }] }),
+    render("fbaWarehouseLow", { accountName: bad, daily: true, products: [{ sku: bad, name: bad, reason: "fewFcs", stockedCount: 1, stocked: [{ fc: "DEL4", units: 3 }], low: [], unknownFcs: [], isNew: true }] }),
     render("confirmation", { activeAlerts: [bad] }),
     render("campaign", { campaigns: [{ name: bad, acos: 50, sales: 1, spend: 1, roas: 1, orders: 0, suggestion: bad }] }),
     render("test", {}),

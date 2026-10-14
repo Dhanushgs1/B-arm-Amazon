@@ -45,14 +45,25 @@ Deno.test("preview build (no persistHistory) sends zero writes and zero Gemini c
   assertEquals(res.historyRowsSaved, 0);
 });
 
-Deno.test("persistHistory: true writes exactly one upsert, into barm_ad_spend_history only", async () => {
+Deno.test("persistHistory: true writes exactly two upserts, into barm_ad_spend_history and barm_ad_spend_history_30d only", async () => {
   calls.length = 0;
   const res = await buildAdSpendReportWorkbook({ endDate: "2026-09-17", aiSuggestions: false, persistHistory: true });
   const w = writes();
+  assertEquals(w.length, 2);
+  w.forEach((c) => assertEquals(c.method, "POST"));
+  const tables = w.map((c) => new URL(c.url).pathname.split("/").pop()).sort();
+  assertEquals(tables, ["barm_ad_spend_history", "barm_ad_spend_history_30d"]);
+  assert(res.historyRowsSaved >= 1);
+});
+
+Deno.test("persistHistory30dOnly: true writes exactly one upsert, into barm_ad_spend_history_30d only", async () => {
+  calls.length = 0;
+  const res = await buildAdSpendReportWorkbook({ endDate: "2026-09-17", aiSuggestions: false, persistHistory30dOnly: true });
+  const w = writes();
   assertEquals(w.length, 1);
   assertEquals(w[0].method, "POST");
-  assert(new URL(w[0].url).pathname.endsWith("/barm_ad_spend_history"), w[0].url);
-  assert(res.historyRowsSaved >= 1);
+  assertEquals(new URL(w[0].url).pathname.split("/").pop(), "barm_ad_spend_history_30d");
+  assertEquals(res.historyRowsSaved, 0);
 });
 
 Deno.test("the fake fetch is restored after the suite", () => {

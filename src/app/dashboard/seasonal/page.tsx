@@ -13,8 +13,10 @@ import {
   TrendingUp, TrendingDown, Zap, AlertTriangle, Sun, Snowflake, Minus, HelpCircle, CalendarClock, RefreshCw, Download,
   Search, ChevronDown, ChevronRight, X, Database, Loader2, Info, Layers, Boxes, CalendarRange, Activity,
 } from "lucide-react";
-import { SimpleView } from "./SimpleView";
+import { SimpleView, MarketplaceChips } from "./SimpleView";
 import type { SeasonalListDto, SeasonalDetailDto, ListMaster, ListSku, Status, Confidence } from "@/lib/seasonalAnalytics";
+import { contributionSummary, RULES } from "@/lib/seasonalAnalytics";
+import { marketplaceInsight, PLAIN_STATUS, perDay, units, salesChangeText, seasonalityText, stockLeft, whyText, recommendationText, findings } from "@/lib/seasonalPlain";
 
 // ── palette (dataviz reference palette; light/dark steps of the same hues) ──────────────────────
 const PALETTE = {
@@ -48,12 +50,12 @@ const STATUS_META: Record<Status, { icon: typeof TrendingUp; cls: string; color:
 };
 const STATUSES = Object.keys(STATUS_META) as Status[];
 
-function StatusBadge({ status, pattern }: { status: Status; pattern?: string | null }) {
+function StatusBadge({ status, pattern, plain }: { status: Status; pattern?: string | null; plain?: boolean }) {
   const m = STATUS_META[status];
   const Icon = m.icon;
   return (
     <span className={`inline-flex items-center gap-1 whitespace-nowrap rounded-md border px-1.5 py-0.5 text-[10px] font-bold ${m.cls}`}>
-      <Icon size={11} /> {status}{pattern ? <span className="font-medium opacity-80">· {pattern}</span> : null}
+      <Icon size={11} /> {plain ? PLAIN_STATUS[status] : status}{pattern && !plain ? <span className="font-medium opacity-80">· {pattern}</span> : null}
     </span>
   );
 }
@@ -227,7 +229,7 @@ export default function SeasonalAnalyticsPage() {
   const setPageSize = (f: (n: number) => number) => setPaging({ rows, size: f(pageSize) });
 
   const exportCsv = () => {
-    const head = ["Master Product SKU ID (master_product_skuid Product Name)", "SKU ID", "Product Name", "Identity", "Marketplace(s)", "Current Sales (units, last 7d)", "Current Avg (units/day, 7d)", "Recent Avg (units/day, 28d)", "Historical Average (units/day)", "Historical Median (units/day)", "Baseline (units/day)", "Historical Peak (units/day)", "Peak Date", "Peak Month", "Growth % vs baseline", "Change vs Average %", "Change vs Previous 28d %", "Seasonality", "Status", "Pattern", "Peak Approaching", "Confidence", "Why (classification)", "Likely Reason", "Evidence", "Recommendation"];
+    const head = ["Master Product SKU ID (master_product_skuid Product Name)", "SKU ID", "Product Name", "Identity", "Marketplace(s)", "Current Sales (units, last 7d)", "Current Avg (units/day, 7d)", "Recent Avg (units/day, 30d)", "Historical Average (units/day)", "Historical Median (units/day)", "Usual = overall average (units/day)", "Historical Peak (units/day)", "Peak Date", "Peak Month", "Growth % vs overall average", "Change vs Average %", "Change vs Previous 30d %", "Seasonality", "Status", "Pattern", "Peak Approaching", "Confidence", "Why (classification)", "Likely Reason", "Evidence", "Recommendation"];
     const esc = (v: unknown) => { const s = v === null || v === undefined ? "" : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
     const lines = rows.map((r) => {
       const isM = "skuIds" in r;
@@ -283,6 +285,21 @@ export default function SeasonalAnalyticsPage() {
           {view === "analysis" && <button onClick={exportCsv} disabled={!data} className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 hover:bg-muted disabled:opacity-50"><Download size={14} /> Export CSV</button>}
           <button onClick={load} className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 hover:bg-muted"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh</button>
         </div>
+      </div>
+
+      {/* ── marketplace filter: one marketplace or all (Full Details also allows any combination) ── */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[10px] font-extrabold uppercase tracking-wider text-muted-foreground">Marketplace</span>
+        <div className="flex flex-wrap rounded-lg border border-border bg-background p-0.5 text-xs font-bold">
+          {["", ...(data?.availableMarketplaces ?? lastData?.availableMarketplaces ?? [])].map((mk) => {
+            const on = mk === "" ? marketplaces.length === 0 : marketplaces.length === 1 && marketplaces[0] === mk;
+            return (
+              <button key={mk || "all"} onClick={() => setMarketplaces(mk ? [mk] : [])}
+                className={`rounded-md px-3 py-1.5 ${on ? "bg-indigo-600 text-white" : "text-muted-foreground hover:text-foreground"}`}>{mk || "All"}</button>
+            );
+          })}
+        </div>
+        {marketplaces.length > 0 && <span className="text-[11px] text-muted-foreground">Sales, trends and status for {marketplaces.join(", ")} only. Stock is shared across marketplaces, so stock days show under All.</span>}
       </div>
 
       {/* ── filters: search + marketplace always visible, the rest on demand ── */}
@@ -451,11 +468,11 @@ export default function SeasonalAnalyticsPage() {
               <HBar data={peakProducts} color={P.s1} P={P} unit=" units" onPick={setSelected} />
             </ChartCard>
 
-            <ChartCard title="4 · High growth products" sub="Recent 4-week avg vs historical baseline (HIGH GROWTH and UNUSUAL SPIKE).">
+            <ChartCard title="4 · High growth products" sub="Recent 30-day avg vs overall average (HIGH GROWTH and UNUSUAL SPIKE).">
               <HBar data={growthProducts} color={P.good} P={P} unit="%" onPick={setSelected} empty="No product is significantly above its baseline." />
             </ChartCard>
 
-            <ChartCard title="5 · Demand drop products" sub="Recent 4-week avg vs historical baseline (DEMAND DROP and UNUSUAL DECLINE).">
+            <ChartCard title="5 · Demand drop products" sub="Recent 30-day avg vs overall average (DEMAND DROP and UNUSUAL DECLINE).">
               <HBar data={dropProducts} color={P.critical} P={P} unit="%" onPick={setSelected} empty="No product is significantly below its baseline." />
             </ChartCard>
 
@@ -471,14 +488,14 @@ export default function SeasonalAnalyticsPage() {
               </ResponsiveContainer>
             </ChartCard>
 
-            <ChartCard title="7 · Current vs historical average" sub="Top 12 master products by volume — baseline vs recent 4-week average (units/day).">
+            <ChartCard title="7 · Current vs historical average" sub="Top 12 master products by volume — overall average vs recent 30-day average (units/day).">
               <ResponsiveContainer width="100%" height={260}>
                 <BarChart data={vsAvg} layout="vertical" margin={{ top: 4, right: 16, left: 8, bottom: 0 }} barGap={2}>
                   <CartesianGrid stroke={P.grid} horizontal={false} />
                   <XAxis type="number" {...axisProps} />
                   <YAxis type="category" dataKey="name" {...axisProps} width={150} />
-                  <Tooltip {...tooltipStyle} labelFormatter={(_, p) => (p?.[0]?.payload as { full?: string })?.full ?? ""} formatter={(v, k) => [`${n1(Number(v))} units/day`, k === "baseline" ? "Historical baseline" : "Recent 4-week avg"]} cursor={{ fill: P.grid, opacity: 0.4 }} />
-                  <Legend wrapperStyle={{ fontSize: 10, color: P.axis }} formatter={(k) => (k === "baseline" ? "Historical baseline" : "Recent 4-week avg")} />
+                  <Tooltip {...tooltipStyle} labelFormatter={(_, p) => (p?.[0]?.payload as { full?: string })?.full ?? ""} formatter={(v, k) => [`${n1(Number(v))} units/day`, k === "baseline" ? "Overall average" : "Recent 30-day avg"]} cursor={{ fill: P.grid, opacity: 0.4 }} />
+                  <Legend wrapperStyle={{ fontSize: 10, color: P.axis }} formatter={(k) => (k === "baseline" ? "Overall average" : "Recent 30-day avg")} />
                   <Bar dataKey="baseline" fill={P.s1} radius={[0, 4, 4, 0]} barSize={7} />
                   <Bar dataKey="recent" fill={P.s2} radius={[0, 4, 4, 0]} barSize={7} />
                 </BarChart>
@@ -521,7 +538,7 @@ export default function SeasonalAnalyticsPage() {
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
               <div>
                 <h2 className="text-sm font-bold">{level === "master" ? "Master Product Performance" : "Individual SKU Performance"}</h2>
-                <p className="text-[10px] text-muted-foreground">{rows.length} rows · units/day unless stated · Current = last 7 days · Recent = last 28 days · click a row to drill down</p>
+                <p className="text-[10px] text-muted-foreground">{rows.length} rows · units/day unless stated · Current = last 7 days · Recent = last 30 days · Baseline = overall average · click a row to drill down</p>
               </div>
               <div className="flex rounded-lg border border-border p-0.5 text-[11px] font-bold">
                 <button onClick={() => setLevel("master")} className={`rounded-md px-2.5 py-1 ${level === "master" ? "bg-indigo-600 text-white" : "text-muted-foreground"}`}>Master products</button>
@@ -656,6 +673,49 @@ function Field({ label, value, sub }: { label: string; value: React.ReactNode; s
   );
 }
 
+// SKU table column explanations — plain wording, but each one states what the number really is.
+const R = RULES;
+const SKU_COL_HELP = {
+  current: `Average units sold per day over the last ${R.currentDays} days.`,
+  recent: `Average units sold per day over the last ${R.recentDays} days. Sales Change and Impact on Change are measured from this.`,
+  usual: "This SKU's overall average daily sales across every day with data (the recent month included).",
+  best: "This SKU's highest single-day sales, and the date.",
+  change: `How Recent Sales (last ${R.recentDays} days) compare with Usual Sales (overall average).`,
+  impact: "Shows how much this SKU contributed to the overall change in the Master Product's sales.\n\nIt is a share of the sales CHANGE — not a share of total sales. SKUs moving the opposite way get no share.",
+  productBest: "Units this SKU sold on the product's best day (the date shown). This SKU's own best day is in the Best Day column.",
+  status: [
+    `How the status is decided (recent = last ${R.recentDays} days, usual = overall average):`,
+    `• Not Enough Data — less than ${R.minBaselineWeeks} weeks of sales history before the last ${R.recentDays} days.`,
+    `• Low Sales — under ${R.minUnitsPerWeek} units a week.`,
+    `• Growing Fast — recent sales at least ${R.growthPct}% above usual (and at least ${R.minAbsChange28d} extra units over ${R.recentDays} days), in ${R.sustainedWeeks} or more of the last 4 weeks.`,
+    `• Sudden Spike — a similar rise that has not lasted ${R.sustainedWeeks} weeks, or the last ${R.currentDays} days ${R.currentSpikePct}%+ above usual.`,
+    `• Sales Falling — recent sales at least ${R.growthPct}% below usual, in ${R.sustainedWeeks} or more of the last 4 weeks.`,
+    `• Sudden Drop — a similar fall that has not lasted ${R.sustainedWeeks} weeks, or the last ${R.currentDays} days ${R.currentDropPct}%+ below usual.`,
+    `• Seasonal High / Low — the change matches a month that was busy / quiet in at least ${R.minSeasonYears} years.`,
+    "• Stable — none of the above.",
+  ].join("\n"),
+};
+
+function HelpTh({ label, help, right }: { label: string; help: string; right?: boolean }) {
+  return (
+    <th className={`px-2 py-1.5 ${right ? "text-right" : ""}`} title={help}>
+      <span className="inline-flex cursor-help items-center gap-0.5">{label}<Info size={9} className="opacity-60" /></span>
+    </th>
+  );
+}
+
+const signed = (v: number) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${n1(Math.abs(v))} units/day`;
+const shortDay = (d: string | null | undefined) => (d ? dl(d).replace(/ \d{4}$/, "") : "Data unavailable");
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <p className="text-[10px] font-extrabold uppercase tracking-wider text-muted-foreground">{title}</p>
+      <div className="mt-1">{children}</div>
+    </div>
+  );
+}
+
 // ── drill-down ──────────────────────────────────────────────────────────────────────────────────
 
 function DrillDown({ master, list, params, onClose, P }: {
@@ -694,6 +754,7 @@ function DrillDown({ master, list, params, onClose, P }: {
   }, [detail]);
 
   const m = detail?.master;
+  const cs = useMemo(() => (detail ? contributionSummary(detail.master) : null), [detail]);
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={onClose}>
@@ -702,95 +763,155 @@ function DrillDown({ master, list, params, onClose, P }: {
           <div className="min-w-0">
             <p className="text-[9px] font-extrabold uppercase tracking-wider text-muted-foreground">Master product summary</p>
             <h2 className="truncate text-lg font-bold">{master}</h2>
-            <p className="text-[11px] text-muted-foreground">Master Product SKU ID: {master} · SKU IDs: {summary?.skuIds.join(", ")}</p>
+            <p className="text-[11px] text-muted-foreground">{summary ? `${summary.skuIds.length} SKU${summary.skuIds.length === 1 ? "" : "s"} on ${summary.marketplaces.join(", ")}: ${summary.skuIds.join(", ")}` : null}</p>
           </div>
           <button onClick={onClose} className="rounded-lg border border-border p-1.5 hover:bg-muted" aria-label="Close"><X size={16} /></button>
         </div>
 
         {err && <p className="m-5 rounded-lg border border-red-300 bg-red-50 p-3 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">{err}</p>}
-        {!detail && !err && <div className="flex items-center justify-center gap-2 py-24 text-sm text-muted-foreground"><Loader2 className="animate-spin" size={16} /> Loading drill-down…</div>}
+        {!detail && !err && <div className="flex items-center justify-center gap-2 py-24 text-sm text-muted-foreground"><Loader2 className="animate-spin" size={16} /> Loading…</div>}
 
-        {m && (
+        {m && cs && (() => {
+          const left = stockLeft(m.stockCoverage);
+          const top = cs.drivers[0];
+          return (
           <div className="space-y-4 p-5">
             <div className="flex flex-wrap items-center gap-2">
-              <StatusBadge status={m.analysis.status} pattern={m.analysis.pattern} />
+              <StatusBadge plain status={m.analysis.status} />
+              {left.low && <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-red-300 bg-red-100 px-1.5 py-0.5 text-[10px] font-bold text-red-800 dark:border-red-800 dark:bg-red-950/50 dark:text-red-300"><AlertTriangle size={11} /> Low Stock</span>}
               {m.analysis.peakApproaching && <PeakBadge />}
-              <ConfidenceBadge c={m.analysis.confidence} />
-            </div>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <Field label="Total SKUs" value={m.skuKeys.length} sub={m.marketplaces.join(", ")} />
-              <Field label="Current sales" value={`${n1(m.metrics.currentAvg)} /day`} sub={`${m.metrics.currentUnits ?? "n/a"} units, last 7 days`} />
-              <Field label="Historical average" value={`${n1(m.metrics.baseline)} /day`} sub={`mean ${n1(m.metrics.baselineMean)} · median day ${n1(m.metrics.dailyMedian)}`} />
-              <Field label="Recent average" value={`${n1(m.metrics.recentAvg)} /day`} sub="last 28 days" />
-              <Field label="Historical peak" value={`${n1(m.metrics.peakQty, 0)} units`} sub={`${dl(m.metrics.peakDate)} · peak month ${ml(m.metrics.peakMonth)}`} />
-              <Field label="Peak week" value={m.metrics.peakWeekUnits !== null ? `${n1(m.metrics.peakWeekUnits, 0)} units` : "n/a"} sub={m.metrics.peakWeekStart ? `week of ${dl(m.metrics.peakWeekStart)}` : undefined} />
-              <Field label="Growth % vs baseline" value={<span className={growthCls(m.metrics.growthPct)}>{pc(m.metrics.growthPct)}</span>} sub={`vs prev 28d ${pc(m.metrics.changeVsPrevPct)} · vs mean ${pc(m.metrics.changeVsMeanPct)}`} />
-              <Field label="Peak vs average / current vs peak" value={`${pc(m.metrics.peakVsAvgPct)}`} sub={`current = ${n1(m.metrics.currentVsPeakPct, 0)}% of peak day`} />
-              <Field label="Change started" value={m.metrics.changeStart ? dl(m.metrics.changeStart) : "n/a"} sub={m.metrics.changeDurationDays ? `${m.metrics.changeDurationDays} days` : "no significant change run"} />
-              <Field label="Seasonality" value={<span className="text-xs">{m.analysis.seasonality.label}</span>} sub={`same month last year: ${m.metrics.sameMonthHistAvg === null ? "no prior-year data" : n1(m.metrics.sameMonthHistAvg) + "/day"}`} />
-              <Field label="Current stock" value={m.currentStock === null ? "n/a" : n1(m.currentStock, 0)} sub="product_forecast_summary_live_v" />
-              <Field label="Covered days" value={m.metrics.coveredDays} sub={`${n1(m.metrics.totalUnits, 0)} units total`} />
+              <span className="text-[10px] text-muted-foreground">Confidence:</span><ConfidenceBadge c={m.analysis.confidence} />
             </div>
 
-            <div className="rounded-xl border border-border p-3 text-xs">
-              <p className="text-[9px] font-extrabold uppercase tracking-wider text-muted-foreground">Likely reason</p>
-              <p className="mt-0.5 font-bold">{m.analysis.likelyReason}</p>
-              <p className="mt-1 text-muted-foreground">{m.analysis.statusReason}</p>
-              <p className="mt-2 text-[9px] font-extrabold uppercase tracking-wider text-muted-foreground">Evidence</p>
-              <ul className="mt-0.5 list-disc space-y-0.5 pl-4 text-[11px]">{m.analysis.evidence.map((e) => <li key={e}>{e}</li>)}</ul>
-              <p className="mt-2 text-[9px] font-extrabold uppercase tracking-wider text-muted-foreground">Recommendation</p>
-              <p className="mt-0.5">{m.analysis.recommendation}</p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              <Field label="Selling Now" value={perDay(m.metrics.currentAvg)} sub="average over the last 7 days" />
+              <Field label="Usual Sales" value={perDay(m.metrics.baseline)} sub="overall average, all days" />
+              <Field label="Recent Sales" value={perDay(m.metrics.recentAvg)} sub={`average over the last ${RULES.recentDays} days`} />
+              <Field label="Sales Change" value={<span className={growthCls(m.metrics.growthPct)}>{pc(m.metrics.growthPct) === "n/a" ? "Data unavailable" : pc(m.metrics.growthPct)}</span>} sub={`${salesChangeText(m.metrics.growthPct)}. Compared with the historical average.`} />
+              <Field label="Best Day" value={m.metrics.peakQty === null ? "Data unavailable" : units(m.metrics.peakQty)} sub={m.metrics.peakDate ? dl(m.metrics.peakDate) : undefined} />
+              <Field label="Best Month" value={m.metrics.peakMonth ? ml(m.metrics.peakMonth) : "Data unavailable"}
+                sub={m.metrics.peakMonth ? `${units(m.metrics.peakMonthUnits)} · ${perDay(m.metrics.peakMonthRate)}${m.metrics.peakMonthComplete ? "" : " · some days missing"}` : undefined} />
+              <Field label="Stock Available" value={m.currentStock === null ? "Stock data unavailable" : units(m.currentStock)} sub="across all SKUs" />
+              <Field label="Stock Left" value={<span className={left.low ? "text-red-600 dark:text-red-400" : m.stockCoverage.kind === "ok" ? undefined : "text-xs"}>{left.value}</span>} sub={left.sub} />
+              <Field label="Seasonality" value={<span className="text-xs">{seasonalityText(m.analysis.seasonality)}</span>} />
             </div>
 
-            <ChartCard title="Daily sales — all SKUs combined" sub="Units per day; gaps are missing data (no upload), not zero. Dashed line = historical baseline.">
+            <div className="space-y-3 rounded-xl border border-border p-3 text-xs">
+              <Section title="Why is this happening?"><p className="text-sm font-bold">{whyText(m.analysis)}</p></Section>
+              <Section title="What we found">
+                <ul className="list-disc space-y-0.5 pl-4 text-[11px]">
+                  {findings(m.metrics, m.analysis, { stock: m.currentStock, coverage: m.stockCoverage, driver: top && cs.drivers.length > 1 && top.shareShown < 100 ? { sku: top.key.split("|")[1], sharePct: top.shareShown } : null }).map((f) => <li key={f}>{f}</li>)}
+                </ul>
+              </Section>
+              <Section title="Recommendation">
+                {recommendationText(m.analysis, m.stockCoverage).map((r, i) => <p key={r} className={i === 0 ? "text-sm font-bold" : "mt-0.5"}>{r}</p>)}
+              </Section>
+            </div>
+
+            {m.byMarketplace.length > 1 && (() => {
+              const ins = marketplaceInsight(m.byMarketplace);
+              return (
+                <div className="rounded-xl border border-border p-3 text-xs">
+                  <Section title="Sales by marketplace">
+                    {ins && <p className="mb-1.5 text-sm font-bold">{ins.text}</p>}
+                    <MarketplaceChips slices={m.byMarketplace} />
+                    <table className="mt-2 w-full text-[11px]">
+                      <thead className="text-left text-[9px] uppercase tracking-wider text-muted-foreground">
+                        <tr><th className="py-1">Marketplace</th><th className="text-right">Selling Now</th><th className="text-right">Usual Sales</th><th className="text-right">Recent Sales</th><th className="text-right">Sales Change</th><th className="pl-3">Status</th></tr>
+                      </thead>
+                      <tbody>
+                        {m.byMarketplace.map((x) => (
+                          <tr key={x.marketplace} className="border-t border-border/60">
+                            <td className="py-1 font-semibold">{x.marketplace}</td>
+                            <td className="text-right tabular-nums">{perDay(x.current)}</td>
+                            <td className="text-right tabular-nums">{perDay(x.baseline)}</td>
+                            <td className="text-right tabular-nums">{perDay(x.recent)}</td>
+                            <td className={`text-right font-bold tabular-nums ${growthCls(x.growth)}`}>{pc(x.growth) === "n/a" ? "Data unavailable" : pc(x.growth)}</td>
+                            <td className="py-1 pl-3"><StatusBadge plain status={x.status} /></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <p className="mt-1 text-[10px] text-muted-foreground">Each marketplace is judged with the same rules as the whole product, using only its own sales.</p>
+                  </Section>
+                </div>
+              );
+            })()}
+
+            <ChartCard title="Daily Sales" sub="Daily units sold across all SKUs. Dashed line = usual sales. A gap means data is missing for that day (not zero sales).">
               <ResponsiveContainer width="100%" height={220}>
                 <LineChart data={daily} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
                   <CartesianGrid stroke={P.grid} vertical={false} />
                   <XAxis dataKey="d" tick={{ fontSize: 10, fill: P.axis }} axisLine={{ stroke: P.grid }} tickLine={false} tickFormatter={(d) => dl(d).replace(/ \d{4}$/, "")} minTickGap={28} />
                   <YAxis tick={{ fontSize: 10, fill: P.axis }} axisLine={{ stroke: P.grid }} tickLine={false} width={40} />
                   <Tooltip contentStyle={{ background: P.surface, border: `1px solid ${P.grid}`, borderRadius: 8, fontSize: 11, color: P.text }} labelStyle={{ color: P.text, fontWeight: 700 }} itemStyle={{ color: P.text }}
-                    labelFormatter={(d) => dl(String(d))} formatter={(v, k) => [v === null ? "missing" : `${n1(Number(v))} units${k === "baseline" ? "/day" : ""}`, k === "baseline" ? "Baseline" : "Sales"]} />
+                    labelFormatter={(d) => dl(String(d))} formatter={(v, k) => [v === null ? "Data unavailable" : `${n1(Number(v))} units${k === "baseline" ? "/day" : ""}`, k === "baseline" ? "Usual sales" : "Units sold"]} />
                   <Line type="monotone" dataKey="total" stroke={P.s1} strokeWidth={2} dot={false} connectNulls={false} activeDot={{ r: 4 }} />
                   <Line type="monotone" dataKey="baseline" stroke={P.axis} strokeDasharray="4 4" strokeWidth={1} dot={false} />
-                  {m.metrics.peakDate && <ReferenceLine x={m.metrics.peakDate} stroke={P.s2} label={{ value: `Peak ${n1(m.metrics.peakQty, 0)}`, fontSize: 10, fill: P.axis, position: "top" }} />}
+                  {m.metrics.peakDate && <ReferenceLine x={m.metrics.peakDate} stroke={P.s2} label={{ value: `Best day ${n1(m.metrics.peakQty, 0)}`, fontSize: 10, fill: P.axis, position: "top" }} />}
                 </LineChart>
               </ResponsiveContainer>
             </ChartCard>
 
             <div className="rounded-xl border border-border">
               <div className="border-b border-border px-3 py-2">
-                <h3 className="text-xs font-bold">SKU breakdown</h3>
-                <p className="text-[10px] text-muted-foreground">Is the change across all SKUs or driven by one? Contribution = share of the master product&apos;s change in its direction. Click a SKU for its evidence.</p>
+                <h3 className="text-xs font-bold">Which SKUs are driving the change?</h3>
+                <p className="text-[10px] text-muted-foreground">Hover a column heading to see what it means. Click a SKU for details.</p>
+                {cs.drivers.length > 0 ? (
+                  <div className="mt-2 rounded-lg bg-muted/40 px-2.5 py-2 text-[11px]">
+                    <p className="font-bold">Master product change is mainly driven by:</p>
+                    <ol className="mt-0.5 list-decimal pl-5">
+                      {cs.drivers.map((d) => <li key={d.key}><span className="font-semibold">{d.key.split("|")[1]}</span> <span className="text-muted-foreground">· {d.key.split("|")[0]}</span> — {signed(d.deltaPerDay)} ({d.shareShown}%)</li>)}
+                    </ol>
+                    <p className="mt-1 text-[10px] text-muted-foreground">
+                      Rising SKUs added {signed(cs.increase)}{cs.decrease < 0 ? <> and falling SKUs {signed(cs.decrease)}</> : null} (net {signed(cs.netSkuChange)}).
+                      {" "}The percentages are each SKU&apos;s share of the {cs.direction > 0 ? "rise" : "fall"} and add up to 100%.
+                      {cs.masterChange !== null && <> Whole product: Recent Sales {n1(m.metrics.recentAvg)} − Usual Sales {n1(m.metrics.baseline)} = {signed(cs.masterChange)}{Math.abs(cs.masterChange - cs.netSkuChange) >= 0.05 ? " (slightly different from the SKU total because usual sales are worked out separately for each SKU)." : "."}</>}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-[11px] text-muted-foreground">Sales of this product&apos;s SKUs have not changed overall.</p>
+                )}
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[860px] text-[11px]">
+                <table className="w-full min-w-[900px] text-[11px]">
                   <thead className="text-left text-[9px] uppercase tracking-wider text-muted-foreground">
-                    <tr><th className="px-2 py-1.5">Master | SKU ID | Marketplace</th><th className="px-2 text-right">Current /day</th><th className="px-2 text-right">Hist. avg</th><th className="px-2 text-right">Peak · date</th><th className="px-2 text-right">Growth %</th><th className="px-2 text-right">Contribution</th><th className="px-2 text-right">Units on peak day</th><th className="px-2">Status</th></tr>
+                    <tr>
+                      <th className="px-2 py-1.5">SKU · Marketplace</th>
+                      <HelpTh right label="Selling Now" help={SKU_COL_HELP.current} />
+                      <HelpTh right label="Recent Sales" help={SKU_COL_HELP.recent} />
+                      <HelpTh right label="Usual Sales" help={SKU_COL_HELP.usual} />
+                      <HelpTh right label="Best Day" help={SKU_COL_HELP.best} />
+                      <HelpTh right label="Sales Change" help={SKU_COL_HELP.change} />
+                      <HelpTh right label="Impact on Change" help={SKU_COL_HELP.impact} />
+                      <HelpTh right label={`Units on product's best day${m.metrics.peakDate ? ` (${shortDay(m.metrics.peakDate)})` : ""}`} help={SKU_COL_HELP.productBest} />
+                      <HelpTh label="Status" help={SKU_COL_HELP.status} />
+                    </tr>
                   </thead>
                   <tbody>
-                    {detail.skus.map((s) => {
-                      const c = m.contributions.find((x) => x.key === s.key);
+                    {detail!.skus.map((s) => {
+                      const c = cs.rows.get(s.key);
                       const pk = m.peakContributors.find((x) => x.key === s.key);
                       const open = openSku === s.key;
                       return (
                         <Fragment key={s.key}>
                           <tr className="cursor-pointer border-t border-border/60 hover:bg-muted/40" onClick={() => setOpenSku(open ? null : s.key)}>
                             <td className="px-2 py-1.5"><span className="font-semibold">{identity(master, s.sku)}</span> <span className="text-muted-foreground">· {s.marketplace}</span></td>
-                            <td className="px-2 text-right tabular-nums">{n1(s.metrics.currentAvg)}</td>
-                            <td className="px-2 text-right tabular-nums">{n1(s.metrics.baseline)}</td>
-                            <td className="px-2 text-right tabular-nums">{n1(s.metrics.peakQty, 0)} · {dl(s.metrics.peakDate)}</td>
-                            <td className={`px-2 text-right font-bold tabular-nums ${growthCls(s.metrics.growthPct)}`}>{pc(s.metrics.growthPct)}</td>
-                            <td className="px-2 text-right tabular-nums">{c ? `${c.deltaPerDay > 0 ? "+" : ""}${n1(c.deltaPerDay)}/day${c.sharePct !== null ? ` (${Math.round(c.sharePct)}%)` : ""}` : "n/a"}</td>
-                            <td className="px-2 text-right tabular-nums">{pk ? n1(pk.units, 0) : "0"}</td>
-                            <td className="px-2 py-1.5"><StatusBadge status={s.analysis.status} pattern={s.analysis.pattern} /></td>
+                            <td className="px-2 text-right tabular-nums">{perDay(s.metrics.currentAvg)}</td>
+                            <td className="px-2 text-right tabular-nums">{perDay(s.metrics.recentAvg)}</td>
+                            <td className="px-2 text-right tabular-nums">{perDay(s.metrics.baseline)}</td>
+                            <td className="px-2 text-right tabular-nums">{s.metrics.peakQty === null ? "Data unavailable" : <>{units(s.metrics.peakQty)} · {shortDay(s.metrics.peakDate)}</>}</td>
+                            <td className={`px-2 text-right font-bold tabular-nums ${growthCls(s.metrics.growthPct)}`}>{pc(s.metrics.growthPct) === "n/a" ? "Data unavailable" : pc(s.metrics.growthPct)}</td>
+                            <td className="whitespace-nowrap px-2 text-right tabular-nums">{!c ? "Data unavailable" : `${c.deltaPerDay === 0 ? "0 units/day" : signed(c.deltaPerDay)} · ${c.shareShown !== null ? `${c.shareShown}% of change` : c.deltaPerDay === 0 ? "no change" : "moving the other way"}`}</td>
+                            <td className="px-2 text-right tabular-nums">{pk ? units(pk.units) : "0 units"}</td>
+                            <td className="px-2 py-1.5"><StatusBadge plain status={s.analysis.status} /></td>
                           </tr>
                           {open && (
-                            <tr className="bg-muted/30"><td colSpan={8} className="px-3 py-2">
-                              <p className="font-semibold">{s.analysis.likelyReason}</p>
-                              <p className="text-muted-foreground">{s.analysis.statusReason}</p>
-                              <ul className="mt-1 list-disc pl-4 text-[10px] text-muted-foreground">{s.analysis.evidence.map((e) => <li key={e}>{e}</li>)}</ul>
-                              <p className="mt-1">{s.analysis.recommendation}</p>
-                              <p className="mt-1"><ConfidenceBadge c={s.analysis.confidence} /></p>
+                            <tr className="bg-muted/30"><td colSpan={9} className="space-y-1.5 px-3 py-2">
+                              <p className="font-semibold">{whyText(s.analysis)}</p>
+                              <ul className="list-disc pl-4 text-[10px] text-muted-foreground">{findings(s.metrics, s.analysis).map((f) => <li key={f}>{f}</li>)}</ul>
+                              <p>{recommendationText(s.analysis, null).join(" ")}</p>
+                              <p><span className="text-[10px] text-muted-foreground">Confidence: </span><ConfidenceBadge c={s.analysis.confidence} /></p>
                             </td></tr>
                           )}
                         </Fragment>
@@ -799,10 +920,12 @@ function DrillDown({ master, list, params, onClose, P }: {
                   </tbody>
                 </table>
               </div>
+              <p className="border-t border-border px-3 py-1.5 text-[10px] text-muted-foreground">Impact on Change measures each SKU&apos;s share of the product&apos;s <span className="font-bold">sales change</span>, not its share of total sales.</p>
             </div>
-            <p className="text-[10px] text-muted-foreground"><Activity size={10} className="mr-1 inline" />Peak approaching / seasonal signals are historical patterns, not forecasts.</p>
+            <p className="text-[10px] text-muted-foreground"><Activity size={10} className="mr-1 inline" />Seasonal and busy-month signals are based on past sales patterns, not forecasts.</p>
           </div>
-        )}
+          );
+        })()}
       </div>
     </div>
   );

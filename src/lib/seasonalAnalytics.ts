@@ -40,7 +40,7 @@ export interface AnalysisOptions {
 // ── Tunables (kept together so the rules are reviewable in one place) ───────────────────────────
 
 export const RULES = {
-  recentDays: 28, // "recent" = last 4 weeks
+  recentDays: 30, // "recent" = last 30 days (a rolling month)
   currentDays: 7, // "current" = last 7 days
   growthPct: 40, // recent vs baseline beyond ±40% is a significant change
   currentSpikePct: 75, // last-7-day jump that flags a spike even when the 4-week average has not moved
@@ -100,6 +100,9 @@ export interface Metrics {
   peakQty: number | null;
   peakDate: string | null;
   peakMonth: string | null; // yyyy-mm with the highest units/day among sufficiently covered months
+  peakMonthUnits: number | null; // units sold in that month (covered days)
+  peakMonthRate: number | null; // units/day in that month
+  peakMonthComplete: boolean; // false when some days of that month have no data
   peakWeekStart: string | null;
   peakWeekUnits: number | null;
   peakWeekRate: number | null; // units/day in the best week (≥ 6 covered days)
@@ -108,7 +111,7 @@ export interface Metrics {
   baseline: number | null; // the baseline used for classification
   baselineMethod: string;
   baselineWeeks: number;
-  recentAvg: number | null; // units/day, last 28 days
+  recentAvg: number | null; // units/day, last 30 days
   currentAvg: number | null; // units/day, last 7 days
   currentUnits: number | null; // units, last 7 days
   prevAvg: number | null; // units/day, the 28 days before the recent window
@@ -155,12 +158,25 @@ export interface MasterResult {
   skuIds: string[];
   marketplaces: string[];
   currentStock: number | null;
+  stockCoverage: StockCoverage;
+  /** The same metrics and status rules, run on each marketplace's SKUs of this master separately. */
+  byMarketplace: MarketplaceSlice[];
   metrics: Metrics;
   analysis: Analysis;
   weekly: WeekPoint[];
   monthly: MonthPoint[];
   contributions: { key: string; deltaPerDay: number; sharePct: number | null }[];
   peakContributors: { key: string; units: number }[];
+}
+
+export interface MarketplaceSlice {
+  marketplace: string;
+  current: number | null; // units/day, last 7 days
+  recent: number | null; // units/day, last 30 days
+  baseline: number | null; // usual units/day
+  growth: number | null; // recent vs baseline, %
+  status: Status;
+  totalUnits: number;
 }
 
 export interface DataQuality {
@@ -378,12 +394,11 @@ export function computeMetrics(series: Series, ctx: Ctx): { metrics: Metrics; to
   const baselineMedianWeekly = medianUsable ? medianSum : null;
   // Median of weekly rates resists a one-off historical spike; it falls back to the mean when there
   // are too few weeks for a median to mean anything, or when an intermittent seller's median week is 0.
-  let baseline: number | null, baselineMethod: string;
-  if (baselineMedianWeekly !== null && baselineMedianWeekly > 0) {
-    baseline = baselineMedianWeekly; baselineMethod = `median of weekly averages, ≥ ${baselineWeeks} weeks per marketplace`;
-  } else {
-    baseline = baselineMean; baselineMethod = baselineWeeks ? `mean of ${baselineWeeks}+ week(s) before the recent window` : "no baseline period";
-  }
+  // Usual sales = the overall average: units/day over every covered day of the selected period
+  // (recent month included), on the like-for-like marketplace set so a late-starting feed cannot
+  // fake growth. The median/pre-window figures above stay available as extra evidence.
+  const baseline = br.use.length ? windowRate(series, 0, T, br.use).rate : null;
+  const baselineMethod = "overall average of all days";
 
   const recentAvg = windowRate(series, ...recentW, br.use).rate;
   const allRecent = windowRate(series, ...recentW, series.keys()).rate;
@@ -410,7 +425,8 @@ export function computeMetrics(series: Series, ctx: Ctx): { metrics: Metrics; to
   const sameMonthHistAvg = sameMonth.length ? sameMonth.reduce((a, m) => a + (m.rate as number), 0) / sameMonth.length : null;
 
   const rankable = monthly.filter((m) => m.rate !== null && m.coveredDays >= m.daysInMonth * RULES.minMonthCoverage);
-  const peakMonth = rankable.length ? rankable.reduce((a, b) => ((b.rate as number) > (a.rate as number) ? b : a)).month : null;
+  const bestMonth = rankable.length ? rankable.reduce((a, b) => ((b.rate as number) > (a.rate as number) ? b : a)) : null;
+  const peakMonth = bestMonth?.month ?? null;
   const fullWeeks = weekly.filter((w) => w.coveredDays >= 6);
   const wr = (w: WeekPoint) => w.units / w.coveredDays;
   const peakWeek = fullWeeks.length ? fullWeeks.reduce((a, b) => (wr(b) > wr(a) ? b : a)) : null;
@@ -453,6 +469,9 @@ export function computeMetrics(series: Series, ctx: Ctx): { metrics: Metrics; to
       peakQty,
       peakDate: peakIdx >= 0 ? addDays(ctx.start, peakIdx) : null,
       peakMonth,
+      peakMonthUnits: bestMonth?.units ?? null,
+      peakMonthRate: bestMonth?.rate ?? null,
+      peakMonthComplete: bestMonth?.complete ?? false,
       peakWeekStart: peakWeek?.weekStart ?? null,
       peakWeekUnits: peakWeek?.units ?? null,
       peakWeekRate: peakWeek ? wr(peakWeek) : null,
@@ -529,6 +548,75 @@ export function detectSeasonality(monthly: MonthPoint[]): Seasonality {
   };
 }
 
+// ── Contribution to change ───────────────────────────────────────────────────────────────────────
+
+/** Presentation view of MasterResult.contributions (calculation unchanged). Each SKU's change is
+ *  recent 30-day avg − its own overall average (units/day). Its share is change ÷ the sum of all
+ *  SKU changes in the master's net direction, so the shares of the SKUs moving that way total 100%
+ *  (rounded with largest remainders so the displayed integers also total 100). SKUs moving the
+ *  other way get no share. It is a share of the CHANGE, never of total sales. */
+export interface ContributionSummary {
+  rows: Map<string, { deltaPerDay: number; sharePct: number | null; shareShown: number | null }>;
+  direction: 1 | -1 | 0;
+  increase: number; // sum of positive SKU changes, units/day
+  decrease: number; // sum of negative SKU changes, units/day (≤ 0)
+  netSkuChange: number; // increase + decrease
+  masterChange: number | null; // master recent 30-day avg − master overall average
+  drivers: { key: string; deltaPerDay: number; shareShown: number }[]; // top 3 in the net direction
+}
+
+export function contributionSummary(m: Pick<MasterResult, "contributions" | "metrics">): ContributionSummary {
+  const increase = m.contributions.reduce((a, c) => a + Math.max(0, c.deltaPerDay), 0);
+  const decrease = m.contributions.reduce((a, c) => a + Math.min(0, c.deltaPerDay), 0);
+  const netSkuChange = increase + decrease;
+  const direction = netSkuChange > 0 ? 1 : netSkuChange < 0 ? -1 : 0;
+  const shared = m.contributions.filter((c) => c.sharePct !== null);
+  const floors = new Map(shared.map((c) => [c.key, Math.floor(c.sharePct as number)]));
+  let left = shared.length ? 100 - [...floors.values()].reduce((a, b) => a + b, 0) : 0;
+  for (const c of [...shared].sort((a, b) => ((b.sharePct as number) % 1) - ((a.sharePct as number) % 1))) {
+    if (left <= 0) break;
+    floors.set(c.key, (floors.get(c.key) as number) + 1); left--;
+  }
+  const rows = new Map(m.contributions.map((c) => [c.key, { deltaPerDay: c.deltaPerDay, sharePct: c.sharePct, shareShown: floors.get(c.key) ?? null }]));
+  const drivers = shared
+    .map((c) => ({ key: c.key, deltaPerDay: c.deltaPerDay, shareShown: floors.get(c.key) as number }))
+    .sort((a, b) => b.shareShown - a.shareShown || Math.abs(b.deltaPerDay) - Math.abs(a.deltaPerDay))
+    .slice(0, 3);
+  const masterChange = m.metrics.recentAvg !== null && m.metrics.baseline !== null ? m.metrics.recentAvg - m.metrics.baseline : null;
+  return { rows, direction, increase, decrease, netSkuChange, masterChange, drivers };
+}
+
+// ── Stock coverage ───────────────────────────────────────────────────────────────────────────────
+
+/** Days of stock at the current sales rate. Stock and sales must share one scope: the master's
+ *  total current stock ÷ the master's total current units/day (summed over its SKUs first — never
+ *  an average of per-SKU coverage). Stock is product-level across all marketplaces, so when the
+ *  sales scope is a marketplace subset the two do not reconcile and no number is given. */
+export type StockCoverage =
+  | { kind: "ok"; days: number; stock: number; salesPerDay: number }
+  | { kind: "no-stock-data" }
+  | { kind: "no-sales" }
+  | { kind: "no-sales-data" }
+  | { kind: "scope-mismatch" };
+
+export function stockCoverage(stock: number | null | undefined, salesPerDay: number | null | undefined, sameScope = true): StockCoverage {
+  if (stock === null || stock === undefined || !Number.isFinite(stock)) return { kind: "no-stock-data" };
+  if (!sameScope) return { kind: "scope-mismatch" };
+  if (salesPerDay === null || salesPerDay === undefined || !Number.isFinite(salesPerDay)) return { kind: "no-sales-data" };
+  if (salesPerDay <= 0) return { kind: "no-sales" };
+  return { kind: "ok", days: Math.max(0, stock) / salesPerDay, stock, salesPerDay };
+}
+
+export function coverageText(c: StockCoverage): string {
+  switch (c.kind) {
+    case "ok": return `${fmt(c.days)} days at current sales rate`;
+    case "no-stock-data": return "Stock data unavailable";
+    case "no-sales": return "No sales — coverage cannot be calculated";
+    case "no-sales-data": return "No current sales data — coverage cannot be calculated";
+    case "scope-mismatch": return "Stock is tracked across all marketplaces — select all marketplaces to see coverage";
+  }
+}
+
 // ── Classification, reasons, recommendations ────────────────────────────────────────────────────
 
 export interface ReasonInputs {
@@ -537,6 +625,7 @@ export interface ReasonInputs {
   adDaily?: Map<string, number>; // date -> ad spend summed over the entity's SKUs
   adCoverage?: { first: string; last: string } | null; // range the ad feeds cover at all
   attribution?: string[]; // "where the change comes from" lines (master only)
+  coverage?: StockCoverage; // master only — drives the stock part of the recommendation
 }
 
 function confidenceFor(m: Metrics, consistentWeeks: number): Confidence {
@@ -556,7 +645,7 @@ export function classify(m: Metrics, monthly: MonthPoint[], asOf: string, inputs
 
   evidence.push(num("Historical baseline", base) + ` (${m.baselineMethod})`);
   evidence.push(num("Historical mean", m.baselineMean));
-  evidence.push(num("Recent 4-week average", recent));
+  evidence.push(num("Recent 30-day average", recent));
   evidence.push(num("Last 7 days", cur));
   if (m.excludedMarketplaces.length) evidence.push(`Like-for-like: ${m.excludedMarketplaces.join(", ")} excluded from comparisons (no data in both periods)`);
 
@@ -567,7 +656,7 @@ export function classify(m: Metrics, monthly: MonthPoint[], asOf: string, inputs
 
   if (base === null || m.baselineWeeks < RULES.minBaselineWeeks) {
     status = "INSUFFICIENT DATA";
-    statusReason = `Only ${m.baselineWeeks} complete week(s) of history before the recent 4-week window (need ≥ ${RULES.minBaselineWeeks}).`;
+    statusReason = `Only ${m.baselineWeeks} complete week(s) of history before the recent 30-day window (need ≥ ${RULES.minBaselineWeeks}).`;
   } else if (lowVolume) {
     status = "LOW VOLUME";
     statusReason = `Sells under ${RULES.minUnitsPerWeek} units/week in both periods — percentage changes would be noise.`;
@@ -575,21 +664,21 @@ export function classify(m: Metrics, monthly: MonthPoint[], asOf: string, inputs
     const sustained = m.weeksUp >= RULES.sustainedWeeks;
     status = sustained ? "HIGH GROWTH" : "UNUSUAL SPIKE";
     pattern = sustained ? "Sustained" : "Short-term";
-    statusReason = `Recent 4-week average is ${Math.round(m.growthPct)}% above the historical baseline; ${m.weeksUp} of the last 4 weeks were ≥ ${RULES.weekUpFactor}× baseline.`;
+    statusReason = `Recent 30-day average is ${Math.round(m.growthPct)}% above the overall average; ${m.weeksUp} of the last 4 weeks were ≥ ${RULES.weekUpFactor}× baseline.`;
   } else if (m.growthPct !== null && m.growthPct <= -RULES.growthPct && delta28 >= RULES.minAbsChange28d) {
     const sustained = m.weeksDown >= RULES.sustainedWeeks;
     status = sustained ? "DEMAND DROP" : "UNUSUAL DECLINE";
     pattern = sustained ? "Sustained" : "Temporary";
-    statusReason = `Recent 4-week average is ${Math.abs(Math.round(m.growthPct))}% below the historical baseline; ${m.weeksDown} of the last 4 weeks were ≤ ${RULES.weekDownFactor}× baseline.`;
+    statusReason = `Recent 30-day average is ${Math.abs(Math.round(m.growthPct))}% below the overall average; ${m.weeksDown} of the last 4 weeks were ≤ ${RULES.weekDownFactor}× baseline.`;
   } else if (cur !== null && base > 0 && ((cur - base) / base) * 100 >= RULES.currentSpikePct && delta7 >= 4) {
     status = "UNUSUAL SPIKE"; pattern = "Short-term";
-    statusReason = `Last 7 days are ${Math.round(((cur - base) / base) * 100)}% above baseline while the 4-week average has not moved significantly.`;
+    statusReason = `Last 7 days are ${Math.round(((cur - base) / base) * 100)}% above baseline while the 30-day average has not moved significantly.`;
   } else if (cur !== null && base > 0 && ((cur - base) / base) * 100 <= -RULES.currentDropPct && delta7 >= 4) {
     status = "UNUSUAL DECLINE"; pattern = "Temporary";
-    statusReason = `Last 7 days are ${Math.abs(Math.round(((cur - base) / base) * 100))}% below baseline while the 4-week average has not moved significantly.`;
+    statusReason = `Last 7 days are ${Math.abs(Math.round(((cur - base) / base) * 100))}% below baseline while the 30-day average has not moved significantly.`;
   } else {
     status = "STABLE";
-    statusReason = `Recent 4-week average is within ±${RULES.growthPct}% of the historical baseline (${pct(m.growthPct)}).`;
+    statusReason = `Recent 30-day average is within ±${RULES.growthPct}% of the overall average (${pct(m.growthPct)}).`;
   }
   if (m.changeStart) evidence.push(`Change began ${m.changeStart} (${m.changeDurationDays} day(s) ago, inclusive)`);
   if (m.peakQty !== null) evidence.push(`Historical peak = ${fmt(m.peakQty, 0)} units on ${m.peakDate}`);
@@ -701,17 +790,28 @@ export function classify(m: Metrics, monthly: MonthPoint[], asOf: string, inputs
     status, pattern, peakApproaching, statusReason,
     likelyReason: [...new Set(reasons)].join(" "),
     evidence, confidence,
-    recommendation: recommend(status, peakApproaching, m, inputs.stockNow ?? null, seasonality),
+    recommendation: recommend(status, peakApproaching, inputs.coverage ?? null, seasonality),
     seasonality,
   };
 }
 
-function recommend(status: Status, peakApproaching: boolean, m: Metrics, stockNow: number | null, s: Seasonality): string {
-  const cover = stockNow !== null && m.recentAvg ? stockNow / m.recentAvg : null;
-  const stockLine = stockNow !== null ? ` Current stock ${fmt(stockNow, 0)} units${cover !== null ? ` ≈ ${fmt(cover, 0)} days at the recent rate` : ""}.` : "";
+function recommend(status: Status, peakApproaching: boolean, c: StockCoverage | null, s: Seasonality): string {
+  const text = recommendText(status, peakApproaching, c, s);
+  if (c?.kind !== "ok" || c.days >= RULES.lowStockCoverDays) return text;
+  const urgent = c.stock <= 0
+    ? "Out of stock — reorder now."
+    : `Reorder now — approximately ${fmt(c.days, 0)} day${Math.round(c.days) === 1 ? "" : "s"} of stock remaining (${fmt(c.stock, 0)} units ÷ ${fmt(c.salesPerDay)}/day).`;
+  return `${urgent} ${text}`;
+}
+
+function recommendText(status: Status, peakApproaching: boolean, c: StockCoverage | null, s: Seasonality): string {
+  const low = c?.kind === "ok" && c.days < RULES.lowStockCoverDays; // already led with "Reorder now"
+  const stockLine = c && !low && c.kind !== "no-stock-data"
+    ? ` Stock coverage: ${coverageText(c)}${c.kind === "ok" ? ` (${fmt(c.stock, 0)} units ÷ ${fmt(c.salesPerDay)}/day)` : ""}.`
+    : "";
   const peak = peakApproaching ? ` Historical sales repeatedly peak in ${s.recurringHigh.map(monthName).join("/")}. Monitor stock and demand closely.` : "";
   switch (status) {
-    case "HIGH GROWTH": return `Sales are significantly above the historical baseline. Review stock availability and advertising capacity.${stockLine}${peak}`;
+    case "HIGH GROWTH": return `Sales are significantly above the overall average. Review stock availability and advertising capacity.${stockLine}${peak}`;
     case "UNUSUAL SPIKE": return `Sales are significantly above normal but there is insufficient historical recurrence to classify this as seasonal. Confirm the spike is genuine before committing stock.${stockLine}${peak}`;
     case "DEMAND DROP": return `Recent sales are significantly below historical baseline. Investigate inventory, advertising and demand conditions.${stockLine}${peak}`;
     case "UNUSUAL DECLINE": return `Sales are significantly below normal and require investigation.${stockLine}${peak}`;
@@ -798,6 +898,14 @@ export function analyze(payload: SeasonalPayload, opts: AnalysisOptions = {}): S
     } else unmapped.push(r);
   });
 
+  // every marketplace a master sells on, regardless of the filter (its stock covers all of them)
+  const allMktsOf = new Map<string, Set<string>>();
+  for (const [mk, , product, mapped] of payload.skus) {
+    if (!mapped || !product) continue;
+    const set = allMktsOf.get(product) ?? new Set<string>();
+    set.add(mk); allMktsOf.set(product, set);
+  }
+
   const masters: MasterResult[] = [];
   for (const [master, idxs] of byMaster) {
     const series: Series = new Map();
@@ -848,17 +956,28 @@ export function analyze(payload: SeasonalPayload, opts: AnalysisOptions = {}): S
       ? { first: ranges.map((x) => x.first).sort().at(-1) as string, last: ranges.map((x) => x.last).sort()[0] }
       : null;
 
+    // Coverage uses the same scope as the displayed Current Sales (metrics.currentAvg, summed over
+    // the master's SKUs) and Current Stock. A marketplace filter that drops some of the product's
+    // marketplaces leaves stock wider than sales, so coverage is withheld rather than overstated.
+    const sameScope = [...(allMktsOf.get(master) ?? [])].every((mk) => mkts.includes(mk) || !allMkts.includes(mk));
+    const coverage = stockCoverage(stockNow.get(master) ?? null, metrics.currentAvg, sameScope);
     const analysis = classify(metrics, monthly, asOf, {
       stockNow: stockNow.get(master) ?? null,
       stockDaily: stockDaily.get(master),
-      adDaily, adCoverage, attribution,
+      adDaily, adCoverage, attribution, coverage,
     });
+    const byMarketplace: MarketplaceSlice[] = [...series.entries()].map(([mk, arr]) => {
+      const one = computeMetrics(new Map([[mk, arr]]), ctx);
+      const st = classify(one.metrics, one.monthly, asOf).status;
+      return { marketplace: mk, current: one.metrics.currentAvg, recent: one.metrics.recentAvg, baseline: one.metrics.baseline, growth: one.metrics.growthPct, status: st, totalUnits: one.metrics.totalUnits };
+    }).sort((a, b) => b.totalUnits - a.totalUnits);
     masters.push({
-      master,
+      master, byMarketplace,
       skuKeys: rs.map((r) => r.key),
       skuIds: [...new Set(rs.map((r) => r.sku))],
       marketplaces: [...new Set(rs.map((r) => r.marketplace))],
       currentStock: stockNow.get(master) ?? null,
+      stockCoverage: coverage,
       metrics, analysis, weekly, monthly, contributions, peakContributors,
     });
   }
@@ -947,6 +1066,7 @@ export interface SlimMetrics {
   current: number | null; currentUnits: number | null; recent: number | null; mean: number | null; median: number | null;
   baseline: number | null; peak: number | null; peakDate: string | null; peakMonth: string | null;
   peakWeekStart: string | null; peakWeekRate: number | null; // best Monday-week, as units/day
+  peakMonthUnits: number | null; peakMonthRate: number | null; peakMonthComplete: boolean;
   growth: number | null; vsMean: number | null; vsPrev: number | null; vsPeak: number | null; peakVsAvg: number | null;
   changeStart: string | null; duration: number | null; totalUnits: number; coveredDays: number;
 }
@@ -959,6 +1079,8 @@ export interface ListEntity {
 }
 export interface ListMaster extends ListEntity {
   master: string; skuIds: string[]; skuKeys: string[]; marketplaces: string[]; currentStock: number | null; evidence: string[]; recommendation: string;
+  stockCoverage: StockCoverage;
+  byMarketplace: MarketplaceSlice[];
   /** SKU with the largest share of the master's change (in the change's direction), and how many SKUs moved that way */
   driver: { key: string; sharePct: number; deltaPerDay: number } | null;
   movingSkus: number;
@@ -975,6 +1097,7 @@ function slim(m: Metrics): SlimMetrics {
     current: r2(m.currentAvg), currentUnits: m.currentUnits, recent: r2(m.recentAvg), mean: r2(m.dailyMean), median: r2(m.dailyMedian),
     baseline: r2(m.baseline), peak: m.peakQty, peakDate: m.peakDate, peakMonth: m.peakMonth,
     peakWeekStart: m.peakWeekStart, peakWeekRate: r2(m.peakWeekRate),
+    peakMonthUnits: m.peakMonthUnits === null ? null : Math.round(m.peakMonthUnits), peakMonthRate: r2(m.peakMonthRate), peakMonthComplete: m.peakMonthComplete,
     growth: r2(m.growthPct), vsMean: r2(m.changeVsMeanPct), vsPrev: r2(m.changeVsPrevPct), vsPeak: r2(m.currentVsPeakPct), peakVsAvg: r2(m.peakVsAvgPct),
     changeStart: m.changeStart, duration: m.changeDurationDays, totalUnits: m.totalUnits, coveredDays: m.coveredDays,
   };
@@ -1008,6 +1131,8 @@ export function toListDto(r: SeasonalResult, availableMarketplaces: string[]): S
     masters: r.masters.map((x) => ({
       ...entity(x.analysis, x.metrics, x.weekly, x.monthly),
       master: x.master, skuIds: x.skuIds, skuKeys: x.skuKeys, marketplaces: x.marketplaces, currentStock: x.currentStock,
+      stockCoverage: x.stockCoverage,
+      byMarketplace: x.byMarketplace.map((b) => ({ ...b, current: r2(b.current), recent: r2(b.recent), baseline: r2(b.baseline), growth: r2(b.growth) })),
       evidence: x.analysis.evidence, recommendation: x.analysis.recommendation,
       ...driverOf(x),
     })),

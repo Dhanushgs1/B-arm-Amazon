@@ -11,8 +11,15 @@ import { sharedFetch } from "@/lib/sharedFetch";
 // rows are normalised here to the barm_meesho_orders shape the reports were
 // written against (order_status, sub_order_no, order_date, sku, quantity,
 // supplier_listed_price, …) and deduped to each sub-order's latest batch.
+//
+// Since 30 Sep 2026 the daily Ad Spend one-file upload's "MS BARM ord" sheet
+// (barm_daily_ms_barm_orders, typed columns, from 13 Aug 2026) is read too:
+// meesho_barm_ord is loaded from outside the app and ran days behind it. Both
+// are merged per Sub Order No, the most recently loaded copy winning, so the
+// daily upload fills the recent days and meesho_barm_ord keeps the older ones.
 
 export const MEESHO_ORDERS_TABLE = "meesho_barm_ord";
+export const MEESHO_DAILY_ORDERS_TABLE = "barm_daily_ms_barm_orders";
 
 const MONTHS: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
@@ -57,22 +64,49 @@ export interface MeeshoOrderRow {
   raw: Record<string, unknown>;
 }
 
-/** Every Meesho order in meesho_barm_ord, one row per Sub Order No (latest batch wins). */
+/** Every Meesho order in meesho_barm_ord + barm_daily_ms_barm_orders, one row per Sub Order No (latest load wins). */
 export function fetchMeeshoOrderRows(): Promise<MeeshoOrderRow[]> {
   return sharedFetch(MEESHO_ORDERS_TABLE, loadMeeshoOrderRows);
 }
 
 async function loadMeeshoOrderRows(): Promise<MeeshoOrderRow[]> {
-  const raw = await fetchAllRows(MEESHO_ORDERS_TABLE, (q) => q);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const latest = new Map<string, any>();
-  raw.forEach((r) => {
-    const key = String(r["Sub Order No"] ?? "").trim();
-    if (!key) return;
-    const prev = latest.get(key);
-    if (!prev || String(r.created_at ?? "") > String(prev.created_at ?? "")) latest.set(key, r);
-  });
-  return [...latest.values()].map((r) => ({
+  const [raw, daily] = await Promise.all([
+    fetchAllRows(MEESHO_ORDERS_TABLE, (q) => q),
+    fetchAllRows(MEESHO_DAILY_ORDERS_TABLE, (q) => q),
+  ]);
+  const latest = new Map<string, MeeshoOrderRow>();
+  const keep = (row: MeeshoOrderRow) => {
+    if (!row.sub_order_no) return;
+    const prev = latest.get(row.sub_order_no);
+    if (!prev || row.created_at > prev.created_at) latest.set(row.sub_order_no, row);
+  };
+  raw.forEach((r) => keep(fromMeeshoBarmOrd(r)));
+  daily.forEach((r) => keep(fromDailyUpload(r)));
+  return [...latest.values()];
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function fromDailyUpload(r: any): MeeshoOrderRow {
+  return {
+    order_status: String(r.order_status ?? "").trim(),
+    sub_order_no: String(r.sub_order_no ?? "").trim(),
+    order_date: r.report_date ? String(r.report_date).slice(0, 10) : null,
+    customer_state: String(r.customer_state ?? ""),
+    product_name: String(r.product_name ?? ""),
+    sku: String(r.sku ?? "").trim(),
+    size: String(r.size ?? ""),
+    quantity: numOrNull(r.quantity),
+    supplier_listed_price: numOrNull(r.listed_price),
+    supplier_discounted_price: numOrNull(r.discounted_price),
+    packet_id: String(r.packet_id ?? ""),
+    created_at: String(r.created_at ?? ""),
+    raw: (r.raw && typeof r.raw === "object" ? r.raw : {}) as Record<string, unknown>,
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function fromMeeshoBarmOrd(r: any): MeeshoOrderRow {
+  return ({
     order_status: String(r["Reason for Credit Entry"] ?? "").trim(),
     sub_order_no: String(r["Sub Order No"]).trim(),
     order_date: parseMeeshoOrderDate(r["Order Date"], r.created_at),
@@ -86,7 +120,7 @@ async function loadMeeshoOrderRows(): Promise<MeeshoOrderRow[]> {
     packet_id: String(r["Packet Id"] ?? ""),
     created_at: String(r.created_at ?? ""),
     raw: Object.fromEntries(Object.entries(r).filter(([k]) => k !== "id" && k !== "created_at")),
-  }));
+  });
 }
 
 /** Orders on file, for the Meesho Overview/Download "Data on file" captions. Never rejects. */
