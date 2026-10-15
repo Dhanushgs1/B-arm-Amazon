@@ -96,11 +96,11 @@ test("combo: Σ stored required qty less max(stock) per component, blanks as 0 (
   assert.equal(out[0].comboQty, 0); // combo column shows 0 for all products (user, 2026-10-15)
 });
 
-test("excluded products (user, 2026-10-15) are left off every list, from godown or the Current stock sheet", () => {
+test("excluded products (user, 2026-10-15) stay on the sheet but are left off No sales", () => {
   const p = (product: string, currentStock: number) => ({ product, currentStock, inboundShipped: 0, unfulfillable: 0, warehouse: 0, qcGodown: 0, packingGodown: 0, skuRows: 1, discontinued: false });
   const products = withExtraProducts([p("Lancing device", 335), p("Silicone Tip", 58), p("Blades", 10)], ["Neck traction pillow (Blue)", "Bulb Syringe IUI applicator -8cm(Pack of 5)"]);
   const { rows } = buildConsolidated(products, [{ date: "2026-10-12", product: "Other", stockOut: 1 }]);
-  assert.deepEqual(rows.map((r) => r.product), ["Blades"]);
+  assert.deepEqual(rows.map((r) => r.product), ["Lancing device", "Silicone Tip", "Blades", "Neck traction pillow (Blue)", "Bulb Syringe IUI applicator -8cm(Pack of 5)"]);
   assert.deepEqual(noSales(rows).map((r) => r.product), ["Blades"]);
 });
 

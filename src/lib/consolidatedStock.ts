@@ -26,8 +26,8 @@
 export const CONSOLIDATED_DAYS = 10;
 export const RUNNING_OUT_DAYS = 30;
 
-/** Products the user took off the sheet (2026-10-15): never on All products, No sales or any list,
- *  whether they come from the godown sheet or the Current stock sheet. Matched by productKey. */
+/** Products left off the No sales list only (user, 2026-10-15); they stay on All products and every
+ *  other list. Matched by productKey. */
 export const EXCLUDED_PRODUCTS = [
   "Mesh nebulizer MY123",
   "Silicone Tip",
@@ -403,8 +403,7 @@ export function buildConsolidated(
     const p = peak.get(key);
     if (!p || qty > p.qty || (qty === p.qty && date > p.date)) peak.set(key, { qty, date });
   }
-  const excluded = new Set(EXCLUDED_PRODUCTS.map(productKey));
-  const rows = products.filter((p) => !excluded.has(productKey(p.product))).map((p) => {
+  const rows = products.map((p) => {
     const key = productKey(p.product);
     const days = dates.map((d) => (out.has(`${d}|${key}`) ? out.get(`${d}|${key}`)! : null));
     const avg = days.reduce<number>((a, v) => a + (v ?? 0), 0) / n;
@@ -436,6 +435,9 @@ export const salesDropped = (rows: ConsolidatedRow[]) =>
 /** No sales list leaves out products holding fewer than this many units (user, 2026-10-14). */
 export const NO_SALES_MIN_STOCK = 5;
 
-/** Nothing shipped in any of the days, at least NO_SALES_MIN_STOCK in stock, not discontinued. Most stock first. */
+const NO_SALES_EXCLUDED = new Set(EXCLUDED_PRODUCTS.map(productKey));
+
+/** Nothing shipped in any of the days, at least NO_SALES_MIN_STOCK in stock, not discontinued, not in
+ *  EXCLUDED_PRODUCTS. Most stock first. */
 export const noSales = (rows: ConsolidatedRow[]) =>
-  rows.filter((r) => !r.discontinued && r.currentStock >= NO_SALES_MIN_STOCK && r.days.every((v) => !v)).sort((a, b) => b.currentStock - a.currentStock);
+  rows.filter((r) => !NO_SALES_EXCLUDED.has(productKey(r.product)) && !NO_SALES_EXCLUDED.has(productKey(r.godownName)) && !r.discontinued && r.currentStock >= NO_SALES_MIN_STOCK && r.days.every((v) => !v)).sort((a, b) => b.currentStock - a.currentStock);
