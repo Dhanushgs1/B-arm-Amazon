@@ -17,7 +17,7 @@ const num = (z: string) => ({ font: { name: "Calibri", sz: 11 }, alignment: { ho
 const YELLOW = { fill: { fgColor: { rgb: "FFFF00" } } };
 const RED = { font: { name: "Calibri", sz: 11, color: { rgb: "9C0006" } }, fill: { fgColor: { rgb: "FFC7CE" } } };
 
-type Cell = { v: string | number; t: "s" | "n"; s: Record<string, unknown> };
+type Cell = { v: string | number; t: "s" | "n" | "e"; s: Record<string, unknown> };
 const s = (v: string, style = NAME): Cell => ({ v, t: "s", s: style });
 const n = (v: number | null | undefined, z = "0", extra: Record<string, unknown> = {}): Cell =>
   v === null || v === undefined || !Number.isFinite(v) ? { v: "", t: "s", s: num(z) } : { v, t: "n", s: { ...num(z), ...extra } };
@@ -32,6 +32,7 @@ function sheet(rows: (Cell & { f?: string })[][], widths: number[], headerHeight
     const addr = XLSX.utils.encode_cell({ r: ri, c: ci });
     if (!ws[addr]) return;
     ws[addr].s = c.s;
+    if (c.t === "e") Object.assign(ws[addr], { t: "e", v: 0x07, w: "#DIV/0!" });
     if (c.t === "n") ws[addr].z = (c.s as { numFmt?: string }).numFmt;
     if (c.f) ws[addr].f = c.f;
   }));
@@ -46,6 +47,8 @@ const dayCells = (days: (number | null)[]) => days.map((v, i) => {
   return n(v ?? 0, "0", prev !== null && (v ?? 0) < prev ? YELLOW : {});
 });
 const coverCell = (d: number | null) => n(d === null ? null : d, "0", d !== null && d < RUNNING_OUT_DAYS ? RED : {});
+/** Runs out in: current ÷ average, #DIV/0! when nothing sold — as the client's sheet shows it (user, 2026-10-15). */
+const runsOutCell = (d: number | null): Cell => (d === null ? { v: "#DIV/0!", t: "e", s: num("0") } : coverCell(d));
 
 /** Peak sales: best single day over every godown day up to the sheet's date (blank = never shipped). */
 const peakCells = (r: ConsolidatedRow) => [n(r.peakQty), s(r.peakDate ? r.peakDate.split("-").reverse().join("-") : "")];
@@ -104,7 +107,7 @@ export function buildConsolidatedWorkbook(data: ConsolidatedExportData) {
         n(r.purchaseQty ?? 0, "0.00"),
         f(`MAX(${cQty}${x},${cBuy}${x},0)`, r.finalQtyToRestock, "0.00"),
         n(r.comboQty ?? 0),
-        { ...coverCell(r.daysOfStock), f: `IF(${cAvg}${x}>0,${cCur}${x}/${cAvg}${x},"")` },
+        { ...runsOutCell(r.daysOfStock), f: `${cCur}${x}/${cAvg}${x}` },
       ];
     }),
   ], [63, ...dayHdr.map(() => 9), 11, 13, 11, 11, 11, 11, 11, 12, 14, 12, 14, 14], 62), "Consolidated");

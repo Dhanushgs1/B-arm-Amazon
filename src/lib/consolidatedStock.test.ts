@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseGodownSheet, buildConsolidated, componentNeeds, mondayOf, istToday, weeklyInputs, runningOut, salesDropped, noSales, blockDate, parseRestockRows, restockSources, mergeRestockRows, dateFromFileName, withExtraProducts } from "./consolidatedStock.ts";
+import { parseGodownSheet, buildConsolidated, componentNeeds, mondayOf, istToday, weeklyInputs, runningOut, salesDropped, noSales, blockDate, parseRestockRows, restockSources, mergeRestockRows, dateFromFileName, withExtraProducts, onlyRestockProducts } from "./consolidatedStock.ts";
 
 // Shape of the godown "FC Stock sheet": A Products, D master product, named stock columns, then
 // "Stock as on" blocks of Opening | Stock IN | Stock Out | Closing.
@@ -268,4 +268,10 @@ test("no sales leaves out products with current stock below 5 (user, 2026-10-14)
   const p = (product: string, currentStock: number) => ({ product, currentStock, inboundShipped: 0, unfulfillable: 0, warehouse: 0, qcGodown: 0, packingGodown: 0, skuRows: 1, discontinued: false });
   const { rows } = buildConsolidated([p("Four", 4), p("Five", 5), p("Lots", 618)], [{ date: "2026-10-12", product: "Other", stockOut: 1 }]);
   assert.deepEqual(noSales(rows).map((r) => r.product), ["Lots", "Five"]);
+});
+
+test("with a restock input file, only its products are listed (user, 2026-10-15)", () => {
+  const p = (product: string, currentStock: number) => ({ product, currentStock, inboundShipped: 0, unfulfillable: 0, warehouse: 0, qcGodown: 0, packingGodown: 0, skuRows: 1, discontinued: false });
+  const out = onlyRestockProducts([p("Blades", 10), p("Godown only", 5)], ["blades ", "Neck traction pillow (Blue)"]);
+  assert.deepEqual(out.map((x) => [x.product, x.currentStock]), [["Blades", 10], ["Neck traction pillow (Blue)", 0]]);
 });

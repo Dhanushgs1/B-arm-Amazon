@@ -370,6 +370,13 @@ export function withExtraProducts(products: GodownProduct[], names: string[]): G
   return out;
 }
 
+/** Once a restock input (Current stock sheet) is uploaded, the sheet lists only the products named in
+ *  it (user, 2026-10-15): godown-only products are left out; godown still supplies their stock and sales. */
+export function onlyRestockProducts(products: GodownProduct[], names: string[]): GodownProduct[] {
+  const keep = new Set(names.map((n) => productKey(cleanName(n))).filter(Boolean));
+  return withExtraProducts(products.filter((p) => keep.has(productKey(p.product))), names);
+}
+
 /** The 10 latest dates with data, oldest first (DAY 10 … DAY 1). */
 export function lastDates(daily: { date: string }[], n = CONSOLIDATED_DAYS): string[] {
   return [...new Set(daily.map((d) => d.date))].sort().slice(-n);

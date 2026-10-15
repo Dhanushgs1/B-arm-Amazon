@@ -17,7 +17,7 @@ import { fetchAllRows } from "@/lib/amazonReportShared";
 import { currentGodownName, isGodownDuplicate, keptGodownName, mergeGodownProducts } from "@/lib/godownProductAliases";
 import { chunk } from "@/lib/amazonOrderUploadRules";
 import {
-  parseGodownSheet, buildConsolidated, weeklyInputs, mondayOf, istToday, parseRestockRows, restockSources, mergeRestockRows, dateFromFileName, withExtraProducts, CONSOLIDATED_DAYS,
+  parseGodownSheet, buildConsolidated, weeklyInputs, mondayOf, istToday, parseRestockRows, restockSources, mergeRestockRows, dateFromFileName, onlyRestockProducts, CONSOLIDATED_DAYS,
   type GodownProduct, type ConsolidatedRow, type ComponentNeed, type WeeklyRfqRow, type WeeklyComponentRow,
 } from "@/lib/consolidatedStock";
 
@@ -166,8 +166,8 @@ async function fetchRestockInputs(asOf: string) {
     ...snap, status: sources.purchase === "snapshot" ? "ok" : snap.status,
     transit: pick(sources.transit), purchase: pick(sources.purchase), components: pick(sources.components),
   };
-  // Products only in the client's Current stock sheet are shown too (user, 2026-10-14).
-  return { inputs, combos, weekly, extraNames: current ? current.map((r) => r.product) : [] };
+  // With a Current stock sheet, its products are the sheet's product list (user, 2026-10-15).
+  return { inputs, combos, weekly, restockNames: current ? current.map((r) => r.product) : null };
 }
 
 /** barm_godown_daily rows before `from` with something shipped — date, product and Stock Out only. */
@@ -218,11 +218,13 @@ export async function fetchConsolidated(asOf?: string): Promise<ConsolidatedData
     readShippedBefore(from),
     fetchRestockInputs(asOf ?? istToday()),
   ]);
-  const products: GodownProduct[] = withExtraProducts(mergeGodownProducts(stock.map((s) => ({
+  const godown = mergeGodownProducts(stock.map((s) => ({
     product: s.product, currentStock: Number(s.current_stock) || 0, inboundShipped: Number(s.inbound_shipped) || 0,
     unfulfillable: Number(s.unfulfillable) || 0, warehouse: Number(s.warehouse) || 0, qcGodown: Number(s.qc_godown) || 0,
     packingGodown: Number(s.packing_godown) || 0, skuRows: Number(s.sku_rows) || 0, discontinued: !!s.discontinued,
-  }))), live.extraNames);
+  })));
+  // A Current stock sheet decides which products are listed; without one, every godown product is.
+  const products: GodownProduct[] = live.restockNames ? onlyRestockProducts(godown, live.restockNames) : godown;
   const { dates, rows } = buildConsolidated(
     products,
     // renamed products (src/lib/godownProductAliases.ts) count under their current name; duplicate copies are left out

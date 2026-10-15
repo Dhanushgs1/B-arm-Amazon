@@ -32,7 +32,8 @@ const dropCls = (days: (number | null)[], i: number) =>
   i > 0 && (days[i] ?? 0) < (days[i - 1] ?? 0) ? "bg-[#FFFF00] text-black dark:bg-yellow-700/60 dark:text-yellow-50" : "";
 
 function coverChip(days: number | null) {
-  if (days === null) return <span className="text-muted-foreground">Not selling</span>;
+  // Nothing sold: Excel's #DIV/0! (current ÷ 0 average), as in the client's sheet (user, 2026-10-15).
+  if (days === null) return <span className="text-muted-foreground">#DIV/0!</span>;
   // Same as the client's sheet: under 30 days in light red with dark red text.
   const cls = days < RUNNING_OUT_DAYS ? "bg-[#FFC7CE] text-[#9C0006] dark:bg-red-950 dark:text-red-300" : "text-foreground";
   return <span className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-bold tabular-nums ${cls}`}>{dec(days, 0)} days</span>;
@@ -183,7 +184,7 @@ export default function ConsolidatedStockPage() {
       ) : (
         <>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-            <KPICard title="Products" value={int(data.rows.length)} subtitle="From the godown sheet" accent="purple" />
+            <KPICard title="Products" value={int(data.rows.length)} subtitle={data.weekly?.transit.from === "current" ? "From the restock inputs sheet" : "From the godown sheet"} accent="purple" />
             <KPICard title={`Running out (< ${RUNNING_OUT_DAYS} days)`} value={int(lists.running.length)} subtitle="Current stock ÷ average per day" accent="orange" onClick={() => setView("running")} />
             <KPICard title="Sales dropped" value={int(lists.dropped.length)} subtitle="Day 3 > Day 2 > Day 1" accent="pink" onClick={() => setView("dropped")} />
             <KPICard title={`No sales (${CONSOLIDATED_DAYS} days)`} value={int(lists.nosales.length)} subtitle={`Stock ${NO_SALES_MIN_STOCK}+, not discontinued`} accent="cyan" onClick={() => setView("nosales")} />
