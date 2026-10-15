@@ -17,7 +17,7 @@ import { fetchAllRows } from "@/lib/amazonReportShared";
 import { currentGodownName, isGodownDuplicate, keptGodownName, mergeGodownProducts } from "@/lib/godownProductAliases";
 import { chunk } from "@/lib/amazonOrderUploadRules";
 import {
-  parseGodownSheet, buildConsolidated, weeklyInputs, mondayOf, istToday, parseRestockRows, restockSources, mergeRestockRows, dateFromFileName, onlyRestockProducts, CONSOLIDATED_DAYS,
+  parseGodownSheet, buildConsolidated, weeklyInputs, mondayOf, istToday, parseRestockRows, restockSources, mergeRestockRows, dateFromFileName, onlyRestockProducts, productKey, CONSOLIDATED_DAYS,
   type GodownProduct, type ConsolidatedRow, type ComponentNeed, type WeeklyRfqRow, type WeeklyComponentRow,
 } from "@/lib/consolidatedStock";
 
@@ -155,9 +155,9 @@ async function fetchRestockInputs(asOf: string) {
   const current = upCurrent
     ? (await readAll(RESTOCK_TABLE.current, "product,stock_intransit,order_placed", ["product"], (q) => q.eq("snapshot_date", upCurrent.date)))
         // spellings from the 13.10.2026 godown file point at the kept name (src/lib/godownProductAliases.ts)
-        .map((r) => ({ product: keptGodownName(String(r.product)), stock_intransit: r.stock_intransit, order_placed: r.order_placed, suggested_rfq: null }))
+        .map((r) => ({ product: keptGodownName(String(r.product)), shownAs: String(r.product), stock_intransit: r.stock_intransit, order_placed: r.order_placed, suggested_rfq: null }))
     : null;
-  const { inputs, combos } = weeklyInputs(mergeRestockRows(current, rfq), components);
+  const { inputs, combos } = weeklyInputs(mergeRestockRows(current?.map(({ shownAs: _, ...r }) => r) ?? null, rfq), components); // eslint-disable-line @typescript-eslint/no-unused-vars
   const fromSnapshot: RestockSource = { from: "snapshot", date: snap.weekStart, at: snap.capturedAt };
   const none: RestockSource = { from: "none", date: null, at: null };
   const pick = (s: "current" | "snapshot" | "none"): RestockSource =>
@@ -167,7 +167,9 @@ async function fetchRestockInputs(asOf: string) {
     transit: pick(sources.transit), purchase: pick(sources.purchase), components: pick(sources.components),
   };
   // With a Current stock sheet, its products are the sheet's product list (user, 2026-10-15).
-  return { inputs, combos, weekly, restockNames: current ? current.map((r) => r.product) : null };
+  return { inputs, combos, weekly, restockNames: current ? current.map((r) => r.product) : null,
+    // matched name → the spelling in the Current stock sheet, which the page and Excel show (user, 2026-10-15)
+    shownAs: new Map((current ?? []).map((r) => [productKey(r.product), r.shownAs.replace(/\s+/g, " ").trim()])) };
 }
 
 /** barm_godown_daily rows before `from` with something shipped — date, product and Stock Out only. */
@@ -233,5 +235,6 @@ export async function fetchConsolidated(asOf?: string): Promise<ConsolidatedData
     CONSOLIDATED_DAYS,
     live.combos,
   );
-  return { snapshotDate, uploadedAt: stock[0]?.uploaded_at ?? null, dates, rows, combos: live.combos, weekly: live.weekly };
+  const named = rows.map((r) => ({ ...r, product: live.shownAs.get(productKey(r.product)) || r.product, godownName: r.product }));
+  return { snapshotDate, uploadedAt: stock[0]?.uploaded_at ?? null, dates, rows: named, combos: live.combos, weekly: live.weekly };
 }

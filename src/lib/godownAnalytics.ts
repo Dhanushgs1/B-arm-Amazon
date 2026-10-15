@@ -333,7 +333,7 @@ export function analyzeGodown(rows: ConsolidatedRow[], history: GodownDailyRow[]
     totals.set(h.date, (totals.get(h.date) ?? 0) + h.stockOut);
   }
   const products: ProductAnalytics[] = rows.map((r) => {
-    const byDate = byProduct.get(productKey(r.product)) ?? new Map<string, number>();
+    const byDate = byProduct.get(productKey(r.godownName ?? r.product)) ?? new Map<string, number>();
     const trend = productTrend(r.product, byDate, asOf, rules);
     const hist = productHistory(byDate, asOf, trend.rate7, trend.peakDate);
     const unusual = unusualDays(byDate, asOf);

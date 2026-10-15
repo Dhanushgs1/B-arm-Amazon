@@ -97,6 +97,7 @@ export interface ConsolidatedRow {
 
   daysOfStock: number | null; // null = not selling
   discontinued: boolean;
+  godownName?: string;        // set when `product` shows the Current stock sheet's spelling: the name godown history uses
 }
 
 type Cell = unknown;
