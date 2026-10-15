@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseGodownSheet, buildConsolidated, componentNeeds, mondayOf, istToday, weeklyInputs, runningOut, salesDropped, noSales, blockDate, parseRestockRows, newerRestockSource } from "./consolidatedStock.ts";
+import { parseGodownSheet, buildConsolidated, componentNeeds, mondayOf, istToday, weeklyInputs, runningOut, salesDropped, noSales, blockDate, parseRestockRows, restockSources, mergeRestockRows, dateFromFileName, withExtraProducts } from "./consolidatedStock.ts";
 
 // Shape of the godown "FC Stock sheet": A Products, D master product, named stock columns, then
 // "Stock as on" blocks of Opening | Stock IN | Stock Out | Closing.
@@ -93,7 +93,15 @@ test("combo: Σ stored required qty less max(stock) per component, blanks as 0 (
   assert.deepEqual(needs.map((n) => [n.component, n.required, n.stock, n.finalQty]), [["Blades", 1385, 834, 551], ["Lancing device", 748, 0, 748], ["Breast Shell", 5, 50, 0]]);
   const products = [{ product: "Blades", currentStock: 834, inboundShipped: 0, unfulfillable: 0, warehouse: 834, qcGodown: 0, packingGodown: 0, skuRows: 1, discontinued: false }];
   const { rows: out } = buildConsolidated(products, [{ date: "2026-10-11", product: "Blades", stockOut: 0 }], [], 10, needs);
-  assert.equal(out[0].comboQty, 551);
+  assert.equal(out[0].comboQty, 0); // combo column shows 0 for all products (user, 2026-10-15)
+});
+
+test("excluded products (user, 2026-10-15) are left off every list, from godown or the Current stock sheet", () => {
+  const p = (product: string, currentStock: number) => ({ product, currentStock, inboundShipped: 0, unfulfillable: 0, warehouse: 0, qcGodown: 0, packingGodown: 0, skuRows: 1, discontinued: false });
+  const products = withExtraProducts([p("Lancing device", 335), p("Silicone Tip", 58), p("Blades", 10)], ["Neck traction pillow (Blue)", "Bulb Syringe IUI applicator -8cm(Pack of 5)"]);
+  const { rows } = buildConsolidated(products, [{ date: "2026-10-12", product: "Other", stockOut: 1 }]);
+  assert.deepEqual(rows.map((r) => r.product), ["Blades"]);
+  assert.deepEqual(noSales(rows).map((r) => r.product), ["Blades"]);
 });
 
 test("peak sales: best single day over all days given, latest date on a tie", () => {
@@ -138,7 +146,7 @@ test("missing snapshot: no restock/combo values at all (never mixed with current
   const products = [{ product: "Insemination kit (Pack of 5)", currentStock: 61, inboundShipped: 0, unfulfillable: 0, warehouse: 61, qcGodown: 0, packingGodown: 0, skuRows: 1, discontinued: false }];
   const daily = Array.from({ length: 10 }, (_, i) => ({ date: `2026-10-${String(i + 1).padStart(2, "0")}`, product: "Insemination kit (Pack of 5)", stockOut: 40 }));
   const [r] = buildConsolidated(products, daily, [], 10, []).rows;
-  assert.deepEqual([r.stockIntransit, r.orderPlaced, r.purchaseQty, r.comboQty], [null, null, null, null]);
+  assert.deepEqual([r.stockIntransit, r.orderPlaced, r.purchaseQty, r.comboQty], [null, null, null, 0]); // combo is 0 for all (user, 2026-10-15)
   assert.equal(r.finalQtyToRestock, 40 * 180 - 61); // the 180-day need only
 });
 
@@ -198,17 +206,62 @@ test("restock upload: Components Sheet -> rows as in the tool (feeds the same co
 
 test("restock upload: header row found below a title row; other files are refused", () => {
   assert.equal(parseRestockRows([["Stock purchase"], SPS_HEAD, ["Amazon", "X", "", 0, 0, 0, 1, 2, 3]]).rfq.length, 1);
-  assert.throws(() => parseRestockRows([["Products", "SKU", "FBA"], ["a", "b", 1]]), /Stock Purchase Sheet|Components Sheet/);
+  assert.throws(() => parseRestockRows([["Products", "SKU", "FBA"], ["a", "b", 1]]), /Stock Purchase Sheet|Components Sheet|Current stock sheet/);
   assert.throws(() => parseRestockRows([SPS_HEAD]), /no product rows/i);
 });
 
-test("newest wins between the Friday upload and the Monday snapshot", () => {
-  const snap = { capturedAt: "2026-10-13T04:30:00Z" };          // Monday 10:00 IST
-  assert.equal(newerRestockSource(snap, { uploadedAt: "2026-10-17T06:00:00Z" }), "upload");   // Friday upload
-  assert.equal(newerRestockSource({ capturedAt: "2026-10-20T04:30:00Z" }, { uploadedAt: "2026-10-17T06:00:00Z" }), "snapshot"); // next Monday
-  assert.equal(newerRestockSource(null, { uploadedAt: "2026-10-17T06:00:00Z" }), "upload");
-  assert.equal(newerRestockSource(snap, null), "snapshot");
-  assert.equal(newerRestockSource(null, null), null);
+test("source priority (user, 2026-10-14): in transit / order placed = latest Current stock sheet, else the Monday snapshot; purchase qty and combo = Monday snapshot only", () => {
+  // 13 Oct with the 9 Oct upload and the 12 Oct week's snapshot
+  assert.deepEqual(restockSources({ date: "2026-10-09" }, true), { transit: "current", purchase: "snapshot", components: "snapshot" });
+  // an older upload still wins over a newer snapshot for in transit / order placed
+  assert.deepEqual(restockSources({ date: "2026-09-01" }, true), { transit: "current", purchase: "snapshot", components: "snapshot" });
+  // no upload on or before the date: the snapshot fills everything
+  assert.deepEqual(restockSources(null, true), { transit: "snapshot", purchase: "snapshot", components: "snapshot" });
+  // snapshot missing / failed: purchase qty and combo have no source (0 + warning); the upload still gives transit
+  assert.deepEqual(restockSources({ date: "2026-10-09" }, false), { transit: "current", purchase: "none", components: "none" });
+  assert.deepEqual(restockSources(null, false), { transit: "none", purchase: "none", components: "none" });
+});
+
+test("in transit / order placed from the Current stock sheet, Suggested RFQ from the snapshot, per product", () => {
+  const current = [{ product: "Nascool", stock_intransit: 108, order_placed: 400, suggested_rfq: null }, { product: "Only in file", stock_intransit: 5, order_placed: null, suggested_rfq: null }];
+  const snap = [{ product: "nascool ", stock_intransit: 0, order_placed: 0, suggested_rfq: 120 }, { product: "Only in snapshot", stock_intransit: 9, order_placed: 9, suggested_rfq: 33 }];
+  assert.deepEqual(mergeRestockRows(current, snap), [
+    { product: "Nascool", stock_intransit: 108, order_placed: 400, suggested_rfq: 120 },
+    { product: "Only in file", stock_intransit: 5, order_placed: null, suggested_rfq: null },
+    // not in the uploaded file: no in transit / order placed from the snapshot, only its Suggested RFQ
+    { product: "Only in snapshot", stock_intransit: null, order_placed: null, suggested_rfq: 33 },
+  ]);
+  // no upload: the snapshot rows as they are
+  assert.deepEqual(mergeRestockRows(null, snap), snap);
+});
+// The client's "Current stock sheet-DD-MM-YYYY.xlsx" (user, 2026-10-14): names + in transit + order placed.
+const CUR_HEAD = ["Product name", "Inbound shipped", "unfulfillable", "Final Stock in Warehouse", "QC Godown stock sheet", "Packing godown stock sheet", "Stock intransit", "Order placed"];
+
+test("restock upload: Current stock sheet -> in transit and order placed per product (no purchase qty)", () => {
+  const r = parseRestockRows([
+    CUR_HEAD,
+    ["Nascool nasal power suction irrigation system", 0, 0, 8, 0, 47, 108, 400],
+    ["Neck traction pillow (Blue) ", 0, 0, 3, 0, 0, null, ""],
+    [null, null, null, null, null, null, null, null],
+  ]);
+  assert.equal(r.kind, "current");
+  assert.deepEqual(r.rfq, [
+    { product: "Nascool nasal power suction irrigation system", stock_intransit: 108, order_placed: 400, suggested_rfq: null, current_stock: 55 },
+    { product: "Neck traction pillow (Blue)", stock_intransit: null, order_placed: null, suggested_rfq: null, current_stock: 3 },
+  ]);
+});
+
+test("file date comes from the file name (DD-MM-YYYY or DD.MM.YYYY), else null", () => {
+  assert.equal(dateFromFileName("Current stock sheet-09-10-2026.xlsx"), "2026-10-09");
+  assert.equal(dateFromFileName("Current stock sheet 9.10.2026.xlsx"), "2026-10-09");
+  assert.equal(dateFromFileName("Stock Purchase Sheet.xlsx"), null);
+  assert.equal(dateFromFileName("x-31-02-2026.xlsx"), null);
+});
+
+test("names only in the restock file become rows (0 stock, 0 sales), godown names are not duplicated", () => {
+  const p = (product: string, currentStock: number) => ({ product, currentStock, inboundShipped: 0, unfulfillable: 0, warehouse: 0, qcGodown: 0, packingGodown: 0, skuRows: 1, discontinued: false });
+  const out = withExtraProducts([p("Blades", 10)], ["blades ", "Neck traction pillow (Blue)"]);
+  assert.deepEqual(out.map((x) => [x.product, x.currentStock, x.skuRows]), [["Blades", 10, 1], ["Neck traction pillow (Blue)", 0, 0]]);
 });
 
 test("no sales leaves out products with current stock below 5 (user, 2026-10-14)", () => {

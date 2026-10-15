@@ -12,7 +12,7 @@
 //     Consolidated sheet (averages, growth, days left, run-out date, restock qty).
 
 import { productKey, RUNNING_OUT_DAYS, type ConsolidatedRow } from "./consolidatedStock.ts";
-import { currentGodownName } from "./godownProductAliases.ts";
+import { currentGodownName, isGodownDuplicate } from "./godownProductAliases.ts";
 
 export const GA_RULES = {
   recentDays: 7,            // "last 7 days" window, ending on the latest godown day
@@ -309,7 +309,7 @@ export function productSeries(rows: GodownDailyRow[], product: string, from: str
   const key = productKey(product);
   const by = new Map<string, { units: number; closing: number | null }>();
   for (const r of rows) {
-    if (productKey(currentGodownName(r.product)) !== key || r.date < from || r.date > to) continue;
+    if (isGodownDuplicate(r.product) || productKey(currentGodownName(r.product)) !== key || r.date < from || r.date > to) continue;
     const cur = by.get(r.date) ?? { units: 0, closing: null };
     cur.units += r.stockOut;
     if (r.closing !== null) cur.closing = (cur.closing ?? 0) + r.closing;
@@ -321,7 +321,7 @@ export function productSeries(rows: GodownDailyRow[], product: string, from: str
 /** Everything the page shows. `rows` = the Consolidated sheet's rows (the products on the current
  *  godown sheet); `history` = barm_godown_daily up to `asOf` (the sheet's latest godown day). */
 export function analyzeGodown(rows: ConsolidatedRow[], history: GodownDailyRow[], asOf: string, rules = GA_RULES): GodownAnalytics {
-  const hist = history.filter((h) => h.date <= asOf);
+  const hist = history.filter((h) => h.date <= asOf && !isGodownDuplicate(h.product));
   const coverage = coverageOf(hist.map((h) => h.date), rules);
   const byProduct = new Map<string, Map<string, number>>();
   const totals = new Map<string, number>();

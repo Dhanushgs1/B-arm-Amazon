@@ -38,7 +38,7 @@ test("Excel export = page data: same days, stock, RFQ, combo, peak, and the snap
   }
   const ins = sheet.find((s) => s[0] === "Insemination kit (Pack of 5)")!;
   assert.equal(ins[head.indexOf("Stock purchase sheet Qty to be restocked")], 2675);
-  assert.equal(sheet.find((s) => s[0] === "Blades")![head.indexOf("Stock to be purchased for Combo products")], 2491);
+  assert.equal(sheet.find((s) => s[0] === "Blades")![head.indexOf("Stock to be purchased for Combo products")], 0); // 0 for all (user, 2026-10-15)
   const nosales = rowsOf(wb, "No Sales products");
   assert.deepEqual(nosales.slice(1).map((s) => s[0]), []); // Blades has 0 stock, so not "no sales with stock"
   const about = rowsOf(wb, "About");
@@ -122,15 +122,19 @@ test("Summary first: every figure is a formula over a detail sheet and its value
   assert.doesNotMatch(xml(1), /<pane /);                                                                          // Summary
 });
 
-test("label names the source of each restock input: Friday upload or Monday snapshot (newest wins)", () => {
-  const up = { from: "upload" as const, date: "2026-10-17", at: "2026-10-17T06:00:00Z" };
+test("label: in transit / order placed from the Current stock sheet, purchase qty and combo from the Monday snapshot", () => {
+  const cur = { from: "current" as const, date: "2026-10-09", at: "2026-10-14T06:00:00Z" };
   const snap = { from: "snapshot" as const, date: "2026-10-12", at: "2026-10-12T04:30:00Z" };
   const none = { from: "none" as const, date: null, at: null };
-  const base = { weekStart: "2026-10-12", capturedAt: "2026-10-12T04:30:00Z", error: null };
-  assert.equal(weeklyLabel({ ...base, status: "ok", purchase: snap, components: snap }), "Stock Purchase / Components: Monday 12-10-2026 snapshot, captured 12 Oct 2026, 10:00 am IST");
-  assert.equal(weeklyLabel({ ...base, status: "ok", purchase: up, components: snap }),
-    "Stock Purchase: uploaded file of 17-10-2026 (17 Oct 2026, 11:30 am IST) · Components: Monday 12-10-2026 snapshot, captured 12 Oct 2026, 10:00 am IST");
-  const w = weeklyLabel({ ...base, status: "missing", capturedAt: null, purchase: up, components: none });
-  assert.match(w, /^WARNING: no Monday 12-10-2026 snapshot \(not captured\) and no Components Sheet upload\. Combo shows 0\. /i);
-  assert.match(w, /Stock Purchase: uploaded file of 17-10-2026/);
+  const base = { weekStart: "2026-10-12", capturedAt: "2026-10-12T04:30:00Z", error: null, status: "ok" as const };
+  const snapText = "Monday 12-10-2026 snapshot, captured 12 Oct 2026, 10:00 am IST";
+  const curText = "Current stock sheet of 09-10-2026 (uploaded 14 Oct 2026, 11:30 am IST)";
+  assert.equal(weeklyLabel({ ...base, transit: snap, purchase: snap, components: snap }), `Stock Purchase / Components: ${snapText}`);
+  assert.equal(weeklyLabel({ ...base, transit: cur, purchase: snap, components: snap }),
+    `In transit / Order placed: ${curText} · Purchase sheet qty / Combo: ${snapText}`);
+  const missing = { ...base, status: "missing" as const, capturedAt: null };
+  assert.equal(weeklyLabel({ ...missing, transit: cur, purchase: none, components: none }),
+    `WARNING: no Monday 12-10-2026 snapshot (not captured). Stock purchase sheet qty and Combo show 0; Final qty is the 180-day need only. In transit / Order placed: ${curText}`);
+  assert.equal(weeklyLabel({ ...missing, transit: none, purchase: none, components: none }),
+    "WARNING: no Monday 12-10-2026 snapshot (not captured) and no Current stock sheet upload. Stock Intransit, Order placed, Stock purchase sheet qty and Combo show 0; Final qty is the 180-day need only.");
 });

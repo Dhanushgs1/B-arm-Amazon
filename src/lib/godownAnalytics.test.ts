@@ -261,3 +261,27 @@ test("seasonality: gated on a year of history, from first sale, high/low months,
   const flat = months.map((m) => ({ ...m, ratePerDay: m.units ? 10 : 0 }));
   assert.equal(seasonalityOf(flat, true, 600).text, "No clear season (every month within ±30% of usual)");
 });
+
+test("13.10.2026 godown names (user, 2026-10-15): duplicate copies dropped, renamed rows summed into the kept name", async () => {
+  const { mergeGodownProducts, isGodownDuplicate, currentGodownName } = await import("./godownProductAliases.ts");
+  const p = (product: string, currentStock: number) => ({ product, currentStock, inboundShipped: 0, unfulfillable: 0, warehouse: currentStock, qcGodown: 0, packingGodown: 0, skuRows: 1, discontinued: false });
+  const out = mergeGodownProducts([
+    p("Teething tube combo (Green,red,yellow)", 188), p("Teething Tube Combo (Green Red Yellow)", 188),
+    p("IR THERMOMETER- GP 100", 4), p("IR Thermometer GP-100", 4),
+    p("Pregnancy kit(1 early, 1 normal, 2 pee cup)", 0), p("Pregnancy Kit (1 Early 1 Normal 2 Pee Cup)", 20),
+    p("Wearable Lactation Massager-Grey", 68), p("Wearable lactation massager (Grey)", 0),
+    p("Wearable Lactation Massager-Purple", 63), p("Wearable lactation massager (Purple)", 0),
+    p("Nail cleaning device", 2), p("Nail fungus cleaning device (new)", 141),
+  ]);
+  assert.deepEqual(out.map((x) => [x.product, x.currentStock, x.skuRows]), [
+    ["Teething tube combo (Green,red,yellow)", 188, 1], ["IR THERMOMETER- GP 100", 4, 1],
+    ["Pregnancy kit(1 early, 1 normal, 2 pee cup)", 20, 2], ["Wearable Lactation Massager-Grey", 68, 2],
+    ["Wearable Lactation Massager-Purple", 63, 2], ["Nail cleaning device", 2, 1], ["Nail fungus cleaning device (new)", 141, 1],
+  ]);
+  assert.ok(isGodownDuplicate("IR Thermometer GP-100") && !isGodownDuplicate("IR THERMOMETER- GP 100"));
+  assert.equal(currentGodownName("Teething tube combo (Green red yellow)"), "Teething tube combo (Green,red,yellow)"); // 26.08 rename still applies
+  const { keptGodownName } = await import("./godownProductAliases.ts");
+  assert.equal(keptGodownName("IR Thermometer GP-100 "), "IR THERMOMETER- GP 100"); // Current stock sheet spelling → kept row
+  assert.equal(keptGodownName("Wearable lactation massager (Grey)"), "Wearable Lactation Massager-Grey");
+  assert.equal(keptGodownName("Flat Teether"), "Flat Teether");
+});

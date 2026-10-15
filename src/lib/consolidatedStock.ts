@@ -26,6 +26,22 @@
 export const CONSOLIDATED_DAYS = 10;
 export const RUNNING_OUT_DAYS = 30;
 
+/** Products the user took off the sheet (2026-10-15): never on All products, No sales or any list,
+ *  whether they come from the godown sheet or the Current stock sheet. Matched by productKey. */
+export const EXCLUDED_PRODUCTS = [
+  "Mesh nebulizer MY123",
+  "Silicone Tip",
+  "Neck traction pillow (Blue)",
+  "Neck traction pillow (green)",
+  "Lancing device",
+  "Bulb Syringe IUI applicator -8cm(Pack of 2)",
+  "Bulb Syringe IUI applicator -8cm(Pack of 5)",
+];
+
+/** Combo stock to buy shows 0 for every product (user, 2026-10-15): the Components snapshot's stock
+ *  is stale, so its needs are not shown. componentNeeds() is kept for when that is fixed. */
+export const SHOW_COMBO_QTY = false;
+
 export interface GodownProduct {
   product: string;
   currentStock: number;
@@ -243,37 +259,58 @@ export function weeklyInputs(rfq: WeeklyRfqRow[], components: WeeklyComponentRow
   };
 }
 
-// Restock inputs upload (user, 2026-10-14): the tool's own exports, given every Friday —
-//   "Stock Purchase Sheet.xlsx"  Marketplace | Product | SKU ID | … | Stock intransit | Order placed | Suggested RFQ
+// Restock inputs upload (user, 2026-10-14), given every Friday. The kind is told by the headers:
+//   "Stock Purchase Sheet.xlsx"  (tool) Marketplace | Product | SKU ID | … | Stock intransit | Order placed | Suggested RFQ
 //                                one row per SKU; the values are per product, repeated on each SKU row
-//   "Components Sheet.xlsx"      Component | Product Entity | Quantities required | RFQ |
+//   "Components Sheet.xlsx"      (tool) Component | Product Entity | Quantities required | RFQ |
 //                                Required Component Quantity | Current Stock | Final Components required quantity
-// The kind is told by the headers. Rows come out in the Monday snapshot's shape, so weeklyInputs()
-// turns either source into the same restock inputs and combo needs.
+//   "Current stock sheet-DD-MM-YYYY.xlsx"  (client) Product name | Inbound shipped | unfulfillable |
+//                                Final Stock in Warehouse | QC Godown stock sheet | Packing godown stock sheet |
+//                                Stock intransit | Order placed — gives in transit and order placed only (current
+//                                stock stays from the godown sheet; its own stock total is kept for audit)
+// Rows come out in the Monday snapshot's shape, so weeklyInputs() turns any source into the same
+// restock inputs and combo needs.
 export type RestockUploadRow = WeeklyRfqRow & { product: string };
+export type CurrentSheetRow = RestockUploadRow & { current_stock: number | null };
 export type ComponentUploadRow = WeeklyComponentRow & { product: string | null; qty_per_unit: number | null; rfq: number | null };
 export type RestockUpload =
   | { kind: "purchase"; rfq: RestockUploadRow[]; components: [] }
+  | { kind: "current"; rfq: CurrentSheetRow[]; components: [] }
   | { kind: "components"; rfq: []; components: ComponentUploadRow[] };
 
 const cleanName = (v: unknown) => String(v ?? "").replace(/\s+/g, " ").trim();
 const headKey = (v: unknown) => cleanName(v).toLowerCase();
+const CURRENT_STOCK_COLS = ["inbound shipped", "unfulfillable", "final stock in warehouse", "qc godown stock sheet", "packing godown stock sheet"];
+
+/** One row per product (first one wins), from a header row's product column. */
+function perProduct<T>(body: unknown[][], prod: number, row: (r: unknown[], product: string) => T): T[] {
+  const by = new Map<string, T>();
+  for (const r of body) {
+    const product = cleanName(r[prod]);
+    if (product && !by.has(productKey(product))) by.set(productKey(product), row(r, product));
+  }
+  return [...by.values()];
+}
 
 export function parseRestockRows(rows: unknown[][]): RestockUpload {
   for (let h = 0; h < Math.min(rows.length, 10); h++) {
     const head = (rows[h] ?? []).map(headKey);
     const at = (name: string) => head.indexOf(name);
     const body = rows.slice(h + 1);
-    const [prod, transit, ordered, rfq] = [at("product"), at("stock intransit"), at("order placed"), at("suggested rfq")];
-    if (prod >= 0 && transit >= 0 && ordered >= 0 && rfq >= 0) {
-      const by = new Map<string, RestockUploadRow>();
-      for (const r of body) {
-        const product = cleanName(r[prod]);
-        if (!product || by.has(productKey(product))) continue;
-        by.set(productKey(product), { product, stock_intransit: numOrNull(r[transit]), order_placed: numOrNull(r[ordered]), suggested_rfq: numOrNull(r[rfq]) });
-      }
-      if (!by.size) throw new Error("Stock Purchase Sheet has no product rows.");
-      return { kind: "purchase", rfq: [...by.values()], components: [] };
+    const [transit, ordered, rfq] = [at("stock intransit"), at("order placed"), at("suggested rfq")];
+    if (at("product") >= 0 && transit >= 0 && ordered >= 0 && rfq >= 0) {
+      const out = perProduct(body, at("product"), (r, product) => ({ product, stock_intransit: numOrNull(r[transit]), order_placed: numOrNull(r[ordered]), suggested_rfq: numOrNull(r[rfq]) }));
+      if (!out.length) throw new Error("Stock Purchase Sheet has no product rows.");
+      return { kind: "purchase", rfq: out, components: [] };
+    }
+    if (at("product name") >= 0 && transit >= 0 && ordered >= 0) {
+      const stockCols = CURRENT_STOCK_COLS.map(at).filter((i) => i >= 0);
+      const out = perProduct(body, at("product name"), (r, product) => ({
+        product, stock_intransit: numOrNull(r[transit]), order_placed: numOrNull(r[ordered]), suggested_rfq: null,
+        current_stock: stockCols.length ? stockCols.reduce((a, i) => a + (numOrNull(r[i]) ?? 0), 0) : null,
+      }));
+      if (!out.length) throw new Error("Current stock sheet has no product rows.");
+      return { kind: "current", rfq: out, components: [] };
     }
     const [comp, entity, per, crfq, req, stock] = [at("component"), at("product entity"), at("quantities required"), at("rfq"), at("required component quantity"), at("current stock")];
     if (comp >= 0 && req >= 0 && stock >= 0) {
@@ -286,14 +323,51 @@ export function parseRestockRows(rows: unknown[][]): RestockUpload {
       return { kind: "components", rfq: [], components };
     }
   }
-  throw new Error('Not a restock file — upload the tool\'s "Stock Purchase Sheet.xlsx" or "Components Sheet.xlsx".');
+  throw new Error('Not a restock file — upload "Current stock sheet-DD-MM-YYYY.xlsx" or the tool\'s "Stock Purchase Sheet.xlsx" / "Components Sheet.xlsx".');
 }
 
-/** Newest wins (user, 2026-10-14): the Friday upload until the next Monday snapshot is captured. */
-export function newerRestockSource(snapshot: { capturedAt: string | null } | null, upload: { uploadedAt: string } | null): "snapshot" | "upload" | null {
-  const snapAt = snapshot?.capturedAt ? Date.parse(snapshot.capturedAt) : null;
-  if (!upload) return snapAt !== null ? "snapshot" : null;
-  return snapAt !== null && snapAt > Date.parse(upload.uploadedAt) ? "snapshot" : "upload";
+/** "…-09-10-2026.xlsx" / "… 9.10.2026.xlsx" → 2026-10-09; null when the name has no valid date. */
+export function dateFromFileName(name: string): string | null {
+  const m = name.match(/(\d{1,2})[-.](\d{1,2})[-.](\d{4})/);
+  if (!m) return null;
+  const iso = `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  const d = new Date(iso + "T00:00:00Z");
+  return Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== iso ? null : iso;
+}
+
+/** Source priority (user, 2026-10-14):
+ *    in transit / order placed   the latest Current stock sheet dated on or before the picked date
+ *                                (found by the caller), else that week's Monday snapshot
+ *    purchase sheet qty, combo   that week's Monday snapshot only (immutable); none = 0 + warning */
+export function restockSources(currentUpload: { date: string } | null, snapshotOk: boolean) {
+  const snap = snapshotOk ? "snapshot" as const : "none" as const;
+  return { transit: currentUpload ? "current" as const : snap, purchase: snap, components: snap };
+}
+
+/** Per product: in transit / order placed from the uploaded Current stock sheet (when there is one),
+ *  Suggested RFQ from the snapshot. Products missing from the upload get no in transit / order placed. */
+export function mergeRestockRows(current: WeeklyRfqRow[] | null, snapshot: WeeklyRfqRow[]): WeeklyRfqRow[] {
+  if (!current) return snapshot;
+  const rfqBy = new Map(snapshot.map((r) => [productKey(r.product), r.suggested_rfq]));
+  const inFile = new Set(current.map((r) => productKey(r.product)));
+  return [
+    ...current.map((r) => ({ ...r, suggested_rfq: rfqBy.get(productKey(r.product)) ?? null })),
+    ...snapshot.filter((r) => !inFile.has(productKey(r.product))).map((r) => ({ ...r, stock_intransit: null, order_placed: null })),
+  ];
+}
+
+/** Products named in the restock file but missing from the godown sheet become rows with 0 stock
+ *  (user, 2026-10-14), so every product in the file shows on the sheet. */
+export function withExtraProducts(products: GodownProduct[], names: string[]): GodownProduct[] {
+  const seen = new Set(products.map((p) => productKey(p.product)));
+  const out = [...products];
+  for (const n of names) {
+    const name = cleanName(n), key = productKey(name);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ product: name, currentStock: 0, inboundShipped: 0, unfulfillable: 0, warehouse: 0, qcGodown: 0, packingGodown: 0, skuRows: 0, discontinued: false });
+  }
+  return out;
 }
 
 /** The 10 latest dates with data, oldest first (DAY 10 … DAY 1). */
@@ -321,7 +395,8 @@ export function buildConsolidated(
     const p = peak.get(key);
     if (!p || qty > p.qty || (qty === p.qty && date > p.date)) peak.set(key, { qty, date });
   }
-  const rows = products.map((p) => {
+  const excluded = new Set(EXCLUDED_PRODUCTS.map(productKey));
+  const rows = products.filter((p) => !excluded.has(productKey(p.product))).map((p) => {
     const key = productKey(p.product);
     const days = dates.map((d) => (out.has(`${d}|${key}`) ? out.get(`${d}|${key}`)! : null));
     const avg = days.reduce<number>((a, v) => a + (v ?? 0), 0) / n;
@@ -334,7 +409,7 @@ export function buildConsolidated(
     return {
       product: p.product, days, avgPerDay: avg, need180, need90: avg * 90, need45: avg * 45,
       currentStock: p.currentStock, stockIntransit: intransit, orderPlaced: ordered,
-      qtyToRestock: qty, purchaseQty: purchase, finalQtyToRestock: Math.max(qty, purchase ?? 0, 0), comboQty: comboBy.get(key) ?? null,
+      qtyToRestock: qty, purchaseQty: purchase, finalQtyToRestock: Math.max(qty, purchase ?? 0, 0), comboQty: SHOW_COMBO_QTY ? comboBy.get(key) ?? null : 0,
       peakQty: peak.get(key)?.qty ?? null, peakDate: peak.get(key)?.date ?? null,
       daysOfStock: avg > 0 ? p.currentStock / avg : null, discontinued: p.discontinued,
     };

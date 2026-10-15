@@ -50,10 +50,11 @@ const coverCell = (d: number | null) => n(d === null ? null : d, "0", d !== null
 /** Peak sales: best single day over every godown day up to the sheet's date (blank = never shipped). */
 const peakCells = (r: ConsolidatedRow) => [n(r.peakQty), s(r.peakDate ? r.peakDate.split("-").reverse().join("-") : "")];
 
-/** Where one restock input came from: the Friday upload or the Monday snapshot, whichever is newer. */
-export type RestockSource = { from: "snapshot" | "upload" | "none"; date: string | null; at: string | null };
+/** Where one restock input came from: a restock upload ("current" = the client's Current stock sheet,
+ *  "upload" = the tool's Stock Purchase / Components Sheet) or the Monday snapshot, whichever is newer. */
+export type RestockSource = { from: "snapshot" | "upload" | "current" | "none"; date: string | null; at: string | null };
 /** status: the Monday snapshot's, or "ok" once every input has a source (upload or snapshot). */
-type WeeklyInfo = { weekStart: string; status: "ok" | "missing" | "failed"; capturedAt: string | null; error: string | null; purchase?: RestockSource; components?: RestockSource };
+type WeeklyInfo = { weekStart: string; status: "ok" | "missing" | "failed"; capturedAt: string | null; error: string | null; transit?: RestockSource; purchase?: RestockSource; components?: RestockSource };
 /** Godown Stock Analytics over the same products (src/lib/godownAnalytics.ts), for the "Seasonal Analytics" sheet. */
 export type SeasonalSheetData = { coverage: Coverage; products: ProductAnalytics[] };
 export type ConsolidatedExportData = { snapshotDate: string | null; dates: string[]; rows: ConsolidatedRow[]; weekly?: WeeklyInfo | null; seasonal?: SeasonalSheetData | null };
@@ -65,21 +66,15 @@ const istStamp = (ts: string) => new Date(ts).toLocaleString("en-IN", { timeZone
 export function weeklyLabel(w: WeeklyInfo | null | undefined): string {
   if (!w) return "Stock Purchase / Components: no week (no godown data)";
   const snapText = `Monday ${dmy(w.weekStart)} snapshot, captured ${w.capturedAt ? istStamp(w.capturedAt) : "?"}`;
-  const p = w.purchase, c = w.components;
-  const allSnapshot = (!p || p.from === "snapshot") && (!c || c.from === "snapshot");
-  if (w.status === "ok" && allSnapshot) return `Stock Purchase / Components: ${snapText}`;
-  const src = (x: RestockSource) => (x.from === "upload" ? `uploaded file of ${dmy(x.date!)} (${istStamp(x.at!)})` : snapText);
-  const parts = [p && p.from !== "none" ? `Stock Purchase: ${src(p)}` : "", c && c.from !== "none" ? `Components: ${src(c)}` : ""].filter(Boolean);
-  if (w.status === "ok") return parts.join(" · ");
+  // In transit / order placed: the Current stock sheet when one was uploaded, else the snapshot.
+  // Purchase sheet qty and Combo: the snapshot only (user, 2026-10-14).
+  const t = w.transit;
+  const curText = t?.from === "current" ? `Current stock sheet of ${dmy(t.date!)} (uploaded ${istStamp(t.at!)})` : null;
+  if (w.status === "ok") return curText ? `In transit / Order placed: ${curText} · Purchase sheet qty / Combo: ${snapText}` : `Stock Purchase / Components: ${snapText}`;
   const why = `no Monday ${dmy(w.weekStart)} snapshot (${w.status === "failed" ? "capture failed" + (w.error ? ": " + w.error : "") : "not captured"})`;
-  if (!parts.length) {
-    return `WARNING: ${why} and no restock upload. `
-      + "Stock Intransit, Order placed, Stock purchase sheet qty and Combo show 0; Final qty is the 180-day need only.";
-  }
-  const missing = p?.from === "none"
-    ? "no Stock Purchase Sheet upload. Stock Intransit, Order placed and Stock purchase sheet qty show 0; Final qty is the 180-day need only."
-    : "no Components Sheet upload. Combo shows 0.";
-  return `WARNING: ${why} and ${missing} ${parts.join(" · ")}`;
+  if (curText) return `WARNING: ${why}. Stock purchase sheet qty and Combo show 0; Final qty is the 180-day need only. In transit / Order placed: ${curText}`;
+  return `WARNING: ${why}${w.transit ? " and no Current stock sheet upload" : ""}. `
+    + "Stock Intransit, Order placed, Stock purchase sheet qty and Combo show 0; Final qty is the 180-day need only.";
 }
 
 export function buildConsolidatedWorkbook(data: ConsolidatedExportData) {
