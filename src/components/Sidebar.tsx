@@ -57,7 +57,6 @@ const NAV_SECTIONS: SidebarNavSection[] = [
       { id: "overview", label: "Overview", icon: LayoutDashboard },
       { id: "upload", label: "Upload", icon: UploadCloud },
       { id: "reports", label: "Download", icon: BarChart3 },
-      { id: "fba", label: "FBA", icon: Boxes, path: "/dashboard/fba" },
     ],
   },
   {
