@@ -34,14 +34,22 @@ export const isGodownDuplicate = (name: string) => Object.hasOwn(GODOWN_DUPLICAT
  *  spellings): a duplicate copy's name points at its original, a renamed one at its current name. */
 export const keptGodownName = (name: string) => { const n = String(name ?? "").trim(); return GODOWN_DUPLICATE_COPIES[n] ?? currentGodownName(n); };
 
-/** Godown stock rows under their current names: duplicate copies left out, renamed rows summed into
- *  the kept name (user, 2026-10-15). The first row's spelling wins when two rows share a name. */
+/** Godown stock rows under their current names: renamed rows summed into the kept name (user,
+ *  2026-10-15). A duplicate copy is left out only when its original has a stock row too; otherwise its
+ *  stock counts under the original's name — the 14.10.2026 FC Stock sheet carries "Teething Tube Combo
+ *  (Green Red Yellow)" and "IR Thermometer GP-100" only under the copy name, and dropping them showed
+ *  0 stock (user, 2026-10-16). The first row's spelling wins when two rows share a name. */
 export function mergeGodownProducts<T extends { product: string; currentStock: number; inboundShipped: number; unfulfillable: number; warehouse: number; qcGodown: number; packingGodown: number; skuRows: number; discontinued: boolean }>(rows: T[]): T[] {
   const key = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
+  const originals = new Set(rows.filter((r) => !isGodownDuplicate(r.product)).map((r) => key(currentGodownName(r.product.trim()))));
   const by = new Map<string, T>();
   for (const r of rows) {
-    if (isGodownDuplicate(r.product)) continue;
-    const name = currentGodownName(r.product.trim());
+    let name = currentGodownName(r.product.trim());
+    if (isGodownDuplicate(r.product)) {
+      const original = GODOWN_DUPLICATE_COPIES[r.product.trim()];
+      if (originals.has(key(original))) continue;
+      name = original;
+    }
     const k = key(name), p = by.get(k);
     if (!p) { by.set(k, { ...r, product: name }); continue; }
     p.currentStock += r.currentStock; p.inboundShipped += r.inboundShipped; p.unfulfillable += r.unfulfillable;

@@ -285,3 +285,16 @@ test("13.10.2026 godown names (user, 2026-10-15): duplicate copies dropped, rena
   assert.equal(keptGodownName("Wearable lactation massager (Grey)"), "Wearable Lactation Massager-Grey");
   assert.equal(keptGodownName("Flat Teether"), "Flat Teether");
 });
+
+test("14.10.2026 godown file (user, 2026-10-16): a duplicate copy with no original row keeps its stock under the original", async () => {
+  const { mergeGodownProducts } = await import("./godownProductAliases.ts");
+  const p = (product: string, currentStock: number) => ({ product, currentStock, inboundShipped: 0, unfulfillable: 0, warehouse: currentStock, qcGodown: 0, packingGodown: 0, skuRows: 2, discontinued: false });
+  // The FC Stock sheet now has these two only under the copy name.
+  assert.deepEqual(mergeGodownProducts([p("Teething Tube Combo (Green Red Yellow)", 189), p("IR Thermometer GP-100", 4), p("Flat Teether", 7)])
+    .map((x) => [x.product, x.currentStock]), [
+    ["Teething tube combo (Green,red,yellow)", 189], ["IR THERMOMETER- GP 100", 4], ["Flat Teether", 7],
+  ]);
+  // With the original present the copy is still left out (no double count), in either order.
+  assert.deepEqual(mergeGodownProducts([p("IR Thermometer GP-100", 4), p("IR THERMOMETER- GP 100", 4)]).map((x) => [x.product, x.currentStock]),
+    [["IR THERMOMETER- GP 100", 4]]);
+});
