@@ -338,7 +338,7 @@ export const CONSOLIDATED_MAIL_TITLE: Record<ConsolidatedMailKind, string> = {
 const MAIL_SHEETS: Record<ConsolidatedMailKind, string[] | null> = {
   nosales: ["No Sales products", "Sales dropped products"],
   runningout: ["Products running out of stock"],
-  consolidated: null,                                   // the whole workbook, as Export Excel
+  consolidated: ["Consolidated"],                       // the Consolidated sheet only, not the full report (user, 2026-10-16)
 };
 
 /** Only `names` of `wb` (sheets and their frozen panes / filters shared, not copied). */

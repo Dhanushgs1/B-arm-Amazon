@@ -149,7 +149,7 @@ export default function ConsolidatedStockPage() {
   };
 
   // "Send mail" (user, 2026-10-16): three separate mails, each with its own file and recipients
-  // (src/lib/consolidatedMail.ts) — No sales & Sales dropped, Running out of stock, the full Consolidate sheet.
+  // (src/lib/consolidatedMail.ts) — No sales & Sales dropped, Running out of stock, the Consolidated sheet only.
   const sendMail = async () => {
     if (!data) return;
     const lines = (Object.keys(CONSOLIDATED_MAIL_RECIPIENTS) as (keyof typeof CONSOLIDATED_MAIL_RECIPIENTS)[])
@@ -159,7 +159,7 @@ export default function ConsolidatedStockPage() {
     setNote(null);
     const done: string[] = [], failed: string[] = [];
     try {
-      for (const f of consolidatedMailFiles(await withSeasonal(data))) {
+      for (const f of consolidatedMailFiles(data)) {
         let bin = "";
         for (let i = 0; i < f.bytes.length; i += 0x8000) bin += String.fromCharCode(...f.bytes.subarray(i, i + 0x8000));
         try {

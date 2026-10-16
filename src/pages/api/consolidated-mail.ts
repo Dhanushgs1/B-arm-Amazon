@@ -21,7 +21,7 @@ const TITLE: Record<ConsolidatedMailKind, string> = {
 const WHAT: Record<ConsolidatedMailKind, string> = {
   nosales: "the <b>No Sales products</b> (nothing shipped in the last 10 godown days, stock 5+) and <b>Sales dropped products</b> (Day 3 &gt; Day 2 &gt; Day 1) sheets",
   runningout: "the <b>Products running out of stock</b> sheet (under 30 days of stock left at the current rate)",
-  consolidated: "the full <b>Consolidate sheet</b> with its Summary, every list and Seasonal Analytics",
+  consolidated: "the <b>Consolidated</b> sheet",
 };
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
