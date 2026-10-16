@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import { supabasePublic } from "@/lib/amazonReportUpload";
 import { toDate as parseFlexibleDate } from "@/lib/meeshoReportUpload";
 import { detectBarmOrdersLayout, fillDownBarmDates, findBarmOrdersHeader, mapBarmOfflineRows, mergeDuplicateBarmInvoices, type BarmOrdersLayout } from "@/lib/barmOfflineOrderRules";
+import { isGoogleAdSpendSheet, parseGoogleAdSpendSheet } from "@/lib/googleAdSpendRules";
 
 // Google (direct/website) orders upload — the seller's own hand-kept "B-Arm
 // Orders" workbook for direct/Google-driven sales that don't come through
@@ -84,11 +85,19 @@ function readSheetRows(ws: XLSX.WorkSheet): { layout: BarmOrdersLayout | null; r
   return { layout: header.layout, rows };
 }
 
+function sheetAoa(ws: XLSX.WorkSheet): unknown[][] {
+  return XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: "" }) as unknown[][];
+}
+
 async function readRows(file: File): Promise<{ layout: BarmOrdersLayout | null; rows: RawRow[] }> {
   const name = file.name.toLowerCase();
   if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
     const wb = await readWorkbook(file);
-    return readSheetRows(wb.Sheets[wb.SheetNames[0]]);
+    // The first sheet that is not a Google Ads campaign report (those go to the spend table, see
+    // uploadGoogleFile) — for an orders-only workbook that is still SheetNames[0], as before.
+    const ordersSheet = wb.SheetNames.find((n) => !isGoogleAdSpendSheet(sheetAoa(wb.Sheets[n])));
+    if (!ordersSheet) return { layout: null, rows: [] };
+    return readSheetRows(wb.Sheets[ordersSheet]);
   }
   const rows = await new Promise<RawRow[]>((resolve, reject) => {
     Papa.parse<RawRow>(file, {
@@ -245,4 +254,116 @@ export async function fetchGoogleOrdersDataInfo(): Promise<GoogleOrdersDataInfo>
     minDate: dates[0] || null,
     maxDate: dates[dates.length - 1] || null,
   };
+}
+
+// ── Google Ads spend ──────────────────────────────────────────────────────────
+// The same Google card also takes Google Ads' "Campaign report" export (see googleAdSpendRules.ts):
+// a sheet with a Campaign + Cost header is ad spend and goes to barm_daily_google_ad_spend (see
+// scripts/barm_daily_google_ad_spend_table.sql); a B-Arm orders sheet goes to
+// barm_daily_google_orders exactly as before. Rows are keyed on (report_start, report_end,
+// campaign_name) like the Meta table, so a single-day export and a 7-day export (one file with
+// both sheets, or two uploads) are both kept, and re-uploading a file updates its rows in place.
+// The Ad Spend Report's Google row picks between them the same way it does for Meta.
+
+export const GOOGLE_AD_SPEND_TABLE = "barm_daily_google_ad_spend";
+
+export interface GoogleAdSpendSavedWindow {
+  start: string;
+  end: string;
+  days: number;
+  spend: number;
+  campaigns: number;
+}
+
+export interface GoogleAdSpendUploadResult {
+  savedRows: number;
+  windows: GoogleAdSpendSavedWindow[];
+}
+
+export interface GoogleUploadResult {
+  /** null when the file had no B-Arm orders sheet. */
+  orders: GoogleOrdersUploadResult | null;
+  /** null when the file had no Google Ads campaign report sheet. */
+  spend: GoogleAdSpendUploadResult | null;
+}
+
+async function uploadGoogleAdSpendSheets(sheets: unknown[][][]): Promise<GoogleAdSpendUploadResult> {
+  // Parse every sheet first, so a bad sheet saves nothing at all.
+  const parsed = sheets.map(parseGoogleAdSpendSheet);
+  for (const p of parsed) {
+    if (p.accountTotal !== null && Math.abs(p.accountTotal - p.campaignTotal) > 0.01) {
+      throw new Error(`Google Ads report ${p.report_start} → ${p.report_end}: campaigns add up to ₹${p.campaignTotal} but its "Total: Account" line says ₹${p.accountTotal} — nothing saved. Download the report again without filters.`);
+    }
+  }
+  // One row per window + campaign: the same window in two sheets is the same figure copied, so the
+  // later sheet replaces it (Postgres also rejects an upsert batch touching one row twice).
+  const byKey = new Map<string, Record<string, unknown>>();
+  const windows = new Map<string, GoogleAdSpendSavedWindow>();
+  for (const p of parsed) {
+    const wKey = `${p.report_start}|${p.report_end}`;
+    windows.set(wKey, {
+      start: p.report_start,
+      end: p.report_end,
+      days: Math.round((Date.parse(p.report_end) - Date.parse(p.report_start)) / 86_400_000) + 1,
+      spend: p.campaignTotal,
+      campaigns: p.campaigns.length,
+    });
+    for (const c of p.campaigns) {
+      byKey.set(`${wKey}|${c.campaign_name.toLowerCase()}`, {
+        report_start: p.report_start,
+        report_end: p.report_end,
+        campaign_name: c.campaign_name,
+        spend: c.spend,
+        clicks: c.clicks,
+        conversions: c.conversions,
+        conv_value: c.conv_value,
+        currency: c.currency,
+        raw: c.lines,
+      });
+    }
+  }
+  const rows = [...byKey.values()];
+  if (!rows.length) throw new Error("The Google Ads report has no campaign rows — nothing saved.");
+  await upsertInChunks(GOOGLE_AD_SPEND_TABLE, rows, "report_start,report_end,campaign_name");
+  return {
+    savedRows: rows.length,
+    windows: [...windows.values()].sort((a, b) => a.end.localeCompare(b.end) || b.days - a.days),
+  };
+}
+
+/** The Google card's upload: a Google Ads campaign report (spend), a B-Arm orders sheet, or a
+ *  workbook with both — each sheet goes to its own table. */
+export async function uploadGoogleFile(file: File): Promise<GoogleUploadResult> {
+  const name = file.name.toLowerCase();
+  if (!name.endsWith(".xlsx") && !name.endsWith(".xls")) return { orders: await uploadGoogleOrdersFile(file), spend: null };
+
+  const wb = await readWorkbook(file);
+  const aoas = wb.SheetNames.map((n) => sheetAoa(wb.Sheets[n]));
+  const spendSheets = aoas.filter(isGoogleAdSpendSheet);
+  const hasOrdersSheet = aoas.some((a) => !isGoogleAdSpendSheet(a) && findBarmOrdersHeader(a));
+  if (!spendSheets.length) return { orders: await uploadGoogleOrdersFile(file), spend: null };
+
+  const spend = await uploadGoogleAdSpendSheets(spendSheets);
+  const orders = hasOrdersSheet ? await uploadGoogleOrdersFile(file) : null;
+  return { orders, spend };
+}
+
+export interface GoogleAdSpendDataInfo {
+  rowCount: number;
+  minDate: string | null;
+  maxDate: string | null;
+  error?: string;
+}
+
+export async function fetchGoogleAdSpendDataInfo(): Promise<GoogleAdSpendDataInfo> {
+  const [minRes, maxRes, countRes] = await Promise.all([
+    supabasePublic.from(GOOGLE_AD_SPEND_TABLE).select("report_start").order("report_start", { ascending: true }).limit(1),
+    supabasePublic.from(GOOGLE_AD_SPEND_TABLE).select("report_end").order("report_end", { ascending: false }).limit(1),
+    supabasePublic.from(GOOGLE_AD_SPEND_TABLE).select("id", { count: "exact", head: true }),
+  ]);
+  const failure = minRes.error || maxRes.error || countRes.error;
+  if (failure) return { rowCount: 0, minDate: null, maxDate: null, error: failure.message };
+  const minDate = (minRes.data?.[0] as { report_start: string } | undefined)?.report_start ?? null;
+  const maxDate = (maxRes.data?.[0] as { report_end: string } | undefined)?.report_end ?? null;
+  return { rowCount: countRes.count || 0, minDate: minDate?.slice(0, 10) ?? null, maxDate: maxDate?.slice(0, 10) ?? null };
 }

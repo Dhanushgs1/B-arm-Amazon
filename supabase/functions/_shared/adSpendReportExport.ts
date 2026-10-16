@@ -1310,12 +1310,24 @@ export async function fetchMeeshoProducts(
 // inside the window. The single reporting day's own figure only ever comes
 // from a literal daily row for that exact date — a range row can't tell us
 // one day's specific share of its total.
+//
+// Google Ads spend (barm_daily_google_ad_spend, see googleAdSpendRules.ts) is stored the same way
+// — one row per [report_start, report_end] window and campaign — so it goes through this same
+// day/range resolution, via fetchWindowedAdSpend.
 async function fetchSocialMediaAdSpend(
   range: { start: string; end: string },
   endDate: string
 ): Promise<{ daySpend: number; rangeSpend: number }> {
+  return fetchWindowedAdSpend("barm_daily_social_media", range, endDate);
+}
+
+async function fetchWindowedAdSpend(
+  table: string,
+  range: { start: string; end: string },
+  endDate: string
+): Promise<{ daySpend: number; rangeSpend: number }> {
   const rows = (await fetchAllRows(
-    "barm_daily_social_media",
+    table,
     (q) => q.lte("report_start", endDate).gte("report_end", range.start)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ).catch(() => [])) as any[];
@@ -1935,13 +1947,16 @@ export interface SocialMediaEmailSummary {
   range: ProductMetricBlock;
 }
 
-// Google (direct/website) orders — no day/range split (unlike Social Media): the source workbook
-// only compiles as one batch per upload, so this is just the two totals, already scoped to the
-// report's date range by fetchGoogleOrders, that the Summary sheet's Google row shows in its
-// QTS/Value columns.
+// Google — the reporting day's B-Arm orders (totalUnits/totalValue, the Summary row's Overall
+// sales QTS/Value) plus its Google Ads spend for the day and the range (0 when no Google Ads
+// report is on file for that window).
 export interface GoogleEmailSummary {
   totalUnits: number;
   totalValue: number;
+  daySpend: number;
+  daySpendTax: number;
+  rangeSpend: number;
+  rangeSpendTax: number;
 }
 
 export interface AdSpendReportResult {
@@ -2092,7 +2107,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // Fetched once and shared across all three platforms — the seller's own
   // approved SKU -> product name list, checked first before falling back to
   // whatever name shows up on an order/price-listing row (see resolveName).
-  const [master, masterSkuid, masterSkuidCatalog, masterSkuidsByName, productMarketing, amz, fk, ms, socialMedia, googleOrders] = await Promise.all([
+  const [master, masterSkuid, masterSkuidCatalog, masterSkuidsByName, productMarketing, amz, fk, ms, socialMedia, googleOrders, googleAdSpend] = await Promise.all([
     fetchProductMasterMap(),
     fetchMasterSkuidMap(),
     fetchMasterSkuidAmazonCatalog(),
@@ -2103,6 +2118,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     fetchMeeshoProducts(range, endDate),
     fetchSocialMediaAdSpend(range, endDate),
     fetchGoogleOrders(range, endDate),
+    // Google Ads spend — same windowed table shape and day/range rule as Meta's.
+    fetchWindowedAdSpend("barm_daily_google_ad_spend", range, endDate),
   ]);
   // Per-platform listing-price lookup for every computeAcos call site below (via acosCell/
   // acosSortRank's own listingPrice parameter) — Meesho has no listing table, so it's omitted
@@ -2507,21 +2524,38 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // under the single-day "Overall sales (<date>)" header (see fetchGoogleOrders's own comment).
   let googleRow: number | null = null;
   let googleSummary: GoogleEmailSummary | null = null;
-  if (googleOrders.rangeUnits > 0 || googleOrders.rangeValue > 0) {
+  //
+  // Ad spend (with/without tax) comes from the Google Ads "Campaign report" upload
+  // (barm_daily_google_ad_spend), resolved per window exactly like Social Media's: the day block is
+  // the reporting day's own daily row, the range block the row matching the full window (else the
+  // daily rows inside it). Spend with tax uses the same default GST multiplier as Meta's. CPC/ACOS
+  // stay blank: the B-Arm orders aren't attributed to the ads, so spend ÷ those orders would read
+  // as ad performance it isn't.
+  const googleDayAgg: WindowAgg = { spend: googleAdSpend.daySpend, units: 0 };
+  const googleRangeAgg: WindowAgg = { spend: googleAdSpend.rangeSpend, units: 0 };
+  const hasGoogleSpend = googleAdSpend.daySpend > 0 || googleAdSpend.rangeSpend > 0;
+  if (googleOrders.rangeUnits > 0 || googleOrders.rangeValue > 0 || hasGoogleSpend) {
     googleRow = sumAoa.length;
     sumAoa.push([
       "Google",
-      0, 0,
-      "(Orders/Sales only — no ad spend data)", "",
-      0, 0, googleOrders.dayUnits, round2(googleOrders.dayValue), "", "", "",
-      0, 0, googleOrders.rangeUnits, round2(googleOrders.rangeValue), "", "", "",
+      round2(googleDayAgg.spend), round2(spendTax(googleDayAgg)),
+      hasGoogleSpend ? "(Google Ads spend + B-Arm orders)" : "(Orders/Sales only — no Google Ads report for this window)", "",
+      round2(googleDayAgg.spend), round2(spendTax(googleDayAgg)), googleOrders.dayUnits, round2(googleOrders.dayValue), "", "", "",
+      round2(googleRangeAgg.spend), round2(spendTax(googleRangeAgg)), googleOrders.rangeUnits, round2(googleOrders.rangeValue), "", "", "",
       googleOrders.dayUnits, round2(googleOrders.dayValue),
     ]);
     // Same figures, reshaped for the emailed daily digest (see buildAdSpendDailyHtml in
     // supabase/functions/send-ad-spend-email/index.ts), which renders this as one more row
     // directly below Social Media's, per the same pattern. Day totals, matching the fix above —
     // the digest is headlined by the single reporting day, same as every other platform's summary.
-    googleSummary = { totalUnits: googleOrders.dayUnits, totalValue: round2(googleOrders.dayValue) };
+    googleSummary = {
+      totalUnits: googleOrders.dayUnits,
+      totalValue: round2(googleOrders.dayValue),
+      daySpend: round2(googleDayAgg.spend),
+      daySpendTax: round2(spendTax(googleDayAgg)),
+      rangeSpend: round2(googleRangeAgg.spend),
+      rangeSpendTax: round2(spendTax(googleRangeAgg)),
+    };
   }
 
   // A Meesho table that failed to load must never pass for a quiet day (see fetchMeeshoProducts).

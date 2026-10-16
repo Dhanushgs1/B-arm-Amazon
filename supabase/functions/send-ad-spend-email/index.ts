@@ -163,27 +163,26 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
         </tr>`
     : "";
 
-  // Google (direct/website) orders — same bespoke-extra-row treatment as Social Media above, but
-  // this channel has no ad spend/CPC/ACOS data of any kind and no day/range split at all (see
-  // GoogleEmailSummary/fetchGoogleOrders in adSpendReportExport.ts — its own data carries no date
-  // column), so every ad-spend column is a dash and only the QTS/Value columns carry a real,
-  // CUMULATIVE (not "this day's") number.
+  // Google — same bespoke-extra-row treatment as Social Media above. Ad spend comes from the
+  // Google Ads "Campaign report" upload (0 when none is on file for the window); QTS/Value are the
+  // reporting day's B-Arm orders. CPC/ACOS stay "-": those orders aren't attributed to the ads
+  // (see GoogleEmailSummary/the Google Summary row in adSpendReportExport.ts).
   const google = data.googleSummary;
   const googleRowHtml = google
     ? `
         <tr>
           <td ${td} style="font-weight:800;border-left:3px solid #4285F4;">Google</td>
-          <td ${td}>${money(0)}</td>
-          <td ${td}>${money(0)}</td>
-          <td ${tdName}>(Orders/Sales only — cumulative total, no ad spend data)</td>
+          <td ${td}>${money(google.daySpend)}</td>
+          <td ${td}>${money(google.daySpendTax)}</td>
+          <td ${tdName}>${google.daySpend > 0 || google.rangeSpend > 0 ? "(Google Ads spend + B-Arm orders)" : "(Orders/Sales only — no Google Ads report for this window)"}</td>
+          <td ${td}>-</td>
+          <td ${td}>${money(google.daySpend)}</td>
+          <td ${td}>${money(google.daySpendTax)}</td>
           <td ${td}>-</td>
           <td ${td}>-</td>
           <td ${td}>-</td>
-          <td ${td}>-</td>
-          <td ${td}>-</td>
-          <td ${td}>-</td>
-          <td ${td}>-</td>
-          <td ${td}>-</td>
+          <td ${td}>${money(google.rangeSpend)}</td>
+          <td ${td}>${money(google.rangeSpendTax)}</td>
           <td ${td}>-</td>
           <td ${td}>-</td>
           <td ${td}>-</td>

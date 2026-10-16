@@ -25,9 +25,11 @@ import {
   type SocialMediaReportDataInfo,
 } from "@/lib/socialMediaReportUpload";
 import {
-  uploadGoogleOrdersFile,
+  uploadGoogleFile,
   fetchGoogleOrdersDataInfo,
+  fetchGoogleAdSpendDataInfo,
   type GoogleOrdersDataInfo,
+  type GoogleAdSpendDataInfo,
 } from "@/lib/googleOrdersUpload";
 import Link from "next/link";
 
@@ -459,20 +461,32 @@ interface GoogleOrdersState {
 // ad-spend data of any kind). Feeds the Ad Spend Report's Summary sheet "Google" row and the Ad
 // spend report sheet's Google section — see googleOrdersUpload.ts / fetchGoogleOrders in
 // adSpendReportExport.ts. Needs scripts/google_orders_table.sql run once in Supabase first.
-function GoogleOrdersUploadCard({ onUploaded, dataInfo }: { onUploaded: () => void; dataInfo: GoogleOrdersDataInfo | undefined }) {
+// The same card also takes Google Ads' "Campaign report" export (ad spend) — each sheet is detected
+// and saved to its own table (see uploadGoogleFile in googleOrdersUpload.ts).
+function GoogleOrdersUploadCard({ onUploaded, dataInfo, spendInfo }: { onUploaded: () => void; dataInfo: GoogleOrdersDataInfo | undefined; spendInfo: GoogleAdSpendDataInfo | undefined }) {
   const [state, setState] = useState<GoogleOrdersState>({ status: "idle" });
   const [dragOver, setDragOver] = useState(false);
 
   const handleFile = async (file: File) => {
     setState({ status: "parsing", fileName: file.name });
     try {
-      const res = await uploadGoogleOrdersFile(file);
+      const { orders: res, spend } = await uploadGoogleFile(file);
       const problems: string[] = [];
-      if (res.rowsWithoutPrice) {
-        problems.push(`Price missing on ${res.rowsWithoutPrice} row${res.rowsWithoutPrice === 1 ? "" : "s"} (line ${res.linesWithoutPrice.join(", ")}) — Sales for them stays blank; fill the Price and upload again`);
+      const parts: string[] = [];
+      if (spend) {
+        const windows = spend.windows
+          .map((w) => `${w.start === w.end ? w.start : `${w.start} → ${w.end}`} (${w.days === 1 ? "1 day" : `${w.days} days`}) ₹${w.spend.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`)
+          .join(" · ");
+        parts.push(`Ad spend saved: ${windows}`);
       }
-      if (res.skippedRows) problems.push(`${res.skippedRows} row${res.skippedRows === 1 ? "" : "s"} skipped (no Date, SKU or Qty)`);
-      const message = `${res.savedRows} rows saved (of ${res.totalRows})${problems.length ? ` — ${problems.join("; ")}` : ""}`;
+      if (res) {
+        if (res.rowsWithoutPrice) {
+          problems.push(`Price missing on ${res.rowsWithoutPrice} row${res.rowsWithoutPrice === 1 ? "" : "s"} (line ${res.linesWithoutPrice.join(", ")}) — Sales for them stays blank; fill the Price and upload again`);
+        }
+        if (res.skippedRows) problems.push(`${res.skippedRows} row${res.skippedRows === 1 ? "" : "s"} skipped (no Date, SKU or Qty)`);
+        parts.push(`Orders: ${res.savedRows} rows saved (of ${res.totalRows})`);
+      }
+      const message = `${parts.join(" · ")}${problems.length ? ` — ${problems.join("; ")}` : ""}`;
       setState({ status: problems.length ? "warning" : "done", fileName: file.name, message });
       onUploaded();
     } catch (err) {
@@ -492,8 +506,9 @@ function GoogleOrdersUploadCard({ onUploaded, dataInfo }: { onUploaded: () => vo
         </div>
       </div>
       <p className="text-xs text-muted-foreground mb-4">
-        Drop the seller&apos;s own &quot;B-Arm Orders&quot; workbook here (S no, Invoice, Product, Qty, Price — no
-        ad spend data for this channel). Feeds the{" "}
+        Drop the seller&apos;s own &quot;B-Arm Orders&quot; workbook (S no, Invoice, Product, Qty, Price) for
+        orders, or Google Ads&apos; &quot;Campaign report&quot; export for ad spend — one day or 7 days, or both
+        sheets in one file. Each sheet is detected and saved to its own table. Feeds the{" "}
         <Link href="/dashboard/reports" className="underline hover:text-foreground">Ad Spend Report</Link>&apos;s
         Summary sheet &quot;Google&quot; row.
       </p>
@@ -514,7 +529,7 @@ function GoogleOrdersUploadCard({ onUploaded, dataInfo }: { onUploaded: () => vo
       >
         <UploadCloud size={24} className="text-muted-foreground" />
         <span className="text-xs text-muted-foreground px-2 text-center truncate max-w-full">
-          {state.fileName || "Click or drop the \"B-Arm Orders\" .xlsx here"}
+          {state.fileName || "Click or drop the \"B-Arm Orders\" or Google Ads \"Campaign report\" .xlsx here"}
         </span>
       </label>
       {dataInfo && (
@@ -522,8 +537,17 @@ function GoogleOrdersUploadCard({ onUploaded, dataInfo }: { onUploaded: () => vo
           {dataInfo.error
             ? `Table not ready — ${dataInfo.error}`
             : dataInfo.rowCount > 0
-              ? `Data: ${dataInfo.minDate ?? "?"} to ${dataInfo.maxDate ?? "?"} · ${dataInfo.totalUnits.toLocaleString("en-IN")} units, ₹${dataInfo.totalValue.toLocaleString("en-IN")} (${dataInfo.rowCount} rows)`
-              : "No data"}
+              ? `Orders: ${dataInfo.minDate ?? "?"} to ${dataInfo.maxDate ?? "?"} · ${dataInfo.totalUnits.toLocaleString("en-IN")} units, ₹${dataInfo.totalValue.toLocaleString("en-IN")} (${dataInfo.rowCount} rows)`
+              : "Orders: no data"}
+        </p>
+      )}
+      {spendInfo && (
+        <p className="text-[10px] text-muted-foreground mt-0.5">
+          {spendInfo.error
+            ? `Ad spend table not ready — ${spendInfo.error}`
+            : spendInfo.rowCount > 0
+              ? `Ad spend: ${spendInfo.minDate} to ${spendInfo.maxDate} (${spendInfo.rowCount} rows)`
+              : "Ad spend: no data"}
         </p>
       )}
       <input
@@ -889,9 +913,11 @@ export default function UploadReportsPage() {
   }, []);
 
   const [googleDataInfo, setGoogleDataInfo] = useState<GoogleOrdersDataInfo | undefined>(undefined);
+  const [googleSpendInfo, setGoogleSpendInfo] = useState<GoogleAdSpendDataInfo | undefined>(undefined);
   const refreshGoogleMeta = useCallback(async () => {
-    const info = await fetchGoogleOrdersDataInfo();
+    const [info, spendInfo] = await Promise.all([fetchGoogleOrdersDataInfo(), fetchGoogleAdSpendDataInfo()]);
     setGoogleDataInfo(info);
+    setGoogleSpendInfo(spendInfo);
   }, []);
 
   useEffect(() => {
@@ -957,7 +983,7 @@ export default function UploadReportsPage() {
       <CombinedAdSpendUploadCard onUploaded={refreshCombinedMeta} dataInfo={combinedDataInfo} keySlot={keySlot} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-        <GoogleOrdersUploadCard onUploaded={refreshGoogleMeta} dataInfo={googleDataInfo} />
+        <GoogleOrdersUploadCard onUploaded={refreshGoogleMeta} dataInfo={googleDataInfo} spendInfo={googleSpendInfo} />
         <SocialMediaUploadCard onUploaded={refreshSocialMediaMeta} dataInfo={socialMediaDataInfo} />
       </div>
 
