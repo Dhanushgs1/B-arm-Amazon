@@ -7,7 +7,7 @@ import { mcp, mcpAllPages, mcpAllInventory } from "@/lib/api";
 import { exportAmazonSalesReport, SalesReportGranularity } from "@/lib/amazonSalesExport";
 import { exportAnalysisReport } from "@/lib/analysisReportExport";
 import { exportHistoricalAnalysisReport } from "@/lib/historicalAnalysisReportExport";
-import { exportAdSpendReport } from "@/lib/adSpendReportExport";
+import { exportAndSaveAdSpendReport } from "@/lib/adSpendReportSave";
 import { exportWeeklySalesReport } from "@/lib/weeklySalesExport";
 import { fetchUploadedDateRange } from "@/lib/amazonReportUpload";
 import { resolveProductName } from "@/lib/categoryMap";
@@ -113,13 +113,18 @@ export default function ReportsPage() {
     if (!endDate) { alert("Pick a date at the top of the dashboard first."); return; }
     setAdSpendGenerating(true); setAdSpendMsg(null);
     try {
-      // A real generation — the one place besides the daily job that records history.
-      const res = await exportAdSpendReport({ endDate, accountName: account?.name, persistHistory: true });
+      // A real generation — the one place besides the daily job that records history. The same
+      // downloaded file + figures are saved as this date's report, so "Send" mails exactly this.
+      const res = await exportAndSaveAdSpendReport({ endDate, accountName: account?.name, persistHistory: true });
       const parts = res.platformTotals.map((p) => `${p.platform} ₹${p.rangeSpendTax.toFixed(0)}`).join(", ");
       const loadWarning = res.dataLoadErrors.length
         ? ` ⚠ ${res.dataLoadErrors.map((e) => `${e.platform} data could not be loaded (${e.error})`).join("; ")} — its figures in this file are missing, not zero. Regenerate once it's fixed.`
         : "";
-      setAdSpendMsg(`Downloaded ${res.filename} — ${res.productCount} products, range spend ${parts}${res.lowSpendCampaignCount ? `, ${res.lowSpendCampaignCount} low-spend campaigns flagged` : ""}${res.historyRowsSaved ? ` · ${res.historyRowsSaved} rows saved to history` : " · history not saved (run scripts/ad_spend_history_table.sql?)"}.${loadWarning}`);
+      const emailNote = res.emailCopy.saved
+        ? " · saved for Send (the email will carry this same Summary and file)"
+        : ` · ⚠ not saved for Send (${res.emailCopy.error}) — Send would use an older copy; download again`;
+      setAdSpendMsg(`Downloaded ${res.filename} — ${res.productCount} products, range spend ${parts}${res.lowSpendCampaignCount ? `, ${res.lowSpendCampaignCount} low-spend campaigns flagged` : ""}${res.historyRowsSaved ? ` · ${res.historyRowsSaved} rows saved to history` : " · history not saved (run scripts/ad_spend_history_table.sql?)"}${emailNote}.${loadWarning}`);
+      setJobStatus("completed");
     } catch (err) {
       setAdSpendMsg("Failed: " + (err instanceof Error ? err.message : String(err)));
     } finally { setAdSpendGenerating(false); }
@@ -621,10 +626,11 @@ export default function ReportsPage() {
           Status Report and a Low Spend Campaigns list. Built from the data uploaded on the Amazon and Flipkart
           Upload pages and Meesho orders from the meesho_barm_ord table in Supabase, plus a Social Media
           (Meta Ads) Summary row from the Upload page&apos;s &quot;Social Media Ad Spend&quot; card, and a Google
-          Summary row (Orders/Sales only — no ad spend data exists for this channel) from the Upload page&apos;s{" "}
+          Summary row (Google Ads spend from the &quot;Campaign report&quot;, plus B-Arm Orders/Sales) from the Upload
+          page&apos;s{" "}
           <a href="/dashboard/upload" className="underline hover:text-foreground">Google Orders (B-Arm)</a>{" "}
-          card (needs scripts/google_orders_table.sql run once in Supabase first). Google Ads campaign spend
-          itself still isn&apos;t included — no sample export has been seen for it yet.
+          card. &quot;Generate &amp; Download&quot; also saves that file for &quot;Send&quot;, so the email carries the
+          same Summary and attachment you downloaded.
         </p>
         <div className="flex flex-wrap gap-2">
           <button

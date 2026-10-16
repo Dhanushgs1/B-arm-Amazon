@@ -6,7 +6,7 @@
 // docs/superpowers/specs/2026-09-08-daily-ad-spend-async-architecture-design.md.
 import type { NextApiRequest, NextApiResponse } from "next";
 import { supabase } from "@/lib/supabaseClient";
-import { findJob } from "@/lib/adSpendJobs";
+import { findJob, isStaleProcessing } from "@/lib/adSpendJobs";
 import { checkSessionOrInternal, edgeFunctionHeaders, guard, isInternalRequest } from "@/lib/apiAuth";
 import { emailSendingPaused, EMAIL_PAUSED_ERROR } from "@/lib/emailPause";
 import { logEmail, failQueued } from "@/lib/emailLog";
@@ -53,6 +53,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
     if (job.status === "failed") {
       return res.status(409).json({ success: false, status: "failed", error: job.error_message || "Report generation failed." });
+    }
+    if (isStaleProcessing(job)) {
+      return res.status(409).json({ success: false, status: "failed", error: "Report generation stopped before finishing (the server run timed out). Click \"Generate & Download\" for this date, then Send again." });
     }
     if (job.status !== "completed") {
       return res.status(202).json({ success: false, status: job.status, message: "Report is still being generated. Please try again shortly." });

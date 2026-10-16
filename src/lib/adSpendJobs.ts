@@ -4,6 +4,7 @@
 // /api/send-ad-spend-email — kept in one place so "what counts as a
 // duplicate" is defined exactly once.
 import { supabase } from "@/lib/supabaseClient";
+import { isStaleProcessing } from "@/lib/adSpendJobRules";
 
 export const AD_SPEND_REPORT_TYPE = "ad_spend_daily";
 
@@ -17,7 +18,10 @@ export interface JobRow {
   email_status: "not_sent" | "sending" | "sent" | "failed";
   email_sent_at: string | null;
   email_error: string | null;
+  updated_at?: string | null;
 }
+
+export { STALE_PROCESSING_MS, isStaleProcessing } from "@/lib/adSpendJobRules";
 
 export async function findJob(reportDate: string, accountName: string): Promise<JobRow | null> {
   const { data, error } = await supabase
@@ -49,7 +53,8 @@ export async function findOrCreateJob(
   force: boolean
 ): Promise<{ job: JobRow; created: boolean }> {
   const existing = await findJob(reportDate, accountName);
-  if (existing && (existing.status === "processing" || (existing.status !== "failed" && !force))) {
+  const stale = existing ? isStaleProcessing(existing) : false;
+  if (existing && !stale && (existing.status === "processing" || (existing.status !== "failed" && !force))) {
     return { job: existing, created: false };
   }
   const { data, error } = await supabase
