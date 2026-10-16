@@ -3,10 +3,13 @@
 // borders, a day's cell yellow when it is lower than the day before, and "runs out in" under 30
 // days in light red with dark red text (the client's conditional formats, applied as fixed colours).
 
-import * as XLSX from "xlsx-js-style";
-import { runningOut, salesDropped, noSales, NO_SALES_MIN_STOCK, RUNNING_OUT_DAYS, CONSOLIDATED_DAYS, type ConsolidatedRow } from "@/lib/consolidatedStock";
-import { NOT_LISTED_PRODUCTS } from "@/lib/notListedProducts";
-import type { Coverage, ProductAnalytics } from "@/lib/godownAnalytics";
+import * as XS from "xlsx-js-style";
+import { runningOut, salesDropped, noSales, NO_SALES_MIN_STOCK, RUNNING_OUT_DAYS, CONSOLIDATED_DAYS, type ConsolidatedRow } from "./consolidatedStock.ts";
+import { NOT_LISTED_PRODUCTS } from "./notListedProducts.ts";
+import type { Coverage, ProductAnalytics } from "./godownAnalytics.ts";
+
+// xlsx-js-style is CommonJS: under plain Node (node --test) its API is on .default; bundlers give it directly.
+const XLSX = ((XS as unknown as { default?: typeof XS }).default ?? XS) as typeof XS;
 
 const thin = { style: "thin", color: { rgb: "000000" } };
 const border = { top: thin, bottom: thin, left: thin, right: thin };
@@ -287,9 +290,9 @@ function summarySheet(data: ConsolidatedExportData, finalCol: string, statusCol:
 // SheetJS writes filters but not frozen panes, so the panes are added to each sheet's XML after
 // writing; nothing else in the file is touched.
 type Layout = { freeze?: boolean; filter?: string };
-const layouts = new WeakMap<XLSX.WorkBook, Record<string, Layout>>();
+const layouts = new WeakMap<XS.WorkBook, Record<string, Layout>>();
 
-function setLayout(wb: XLSX.WorkBook, name: string, layout: Layout) {
+function setLayout(wb: XS.WorkBook, name: string, layout: Layout) {
   const m = layouts.get(wb) ?? {};
   m[name] = layout;
   layouts.set(wb, m);
@@ -300,7 +303,7 @@ const tableRef = (cols: number, rows: number) => `A1:${XLSX.utils.encode_col(col
 const PANE = '<sheetView workbookViewId="0"><pane xSplit="1" ySplit="1" topLeftCell="B2" activePane="bottomRight" state="frozen"/><selection pane="bottomRight"/></sheetView>';
 
 /** The workbook as .xlsx bytes, with the frozen panes. */
-export function consolidatedWorkbookBytes(wb: XLSX.WorkBook): Uint8Array {
+export function consolidatedWorkbookBytes(wb: XS.WorkBook): Uint8Array {
   const layout = layouts.get(wb) ?? {};
   const bytes = XLSX.write(wb, { type: "array", bookType: "xlsx" }) as ArrayBuffer;
   const zip = XLSX.CFB.read(new Uint8Array(bytes), { type: "array" });
@@ -342,7 +345,7 @@ const MAIL_SHEETS: Record<ConsolidatedMailKind, string[] | null> = {
 };
 
 /** Only `names` of `wb` (sheets and their frozen panes / filters shared, not copied). */
-function pickSheets(wb: XLSX.WorkBook, names: string[]): XLSX.WorkBook {
+function pickSheets(wb: XS.WorkBook, names: string[]): XS.WorkBook {
   const out = XLSX.utils.book_new();
   const lay = layouts.get(wb) ?? {};
   for (const n of names) {
