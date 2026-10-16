@@ -16,6 +16,39 @@ export const FC_ALERT_CC = [
   "nivetha@b-arm.com", "sriram@b-arm.com", "duvaraga@b-arm.com",
 ];
 
+// Never mailed (user, 2026-10-16, after the 25-product mail): Current stock sheet names the team does not
+// want in the FC sheet. Matched with productKey, so case / spacing differences do not matter. Anything
+// else missing from the FC sheet (e.g. a new product) is still mailed.
+export const FC_IGNORED_NAMES = [
+  // Not to be added to the FC sheet
+  "Neck traction pillow (Blue)",
+  "Neck traction pillow (green)",
+  "Sensory brush",
+  "Suture Practice pad(MW)",
+  "Baby nasal aspirator - hand pump (white model)",
+  "Contact lens cleaner",
+  "Cradle cap scrub",
+  "Cradle cap brush",
+  "Cradle cap comb - double sided",
+  "Syringes for nasal aspirator",
+  "Pregnancy kit combo with Ovulation thermometer",
+  "IQ puzzles (Autism)",
+  "IUI Catheter and Syringes (Insemination kit)",
+  "Bulb Syringe IUI applicator -8cm(Pack of 5)",
+  "IR Bulb",
+  // Not restocked
+  "Baby nasal aspirator (hand pump-Pink)",
+  "Instant Breast warmers (Red)",
+  "Warming Lactation Massager (Green)",
+  "Warming Lactation Massager (Dark Pink)",
+  "Wearable lactation massager (Purple)",
+  "Wearable lactation massager (Grey)",
+  "Pelvic muscle floor trainer (screw type) - Blue",
+  "Digital pelvic muscle trainer- new model",
+  "Nail cleaning device",
+  "Semi- Transparent Human Model",
+];
+
 export type FcAlertStatus = "sent" | "failed" | "nothing_missing" | "already_sent" | "paused";
 
 export interface FcAlertRow {
@@ -30,10 +63,12 @@ export interface FcAlertRow {
   error: string | null;
 }
 
-/** Current stock sheet names with no product of the same name in the FC sheet, in file order. Both
- *  sides go through the godown aliases (src/lib/godownProductAliases.ts) and productKey. */
+/** Current stock sheet names with no product of the same name in the FC sheet, in file order, leaving
+ *  out FC_IGNORED_NAMES. Both sides go through the godown aliases (src/lib/godownProductAliases.ts)
+ *  and productKey. */
 export function missingFromFc(restockNames: string[], godownNames: string[]): string[] {
   const fc = new Set(godownNames.map((n) => productKey(keptGodownName(n))));
+  for (const n of FC_IGNORED_NAMES) fc.add(productKey(keptGodownName(n)));
   const seen = new Set<string>();
   const out: string[] = [];
   for (const raw of restockNames) {
