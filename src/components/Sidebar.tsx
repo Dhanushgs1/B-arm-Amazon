@@ -34,7 +34,6 @@ import {
   CalendarRange,
   Radio,
   Layers,
-  Activity,
   type LucideIcon
 } from "lucide-react";
 import { MARKETPLACE_META, UPLOAD_ONLY_TAB_META, getMarketplaceTab, isUploadOnlyTab } from "@/lib/marketplace";
@@ -80,7 +79,6 @@ const NAV_SECTIONS: SidebarNavSection[] = [
       { id: "inventory", label: "Inventory", icon: Box },
       { id: "live", label: "Live Inventory", icon: Radio, path: "/dashboard/inventory/live" },
       { id: "consolidated", label: "Consolidated Stock Sheet", icon: Layers, path: "/dashboard/inventory/consolidated" },
-      { id: "godown-analytics", label: "Godown Stock Analytics", icon: Activity, path: "/dashboard/inventory/analytics" },
       { id: "marketshare", label: "Market Share", icon: TrendingUp },
       { id: "master", label: "Master", icon: Database },
     ],
