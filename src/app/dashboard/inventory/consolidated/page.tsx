@@ -7,7 +7,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { FcNameAlertPanel, runFcCheck, FC_ALERTS_KEY } from "@/components/FcNameAlertPanel";
+import { FcNameAlertPanel, ListingAlertPanel, runFcCheck, runListingCheck, FC_ALERTS_KEY, LISTING_ALERTS_KEY } from "@/components/FcNameAlertPanel";
 import { InventoryTabs } from "@/components/InventoryTabs";
 import { useDashboard } from "@/lib/DashboardContext";
 import { KPICard } from "@/components/KPICard";
@@ -79,6 +79,15 @@ export default function ConsolidatedStockPage() {
     return "";
   };
 
+  // After a restock upload: products whose every Amazon SKU is inactive / deleted go to the Listing Team (user, 2026-10-16).
+  const listingCheck = async () => {
+    const r = await runListingCheck("restock");
+    await qc.invalidateQueries({ queryKey: LISTING_ALERTS_KEY });
+    if (r.status === "sent") return ` ${r.missing?.length ?? 0} product(s) with no active Amazon listing — Listing Team mailed.`;
+    if (r.status === "failed") return ` Listing check failed: ${r.error ?? "unknown error"}.`;
+    return "";
+  };
+
   const upload = async (file: File | undefined) => {
     if (!file) return;
     setBusy(true);
@@ -102,8 +111,8 @@ export default function ConsolidatedStockPage() {
     setNote(null);
     try {
       const r = await uploadRestockWorkbook(file);
-      const fc = await fcCheck("restock");
-      setNote({ ok: true, text: `Current stock sheet saved for ${dateLong(r.date)}: ${r.rows} products (in transit, order placed).${fc}` });
+      const [fc, listing] = await Promise.all([fcCheck("restock"), listingCheck()]);
+      setNote({ ok: true, text: `Current stock sheet saved for ${dateLong(r.date)}: ${r.rows} products (in transit, order placed).${fc}${listing}` });
       await refetch();
     } catch (e) {
       setNote({ ok: false, text: e instanceof Error ? e.message : "Upload failed" });
@@ -185,7 +194,10 @@ export default function ConsolidatedStockPage() {
         </div>
       )}
 
-      <FcNameAlertPanel />
+      <div className="grid gap-3 xl:grid-cols-2">
+        <FcNameAlertPanel />
+        <ListingAlertPanel />
+      </div>
 
       {isLoading ? (
         <div className="flex items-center gap-2 py-16 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Loading stock…</div>
