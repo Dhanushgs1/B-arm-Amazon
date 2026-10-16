@@ -228,6 +228,18 @@ export default function ConsolidatedStockPage() {
         </div>
       )}
 
+      {!!data?.stockIssues?.length && (
+        <div role="alert" id="stock-mapping-warning" className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2.5 text-xs font-semibold text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <p>Godown stock check: {data.stockIssues.length} product{data.stockIssues.length === 1 ? "" : "s"} in the godown file {data.stockIssues.length === 1 ? "does" : "do"} not map cleanly to this sheet.</p>
+            <ul className="mt-1 list-disc pl-4 font-normal">
+              {data.stockIssues.map((i) => <li key={i.product}><b>{i.product}</b>: {i.note}</li>)}
+            </ul>
+          </div>
+        </div>
+      )}
+
       <div className="grid gap-3 xl:grid-cols-2">
         <FcNameAlertPanel />
         <ListingAlertPanel />
