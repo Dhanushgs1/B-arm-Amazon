@@ -1,5 +1,5 @@
 // Monthly Search Terms mail (src/lib/searchTermMonthly.ts): the account's Amazon search terms for the
-// period (1st – 30th; a 31st rolls into the next month) in four sheets — Orders 0, ACOS above 50%,
+// calendar month (1st to its last day — 30th / 31st, Feb 28th / 29th) in four sheets — Orders 0, ACOS above 50%,
 // ACOS 25–50%, ACOS 13–25% — mailed on the period's last day to the slot's Settings recipients.
 // Search terms come live from SellerMate (get_search_term_performance), grouped like the Search Terms
 // page (search term × campaign × ad group). Every send is logged in barm_search_term_mail_log, which
@@ -131,7 +131,7 @@ function mailHtml(buckets: Record<string, SearchTermRow[]>, period: { start: str
     + `<table style="border-collapse:collapse;margin:10px 0"><tr style="background:#eef2ff">`
     + `<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left">Sheet</th><th style="padding:6px 10px;border:1px solid #e5e7eb">Search terms</th>`
     + `<th style="padding:6px 10px;border:1px solid #e5e7eb">Spend</th><th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left">Top by spend</th></tr>${rows}</table>`
-    + `<p style="color:#6b7280;font-size:12px">Each month runs to the 30th; a 31st is counted in the next month's mail. Orders 0 = spend with no order. ACOS bands: above 50%, 25%–50%, 13% to under 25%.</p>`
+    + `<p style="color:#6b7280;font-size:12px">Each mail covers the whole calendar month, 1st to its last day. Orders 0 = spend with no order. ACOS bands: above 50%, 25%–50%, 13% to under 25%.</p>`
     + `</div>`;
 }
 

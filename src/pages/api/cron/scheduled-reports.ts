@@ -147,8 +147,8 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
   if (isMonday && (s.ratingDropAlerts ?? slot === "B")) {
     results.ratingDrop = await callReportEndpoint(req, "/api/rating-drop-alert", acct, `[${slot}] Rating drop`);
   }
-  // Monthly Search Terms — on the 30th (February: its last day), the period's search terms in four
-  // sheets (Orders 0, ACOS >50%, 25–50%, 13–25%); a 31st rolls into the next month. The route itself
+  // Monthly Search Terms — on the month's last day, that calendar month's search terms (1st to 30th /
+  // 31st; Feb 28th / 29th) in four sheets (Orders 0, ACOS >50%, 25–50%, 13–25%). The route itself
   // decides whether today is the mail day and sends at most once per period (search-term-monthly-mail.ts).
   // On by default for B-ARM.
   if (s.searchTermMonthly ?? slot === "B") {

@@ -135,8 +135,9 @@ export function SearchTermMailPanel({ keySlot }: { keySlot: string }) {
         </div>
 
         <p className="mt-2 text-xs text-muted-foreground">
-          Goes out on the <b className="text-foreground">30th of every month at 9:00 AM IST</b> (February: its last day) with that month&apos;s
-          search terms from the <b className="text-foreground">1st to the 30th</b>. A 31st is counted in the next month&apos;s mail. Sent to{" "}
+          Goes out on the <b className="text-foreground">last day of every month at 9:00 AM IST</b> with that month&apos;s search terms from
+          the <b className="text-foreground">1st to the last day</b> — 31st in Jan, Mar, May, Jul, Aug, Oct, Dec; 30th in Apr, Jun, Sep, Nov;
+          28th / 29th in Feb. Sent to{" "}
           <b className="text-foreground">{to || "— (set the notification email in Settings)"}</b>{cc && <> (cc {cc})</>}.
         </p>
 

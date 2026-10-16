@@ -1,14 +1,13 @@
-// Monthly Search Terms mail (user, 2026-10-16): once a month, on the 30th, the account's Amazon search
-// terms for the month in four sheets — Orders 0, ACOS above 50%, ACOS 25–50%, ACOS 13–25%.
+// Monthly Search Terms mail (user, 2026-10-16): once a month, on the month's last day, the account's
+// Amazon search terms for that calendar month in four sheets — Orders 0, ACOS above 50%, ACOS 25–50%,
+// ACOS 13–25%.
 //
-// Each month's period ends on the 30th. A 31st is not dropped: it is the first day of the next month's
-// period (e.g. Oct 31 – Nov 30). February has no 30th, so its period ends — and its mail goes — on its
-// last day (28th / 29th). Dates are IST calendar dates.
+// Each period is a whole calendar month, 1st to its last day: the 31st in Jan, Mar, May, Jul, Aug, Oct
+// and Dec; the 30th in Apr, Jun, Sep and Nov; the 28th (29th in a leap year) in February. The mail goes
+// on that last day. Dates are IST calendar dates.
 //
 // Pure functions only (no imports) so node --test can run them; the API route is
 // src/pages/api/search-term-monthly-mail.ts and the Mail tab is on the Search Terms page.
-
-export const PERIOD_END_DAY = 30;
 
 export interface MonthlyPeriod { start: string; end: string; label: string }
 
@@ -22,20 +21,14 @@ export function istToday(now = new Date()): string {
   return new Date(now.getTime() + 5.5 * 3_600_000).toISOString().slice(0, 10);
 }
 
-/** The period that ends in the given month (year, 1-based month). */
+/** The calendar month (year, 1-based month): 1st to its last day. */
 export function periodForMonth(y: number, m: number): MonthlyPeriod {
-  const endDay = Math.min(PERIOD_END_DAY, daysIn(y, m));
-  const py = m === 1 ? y - 1 : y, pm = m === 1 ? 12 : m - 1;
-  // The previous month's period stopped at its 30th; its 31st (if any) starts this one.
-  const start = daysIn(py, pm) > PERIOD_END_DAY ? iso(py, pm, PERIOD_END_DAY + 1) : iso(y, m, 1);
-  return { start, end: iso(y, m, endDay), label: `${MONTHS[m - 1]} ${y}` };
+  return { start: iso(y, m, 1), end: iso(y, m, daysIn(y, m)), label: `${MONTHS[m - 1]} ${y}` };
 }
 
-/** The period a date falls in. The 31st belongs to the next month's period. */
+/** The period (calendar month) a date falls in. */
 export function periodContaining(date: string): MonthlyPeriod {
-  const y = Number(date.slice(0, 4)), m = Number(date.slice(5, 7)), d = Number(date.slice(8, 10));
-  if (d > PERIOD_END_DAY) return m === 12 ? periodForMonth(y + 1, 1) : periodForMonth(y, m + 1);
-  return periodForMonth(y, m);
+  return periodForMonth(Number(date.slice(0, 4)), Number(date.slice(5, 7)));
 }
 
 /** The period whose mail is due on `today` (its last day), or null. */
