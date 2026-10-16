@@ -6,7 +6,8 @@
 // Monday 10:00 IST snapshot; purchase qty and combo needs always come from the Monday snapshot.
 
 import { useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { FcNameAlertPanel, runFcCheck, FC_ALERTS_KEY } from "@/components/FcNameAlertPanel";
 import { InventoryTabs } from "@/components/InventoryTabs";
 import { useDashboard } from "@/lib/DashboardContext";
 import { KPICard } from "@/components/KPICard";
@@ -45,6 +46,7 @@ export default function ConsolidatedStockPage() {
   const [busy, setBusy] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const qc = useQueryClient();
   const godownRef = useRef<HTMLInputElement>(null);
   const restockRef = useRef<HTMLInputElement>(null);
 
@@ -68,13 +70,23 @@ export default function ConsolidatedStockPage() {
   }, [search]);
   const totalRestock = (data?.rows ?? []).reduce((a, r) => a + r.finalQtyToRestock, 0);
 
+  // After each upload: names in the Current stock sheet missing from the FC sheet are mailed (user, 2026-10-16).
+  const fcCheck = async (trigger: "restock" | "godown") => {
+    const r = await runFcCheck(trigger);
+    await qc.invalidateQueries({ queryKey: FC_ALERTS_KEY });
+    if (r.status === "sent") return ` ${r.missing?.length ?? 0} name(s) not in the FC sheet — mail sent.`;
+    if (r.status === "failed") return ` FC name check mail failed: ${r.error ?? "unknown error"}.`;
+    return "";
+  };
+
   const upload = async (file: File | undefined) => {
     if (!file) return;
     setBusy(true);
     setNote(null);
     try {
       const r = await uploadGodownWorkbook(file);
-      setNote({ ok: true, text: `Godown sheet saved: ${r.products} products, stock as on ${dateLong(r.snapshotDate)}, ${r.days} days of movement.${r.warnings.length ? " " + r.warnings.join(" ") : ""}` });
+      const fc = await fcCheck("godown");
+      setNote({ ok: true, text: `Godown sheet saved: ${r.products} products, stock as on ${dateLong(r.snapshotDate)}, ${r.days} days of movement.${r.warnings.length ? " " + r.warnings.join(" ") : ""}${fc}` });
       await refetch();
     } catch (e) {
       setNote({ ok: false, text: e instanceof Error ? e.message : "Upload failed" });
@@ -90,7 +102,8 @@ export default function ConsolidatedStockPage() {
     setNote(null);
     try {
       const r = await uploadRestockWorkbook(file);
-      setNote({ ok: true, text: `Current stock sheet saved for ${dateLong(r.date)}: ${r.rows} products (in transit, order placed).` });
+      const fc = await fcCheck("restock");
+      setNote({ ok: true, text: `Current stock sheet saved for ${dateLong(r.date)}: ${r.rows} products (in transit, order placed).${fc}` });
       await refetch();
     } catch (e) {
       setNote({ ok: false, text: e instanceof Error ? e.message : "Upload failed" });
@@ -171,6 +184,8 @@ export default function ConsolidatedStockPage() {
           <span>{weeklyLabel(data.weekly)}</span>
         </div>
       )}
+
+      <FcNameAlertPanel />
 
       {isLoading ? (
         <div className="flex items-center gap-2 py-16 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Loading stock…</div>
