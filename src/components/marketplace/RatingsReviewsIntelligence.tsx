@@ -458,13 +458,13 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace: Marke
           <h1 className="text-2xl font-bold tracking-tight text-foreground">Ratings & Reviews</h1>
           <p className="mt-1 flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground">
             <CalendarClock className="h-4 w-4" />
-            Snapshot {fmtDate(data.snapshotDate)}
-            {data.previousDate && (
-              <>
-                <span className="text-muted-foreground/50">·</span>
-                compared with {fmtDate(data.previousDate)}
-              </>
-            )}
+            {/* each channel shows its own latest upload (user, 2026-10-16) */}
+            {Object.entries(data.platformDates).map(([p, d], i) => (
+              <span key={p} className="whitespace-nowrap">
+                {i > 0 && <span className="mr-2 text-muted-foreground/50">·</span>}
+                <b className="text-foreground">{p}</b> {fmtDate(d.current)}{d.previous ? <> vs {fmtDate(d.previous)}</> : null}
+              </span>
+            ))}
             <span className="text-muted-foreground/50">·</span>
             {data.snapshotDates.length} week{data.snapshotDates.length === 1 ? "" : "s"} of history
           </p>

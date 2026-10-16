@@ -7,8 +7,10 @@
 //                                    way (dashboard upload, Supabase CSV import) is kept.
 //   replace_product_rating_metrics — the upload RPC: replaces the latest snapshot for a date.
 //
-// The dashboard reads history: the newest snapshot is "current", the one before it is
-// "previous", and week-over-week changes are current minus previous for the same SKU.
+// The dashboard reads history PER CHANNEL (user, 2026-10-16): each channel's newest snapshot is its
+// "current" and the one before it its "previous", so a week where only one channel's file was
+// uploaded (e.g. Meesho alone on 14 Oct) no longer hides the others. Changes are current minus
+// previous for the same SKU. Channels whose latest snapshot has no rated SKU are left out.
 //
 // Facts about this data the UI relies on:
 //   - Only Amazon and Flipkart carry rating data; other channels are listed with nulls.
@@ -77,6 +79,7 @@ export interface RatingMetricsData {
   snapshotDate: string | null;
   previousDate: string | null;
   snapshotDates: string[]; // newest first
+  platformDates: Record<string, { current: string; previous: string | null }>; // per channel shown
   platforms: string[]; // channels with at least one row, rated channels first
   ratedPlatforms: string[];
   weekly: WeeklyPoint[];
@@ -146,13 +149,29 @@ export async function fetchRatingMetrics(): Promise<RatingMetricsData> {
   const weeklyRows = (weeklyRaw ?? []) as WeeklyRow[];
 
   const snapshotDates = Array.from(new Set(weeklyRows.map((w) => w.snapshot_date))).sort().reverse();
-  const snapshotDate = snapshotDates[0] ?? null;
-  const previousDate = snapshotDates[1] ?? null;
 
-  const [current, previous] = await Promise.all([
-    snapshotDate ? fetchSnapshot(snapshotDate) : Promise.resolve([]),
-    previousDate ? fetchSnapshot(previousDate) : Promise.resolve([]),
-  ]);
+  // Each channel's own newest and previous snapshot (status buckets and unrated-only channels left out).
+  const datesBy = new Map<string, { date: string; rated: number }[]>();
+  for (const w of weeklyRows) {
+    if (STATUS_BUCKETS.has(w.platform.trim().toLowerCase())) continue;
+    if (!datesBy.has(w.platform)) datesBy.set(w.platform, []);
+    datesBy.get(w.platform)!.push({ date: w.snapshot_date, rated: Number(w.rated_count) || 0 });
+  }
+  const platformDates: RatingMetricsData["platformDates"] = {};
+  for (const [p, ds] of datesBy) {
+    const sorted = [...new Set(ds.map((d) => d.date))].sort().reverse();
+    const latest = ds.filter((d) => d.date === sorted[0]).reduce((a, d) => a + d.rated, 0);
+    if (latest > 0) platformDates[p] = { current: sorted[0], previous: sorted[1] ?? null };
+  }
+  const currents = Object.values(platformDates).map((d) => d.current).sort().reverse();
+  const previouses = Object.values(platformDates).map((d) => d.previous).filter((d): d is string => !!d).sort().reverse();
+  const snapshotDate = currents[0] ?? null;
+  const previousDate = previouses[0] ?? null;
+
+  const needed = [...new Set([...currents, ...previouses])];
+  const byDate = new Map(await Promise.all(needed.map(async (d) => [d, await fetchSnapshot(d)] as const)));
+  const current = Object.entries(platformDates).flatMap(([p, d]) => (byDate.get(d.current) ?? []).filter((r) => r.platform === p));
+  const previous = Object.entries(platformDates).flatMap(([p, d]) => (d.previous ? (byDate.get(d.previous) ?? []).filter((r) => r.platform === p) : []));
 
   const prevByKey = new Map<string, HistoryRow>();
   for (const p of previous) prevByKey.set(`${p.platform}|${p.sku_key}`, p);
@@ -163,7 +182,7 @@ export async function fetchRatingMetrics(): Promise<RatingMetricsData> {
     const price = num(r.price);
     const productName = r.product_name.trim() || r.sku_id || "Unnamed";
     let prev: RatingItem["prev"];
-    if (previousDate) {
+    if (platformDates[r.platform]?.previous) {
       const p = prevByKey.get(`${r.platform}|${r.sku_key}`);
       prev = p ? { rating: cleanRating(p.rating), reviews: num(p.review_count) ?? 0 } : null;
     }
@@ -202,6 +221,7 @@ export async function fetchRatingMetrics(): Promise<RatingMetricsData> {
     snapshotDate,
     previousDate,
     snapshotDates,
+    platformDates,
     platforms,
     ratedPlatforms: platforms.filter((p) => (counts.get(p)?.rated ?? 0) > 0),
     weekly: weeklyRows
