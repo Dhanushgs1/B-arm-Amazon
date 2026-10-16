@@ -11,8 +11,9 @@ import { DataTable } from "@/components/DataTable";
 import { KPICard } from "@/components/KPICard";
 import { PageHero } from "@/components/PageHero";
 import { QueryErrorState } from "@/components/QueryErrorState";
+import { SearchTermMailPanel } from "@/components/SearchTermMailPanel";
 import { AcosBadge, ACOS_LIMIT, acosRowClass } from "@/components/AcosBadge";
-import { Loader2, Search, AlertTriangle, Lightbulb, TrendingUp } from "lucide-react";
+import { Loader2, Search, Mail } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const cur = (val: number, currency?: string) => {
@@ -27,6 +28,7 @@ export default function SearchTermsPage() {
   const { keySlot, startDate, endDate, account, contextLoading, setSelectedCampaignName } = useDashboard();
   const [kpiModal, setKpiModal] = useState<{ title: string; data: any[] } | null>(null);
   const [aiModal, setAiModal] = useState(false);
+  const [tab, setTab] = useState<"terms" | "mail">("terms");
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["searchterms", keySlot, account?.id, startDate, endDate],
@@ -39,7 +41,7 @@ export default function SearchTermsPage() {
         group_by: ["searchTerm", "campaignName", "adGroupName"],
       }, keySlot);
     },
-    enabled: !!account,
+    enabled: !!account && tab === "terms",
   });
 
   const currency = account?.currency;
@@ -151,8 +153,35 @@ export default function SearchTermsPage() {
     },
   ];
 
+  const tabBar = (
+    <div className="flex gap-1 rounded-xl border border-border bg-muted/40 p-1 w-fit">
+      {([["terms", "Search Terms", Search], ["mail", "Mail", Mail]] as const).map(([id, label, Icon]) => (
+        <button
+          key={id}
+          onClick={() => setTab(id)}
+          className={cn(
+            "flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-xs font-bold transition-colors",
+            tab === id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+          )}
+        >
+          <Icon className="h-3.5 w-3.5" /> {label}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (tab === "mail") {
+    return (
+      <div className="space-y-6 pb-10">
+        {tabBar}
+        <SearchTermMailPanel keySlot={keySlot} />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6 pb-10">
+      {tabBar}
       {isError && (
         <QueryErrorState
           compact

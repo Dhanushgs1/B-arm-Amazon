@@ -114,6 +114,7 @@ export default function SettingsPage() {
   const [highAcosThreshold, setHighAcosThreshold] = useState(14);
   const [stockoutWarnDays, setStockoutWarnDays] = useState(10);
   const [monthlySummary, setMonthlySummary] = useState(false);
+  const [searchTermMonthly, setSearchTermMonthly] = useState(true);
   const [aiEnabled, setAiEnabled] = useState(true);
   const [autoInsights, setAutoInsights] = useState(true);
   const [smartAlerts, setSmartAlerts] = useState(true);
@@ -186,6 +187,7 @@ export default function SettingsPage() {
         setHighAcosThreshold(p.highAcosThreshold ?? 14);
         setStockoutWarnDays(p.stockoutWarnDays ?? 10);
         setMonthlySummary(p.monthlySummary ?? false);
+        setSearchTermMonthly(p.searchTermMonthly ?? keySlot === "B");
         setAiEnabled(p.aiEnabled ?? true);
         setAutoInsights(p.autoInsights ?? true);
         setSmartAlerts(p.smartAlerts ?? true);
@@ -248,7 +250,7 @@ export default function SettingsPage() {
       syncSchedule, twoFactor, ipRestrict, whitelistIps,
       timezone, defaultRange, pushAlerts, roasAlerts, inventoryAlerts,
       weeklySummary, dailySummary, liveAlerts, fbaWarehouseAlerts, monthlySummary, aiEnabled, autoInsights, smartAlerts,
-      highAcosDaily, highAcosThreshold, stockoutWarnDays, campaignPauseEmails, ratingDropAlerts,
+      highAcosDaily, highAcosThreshold, stockoutWarnDays, campaignPauseEmails, ratingDropAlerts, searchTermMonthly,
       forecastWindow, recMode, autoPause, autoNegatives, autoBudget,
       roasTarget, compactMode, theme,
       flipkartApiKey, flipkartSellerId,
@@ -282,6 +284,7 @@ export default function SettingsPage() {
         ratingDropAlerts && "Rating Drop (listings that fell from 4★+ to below 4★ — Mondays, once that week's ratings are uploaded)",
         weeklySummary && "Weekly Summary (Monday 9:00 AM IST)",
         monthlySummary && "Monthly Summary (1st, 9:00 AM IST)",
+        searchTermMonthly && "Search Terms Monthly (30th, 9:00 AM IST — Orders 0, ACOS above 50%, 25–50% and 13–25% sheets; a 31st counts in the next month)",
         slackAlerts && "Slack Alerts",
         pushAlerts && "Push Notifications",
       ].filter(Boolean) as string[];
@@ -728,14 +731,17 @@ export default function SettingsPage() {
                 <SettingRow title="Monthly Summary" desc="Sent on the 1st of every month at 9:00 AM IST.">
                   <Toggle checked={monthlySummary} onChange={setMonthlySummary} />
                 </SettingRow>
-                {(dailySummary || liveAlerts || fbaWarehouseAlerts || highAcosDaily || ratingDropAlerts || weeklySummary || monthlySummary) && (
+                <SettingRow title="Search Terms Monthly" desc="On the 30th at 9:00 AM IST (February: its last day): the month's search terms (1st – 30th; a 31st is counted in the next month) in four sheets — Orders 0, ACOS above 50%, 25–50% and 13–25%. Status and Send now are on the Search Terms page's Mail tab.">
+                  <Toggle checked={searchTermMonthly} onChange={setSearchTermMonthly} />
+                </SettingRow>
+                {(dailySummary || liveAlerts || fbaWarehouseAlerts || highAcosDaily || ratingDropAlerts || weeklySummary || monthlySummary || searchTermMonthly) && (
                   <div className="mt-1 mb-2 px-3 py-2.5 bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 rounded-xl">
                     <p className="text-[11px] font-extrabold text-indigo-600 dark:text-indigo-400 flex items-center gap-1.5">
                       <span>📬</span> Reports will be sent to: <span className="font-black">{notifEmail || "—"}</span>
                       {ccEmail && <span className="font-semibold">(cc: {ccEmail})</span>}
                     </p>
                     <p className="text-[10px] text-indigo-500/80 font-semibold mt-0.5">
-                      {[dailySummary && "Daily digest 9AM", liveAlerts && "Things need attention 9AM", fbaWarehouseAlerts && "FBA stock 9AM", highAcosDaily && "High ACOS after upload", ratingDropAlerts && "Rating drop Monday", weeklySummary && "Weekly Monday", monthlySummary && "Monthly 1st"].filter(Boolean).join(" · ")}
+                      {[dailySummary && "Daily digest 9AM", liveAlerts && "Things need attention 9AM", fbaWarehouseAlerts && "FBA stock 9AM", highAcosDaily && "High ACOS after upload", ratingDropAlerts && "Rating drop Monday", weeklySummary && "Weekly Monday", monthlySummary && "Monthly 1st", searchTermMonthly && "Search terms 30th"].filter(Boolean).join(" · ")}
                     </p>
                   </div>
                 )}

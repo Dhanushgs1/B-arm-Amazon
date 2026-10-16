@@ -72,6 +72,7 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
         liveAlerts: !!s.liveAlerts,
         fbaWarehouseLow: !!(s.fbaWarehouseAlerts ?? slot === "B"),
         highAcosTrend: !!s.highAcosDaily,
+        searchTermMonthly: !!(s.searchTermMonthly ?? slot === "B"),
         ratingDrop: isMonday && !!(s.ratingDropAlerts ?? slot === "B"),
         weekly: isMonday && !!s.weeklySummary,
         monthly: isFirstOfMonth && !!s.monthlySummary,
@@ -145,6 +146,13 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
   // Ratings & Reviews upload sends it (see rating-drop-alert.ts). On by default for B-ARM.
   if (isMonday && (s.ratingDropAlerts ?? slot === "B")) {
     results.ratingDrop = await callReportEndpoint(req, "/api/rating-drop-alert", acct, `[${slot}] Rating drop`);
+  }
+  // Monthly Search Terms — on the 30th (February: its last day), the period's search terms in four
+  // sheets (Orders 0, ACOS >50%, 25–50%, 13–25%); a 31st rolls into the next month. The route itself
+  // decides whether today is the mail day and sends at most once per period (search-term-monthly-mail.ts).
+  // On by default for B-ARM.
+  if (s.searchTermMonthly ?? slot === "B") {
+    results.searchTermMonthly = await callReportEndpoint(req, "/api/search-term-monthly-mail", acct, `[${slot}] Search terms monthly`);
   }
   if (isMonday && s.weeklySummary) {
     results.weekly = await callReportEndpoint(req, "/api/weekly-report", acct, `[${slot}] Weekly report`);

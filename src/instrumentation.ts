@@ -110,6 +110,9 @@ export async function register() {
         if (s.highAcosDaily) {
           await runAlertEndpoint("/api/high-acos-report", { ...acct, threshold: Number(s.highAcosThreshold) || 14 }, `[${slot}] High ACOS`);
         }
+        if (s.searchTermMonthly ?? slot === "B") {
+          await runAlertEndpoint("/api/search-term-monthly-mail", acct, `[${slot}] Search terms monthly`);
+        }
       }
     }, { timezone: "UTC" });
 
