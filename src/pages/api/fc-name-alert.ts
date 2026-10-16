@@ -1,7 +1,7 @@
 // "Name in the Current stock sheet but not in the FC sheet" mail (src/lib/fcNameCheck.ts).
 // Called by the Consolidated Stock Sheet right after a godown or restock upload, and by its
 // "Check now" button. Compares the latest Current stock sheet with the latest godown snapshot, mails
-// the missing names to FC_ALERT_TO, and logs every check in barm_fc_name_alerts (the page's status).
+// the missing names to FC_ALERT_TO (cc FC_ALERT_CC), and logs every check in barm_fc_name_alerts (the page's status).
 // The same missing names for the same two files are mailed once; "Check now" (force) mails again.
 //
 // POST body: { trigger?: "restock" | "godown" | "manual", force?: boolean }
@@ -12,7 +12,7 @@ import { fetchAllRows } from "@/lib/amazonReportShared";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
 import { checkSessionOrInternal, guard } from "@/lib/apiAuth";
 import { emailSendingPaused, EMAIL_PAUSED_ERROR } from "@/lib/emailPause";
-import { FC_ALERT_TO, missingFromFc, sameNames, fcAlertSubject, fcAlertHtml, type FcAlertStatus } from "@/lib/fcNameCheck";
+import { FC_ALERT_TO, FC_ALERT_CC, missingFromFc, sameNames, fcAlertSubject, fcAlertHtml, type FcAlertStatus } from "@/lib/fcNameCheck";
 
 const LOG = "barm_fc_name_alerts";
 
@@ -26,7 +26,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   if (!guard(req, res, checkSessionOrInternal)) return;
   const { trigger = "manual", force = false } = req.body || {};
-  const recipients = FC_ALERT_TO.join(", ");
+  const to = FC_ALERT_TO.join(", "), cc = FC_ALERT_CC.join(", ");
+  const recipients = `to: ${to} | cc: ${cc}`;
 
   const log = async (status: FcAlertStatus, restockDate: string | null, godownDate: string | null, missing: string[], error: string | null = null) => {
     const { error: e } = await supabasePublic.from(LOG).insert({
@@ -61,7 +62,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        type: "custom", to: recipients, subject: fcAlertSubject(missing, restockDate),
+        type: "custom", to, cc, subject: fcAlertSubject(missing, restockDate),
         data: { html: fcAlertHtml(missing, restockDate, godownDate), channel: null },
       }),
     });

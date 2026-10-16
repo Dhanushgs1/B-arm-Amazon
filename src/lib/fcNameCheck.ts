@@ -1,13 +1,20 @@
 // "Name in the Current stock sheet but not in the FC sheet" mail (user, 2026-10-16). After either upload
 // on the Consolidated Stock Sheet, every product in the latest Current stock sheet (restock inputs) is
 // looked up in the latest godown "FC Stock sheet"; names with no match are mailed to the FC sheet
-// handler and Barath so the FC sheet gets them. src/pages/api/fc-name-alert.ts sends it; every check
+// handler and the team (FC_ALERT_TO / FC_ALERT_CC) so the FC sheet gets them. src/pages/api/fc-name-alert.ts sends it; every check
 // is logged in barm_fc_name_alerts, which the page shows as the mail status.
 
 import { productKey } from "./consolidatedStock.ts";
 import { keptGodownName } from "./godownProductAliases.ts";
 
-export const FC_ALERT_TO = ["arun.a@b-arm.com", "barath@b-arm.com"];
+// Recipients (user, 2026-10-16): arun.a is the FC sheet handler.
+export const FC_ALERT_TO = ["sharmilambarm@gmail.com", "arun.a@b-arm.com"];
+export const FC_ALERT_CC = [
+  "gokilabarm@gmail.com", "mathumithabarm@gmail.com", "deena@b-arm.com", "kavinilavan@b-arm.com", "chandru.m@b-arm.com",
+  "sruthisri@barmenterprises.com", "kaviyapriyabarm@gmail.com", "aravindh.l@b-arm.com", "harshineebarm@gmail.com",
+  "akshaya.v@b-arm.com", "manoj.j@b-arm.com", "prinesh@b-arm.com", "\"Prashanth B-Arm\" <prashanthbarm@gmail.com>",
+  "nivetha@b-arm.com", "sriram@b-arm.com", "duvaraga@b-arm.com",
+];
 
 export type FcAlertStatus = "sent" | "failed" | "nothing_missing" | "already_sent" | "paused";
 

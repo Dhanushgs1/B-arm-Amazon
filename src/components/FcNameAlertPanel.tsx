@@ -6,7 +6,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabasePublic } from "@/lib/amazonReportUpload";
-import { FC_ALERT_TO, type FcAlertRow, type FcAlertStatus } from "@/lib/fcNameCheck";
+import { FC_ALERT_TO, FC_ALERT_CC, type FcAlertRow, type FcAlertStatus } from "@/lib/fcNameCheck";
 import { Loader2, Mail, RefreshCw } from "lucide-react";
 
 export const FC_ALERTS_KEY = ["fc_name_alerts"];
@@ -72,7 +72,8 @@ export function FcNameAlertPanel() {
         </button>
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
-        After each upload, product names in the Current stock sheet that are not in the FC Stock sheet are mailed to <b className="text-foreground">{FC_ALERT_TO.join(", ")}</b>.
+        After each upload, product names in the Current stock sheet that are not in the FC Stock sheet are mailed to <b className="text-foreground">{FC_ALERT_TO.join(", ")}</b>
+        <span title={FC_ALERT_CC.join(", ")}> (cc {FC_ALERT_CC.length} people: {FC_ALERT_CC.map((c) => c.replace(/^.*<|>$/g, "")).join(", ")})</span>.
       </p>
       {err && <p className="mt-2 text-xs font-semibold text-red-700 dark:text-red-400">{err}</p>}
       {isLoading ? (
