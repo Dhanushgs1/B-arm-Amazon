@@ -68,13 +68,15 @@ export interface FcAlertRow {
  *  and productKey. */
 export function missingFromFc(restockNames: string[], godownNames: string[]): string[] {
   const fc = new Set(godownNames.map((n) => productKey(keptGodownName(n))));
-  for (const n of FC_IGNORED_NAMES) fc.add(productKey(keptGodownName(n)));
+  // Ignored names match as written and under their godown rename; the rename map is case-sensitive,
+  // so "WEARABLE LACTATION MASSAGER (PURPLE)" is only caught by its own key.
+  const ignored = new Set(FC_IGNORED_NAMES.flatMap((n) => [productKey(n), productKey(keptGodownName(n))]));
   const seen = new Set<string>();
   const out: string[] = [];
   for (const raw of restockNames) {
     const name = String(raw ?? "").replace(/\s+/g, " ").trim();
     const key = productKey(keptGodownName(name));
-    if (!key || fc.has(key) || seen.has(key)) continue;
+    if (!key || fc.has(key) || seen.has(key) || ignored.has(key) || ignored.has(productKey(name))) continue;
     seen.add(key);
     out.push(name);
   }
