@@ -32,30 +32,41 @@ const LOG = "barm_search_term_mail_log";
 const SELLERMATE_BASE_URL = "https://api.sellermate.ai/public/v1/tools";
 const PAGE_SIZE = 500;
 const MAX_PAGES = 60;
+const CONCURRENCY = 2;
+const MAX_RETRIES = 5;
 
 export const config = { maxDuration: 300 };
 
 /** Every search term row for the window. Throws on any failed page, so a partial pull is never mailed. */
 async function fetchSearchTerms(apiKey: string, accountId: string, workspaceId: string, start: string, end: string): Promise<SearchTermRow[]> {
+  // SellerMate limits requests in flight at once (429 "Too many concurrent requests"), so pages are
+  // fetched two at a time and a 429 waits (Retry-After, else 2s, 4s, 8s …) and tries again.
   const call = async (page: number) => {
-    const r = await fetch(`${SELLERMATE_BASE_URL}/get_search_term_performance`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
-      body: JSON.stringify({
-        amazon_account_id: accountId, workspace_id: workspaceId, start_date: start, end_date: end,
-        group_by: ["searchTerm", "campaignName", "adGroupName"], page, page_size: PAGE_SIZE,
-      }),
-    });
-    if (!r.ok) throw new Error(`SellerMate search terms (page ${page}): ${await r.text()}`);
-    return r.json();
+    for (let attempt = 0; ; attempt++) {
+      const r = await fetch(`${SELLERMATE_BASE_URL}/get_search_term_performance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+        body: JSON.stringify({
+          amazon_account_id: accountId, workspace_id: workspaceId, start_date: start, end_date: end,
+          group_by: ["searchTerm", "campaignName", "adGroupName"], page, page_size: PAGE_SIZE,
+        }),
+      });
+      if (r.status === 429 && attempt < MAX_RETRIES) {
+        const after = Number(r.headers.get("retry-after"));
+        await new Promise((ok) => setTimeout(ok, after > 0 ? Math.min(after, 30) * 1000 : 2000 * 2 ** attempt));
+        continue;
+      }
+      if (!r.ok) throw new Error(`SellerMate search terms (page ${page}): ${await r.text()}`);
+      return r.json();
+    }
   };
   const first = await call(0);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const all: any[] = [...(first.data || [])];
   const totalPages = Number(first.pagination?.totalPages) || 1;
   if (totalPages > MAX_PAGES) throw new Error(`Too many search term pages (${totalPages})`);
-  for (let p = 1; p < totalPages; p += 10) {
-    const batch = Array.from({ length: Math.min(10, totalPages - p) }, (_, i) => call(p + i));
+  for (let p = 1; p < totalPages; p += CONCURRENCY) {
+    const batch = Array.from({ length: Math.min(CONCURRENCY, totalPages - p) }, (_, i) => call(p + i));
     for (const res of await Promise.all(batch)) all.push(...(res.data || []));
   }
   return all.map(toRow).filter((r) => r.searchTerm);
