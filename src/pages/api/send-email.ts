@@ -5,6 +5,7 @@ import { decideSend } from "@/lib/emailSendPolicy";
 import { escapeEmailData, escapeHtml } from "@/lib/htmlEscape";
 import { readEmailSettings } from "@/lib/emailSettingsStore";
 import { emailSendingPaused, EMAIL_PAUSED_ERROR } from "@/lib/emailPause";
+import { logEmail, attachmentNames } from "@/lib/emailLog";
 
 // Reverted from Resend back to Gmail SMTP by the seller's own request: Resend needs a verified
 // domain to send to real recipients (sandboxed to the signup email otherwise), and while that
@@ -1534,8 +1535,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(200).json({ preview: true, subject: subject || SUBJECTS[type] || "Marketplace360 Notification", html });
   }
 
+  // Every send attempt from here on is logged in Supabase's email_log (src/lib/emailLog.ts).
+  const mailSubject = subject || SUBJECTS[type] || "Marketplace360 Notification";
+  const logBase = { source: "send-email" as const, mail_type: String(type), subject: mailSubject, attachments: attachmentNames(attachments) };
+
   // Global kill switch (src/lib/emailPause.ts) — checked before anything can send.
-  if (emailSendingPaused()) return res.status(503).json({ error: EMAIL_PAUSED_ERROR, paused: true });
+  if (emailSendingPaused()) {
+    await logEmail({ ...logBase, to_addr: body.to, cc_addr: body.cc, status: "paused", error: EMAIL_PAUSED_ERROR });
+    return res.status(503).json({ error: EMAIL_PAUSED_ERROR, paused: true });
+  }
 
   let { to, cc } = body;
   if (decision.recipients === "saved") {
@@ -1544,8 +1552,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     cc = saved.ccEmail || undefined;
   }
 
-  if (!to) return res.status(400).json({ error: "Recipient email (to) is required" });
+  if (!to) {
+    await logEmail({ ...logBase, status: "failed", error: "Recipient email (to) is required" });
+    return res.status(400).json({ error: "Recipient email (to) is required" });
+  }
   if (!process.env.SMTP_FROM || !process.env.SMTP_PASS) {
+    await logEmail({ ...logBase, to_addr: to, cc_addr: cc, status: "failed", error: "SMTP credentials not configured" });
     return res.status(500).json({ error: "SMTP credentials not configured" });
   }
 
@@ -1562,16 +1574,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       from: `Marketplace360 Dashboard <${process.env.SMTP_FROM}>`,
       to,
       cc: cc || undefined,
-      subject: subject || SUBJECTS[type] || "Marketplace360 Notification",
+      subject: mailSubject,
       html,
       // attachments: [{ filename, content: <base64 string>, encoding: "base64" }] — content
       // travels as base64 over JSON since raw Buffers don't survive a fetch() body.
       attachments: Array.isArray(attachments) && attachments.length ? attachments : undefined,
     });
     console.log("Email sent:", info.messageId, "→", to, cc ? `(cc: ${cc})` : "");
+    await logEmail({ ...logBase, to_addr: to, cc_addr: cc, status: "sent", message_id: info.messageId });
     res.status(200).json({ success: true, message: `Email sent to ${to}${cc ? ` (cc: ${cc})` : ""}`, messageId: info.messageId });
   } catch (err: any) {
     console.error("Email send error:", err);
+    await logEmail({ ...logBase, to_addr: to, cc_addr: cc, status: "failed", error: err?.message || "Failed to send email" });
     res.status(500).json({ error: err.message || "Failed to send email" });
   }
 }

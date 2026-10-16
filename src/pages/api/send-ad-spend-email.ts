@@ -9,6 +9,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { findJob } from "@/lib/adSpendJobs";
 import { checkSessionOrInternal, edgeFunctionHeaders, guard, isInternalRequest } from "@/lib/apiAuth";
 import { emailSendingPaused, EMAIL_PAUSED_ERROR } from "@/lib/emailPause";
+import { logEmail, failQueued } from "@/lib/emailLog";
 
 const DEFAULT_TO = "kaviyapriyabarm@gmail.com";
 const DEFAULT_CC = [
@@ -26,7 +27,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   // Global kill switch (src/lib/emailPause.ts) — this route mails via the Edge Function, not
   // /api/send-email, so it needs its own check.
-  if (emailSendingPaused()) return res.status(503).json({ error: EMAIL_PAUSED_ERROR, paused: true });
+  if (emailSendingPaused()) {
+    await logEmail({ source: "ad-spend-edge", mail_type: "adSpendDaily", subject: "📈 Ad spend Report", status: "paused", error: EMAIL_PAUSED_ERROR });
+    return res.status(503).json({ error: EMAIL_PAUSED_ERROR, paused: true });
+  }
   // Browser-facing (Reports page "Send"): requires the signed-in dashboard session.
   if (!guard(req, res, checkSessionOrInternal)) return;
   const edgeHeaders = edgeFunctionHeaders();
@@ -71,6 +75,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const edgeBaseUrl = process.env.SUPABASE_EDGE_URL;
     if (!edgeBaseUrl) return res.status(500).json({ error: "SUPABASE_EDGE_URL is not configured" });
 
+    // Logged before the Edge Function is called: it sends in the background, and the email_log trigger
+    // on report_generation_jobs turns this row into sent / failed when it finishes.
+    await logEmail({ source: "ad-spend-edge", mail_type: "adSpendDaily", subject: "📈 Ad spend Report", to_addr: toAddr, cc_addr: ccAddr, attachments: [result.filename], status: "queued", job_id: job.id });
+
     const ackController = new AbortController();
     const ackTimeout = setTimeout(() => ackController.abort(), 8000);
     try {
@@ -83,11 +91,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       clearTimeout(ackTimeout);
       if (!edgeRes.ok) {
         const errBody = await edgeRes.json().catch(() => ({}));
+        await failQueued(job.id, errBody?.error || "Edge Function invocation failed");
         return res.status(502).json({ error: errBody?.error || "Edge Function invocation failed" });
       }
     } catch (fetchErr) {
       clearTimeout(ackTimeout);
       const message = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+      await failQueued(job.id, `Edge Function invocation failed: ${message}`);
       return res.status(502).json({ error: `Edge Function invocation failed: ${message}` });
     }
 
