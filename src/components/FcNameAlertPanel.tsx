@@ -43,7 +43,6 @@ const chip = (s: FcAlertStatus) => {
 };
 const when = (iso: string) => new Date(iso).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
 const dmy = (iso: string | null) => (iso ? `${iso.slice(8, 10)}-${iso.slice(5, 7)}-${iso.slice(0, 4)}` : "—");
-const bare = (a: string) => a.replace(/^.*<|>$/g, "");
 
 type Row = FcAlertRow & { details?: ListingProblem[] };
 interface PanelConfig {
@@ -57,7 +56,7 @@ export const FcNameAlertPanel = () => (
     id="fc-name-alert" title="FC sheet name check — mail status" table="barm_fc_name_alerts" queryKey={FC_ALERTS_KEY}
     run={(force) => runFcCheck("manual", force)}
     buttonTitle="Check the latest Current stock sheet against the latest FC sheet and mail the missing names now"
-    intro="After each upload, product names in the Current stock sheet that are not in the FC Stock sheet are mailed to"
+    intro="After each upload, product names in the Current stock sheet that are not in the FC Stock sheet are mailed to the team —"
     to={FC_ALERT_TO} cc={FC_ALERT_CC} flaggedLabel="Not in the FC sheet"
     checked={(r) => <>Current stock sheet of <b className="text-foreground">{dmy(r.restock_date)}</b> vs FC sheet as on <b className="text-foreground">{dmy(r.godown_date)}</b></>}
   />
@@ -68,7 +67,7 @@ export const ListingAlertPanel = () => (
     id="listing-alert" title="Listing check (Listing Team) — mail status" table="barm_listing_alerts" queryKey={LISTING_ALERTS_KEY}
     run={(force) => runListingCheck("manual", force)}
     buttonTitle="Check every Current stock sheet product's Amazon SKUs now and mail the Listing Team"
-    intro="After each restock upload, products in the Current stock sheet whose every Amazon SKU (master SKU sheet) is inactive / discontinued or no longer on Amazon are mailed to"
+    intro="After each restock upload, products in the Current stock sheet whose every Amazon SKU (master SKU sheet) is inactive / discontinued or no longer on Amazon are mailed to the Listing Team —"
     to={LISTING_ALERT_TO} cc={LISTING_ALERT_CC} flaggedLabel="No active Amazon listing"
     checked={(r) => <>Current stock sheet of <b className="text-foreground">{dmy(r.restock_date)}</b> vs live Amazon listings</>}
   />
@@ -110,8 +109,7 @@ function AlertLogPanel({ id, title, table, queryKey, run, buttonTitle, intro, to
         </button>
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
-        {intro} <b className="text-foreground">{to.map(bare).join(", ")}</b>
-        <span title={cc.join(", ")}> (cc {cc.length} people: {cc.map(bare).join(", ")})</span>.
+        {intro} {to.length + cc.length} people.
       </p>
       {err && <p className="mt-2 text-xs font-semibold text-red-700 dark:text-red-400">{err}</p>}
       {isLoading ? (

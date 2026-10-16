@@ -12,8 +12,7 @@ import { InventoryTabs } from "@/components/InventoryTabs";
 import { useDashboard } from "@/lib/DashboardContext";
 import { KPICard } from "@/components/KPICard";
 import { QueryErrorState } from "@/components/QueryErrorState";
-import { exportConsolidatedWorkbook, consolidatedMailFiles, CONSOLIDATED_MAIL_TITLE, weeklyLabel } from "@/lib/consolidatedStockExport";
-import { CONSOLIDATED_MAIL_RECIPIENTS } from "@/lib/consolidatedMail";
+import { exportConsolidatedWorkbook, consolidatedMailFiles, CONSOLIDATED_MAIL_TITLE, weeklyLabel, type ConsolidatedMailKind } from "@/lib/consolidatedStockExport";
 import { fetchConsolidated, uploadGodownWorkbook, uploadRestockWorkbook, type ConsolidatedData } from "@/lib/consolidatedStockUpload";
 import { runningOut, salesDropped, noSales, NO_SALES_MIN_STOCK, RUNNING_OUT_DAYS, CONSOLIDATED_DAYS, type ConsolidatedRow } from "@/lib/consolidatedStock";
 import { NOT_LISTED_PRODUCTS, NOT_LISTED_AS_OF } from "@/lib/notListedProducts";
@@ -46,7 +45,7 @@ export default function ConsolidatedStockPage() {
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [mailing, setMailing] = useState(false);
+  const [mailing, setMailing] = useState<ConsolidatedMailKind | null>(null);
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
   const qc = useQueryClient();
   const godownRef = useRef<HTMLInputElement>(null);
@@ -148,35 +147,28 @@ export default function ConsolidatedStockPage() {
     }
   };
 
-  // "Send mail" (user, 2026-10-16): three separate mails, each with its own file and recipients
-  // (src/lib/consolidatedMail.ts) — No sales & Sales dropped, Running out of stock, the Consolidated sheet only.
-  const sendMail = async () => {
+  // Mail buttons (user, 2026-10-16): No sales & Sales dropped, Running out of stock and the Consolidated
+  // sheet go separately, each from its own button with its own file and recipients (src/lib/consolidatedMail.ts).
+  const sendMail = async (kind: ConsolidatedMailKind) => {
     if (!data) return;
-    const lines = (Object.keys(CONSOLIDATED_MAIL_RECIPIENTS) as (keyof typeof CONSOLIDATED_MAIL_RECIPIENTS)[])
-      .map((k) => `• ${CONSOLIDATED_MAIL_TITLE[k]} → ${CONSOLIDATED_MAIL_RECIPIENTS[k].to.join(", ")} (cc ${CONSOLIDATED_MAIL_RECIPIENTS[k].cc.length})`);
-    if (!window.confirm(`Send these 3 mails now?\n\n${lines.join("\n")}`)) return;
-    setMailing(true);
+    const title = CONSOLIDATED_MAIL_TITLE[kind];
+    if (!window.confirm(`Send the "${title}" mail now?`)) return;
+    setMailing(kind);
     setNote(null);
-    const done: string[] = [], failed: string[] = [];
     try {
-      for (const f of consolidatedMailFiles(data)) {
-        let bin = "";
-        for (let i = 0; i < f.bytes.length; i += 0x8000) bin += String.fromCharCode(...f.bytes.subarray(i, i + 0x8000));
-        try {
-          const r = await fetch("/api/consolidated-mail", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ kind: f.kind, filename: f.filename, content: btoa(bin), date: f.date, rows: f.rows }),
-          });
-          const j = await r.json().catch(() => ({}));
-          if (r.ok) done.push(CONSOLIDATED_MAIL_TITLE[f.kind]);
-          else failed.push(`${CONSOLIDATED_MAIL_TITLE[f.kind]} (${j?.error || `HTTP ${r.status}`})`);
-        } catch (e) {
-          failed.push(`${CONSOLIDATED_MAIL_TITLE[f.kind]} (${e instanceof Error ? e.message : "request failed"})`);
-        }
-      }
-      setNote({ ok: !failed.length, text: [done.length ? `Mail sent: ${done.join(", ")}.` : "", failed.length ? `Not sent: ${failed.join("; ")}.` : ""].filter(Boolean).join(" ") });
+      const f = consolidatedMailFiles(data).find((x) => x.kind === kind)!;
+      let bin = "";
+      for (let i = 0; i < f.bytes.length; i += 0x8000) bin += String.fromCharCode(...f.bytes.subarray(i, i + 0x8000));
+      const r = await fetch("/api/consolidated-mail", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, filename: f.filename, content: btoa(bin), date: f.date, rows: f.rows }),
+      });
+      const j = await r.json().catch(() => ({}));
+      setNote(r.ok ? { ok: true, text: `"${title}" mail sent.` } : { ok: false, text: `"${title}" mail not sent: ${j?.error || `HTTP ${r.status}`}` });
+    } catch (e) {
+      setNote({ ok: false, text: `"${title}" mail not sent: ${e instanceof Error ? e.message : "request failed"}` });
     } finally {
-      setMailing(false);
+      setMailing(null);
     }
   };
 
@@ -217,9 +209,11 @@ export default function ConsolidatedStockPage() {
         <button onClick={exportExcel} disabled={!data?.rows.length || exporting} className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-3.5 py-2 text-xs font-bold hover:bg-muted disabled:opacity-60">
           {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} Export Excel
         </button>
-        <button onClick={sendMail} disabled={!data?.rows.length || mailing} title="Mails No sales & Sales dropped, Running out of stock and the Consolidate sheet — each as its own file to its own list" className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-3.5 py-2 text-xs font-bold hover:bg-muted disabled:opacity-60">
-          {mailing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />} Send mail
-        </button>
+{(["runningout", "consolidated", "nosales"] as ConsolidatedMailKind[]).map((k) => (
+          <button key={k} onClick={() => sendMail(k)} disabled={!data?.rows.length || mailing !== null} title={`Mail the "${CONSOLIDATED_MAIL_TITLE[k]}" file`} className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-3.5 py-2 text-xs font-bold hover:bg-muted disabled:opacity-60">
+            {mailing === k ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />} Mail: {CONSOLIDATED_MAIL_TITLE[k]}
+          </button>
+        ))}
         {note && (
           <span className={`flex items-center gap-1.5 text-xs font-semibold ${note.ok ? "text-green-700 dark:text-green-400" : "text-red-700 dark:text-red-400"}`}>
             {note.ok ? <CheckCircle2 className="h-3.5 w-3.5" /> : <AlertTriangle className="h-3.5 w-3.5" />}{note.text}
