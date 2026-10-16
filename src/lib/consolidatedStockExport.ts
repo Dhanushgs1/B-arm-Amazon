@@ -326,3 +326,43 @@ export function exportConsolidatedWorkbook(data: ConsolidatedExportData) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
+
+// ── "Send mail" (user, 2026-10-16): three separate mails, each with its own file ──────────────────
+// Recipients are fixed server-side per kind (src/pages/api/consolidated-mail.ts).
+export type ConsolidatedMailKind = "nosales" | "runningout" | "consolidated";
+export const CONSOLIDATED_MAIL_TITLE: Record<ConsolidatedMailKind, string> = {
+  nosales: "No sales & Sales dropped",
+  runningout: "Products running out of stock",
+  consolidated: "Consolidate sheet",
+};
+const MAIL_SHEETS: Record<ConsolidatedMailKind, string[] | null> = {
+  nosales: ["No Sales products", "Sales dropped products"],
+  runningout: ["Products running out of stock"],
+  consolidated: null,                                   // the whole workbook, as Export Excel
+};
+
+/** Only `names` of `wb` (sheets and their frozen panes / filters shared, not copied). */
+function pickSheets(wb: XLSX.WorkBook, names: string[]): XLSX.WorkBook {
+  const out = XLSX.utils.book_new();
+  const lay = layouts.get(wb) ?? {};
+  for (const n of names) {
+    XLSX.utils.book_append_sheet(out, wb.Sheets[n], n);
+    if (lay[n]) setLayout(out, n, lay[n]);
+  }
+  return out;
+}
+
+/** The three mail attachments: kind, file name, .xlsx bytes, rows in it. */
+export function consolidatedMailFiles(data: ConsolidatedExportData) {
+  const wb = buildConsolidatedWorkbook(data);
+  const date = dmy(data.dates.at(-1) ?? data.snapshotDate ?? "");
+  const rows: Record<ConsolidatedMailKind, number> = {
+    nosales: noSales(data.rows).length + salesDropped(data.rows).length,
+    runningout: runningOut(data.rows).length,
+    consolidated: data.rows.length,
+  };
+  return (Object.keys(MAIL_SHEETS) as ConsolidatedMailKind[]).map((kind) => {
+    const names = MAIL_SHEETS[kind];
+    return { kind, date, rows: rows[kind], filename: `${CONSOLIDATED_MAIL_TITLE[kind]} -${date}.xlsx`, bytes: consolidatedWorkbookBytes(names ? pickSheets(wb, names) : wb) };
+  });
+}

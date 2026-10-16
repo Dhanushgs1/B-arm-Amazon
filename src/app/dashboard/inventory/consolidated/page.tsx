@@ -12,13 +12,14 @@ import { InventoryTabs } from "@/components/InventoryTabs";
 import { useDashboard } from "@/lib/DashboardContext";
 import { KPICard } from "@/components/KPICard";
 import { QueryErrorState } from "@/components/QueryErrorState";
-import { exportConsolidatedWorkbook, weeklyLabel } from "@/lib/consolidatedStockExport";
+import { exportConsolidatedWorkbook, consolidatedMailFiles, CONSOLIDATED_MAIL_TITLE, weeklyLabel } from "@/lib/consolidatedStockExport";
+import { CONSOLIDATED_MAIL_RECIPIENTS } from "@/lib/consolidatedMail";
 import { fetchConsolidated, uploadGodownWorkbook, uploadRestockWorkbook, type ConsolidatedData } from "@/lib/consolidatedStockUpload";
 import { runningOut, salesDropped, noSales, NO_SALES_MIN_STOCK, RUNNING_OUT_DAYS, CONSOLIDATED_DAYS, type ConsolidatedRow } from "@/lib/consolidatedStock";
 import { NOT_LISTED_PRODUCTS, NOT_LISTED_AS_OF } from "@/lib/notListedProducts";
 import { readDaily } from "@/lib/godownAnalyticsData";
 import { analyzeGodown } from "@/lib/godownAnalytics";
-import { Loader2, Upload, Download, Search, Info, CheckCircle2, AlertTriangle } from "lucide-react";
+import { Loader2, Upload, Download, Search, Info, CheckCircle2, AlertTriangle, Send } from "lucide-react";
 
 type View = "all" | "running" | "dropped" | "nosales" | "notlisted";
 
@@ -45,6 +46,7 @@ export default function ConsolidatedStockPage() {
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [mailing, setMailing] = useState(false);
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
   const qc = useQueryClient();
   const godownRef = useRef<HTMLInputElement>(null);
@@ -124,22 +126,57 @@ export default function ConsolidatedStockPage() {
 
   // Export adds the "Seasonal Analytics" sheet, built from the full godown history (user, 2026-10-13).
   // If that history can't be read, the workbook is still exported without it and the page says so.
+  const withSeasonal = async (d: ConsolidatedData) => {
+    const asOf = d.dates[d.dates.length - 1];
+    try {
+      const a = analyzeGodown(d.rows, await readDaily(asOf), asOf);
+      return { ...d, seasonal: { coverage: a.coverage, products: a.products } };
+    } catch (e) {
+      setNote({ ok: false, text: `Seasonal Analytics sheet left out: ${e instanceof Error ? e.message : "godown history could not be read"}` });
+      return { ...d, seasonal: null };
+    }
+  };
+
   const exportExcel = async () => {
     if (!data) return;
     setExporting(true);
     setNote(null);
     try {
-      const asOf = data.dates[data.dates.length - 1];
-      let seasonal = null;
-      try {
-        const a = analyzeGodown(data.rows, await readDaily(asOf), asOf);
-        seasonal = { coverage: a.coverage, products: a.products };
-      } catch (e) {
-        setNote({ ok: false, text: `Seasonal Analytics sheet left out: ${e instanceof Error ? e.message : "godown history could not be read"}` });
-      }
-      exportConsolidatedWorkbook({ ...data, seasonal });
+      exportConsolidatedWorkbook(await withSeasonal(data));
     } finally {
       setExporting(false);
+    }
+  };
+
+  // "Send mail" (user, 2026-10-16): three separate mails, each with its own file and recipients
+  // (src/lib/consolidatedMail.ts) — No sales & Sales dropped, Running out of stock, the full Consolidate sheet.
+  const sendMail = async () => {
+    if (!data) return;
+    const lines = (Object.keys(CONSOLIDATED_MAIL_RECIPIENTS) as (keyof typeof CONSOLIDATED_MAIL_RECIPIENTS)[])
+      .map((k) => `• ${CONSOLIDATED_MAIL_TITLE[k]} → ${CONSOLIDATED_MAIL_RECIPIENTS[k].to.join(", ")} (cc ${CONSOLIDATED_MAIL_RECIPIENTS[k].cc.length})`);
+    if (!window.confirm(`Send these 3 mails now?\n\n${lines.join("\n")}`)) return;
+    setMailing(true);
+    setNote(null);
+    const done: string[] = [], failed: string[] = [];
+    try {
+      for (const f of consolidatedMailFiles(await withSeasonal(data))) {
+        let bin = "";
+        for (let i = 0; i < f.bytes.length; i += 0x8000) bin += String.fromCharCode(...f.bytes.subarray(i, i + 0x8000));
+        try {
+          const r = await fetch("/api/consolidated-mail", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ kind: f.kind, filename: f.filename, content: btoa(bin), date: f.date, rows: f.rows }),
+          });
+          const j = await r.json().catch(() => ({}));
+          if (r.ok) done.push(CONSOLIDATED_MAIL_TITLE[f.kind]);
+          else failed.push(`${CONSOLIDATED_MAIL_TITLE[f.kind]} (${j?.error || `HTTP ${r.status}`})`);
+        } catch (e) {
+          failed.push(`${CONSOLIDATED_MAIL_TITLE[f.kind]} (${e instanceof Error ? e.message : "request failed"})`);
+        }
+      }
+      setNote({ ok: !failed.length, text: [done.length ? `Mail sent: ${done.join(", ")}.` : "", failed.length ? `Not sent: ${failed.join("; ")}.` : ""].filter(Boolean).join(" ") });
+    } finally {
+      setMailing(false);
     }
   };
 
@@ -179,6 +216,9 @@ export default function ConsolidatedStockPage() {
         </button>
         <button onClick={exportExcel} disabled={!data?.rows.length || exporting} className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-3.5 py-2 text-xs font-bold hover:bg-muted disabled:opacity-60">
           {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} Export Excel
+        </button>
+        <button onClick={sendMail} disabled={!data?.rows.length || mailing} title="Mails No sales & Sales dropped, Running out of stock and the Consolidate sheet — each as its own file to its own list" className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-3.5 py-2 text-xs font-bold hover:bg-muted disabled:opacity-60">
+          {mailing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />} Send mail
         </button>
         {note && (
           <span className={`flex items-center gap-1.5 text-xs font-semibold ${note.ok ? "text-green-700 dark:text-green-400" : "text-red-700 dark:text-red-400"}`}>
