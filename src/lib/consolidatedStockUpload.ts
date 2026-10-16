@@ -14,7 +14,7 @@
 import * as XLSX from "xlsx";
 import { supabasePublic } from "@/lib/amazonReportUpload";
 import { fetchAllRows } from "@/lib/amazonReportShared";
-import { currentGodownName, isGodownDuplicate, keptGodownName, mergeGodownProducts } from "@/lib/godownProductAliases";
+import { checkStockMapping, keptGodownName, mergeGodownDaily, mergeGodownProducts, type StockMappingIssue } from "@/lib/godownProductAliases";
 import { chunk } from "@/lib/amazonOrderUploadRules";
 import {
   parseGodownSheet, buildConsolidated, weeklyInputs, mondayOf, istToday, parseRestockRows, restockSources, mergeRestockRows, dateFromFileName, onlyRestockProducts, productKey, CONSOLIDATED_DAYS,
@@ -109,6 +109,8 @@ export interface ConsolidatedData {
   rows: ConsolidatedRow[];
   combos: ComponentNeed[];
   weekly: WeeklySnapshotInfo | null;
+  /** Godown stock that did not reach the sheet as expected (checkStockMapping); empty when all is mapped. */
+  stockIssues?: StockMappingIssue[];
 }
 
 /** Selected columns of a table, paged (PostgREST caps a response at 1000 rows). */
@@ -220,6 +222,7 @@ export async function fetchConsolidated(asOf?: string): Promise<ConsolidatedData
     readShippedBefore(from),
     fetchRestockInputs(asOf ?? istToday()),
   ]);
+  const rawStock = stock.map((s) => ({ product: String(s.product), currentStock: Number(s.current_stock) || 0 }));
   const godown = mergeGodownProducts(stock.map((s) => ({
     product: s.product, currentStock: Number(s.current_stock) || 0, inboundShipped: Number(s.inbound_shipped) || 0,
     unfulfillable: Number(s.unfulfillable) || 0, warehouse: Number(s.warehouse) || 0, qcGodown: Number(s.qc_godown) || 0,
@@ -229,12 +232,15 @@ export async function fetchConsolidated(asOf?: string): Promise<ConsolidatedData
   const products: GodownProduct[] = live.restockNames ? onlyRestockProducts(godown, live.restockNames) : godown;
   const { dates, rows } = buildConsolidated(
     products,
-    // renamed products (src/lib/godownProductAliases.ts) count under their current name; duplicate copies are left out
-    [...older, ...recent].filter((d) => !isGodownDuplicate(d.product)).map((d) => ({ date: d.stock_date, product: currentGodownName(d.product), stockOut: Number(d.stock_out) || 0 })),
+    // renamed products (src/lib/godownProductAliases.ts) count under their current name; a duplicate copy's
+    // day is left out only when its original has that day too
+    mergeGodownDaily([...older, ...recent].map((d) => ({ date: d.stock_date, product: String(d.product), stockOut: Number(d.stock_out) || 0 }))),
     live.inputs,
     CONSOLIDATED_DAYS,
     live.combos,
   );
   const named = rows.map((r) => ({ ...r, product: live.shownAs.get(productKey(r.product)) || r.product, godownName: r.product }));
-  return { snapshotDate, uploadedAt: stock[0]?.uploaded_at ?? null, dates, rows: named, combos: live.combos, weekly: live.weekly };
+  const stockIssues = checkStockMapping(rawStock, products);
+  if (stockIssues.length) console.warn("[Marketplace360] Consolidated stock mapping:", stockIssues);
+  return { snapshotDate, uploadedAt: stock[0]?.uploaded_at ?? null, dates, rows: named, combos: live.combos, weekly: live.weekly, stockIssues };
 }
