@@ -358,7 +358,13 @@ function SocialMediaUploadCard({ onUploaded, dataInfo }: { onUploaded: () => voi
     setState({ status: "parsing", fileName: file.name });
     try {
       const res = await uploadSocialMediaReportFile(file);
-      const message = `${res.savedRows} rows saved${res.skippedRows ? `, ${res.skippedRows} skipped` : ""} (of ${res.totalRows})`;
+      // List every window saved, so a workbook with a single-day sheet and a 7-day sheet shows both.
+      const windows = res.windows
+        .map((w) => `${w.start === w.end ? w.start : `${w.start} → ${w.end}`} (${w.days === 1 ? "1 day" : `${w.days} days`}) ₹${w.spend.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`)
+        .join(" · ");
+      const message = res.savedRows
+        ? `Saved ${windows}${res.skippedRows ? ` — ${res.skippedRows} total/blank rows skipped` : ""}`
+        : `Nothing saved — no row had a Campaign name with Reporting starts/ends (${res.totalRows} rows read)`;
       setState({ status: "done", fileName: file.name, message });
       onUploaded();
     } catch (err) {
@@ -379,7 +385,8 @@ function SocialMediaUploadCard({ onUploaded, dataInfo }: { onUploaded: () => voi
       </div>
       <p className="text-xs text-muted-foreground mb-4">
         Drop Meta Ads Manager&apos;s &quot;Raw Data Report&quot; export here — a single day&apos;s export or a
-        multi-day range both work, this card auto-detects which. Feeds the{" "}
+        multi-day range both work, this card auto-detects which. One workbook can carry both — e.g. a
+        &quot;oct 15&quot; sheet and an &quot;oct 9-15&quot; sheet — and every sheet is saved. Feeds the{" "}
         <Link href="/dashboard/reports" className="underline hover:text-foreground">Ad Spend Report</Link>&apos;s
         Summary sheet &quot;Social Media&quot; row.
       </p>

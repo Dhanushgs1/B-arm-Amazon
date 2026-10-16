@@ -104,6 +104,36 @@ export interface SocialMediaUploadResult {
   skippedRows: number;
   minDate: string | null;
   maxDate: string | null;
+  /** One entry per reporting window saved (a single day, a 7-day range, ...), oldest end first —
+   *  so the card can show that a two-sheet workbook saved both its day and its range. */
+  windows: SocialMediaSavedWindow[];
+}
+
+export interface SocialMediaSavedWindow {
+  start: string;
+  end: string;
+  days: number;
+  spend: number;
+  campaigns: number;
+}
+
+function savedWindows(rows: { report_start?: string | null; report_end?: string | null; spend?: number }[]): SocialMediaSavedWindow[] {
+  const byWindow = new Map<string, SocialMediaSavedWindow>();
+  for (const r of rows) {
+    if (!r.report_start || !r.report_end) continue;
+    const key = `${r.report_start}|${r.report_end}`;
+    const w = byWindow.get(key) ?? {
+      start: r.report_start,
+      end: r.report_end,
+      days: Math.round((Date.parse(r.report_end) - Date.parse(r.report_start)) / 86_400_000) + 1,
+      spend: 0,
+      campaigns: 0,
+    };
+    w.spend = Math.round((w.spend + (r.spend ?? 0)) * 100) / 100;
+    w.campaigns += 1;
+    byWindow.set(key, w);
+  }
+  return [...byWindow.values()].sort((a, b) => a.end.localeCompare(b.end) || b.days - a.days);
 }
 
 export async function uploadSocialMediaReportFile(file: File): Promise<SocialMediaUploadResult> {
@@ -117,18 +147,20 @@ export async function uploadSocialMediaReportFile(file: File): Promise<SocialMed
   const valid = mergeMetaRows(mapped).map((r) => { const row: Partial<MappedRow> = { ...r }; delete row.sheet; return row; });
 
   if (!valid.length) {
-    return { totalRows: rawRows.length, savedRows: 0, skippedRows: rawRows.length, minDate: null, maxDate: null };
+    return { totalRows: rawRows.length, savedRows: 0, skippedRows: rawRows.length, minDate: null, maxDate: null, windows: [] };
   }
 
   await upsertInChunks(valid as unknown as Record<string, unknown>[]);
 
-  const dates = valid.map((r) => r.report_start as string).sort();
+  const starts = valid.map((r) => r.report_start as string).sort();
+  const ends = valid.map((r) => r.report_end as string).sort();
   return {
     totalRows: rawRows.length,
     savedRows: valid.length,
     skippedRows: rawRows.length - valid.length,
-    minDate: dates[0] ?? null,
-    maxDate: dates[dates.length - 1] ?? null,
+    minDate: starts[0] ?? null,
+    maxDate: ends[ends.length - 1] ?? null,
+    windows: savedWindows(valid),
   };
 }
 
