@@ -120,10 +120,13 @@ export default function ReportsPage() {
       const loadWarning = res.dataLoadErrors.length
         ? ` ⚠ ${res.dataLoadErrors.map((e) => `${e.platform} data could not be loaded (${e.error})`).join("; ")} — its figures in this file are missing, not zero. Regenerate once it's fixed.`
         : "";
+      const spendWarning = res.amazonSpendWarnings.length
+        ? ` ⚠ Amazon Brand/Display spend not in the figures: ${res.amazonSpendWarnings.join(" ")}`
+        : "";
       const emailNote = res.emailCopy.saved
         ? " · saved for Send (the email will carry this same Summary and file)"
         : ` · ⚠ not saved for Send (${res.emailCopy.error}) — Send would use an older copy; download again`;
-      setAdSpendMsg(`Downloaded ${res.filename} — ${res.productCount} products, range spend ${parts}${res.lowSpendCampaignCount ? `, ${res.lowSpendCampaignCount} low-spend campaigns flagged` : ""}${res.historyRowsSaved ? ` · ${res.historyRowsSaved} rows saved to history` : " · history not saved (run scripts/ad_spend_history_table.sql?)"}${emailNote}.${loadWarning}`);
+      setAdSpendMsg(`Downloaded ${res.filename} — ${res.productCount} products, range spend ${parts}${res.lowSpendCampaignCount ? `, ${res.lowSpendCampaignCount} low-spend campaigns flagged` : ""}${res.historyRowsSaved ? ` · ${res.historyRowsSaved} rows saved to history` : " · history not saved (run scripts/ad_spend_history_table.sql?)"}${emailNote}.${loadWarning}${spendWarning}`);
       setJobStatus("completed");
     } catch (err) {
       setAdSpendMsg("Failed: " + (err instanceof Error ? err.message : String(err)));
