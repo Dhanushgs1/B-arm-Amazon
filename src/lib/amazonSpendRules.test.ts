@@ -173,3 +173,16 @@ test("campaignsMissingOnDay: a campaign that spent, then ran ₹0 rows, then dro
   ];
   assert.deepEqual(campaignsMissingOnDay([], sp, "2026-10-15"), []);
 });
+
+test("SKU-less: an Ad Type spelled out as 'Sponsored Display' is Display, not Brands (so it can't double an SD report row)", () => {
+  const { campaignDays } = collectSkuLessSpend([amRow({ campaign_name: "Display X", ad_type: "Sponsored Display", spend: 9 })]);
+  assert.equal(campaignDays[0].ad_type, "SD");
+});
+
+test("unmappedCampaignSpend: the mapping is looked up with the stored (untrimmed) name, like the report's spend loop", () => {
+  const rows = [{ campaign_name: "Brand A ", report_date: "2026-10-15", spend: 10 }];
+  // Mapped under its exact stored name -> mapped, so it is not listed (the spend loop spreads it).
+  assert.deepEqual(unmappedCampaignSpend(rows, (c) => c === "Brand A "), []);
+  // Only a trimmed key exists -> the spend loop can't find it either, so it IS listed (and counted as unmapped).
+  assert.deepEqual(unmappedCampaignSpend(rows, (c) => c === "Brand A"), [{ campaign_name: "Brand A", spend: 10, dates: ["2026-10-15"] }]);
+});

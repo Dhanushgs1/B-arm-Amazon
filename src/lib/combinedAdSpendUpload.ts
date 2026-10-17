@@ -626,36 +626,57 @@ async function writeReportTable(ws: XLSX.WorkSheet, spec: ReportTableSpec): Prom
 const SKU_LESS_SOURCE = "AM ads (no Advertised SKU)";
 const inr = (n: number) => `₹${n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-async function saveSkuLessCampaignDays(table: string, days: SkuLessCampaignDay[]): Promise<{ saved: SkuLessCampaignDay[]; keptReportRows: SkuLessCampaignDay[] }> {
-  if (!days.length) return { saved: [], keptReportRows: [] };
+type CampaignTableRow = { id: number; report_date: string; campaign_name: string; raw?: { source?: string } | null };
+const SKU_LESS_TABLES = { SB: "barm_amazon_sb_campaign", SD: "barm_amazon_sd_campaign" } as const;
+const dayKey = (date: string, campaign: string) => `${String(date).slice(0, 10)}|${campaign}`;
+
+async function readCampaignRows(table: string, days: SkuLessCampaignDay[]): Promise<CampaignTableRow[]> {
   const dates = days.map((d) => d.report_date).sort();
   const { data, error } = await supabasePublic
     .from(table)
-    .select("report_date, campaign_name, raw")
+    .select("id, report_date, campaign_name, raw")
     .gte("report_date", dates[0])
     .lte("report_date", dates[dates.length - 1])
     .in("campaign_name", [...new Set(days.map((d) => d.campaign_name))]);
   if (error) throw new Error(`Reading ${table} failed: ${error.message}`);
-  // A row from Amazon's own SB/SD campaign report (uploaded separately) is the fuller source for that
-  // campaign-day — left as it is. Only rows this function wrote earlier are refreshed.
+  return (data || []) as CampaignTableRow[];
+}
+
+/** Saves each SKU-less campaign-day to its SB or SD table — at most one row per campaign-day across BOTH
+ *  tables, since the report sums SB and SD rows together. A campaign-day Amazon's own SB/SD campaign
+ *  report already has (in either table) is the fuller source and is left as it is; a copy this function
+ *  saved earlier to the other table (e.g. before its Ad Type read "Sponsored Display") is removed. */
+async function saveSkuLessCampaignDays(days: SkuLessCampaignDay[]): Promise<{ saved: SkuLessCampaignDay[]; keptReportRows: SkuLessCampaignDay[] }> {
+  if (!days.length) return { saved: [], keptReportRows: [] };
+  const existing = { SB: await readCampaignRows(SKU_LESS_TABLES.SB, days), SD: await readCampaignRows(SKU_LESS_TABLES.SD, days) };
   const fromCampaignReport = new Set(
-    (data || [])
-      .filter((r: { raw?: { source?: string } | null }) => r.raw?.source !== SKU_LESS_SOURCE)
-      .map((r: { report_date: string; campaign_name: string }) => `${String(r.report_date).slice(0, 10)}|${r.campaign_name}`),
+    [...existing.SB, ...existing.SD].filter((r) => r.raw?.source !== SKU_LESS_SOURCE).map((r) => dayKey(r.report_date, r.campaign_name)),
   );
-  const keptReportRows = days.filter((d) => fromCampaignReport.has(`${d.report_date}|${d.campaign_name}`));
-  const saved = days.filter((d) => !fromCampaignReport.has(`${d.report_date}|${d.campaign_name}`));
-  for (const part of chunk(saved, 300)) {
-    const { error: upErr } = await supabasePublic.from(table).upsert(
-      part.map((d) => ({
-        report_date: d.report_date,
-        campaign_name: d.campaign_name,
-        spend: Math.round(d.spend * 100) / 100,
-        raw: { source: SKU_LESS_SOURCE, ad_type: d.ad_type, rows: d.rows },
-      })),
-      { onConflict: "report_date,campaign_name" },
-    );
-    if (upErr) throw new Error(`Saving SKU-less spend to ${table} failed: ${upErr.message}`);
+  const keptReportRows = days.filter((d) => fromCampaignReport.has(dayKey(d.report_date, d.campaign_name)));
+  const saved = days.filter((d) => !fromCampaignReport.has(dayKey(d.report_date, d.campaign_name)));
+  for (const type of ["SB", "SD"] as const) {
+    const other = type === "SB" ? "SD" : "SB";
+    const mine = saved.filter((d) => d.ad_type === type);
+    const keys = new Set(mine.map((d) => dayKey(d.report_date, d.campaign_name)));
+    const staleIds = existing[other]
+      .filter((r) => r.raw?.source === SKU_LESS_SOURCE && keys.has(dayKey(r.report_date, r.campaign_name)))
+      .map((r) => r.id);
+    for (const part of chunk(staleIds, 300)) {
+      const { error } = await supabasePublic.from(SKU_LESS_TABLES[other]).delete().in("id", part);
+      if (error) throw new Error(`Removing an earlier SKU-less copy from ${SKU_LESS_TABLES[other]} failed: ${error.message}`);
+    }
+    for (const part of chunk(mine, 300)) {
+      const { error } = await supabasePublic.from(SKU_LESS_TABLES[type]).upsert(
+        part.map((d) => ({
+          report_date: d.report_date,
+          campaign_name: d.campaign_name,
+          spend: Math.round(d.spend * 100) / 100,
+          raw: { source: SKU_LESS_SOURCE, ad_type: d.ad_type, rows: d.rows },
+        })),
+        { onConflict: "report_date,campaign_name" },
+      );
+      if (error) throw new Error(`Saving SKU-less spend to ${SKU_LESS_TABLES[type]} failed: ${error.message}`);
+    }
   }
   return { saved, keptReportRows };
 }
@@ -710,9 +731,7 @@ export async function saveSkuLessAmAdsSpend(ws: XLSX.WorkSheet): Promise<{ detai
   const splitNote = alreadySplit ? `${alreadySplit} Brand/Display campaign-day${alreadySplit === 1 ? "" : "s"} with no SKU here already split per SKU in the SP table, not saved again` : "";
   if (!campaignDays.length) return { detail: splitNote, warnings };
 
-  const sb = await saveSkuLessCampaignDays("barm_amazon_sb_campaign", campaignDays.filter((d) => d.ad_type === "SB"));
-  const sd = await saveSkuLessCampaignDays("barm_amazon_sd_campaign", campaignDays.filter((d) => d.ad_type === "SD"));
-  const saved = [...sb.saved, ...sd.saved];
+  const { saved, keptReportRows } = await saveSkuLessCampaignDays(campaignDays);
   const mapped = await fetchMappedCampaigns();
   const unmapped = saved.filter((d) => !mapped.has(d.campaign_name));
   const unmappedByCampaign = new Map<string, { spend: number; dates: string[] }>();
@@ -729,7 +748,7 @@ export async function saveSkuLessAmAdsSpend(ws: XLSX.WorkSheet): Promise<{ detai
   const detail = saved.length
     ? `${saved.length} Brand/Display campaign-day${saved.length === 1 ? "" : "s"} with no SKU split (${inr(total)}) saved for the campaign-to-SKU mapping` +
       (unmapped.length ? `, ${unmapped.length} of them unmapped` : ", all mapped") +
-      ([...sb.keptReportRows, ...sd.keptReportRows].length ? `; ${[...sb.keptReportRows, ...sd.keptReportRows].length} already on file from the SB/SD campaign report, left as is` : "")
+      (keptReportRows.length ? `; ${keptReportRows.length} already on file from the SB/SD campaign report, left as is` : "")
     : `${campaignDays.length} Brand/Display campaign-day${campaignDays.length === 1 ? "" : "s"} with no SKU split already on file from the SB/SD campaign report, left as is`;
   return { detail: [detail, splitNote].filter(Boolean).join("; "), warnings };
 }
