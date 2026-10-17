@@ -96,7 +96,7 @@ export default function ConsolidatedStockPage() {
     try {
       const r = await uploadGodownWorkbook(file);
       const fc = await fcCheck("godown");
-      setNote({ ok: true, text: `Godown sheet saved: ${r.products} products, stock as on ${dateLong(r.snapshotDate)}, ${r.days} days of movement.${r.warnings.length ? " " + r.warnings.join(" ") : ""}${fc}` });
+      setNote({ ok: true, text: `Godown sheet saved: ${r.products} products${r.notRestocked ? ` (+ ${r.notRestocked} on Not restocked Products)` : ""}, stock as on ${dateLong(r.snapshotDate)}, ${r.days} days of movement.${r.warnings.length ? " " + r.warnings.join(" ") : ""}${fc}` });
       await refetch();
     } catch (e) {
       setNote({ ok: false, text: e instanceof Error ? e.message : "Upload failed" });

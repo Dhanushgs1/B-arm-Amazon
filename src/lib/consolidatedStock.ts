@@ -109,6 +109,36 @@ const num = (v: Cell): number => {
 export const productKey = (s: Cell) => String(s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 const label = (s: Cell) => String(s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 
+/** Current stock from the godown workbook's "Not restocked Products" tab (user, 2026-10-17: the client
+ *  counts it — "Nail cleaning device" moved there in the 14.10.2026 file with 2 units). Master name in
+ *  the column headed "MASTER NAME" (C); stock = Inbound + unfulfillable + Final Stock in Warehouse +
+ *  QC godown + Packing godown, as on the FC Stock sheet (#N/A counts as 0), summed per master product.
+ *  Its dated blocks end in 2025, so daily Stock Out keeps coming from the FC Stock sheet only. */
+export function parseNotRestockedStock(rows: Cell[][]): { products: GodownProduct[]; warnings: string[] } {
+  const head = rows[0] ?? [], sub = rows[1] ?? [];
+  const masterCol = sub.findIndex((h) => label(h) === "master name");
+  const find = (re: RegExp) => head.findIndex((h) => re.test(label(h)));
+  const cols = {
+    inbound: find(/^inbound( shipped)?$/), unfulfillable: find(/^unfulfillable$/), warehouse: find(/^final stock in warehouse$/),
+    qc: find(/^qc godown stock sheet$/), packing: find(/^packing godown stock sheet$/),
+  };
+  const missing = [...(masterCol < 0 ? ["MASTER NAME"] : []), ...Object.entries(cols).filter(([, i]) => i < 0).map(([k]) => k)];
+  if (missing.length) return { products: [], warnings: [`"Not restocked Products" tab skipped: column ${missing.join(", ")} not found.`] };
+  const by = new Map<string, GodownProduct>();
+  for (const r of rows.slice(2)) {
+    const name = String(r[masterCol] ?? "").replace(/\s+/g, " ").trim();
+    const key = productKey(name);
+    if (!key || key === "0") continue;
+    const p = by.get(key) ?? { product: name, currentStock: 0, inboundShipped: 0, unfulfillable: 0, warehouse: 0, qcGodown: 0, packingGodown: 0, skuRows: 0, discontinued: false };
+    p.inboundShipped += num(r[cols.inbound]); p.unfulfillable += num(r[cols.unfulfillable]); p.warehouse += num(r[cols.warehouse]);
+    p.qcGodown += num(r[cols.qc]); p.packingGodown += num(r[cols.packing]);
+    p.currentStock = p.inboundShipped + p.unfulfillable + p.warehouse + p.qcGodown + p.packingGodown;
+    p.skuRows++;
+    by.set(key, p);
+  }
+  return { products: [...by.values()], warnings: [] };
+}
+
 /** "Stock as on 26.08.2026" → "2026-08-26". */
 export function blockDate(header: Cell): string | null {
   const m = String(header ?? "").match(/stock as on\s*(\d{1,2})[./-](\d{1,2})[./-](\d{4})/i);

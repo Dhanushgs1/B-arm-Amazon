@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseGodownSheet, buildConsolidated, componentNeeds, mondayOf, istToday, weeklyInputs, runningOut, salesDropped, noSales, blockDate, parseRestockRows, restockSources, mergeRestockRows, dateFromFileName, withExtraProducts, onlyRestockProducts } from "./consolidatedStock.ts";
+import { parseGodownSheet, parseNotRestockedStock, buildConsolidated, componentNeeds, mondayOf, istToday, weeklyInputs, runningOut, salesDropped, noSales, blockDate, parseRestockRows, restockSources, mergeRestockRows, dateFromFileName, withExtraProducts, onlyRestockProducts } from "./consolidatedStock.ts";
 
 // Shape of the godown "FC Stock sheet": A Products, D master product, named stock columns, then
 // "Stock as on" blocks of Opening | Stock IN | Stock Out | Closing.
@@ -274,4 +274,31 @@ test("with a restock input file, only its products are listed (user, 2026-10-15)
   const p = (product: string, currentStock: number) => ({ product, currentStock, inboundShipped: 0, unfulfillable: 0, warehouse: 0, qcGodown: 0, packingGodown: 0, skuRows: 1, discontinued: false });
   const out = onlyRestockProducts([p("Blades", 10), p("Godown only", 5)], ["blades ", "Neck traction pillow (Blue)"]);
   assert.deepEqual(out.map((x) => [x.product, x.currentStock]), [["Blades", 10], ["Neck traction pillow (Blue)", 0]]);
+});
+
+// "Not restocked Products" tab as in the 14.10.2026 godown file (header rows, two listings of one master
+// product, #N/A in the QC / Packing columns, a section row without a master name).
+test("Not restocked Products tab: stock per master product, #N/A as 0, missing columns skipped with a warning", async () => {
+  const head = ["Products", null, null, null, "SKU ", "FC \nCentre", "FBA", "In transit to FBA/Not Shipped/In transit to Office", "Inbound", "unfulfillable", "cancelled", "Reserved", "Yesterday stock",
+    null, null, null, "COUNT CHECK", null, null, null, null, "Final Stock in Warehouse", "QC Godown stock sheet", "Packing godown stock sheet"];
+  const sub = [null, null, "MASTER NAME", "MASTER SKU"];
+  const row = (listing: string, master: string | null, inbound: unknown, unf: unknown, wh: unknown) => {
+    const r: unknown[] = Array(24).fill(null);
+    r[0] = listing; r[2] = master; r[8] = inbound; r[9] = unf; r[21] = wh; r[22] = "#N/A"; r[23] = "#N/A";
+    return r;
+  };
+  const { products, warnings } = parseNotRestockedStock([head, sub,
+    row("Nail Fungal Cleaning  Device-old model", "Nail cleaning device", null, null, 2),
+    row("Nail Fungal Cleaning Device- FBA-old model", " Nail  cleaning device ", 0, 0, 0),
+    row("Wearable massager listing", "Wearable lactation massager (Grey)", 1, 1, 3),
+    row("RMT heading", null, null, null, 9),
+  ] as never);
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(products.map((p) => [p.product, p.currentStock, p.skuRows]), [["Nail cleaning device", 2, 2], ["Wearable lactation massager (Grey)", 5, 1]]);
+  assert.deepEqual(parseNotRestockedStock([]).products, []);
+  assert.match(parseNotRestockedStock([["Products"], [null, null, "MASTER NAME"]] as never).warnings[0], /not found/);
+  // On the sheet it adds to the FC Stock sheet's stock for the same product (merge sums by name).
+  const { mergeGodownProducts } = await import("./godownProductAliases.ts");
+  const fc = { product: "Wearable Lactation Massager-Grey", currentStock: 68, inboundShipped: 0, unfulfillable: 0, warehouse: 68, qcGodown: 0, packingGodown: 0, skuRows: 2, discontinued: false };
+  assert.deepEqual(mergeGodownProducts([fc, ...products]).map((p) => [p.product, p.currentStock]), [["Wearable Lactation Massager-Grey", 73], ["Nail cleaning device", 2]]);
 });

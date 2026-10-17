@@ -17,7 +17,7 @@ import { fetchAllRows } from "@/lib/amazonReportShared";
 import { checkStockMapping, keptGodownName, mergeGodownDaily, mergeGodownProducts, type StockMappingIssue } from "@/lib/godownProductAliases";
 import { chunk } from "@/lib/amazonOrderUploadRules";
 import {
-  parseGodownSheet, buildConsolidated, weeklyInputs, mondayOf, istToday, parseRestockRows, restockSources, mergeRestockRows, dateFromFileName, onlyRestockProducts, productKey, CONSOLIDATED_DAYS,
+  parseGodownSheet, parseNotRestockedStock, buildConsolidated, weeklyInputs, mondayOf, istToday, parseRestockRows, restockSources, mergeRestockRows, dateFromFileName, onlyRestockProducts, productKey, CONSOLIDATED_DAYS,
   type GodownProduct, type ConsolidatedRow, type ComponentNeed, type WeeklyRfqRow, type WeeklyComponentRow,
 } from "@/lib/consolidatedStock";
 
@@ -31,6 +31,19 @@ async function upsert(table: string, rows: Record<string, unknown>[], onConflict
   for (const part of chunk(rows, 500)) {
     const { error } = await supabasePublic.from(table).upsert(part, { onConflict });
     if (error) throw new Error(`${table}: ${error.message}`);
+  }
+}
+
+const NOT_RESTOCKED_TABLE = "barm_godown_not_restocked";
+
+/** The "Not restocked Products" stock saved with a godown upload. Empty when that upload had none, or
+ *  before the table exists — the sheet then shows FC Stock sheet stock only, as before. */
+async function readNotRestocked(snapshotDate: string): Promise<{ product: string; current_stock: number }[]> {
+  try {
+    return (await fetchAllRows(NOT_RESTOCKED_TABLE, (q) => q.eq("snapshot_date", snapshotDate), "product")) as { product: string; current_stock: number }[];
+  } catch (err) {
+    console.warn("[Marketplace360] Not restocked stock unavailable:", err instanceof Error ? err.message : err);
+    return [];
   }
 }
 
@@ -49,7 +62,17 @@ export async function uploadGodownWorkbook(file: File) {
   await upsert("barm_godown_daily", parsed.daily.map((d) => ({
     stock_date: d.date, product: d.product, opening: d.opening, stock_in: d.stockIn, stock_out: d.stockOut, closing: d.closing, uploaded_at: now,
   })), "stock_date,product");
-  return { snapshotDate: parsed.snapshotDate, products: parsed.products.length, days: new Set(parsed.daily.map((d) => d.date)).size, warnings: parsed.warnings };
+  // "Not restocked Products" stock, kept apart from barm_godown_stock so that table stays the FC Stock
+  // sheet (the FC name check mail reads it); the Consolidated sheet adds it to current stock.
+  const notRestocked = parseNotRestockedStock(rowsOf(findSheet(wb, /^not restocked products$/i)));
+  if (notRestocked.products.length) {
+    await upsert(NOT_RESTOCKED_TABLE, notRestocked.products.map((p) => ({
+      snapshot_date: parsed.snapshotDate, product: p.product, current_stock: p.currentStock, inbound: p.inboundShipped,
+      unfulfillable: p.unfulfillable, warehouse: p.warehouse, qc_godown: p.qcGodown, packing_godown: p.packingGodown, sku_rows: p.skuRows, uploaded_at: now,
+    })), "snapshot_date,product");
+  }
+  return { snapshotDate: parsed.snapshotDate, products: parsed.products.length, notRestocked: notRestocked.products.length,
+    days: new Set(parsed.daily.map((d) => d.date)).size, warnings: [...parsed.warnings, ...notRestocked.warnings] };
 }
 
 /** Where one restock input came from: the client's Current stock sheet upload or the Monday snapshot.
@@ -214,14 +237,17 @@ export async function fetchConsolidated(asOf?: string): Promise<ConsolidatedData
   const to = lastDay?.[0]?.stock_date as string | undefined;
   if (!to) return { snapshotDate: null, uploadedAt: null, dates: [], rows: [], combos: [], weekly: null };
   const from = new Date(Date.parse(to + "T00:00:00Z") - 40 * 86_400_000).toISOString().slice(0, 10);
-  const [stock, recent, older, live] = await Promise.all([
+  const [fcStock, notRestocked, recent, older, live] = await Promise.all([
     fetchAllRows("barm_godown_stock", (q) => q.eq("snapshot_date", snapshotDate), "product"),
+    readNotRestocked(snapshotDate),
     fetchAllRows("barm_godown_daily", (q) => q.gte("stock_date", from).lte("stock_date", to), ["stock_date", "product"]),
     // Earlier days only matter for Peak sales, so only the days something shipped (all of history once
     // the file's older days are imported: ~80k rows, so its pages are read in parallel).
     readShippedBefore(from),
     fetchRestockInputs(asOf ?? istToday()),
   ]);
+  // FC Stock sheet rows plus the "Not restocked Products" tab's stock (summed per product by the merge)
+  const stock = [...fcStock, ...notRestocked.map((r) => ({ ...r, inbound_shipped: 0, unfulfillable: 0, warehouse: Number(r.current_stock) || 0, qc_godown: 0, packing_godown: 0, sku_rows: 0, discontinued: false }))];
   const rawStock = stock.map((s) => ({ product: String(s.product), currentStock: Number(s.current_stock) || 0 }));
   const godown = mergeGodownProducts(stock.map((s) => ({
     product: s.product, currentStock: Number(s.current_stock) || 0, inboundShipped: Number(s.inbound_shipped) || 0,
@@ -242,5 +268,5 @@ export async function fetchConsolidated(asOf?: string): Promise<ConsolidatedData
   const named = rows.map((r) => ({ ...r, product: live.shownAs.get(productKey(r.product)) || r.product, godownName: r.product }));
   const stockIssues = checkStockMapping(rawStock, products);
   if (stockIssues.length) console.warn("[Marketplace360] Consolidated stock mapping:", stockIssues);
-  return { snapshotDate, uploadedAt: stock[0]?.uploaded_at ?? null, dates, rows: named, combos: live.combos, weekly: live.weekly, stockIssues };
+  return { snapshotDate, uploadedAt: fcStock[0]?.uploaded_at ?? null, dates, rows: named, combos: live.combos, weekly: live.weekly, stockIssues };
 }
