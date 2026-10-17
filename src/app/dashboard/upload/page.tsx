@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useDashboard } from "@/lib/DashboardContext";
-import { UploadCloud, CheckCircle2, XCircle, Loader2, FileSpreadsheet } from "lucide-react";
+import { UploadCloud, CheckCircle2, XCircle, Loader2, FileSpreadsheet, AlertTriangle } from "lucide-react";
 import {
   uploadReportFile,
   type UploadReportType,
@@ -269,9 +269,9 @@ function CombinedAdSpendUploadCard({ onUploaded, dataInfo, keySlot }: { onUpload
         Drop the client&apos;s combined &quot;Last 7 days&quot; workbook here — this now feeds the{" "}
         <Link href="/dashboard/reports" className="underline hover:text-foreground">Ad Spend Report</Link> directly:
         AM ads / AM ord / FK ads / FK ord / MS BARM ads write straight into the real report tables (as
-        well as an archived raw copy of every sheet). <b>Sponsored Brands and Sponsored Display are the one thing this
-        file never contains</b> — Amazon doesn&apos;t offer those two combined with Sponsored Products, so they still
-        need their own upload with the cards below. MS BARM ord is only archived, since Meesho orders now come from
+        well as an archived raw copy of every sheet). Sponsored Brands / Display rows in AM ads that aren&apos;t split per
+        SKU (no Advertised SKU) are saved per campaign and spread over the SKUs mapped to that campaign below — any
+        such spend with no mapping is flagged in amber after the upload. MS BARM ord is only archived, since Meesho orders now come from
         the meesho_barm_ord table. MS MW ads/ord (Millwright) are also only archived — that store isn&apos;t wired into
         the Ad Spend Report yet.
       </p>
@@ -322,9 +322,17 @@ function CombinedAdSpendUploadCard({ onUploaded, dataInfo, keySlot }: { onUpload
         {state.status === "done" && state.results && (
           <div className="space-y-1.5">
             {state.results.map((r) => (
-              <div key={r.sheet} className={`flex items-start gap-1.5 ${SHEET_STATUS_STYLE[r.status]}`}>
-                {r.status === "ok" ? <CheckCircle2 size={14} className="mt-0.5 shrink-0" /> : <XCircle size={14} className="mt-0.5 shrink-0" />}
-                <span><span className="font-semibold">{r.label}:</span> {r.detail}</span>
+              <div key={r.sheet}>
+                <div className={`flex items-start gap-1.5 ${SHEET_STATUS_STYLE[r.status]}`}>
+                  {r.status === "ok" ? <CheckCircle2 size={14} className="mt-0.5 shrink-0" /> : <XCircle size={14} className="mt-0.5 shrink-0" />}
+                  <span><span className="font-semibold">{r.label}:</span> {r.detail}</span>
+                </div>
+                {r.warnings?.map((w) => (
+                  <div key={w} className="flex items-start gap-1.5 mt-1 ml-5 text-amber-600 dark:text-amber-400 font-semibold">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                    <span>{w}</span>
+                  </div>
+                ))}
               </div>
             ))}
             {state.acosNote && (

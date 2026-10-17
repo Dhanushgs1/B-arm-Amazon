@@ -2,6 +2,7 @@ import * as XLSX from "xlsx";
 import { supabasePublic, dedupeExactRows, type ReportDataInfo } from "@/lib/amazonReportUpload";
 import { toDate as parseFlexibleDate } from "@/lib/meeshoReportUpload";
 import { amazonPurchaseIstDate, chunk, planReplaceByKey } from "@/lib/amazonOrderUploadRules";
+import { collectSkuLessSpend, spCampaignDays, isSplitCoveredCampaignRow, type AmAdsSpendRow, type SkuLessCampaignDay } from "@/lib/amazonSpendRules";
 
 // Ingests the seller's own hand-assembled "Last 7 days - DD-MM-YYYY.xlsx"
 // workbook in one shot. Writes each sheet's raw rows into its own dedicated
@@ -17,16 +18,21 @@ import { amazonPurchaseIstDate, chunk, planReplaceByKey } from "@/lib/amazonOrde
 // that's what made the one-file upload insufficient on its own and forced a
 // second round of per-report uploads for the exact same data every day.
 //
-// Sponsored Brands and Sponsored Display are the one gap this file can never
-// close: this workbook has no SB/SD sheet at all (only Sponsored Products,
-// via "AM ads"), because Amazon doesn't offer a combined SP+SB+SD download —
-// those two still need their own separate upload on the Amazon Upload page.
+// Sponsored Brands / Display spend reaches "AM ads" two ways: as the seller's
+// own per-SKU split (stored in the SP table like any SP row), or as one
+// unsplit campaign row with no Advertised SKU. The SP table is keyed on the
+// SKU, so the unsplit rows are saved to barm_amazon_sb_campaign /
+// barm_amazon_sd_campaign instead (saveSkuLessAmAdsSpend below), where the
+// report's campaign-to-SKU mapping spreads them — and any of that spend no
+// mapping covers is listed as a warning on the upload result.
 
 export interface SheetUploadOutcome {
   sheet: string;
   label: string;
   status: "ok" | "empty" | "missing" | "error";
   detail: string;
+  /** Spend this upload could not attribute to a product — shown in amber under the sheet's result. */
+  warnings?: string[];
 }
 
 const SHEET_LABELS: Record<string, string> = {
@@ -358,10 +364,9 @@ export async function fetchDailyTablesDataInfo(): Promise<ReportDataInfo> {
 // upload pages already do for the SAME tables, just reading this workbook's
 // column headers instead of each platform's native export headers.
 //
-// Sponsored Brands and Sponsored Display are NOT covered here — this
-// workbook never contains them (no SB/SD sheet exists in the seller's "Last
-// 7 days" file at all), so that gap can only be closed by uploading those
-// two reports separately on the Amazon Upload page.
+// "AM ads" rows with no Advertised SKU (unsplit Sponsored Brands / Display
+// campaign rows) can't go into the SKU-keyed SP table — see
+// saveSkuLessAmAdsSpend for where they go instead.
 
 interface ReportTableSpec {
   table: string;
@@ -607,6 +612,128 @@ async function writeReportTable(ws: XLSX.WorkSheet, spec: ReportTableSpec): Prom
   return { detail, rows: mapped };
 }
 
+// ── SKU-less "AM ads" spend ─────────────────────────────────────────────────
+//
+// REPORT_TARGETS["AM ads"] needs an Advertised SKU, so a Brand/Display
+// campaign the seller hasn't split per SKU yet used to vanish here without a
+// word — 15 Oct 2026's three Brand-ad campaigns (₹1,486.32) did exactly that,
+// and the Ad Spend Report then printed "₹0 unmapped". Those rows are now
+// saved as campaign rows (same table and key the separate SB/SD campaign
+// upload uses), so the report spreads them over the campaign's mapped SKUs —
+// or lists them as unmapped — and once the seller's split for that day is
+// uploaded, isSplitCoveredCampaignRow skips them so nothing counts twice.
+
+const SKU_LESS_SOURCE = "AM ads (no Advertised SKU)";
+const inr = (n: number) => `₹${n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+async function saveSkuLessCampaignDays(table: string, days: SkuLessCampaignDay[]): Promise<{ saved: SkuLessCampaignDay[]; keptReportRows: SkuLessCampaignDay[] }> {
+  if (!days.length) return { saved: [], keptReportRows: [] };
+  const dates = days.map((d) => d.report_date).sort();
+  const { data, error } = await supabasePublic
+    .from(table)
+    .select("report_date, campaign_name, raw")
+    .gte("report_date", dates[0])
+    .lte("report_date", dates[dates.length - 1])
+    .in("campaign_name", [...new Set(days.map((d) => d.campaign_name))]);
+  if (error) throw new Error(`Reading ${table} failed: ${error.message}`);
+  // A row from Amazon's own SB/SD campaign report (uploaded separately) is the fuller source for that
+  // campaign-day — left as it is. Only rows this function wrote earlier are refreshed.
+  const fromCampaignReport = new Set(
+    (data || [])
+      .filter((r: { raw?: { source?: string } | null }) => r.raw?.source !== SKU_LESS_SOURCE)
+      .map((r: { report_date: string; campaign_name: string }) => `${String(r.report_date).slice(0, 10)}|${r.campaign_name}`),
+  );
+  const keptReportRows = days.filter((d) => fromCampaignReport.has(`${d.report_date}|${d.campaign_name}`));
+  const saved = days.filter((d) => !fromCampaignReport.has(`${d.report_date}|${d.campaign_name}`));
+  for (const part of chunk(saved, 300)) {
+    const { error: upErr } = await supabasePublic.from(table).upsert(
+      part.map((d) => ({
+        report_date: d.report_date,
+        campaign_name: d.campaign_name,
+        spend: Math.round(d.spend * 100) / 100,
+        raw: { source: SKU_LESS_SOURCE, ad_type: d.ad_type, rows: d.rows },
+      })),
+      { onConflict: "report_date,campaign_name" },
+    );
+    if (upErr) throw new Error(`Saving SKU-less spend to ${table} failed: ${upErr.message}`);
+  }
+  return { saved, keptReportRows };
+}
+
+/** (campaign, day) pairs the SP table already carries the seller's per-SKU split for — from this upload
+ *  or an earlier one. The report skips SB/SD rows for those days (isSplitCoveredCampaignRow), so saving
+ *  them would only add noise to the mapping panel and to the unmapped warning. */
+async function fetchSplitCampaignDays(days: SkuLessCampaignDay[]): Promise<Set<string>> {
+  if (!days.length) return new Set();
+  const dates = days.map((d) => d.report_date).sort();
+  const { data, error } = await supabasePublic
+    .from("barm_amazon_sp_advertised_product")
+    .select("campaign_name, report_date")
+    .gte("report_date", dates[0])
+    .lte("report_date", dates[dates.length - 1])
+    .in("campaign_name", [...new Set(days.map((d) => d.campaign_name))]);
+  if (error) throw new Error(`Reading the SP table's per-SKU splits failed: ${error.message}`);
+  return spCampaignDays(data || []);
+}
+
+/** Campaign names with any row on the Upload page's campaign-to-SKU mapping — the Ad Spend Report's
+ *  campaignShares treats a missing/zero weight as 1, so one mapping row is enough to spread the spend. */
+async function fetchMappedCampaigns(): Promise<Set<string>> {
+  const { data, error } = await supabasePublic.from("barm_amazon_campaign_sku_map").select("campaign_name");
+  if (error) throw new Error(`Reading the campaign-to-SKU mapping failed: ${error.message}`);
+  return new Set((data || []).map((r: { campaign_name?: string }) => r.campaign_name || "").filter(Boolean));
+}
+
+/** Saves the "AM ads" sheet's SKU-less spend (see above) and returns one line per thing the seller
+ *  needs to act on: spend whose campaign has no SKU mapping, and spend with no campaign at all. */
+export async function saveSkuLessAmAdsSpend(ws: XLSX.WorkSheet): Promise<{ detail: string; warnings: string[] }> {
+  const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" });
+  const rows: AmAdsSpendRow[] = raw.map((r) => {
+    const p = makePicker(r);
+    return {
+      report_date: parseFlexibleDate(p("Start Date")),
+      campaign_name: str(p("Campaign Name")),
+      ad_type: str(p("Ad Type")),
+      advertised_sku: str(p("Advertised SKU")),
+      spend: numOf(p("Spend")),
+    };
+  });
+  const collected = collectSkuLessSpend(rows);
+  const { unattributable } = collected;
+  const splitDays = await fetchSplitCampaignDays(collected.campaignDays);
+  const campaignDays = collected.campaignDays.filter((d) => !isSplitCoveredCampaignRow(d, splitDays));
+  const alreadySplit = collected.campaignDays.length - campaignDays.length;
+  const warnings: string[] = [];
+  unattributable.forEach((u) =>
+    warnings.push(`${u.report_date}: ${inr(u.spend)} of ad spend has neither an Advertised SKU nor a Campaign Name (${u.rows} row${u.rows === 1 ? "" : "s"}) — it can't reach any product. Fill in the SKU or campaign in "AM ads" and re-upload.`),
+  );
+  const splitNote = alreadySplit ? `${alreadySplit} Brand/Display campaign-day${alreadySplit === 1 ? "" : "s"} with no SKU here already split per SKU in the SP table, not saved again` : "";
+  if (!campaignDays.length) return { detail: splitNote, warnings };
+
+  const sb = await saveSkuLessCampaignDays("barm_amazon_sb_campaign", campaignDays.filter((d) => d.ad_type === "SB"));
+  const sd = await saveSkuLessCampaignDays("barm_amazon_sd_campaign", campaignDays.filter((d) => d.ad_type === "SD"));
+  const saved = [...sb.saved, ...sd.saved];
+  const mapped = await fetchMappedCampaigns();
+  const unmapped = saved.filter((d) => !mapped.has(d.campaign_name));
+  const unmappedByCampaign = new Map<string, { spend: number; dates: string[] }>();
+  unmapped.forEach((d) => {
+    const e = unmappedByCampaign.get(d.campaign_name) || { spend: 0, dates: [] };
+    e.spend += d.spend;
+    e.dates.push(d.report_date);
+    unmappedByCampaign.set(d.campaign_name, e);
+  });
+  unmappedByCampaign.forEach((e, campaign) =>
+    warnings.push(`"${campaign}": ${inr(e.spend)} of Brand/Display spend with no SKU split (${e.dates.join(", ")}) and no SKU mapping on the Upload page — the Ad Spend Report will list it as unmapped, not under any product. Map this campaign to its SKUs (or split it per SKU in "AM ads"), then regenerate the report.`),
+  );
+  const total = saved.reduce((s, d) => s + d.spend, 0);
+  const detail = saved.length
+    ? `${saved.length} Brand/Display campaign-day${saved.length === 1 ? "" : "s"} with no SKU split (${inr(total)}) saved for the campaign-to-SKU mapping` +
+      (unmapped.length ? `, ${unmapped.length} of them unmapped` : ", all mapped") +
+      ([...sb.keptReportRows, ...sd.keptReportRows].length ? `; ${[...sb.keptReportRows, ...sd.keptReportRows].length} already on file from the SB/SD campaign report, left as is` : "")
+    : `${campaignDays.length} Brand/Display campaign-day${campaignDays.length === 1 ? "" : "s"} with no SKU split already on file from the SB/SD campaign report, left as is`;
+  return { detail: [detail, splitNote].filter(Boolean).join("; "), warnings };
+}
+
 export interface CombinedUploadResult {
   results: SheetUploadOutcome[];
   /** "AM ads" rows as saved to barm_amazon_sp_advertised_product — the upload page runs the High
@@ -634,8 +761,25 @@ export async function uploadCombinedWorkbook(file: File): Promise<CombinedUpload
         continue;
       }
       const report = await writeReportTable(ws, reportSpec);
-      if (sheet === "AM ads") spAdsRows = report.rows;
-      results.push({ sheet, label: SHEET_LABELS[sheet], status: mirror.status, detail: `${mirror.detail} · Ad Spend Report: ${report.detail}.` });
+      if (sheet !== "AM ads") {
+        results.push({ sheet, label: SHEET_LABELS[sheet], status: mirror.status, detail: `${mirror.detail} · Ad Spend Report: ${report.detail}.` });
+        continue;
+      }
+      spAdsRows = report.rows;
+      // A failure here must not read as success: the SP rows are saved, but the SKU-less spend isn't.
+      let skuLess: { detail: string; warnings: string[] };
+      try {
+        skuLess = await saveSkuLessAmAdsSpend(ws);
+      } catch (err) {
+        skuLess = { detail: "", warnings: [`Brand/Display spend with no SKU split was NOT saved — ${err instanceof Error ? err.message : String(err)}. The Ad Spend Report will be short that spend until this upload succeeds.`] };
+      }
+      results.push({
+        sheet,
+        label: SHEET_LABELS[sheet],
+        status: mirror.status,
+        detail: `${mirror.detail} · Ad Spend Report: ${report.detail}${skuLess.detail ? ` · ${skuLess.detail}` : ""}.`,
+        ...(skuLess.warnings.length ? { warnings: skuLess.warnings } : {}),
+      });
     } catch (err) {
       results.push({ sheet, label: SHEET_LABELS[sheet], status: "error", detail: err instanceof Error ? err.message : String(err) });
     }

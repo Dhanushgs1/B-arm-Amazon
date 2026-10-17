@@ -115,6 +115,18 @@ cell). If a workbook still shows Overall sales roughly a week's multiple of the 
 figure, and the Summary header reads `Overall sales (<dd-mm-yyyy to dd-mm-yyyy>)` instead of a
 single date, it was generated before this fix; regenerate rather than patching the file.
 
+**Unsplit Brand/Display rows in AM ads dropped at upload.** Fixed 2026-10-17 in
+`combinedAdSpendUpload.ts` (`saveSkuLessAmAdsSpend`): the "AM ads" → SP-table write needs an Advertised
+SKU, so a Sponsored Brands/Display campaign row the seller hadn't split per SKU yet was discarded
+without a word, and the report's Notes still read "₹0 unmapped". Symptom: Amazon day (and range) spend
+short by exactly that day's SB/SD rows with a blank SKU (15 Oct 2026: ₹1,486.32 = ₹1,753.86 with tax,
+three Brand-ad campaigns), while every earlier day — where the seller's per-SKU split was uploaded —
+reconciles to the paisa. Those rows are now saved to `barm_amazon_sb_campaign`/`_sd_campaign` and spread by
+the campaign-to-SKU mapping (skipped once a split for that day exists, via `isSplitCoveredCampaignRow`);
+unmapped spend and Brand/Display campaigns with no row on the reporting day are listed as ⚠ warnings in
+Notes, the download message and the email. If you see this gap on a report generated before the fix,
+re-upload that day's AM ads and regenerate.
+
 **Overall sales still filtering by order status, or Flipkart's Value sourced from the wrong
 report.** Fixed 2026-08-27 in `adSpendReportExport.ts`'s `fetchAmazonProducts` /
 `fetchFlipkartProducts` / `fetchMeeshoProducts`: the Overall sales QTS/Value accumulation used

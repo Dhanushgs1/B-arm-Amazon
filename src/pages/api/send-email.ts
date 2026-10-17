@@ -1308,6 +1308,18 @@ export function buildHtml(type: string, data: Record<string, any>, toEmail: stri
         </td></tr>`
       : "";
 
+    const amazonSpendWarnings: string[] = data.amazonSpendWarnings || [];
+    const spendWarningBanner = amazonSpendWarnings.length
+      ? `<tr><td style="padding-bottom:16px;">
+            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;">
+              <tr><td style="padding:12px 14px;">
+                <p style="margin:0 0 4px;color:#92400e;font-size:12.5px;font-weight:800;">&#9888; Amazon spend below is understated — some Brand/Display spend isn't attributed to any product</p>
+                ${amazonSpendWarnings.map((w) => `<p style="margin:0;color:#92400e;font-size:11.5px;font-weight:600;">${w}</p>`).join("")}
+              </td></tr>
+            </table>
+          </td></tr>`
+      : "";
+
     // Full per-product breakdown for Amazon and Flipkart specifically — matching the manual
     // mail's separate "Here is the Amazon/Flipkart platform's ad spend report" tables, which
     // list every advertised product (not just the top-3 shortlist above). The manual mail never
@@ -1370,6 +1382,7 @@ export function buildHtml(type: string, data: Record<string, any>, toEmail: stri
           </p>
         </td></tr>
         ${incompleteBanner}
+        ${spendWarningBanner}
         <tr><td style="padding-top:6px;">
           <div style="overflow-x:auto;">
           <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;min-width:1100px;">

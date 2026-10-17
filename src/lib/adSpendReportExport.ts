@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx-js-style";
 import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
-import { spCampaignDays, isSplitCoveredCampaignRow } from "@/lib/amazonSpendRules";
+import { spCampaignDays, isSplitCoveredCampaignRow, unmappedCampaignSpend, campaignsMissingOnDay } from "@/lib/amazonSpendRules";
 import { upsertInChunks } from "@/lib/amazonReportUpload";
 import { toDate as parseFlexibleDate } from "@/lib/meeshoReportUpload";
 import { resolveProductName } from "@/lib/categoryMap";
@@ -541,6 +541,12 @@ export async function fetchAmazonProducts(
   overallRange: SalesAgg;
   campaigns: CampaignSpendRow[];
   unmappedSpend: number;
+  /** Unmapped SB/SD spend on the reporting day alone (part of unmappedSpend, which covers the range). */
+  unmappedSpendDay: number;
+  /** unmappedSpend broken down per campaign, biggest first — the Notes sheet names each one. */
+  unmappedCampaigns: { campaign_name: string; spend: number; dates: string[] }[];
+  /** Brand/Display campaigns that spent earlier in the range but have no row at all on the reporting day. */
+  campaignsMissingOnEndDate: { campaign_name: string; lastSpendDate: string; lastSpend: number }[];
   reportDates: Set<string>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   spRows: any[];
@@ -688,6 +694,12 @@ export async function fetchAmazonProducts(
     if (!shares) { unmappedSpend += spend; return; }
     shares.forEach(({ sku, share }) => { ensureSpend(sku).spend += spend * share; });
   });
+  // Named per campaign so a gap never reads as a bare (or ₹0) total — see the Notes sheet's warnings.
+  const unmappedCampaigns = unmappedCampaignSpend(sbSdRows, (c) => !!campaignShares(c));
+  const unmappedSpendDay = unmappedCampaignSpend(sbSdRows.filter((r: { report_date?: string }) => r.report_date === endDate), (c) => !!campaignShares(c))
+    .reduce((s, c) => s + c.spend, 0);
+  // Every SB/SD row, split-covered ones included: a split day still means the campaign has a row that day.
+  const campaignsMissingOnEndDate = campaignsMissingOnDay([...sbRows, ...sdRows], spRows, endDate);
 
   // "day" spend is the same rows filtered to report_date === endDate, summed
   // through the identical apportioning logic — recomputed rather than
@@ -812,7 +824,7 @@ export async function fetchAmazonProducts(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [...spRows, ...sbRows, ...sdRows].forEach((r: any) => { if (r.report_date) reportDates.add(r.report_date); });
 
-  return { products, overallDay, overallRange, campaigns, unmappedSpend, reportDates, spRows, spRowsRaw, orderRows, revenueRangeBySku: revenueBySku };
+  return { products, overallDay, overallRange, campaigns, unmappedSpend, unmappedSpendDay, unmappedCampaigns, campaignsMissingOnEndDate, reportDates, spRows, spRowsRaw, orderRows, revenueRangeBySku: revenueBySku };
 }
 
 // Amazon's current live listing price, straight off barm_amazon_price_listing (scripts/
@@ -1968,6 +1980,10 @@ export interface AdSpendReportResult {
   // Summary sheet's own "Google" row.
   googleSummary: GoogleEmailSummary | null;
   unmappedAmazonSpend: number;
+  /** One line per Amazon Brand/Display spend problem (unmapped campaign, campaign with no row on the
+   *  reporting day) — shown in the Notes sheet, on the download message and in the email, so spend that
+   *  never reached a product can't pass as ₹0. Empty when there's nothing to flag. */
+  amazonSpendWarnings: string[];
   lowSpendCampaignCount: number;
   historyRowsSaved: number;
   // Every platform's own ad-spend export lags ~1 day (today's spend isn't
@@ -2223,6 +2239,13 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     .filter(({ reportDates }) => reportDates.size > 0)
     .map(({ platform, reportDates }) => ({ platform, missingDates: missingDates(reportDates, range.start, endDate) }))
     .filter(({ missingDates }) => missingDates.length > 0);
+
+  const amazonSpendWarnings: string[] = [
+    ...amz.unmappedCampaigns.map((c) =>
+      `Amazon "${c.campaign_name}": ₹${round2(c.spend).toFixed(2)} (₹${round2(c.spend * DEFAULT_GST_MULTIPLIER).toFixed(2)} with tax) of Brand/Display spend on ${c.dates.map(dotDate).join(", ")} has no SKU split and no SKU mapping — NOT in any product's figures or the Amazon totals. Map the campaign on the Upload page (or split it per SKU in AM ads), then regenerate.`),
+    ...amz.campaignsMissingOnEndDate.map((c) =>
+      `Amazon "${c.campaign_name}": spent ₹${round2(c.lastSpend).toFixed(2)} on ${dotDate(c.lastSpendDate)} but has no row at all for ${dotDate(endDate)} — if it was still running, that day's spend is missing (not ₹0). Upload its ${dotDate(endDate)} data (AM ads, or the Sponsored Brands/Display campaign report), then regenerate.`),
+  ];
 
   const [historyRowsSaved] = await Promise.all([
     opts.persistHistory ? saveAdSpendHistory(platforms, endDate, range.start, listingPriceFor) : 0,
@@ -2932,6 +2955,17 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     [""],
     [`Generated for ${accountName || "this account"} · reporting day ${dotDate(endDate)} · range ${dotDate(range.start)} to ${dotDate(endDate)} (${rangeDays} days)`],
     [""],
+    ...(amazonSpendWarnings.length
+      ? [
+          [
+            "⚠ AMAZON BRAND/DISPLAY SPEND NOT IN THE FIGURES BELOW — " +
+              `unmapped: ₹${round2(amz.unmappedSpend).toFixed(2)} over the range (₹${round2(amz.unmappedSpendDay).toFixed(2)} on ${dotDate(endDate)}), before tax. ` +
+              "Every product row and the Amazon totals are understated by this much until it's fixed and the report is regenerated:",
+          ],
+          ...amazonSpendWarnings.map((w) => [`  ${w}`]),
+          [""],
+        ]
+      : []),
     ...(incompleteDates.length
       ? [
           [
@@ -2956,7 +2990,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     ["Meesho ad metrics count ad orders only — Summary, Ad spend report, SKU Wise Report, Action Sheet and the daily email: Orders = \"Orders by ad\" from Meesho's own Ads report (matches the Meesho (B Arm) Spend sheet 1:1 for the same SKU and date), Total Sales = Ad Sales (Ad Orders x Price), CPC = Spend (with tax) / Ad Orders, ACOS = Spend / Ad Sales, or CPC / Price when there are no ad orders. Overall sales QTS/Value and the Meesho (B Arm) orders leaderboard still count every Meesho order. The orders sheet's \"Order source = Ad order\" tag is NOT used — Meesho's two exports don't always agree on it. Amazon/Flipkart are unaffected."],
     ["\"Day\" = the single reporting day above. \"Range\" = that day and the", rangeDays - 1, "days before it, inclusive."],
     [""],
-    ["Amazon: spend is a plain sum of the SP table (barm_amazon_sp_advertised_product), which also carries your AM-ads sheet's per-SKU split of Sponsored Brands/Display spend (each campaign-day's first split row is named, the rest have a blank campaign) — that split is how Brand/Display spend reaches each product here. An SB/SD campaign-day with no such split is spread over the SKUs mapped to it on the Upload page; SB/SD spend with neither a split nor a mapping for the range window: ₹" + round2(amz.unmappedSpend) + " — not attributed to any product below."],
+    ["Amazon: spend is a plain sum of the SP table (barm_amazon_sp_advertised_product), which also carries your AM-ads sheet's per-SKU split of Sponsored Brands/Display spend (each campaign-day's first split row is named, the rest have a blank campaign) — that split is how Brand/Display spend reaches each product here. An SB/SD campaign-day with no such split is spread over the SKUs mapped to it on the Upload page; SB/SD spend with neither a split nor a mapping for the range window: ₹" + round2(amz.unmappedSpend) + (amz.unmappedSpend > 0 ? " — not attributed to any product below (see the ⚠ warning at the top)." : " — every SB/SD campaign row on file is split or mapped.") + " Unsplit SB/SD rows in AM ads (no Advertised SKU) are saved per campaign by the upload and counted here, never dropped." + (amz.campaignsMissingOnEndDate.length ? " Some Brand/Display campaigns have no row on the reporting day — see the ⚠ warning at the top." : "")],
     ["Flipkart: FSN report spend is per-SKU for every campaign type, so no apportioning is needed. Price comes from the SKU's own FK Orders Invoice Amount for the window (summed Invoice Amount / summed quantity, non-cancelled rows); only a SKU with no real order in the window falls back to the Listings snapshot (then the Earn more report's realised price)."],
     ["Meesho: Ads report spend is per-SKU. Overall sales Value / Total Sales = Quantity x each order row's own Supplier Listed Price (Incl. GST + Commission), from the Orders report only. meesho_price_marketing (the live scraped listing price) is used only for the displayed Price and as the Price in the ACOS CPC / Price fallback. Column names come from the seller's own workbook, not a native Meesho export seen directly — see src/lib/meeshoReportUpload.ts if a real export's headers turn out to differ."],
     ["Social-media (Meta) spend appears as its own Summary-sheet row when uploaded, separate from the three marketplace platforms. Google Ads spend (the Google Ads \"Campaign report\" uploaded on the Upload page's Google card) fills the Google row's Ad spend columns: the day block from that day's own export, the range block from an export covering exactly the range, else the daily exports inside it. ₹0 there means no Google Ads report is on file for that window, not ₹0 spent. The Google row's Orders/Sales are the B-Arm orders; its CPC/ACOS stay blank since those orders are not attributed to the ads."],
@@ -2985,6 +3019,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     socialMediaSummary,
     googleSummary,
     unmappedAmazonSpend: round2(amz.unmappedSpend),
+    amazonSpendWarnings,
     lowSpendCampaignCount: lowSpend.length,
     historyRowsSaved,
     incompleteDates,

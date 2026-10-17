@@ -236,6 +236,19 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
           </table>
         </td></tr>`
     : "";
+  // Amazon Brand/Display spend the report couldn't attribute (adSpendReportExport.ts's
+  // amazonSpendWarnings) — amber like the sync banner: understated, not a quiet ₹0.
+  const amazonSpendWarnings: string[] = data.amazonSpendWarnings || [];
+  const spendWarningBanner = amazonSpendWarnings.length
+    ? `<tr><td style="padding-bottom:16px;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;">
+            <tr><td style="padding:12px 14px;">
+              <p style="margin:0 0 4px;color:#92400e;font-size:12.5px;font-weight:800;">&#9888; Amazon spend below is understated — some Brand/Display spend isn't attributed to any product</p>
+              ${amazonSpendWarnings.map((w) => `<p style="margin:0;color:#92400e;font-size:11.5px;font-weight:600;">${w}</p>`).join("")}
+            </td></tr>
+          </table>
+        </td></tr>`
+    : "";
   // A Meesho table that failed to load (see adSpendReportExport.ts's dataLoadErrors) — red, not
   // amber: those figures are missing, not just late, and must not read as a quiet day.
   const dataLoadErrors: { platform: string; error: string }[] = data.dataLoadErrors || [];
@@ -319,6 +332,7 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
         </td></tr>
         ${loadErrorBanner}
         ${incompleteBanner}
+        ${spendWarningBanner}
         <tr><td style="padding-top:6px;">
           <div style="overflow-x:auto;">
           <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;min-width:1100px;">
@@ -418,6 +432,7 @@ Deno.serve(async (req: Request) => {
         platformTotals: unknown; platformSummaries: unknown; socialMediaSummary: unknown; googleSummary: unknown; lowSpendCampaignCount: number;
         incompleteDates: unknown;
         dataLoadErrors?: unknown;
+        amazonSpendWarnings?: unknown;
       };
       // dmy(): 'YYYY-MM-DD' -> 'DD-MM-YYYY' — same as adSpendReportExport.ts's
       // dotDate/send-ad-spend-email.ts's dmy, ported identically.
@@ -438,6 +453,7 @@ Deno.serve(async (req: Request) => {
         lowSpendCampaignCount: result.lowSpendCampaignCount,
         incompleteDates: result.incompleteDates,
         dataLoadErrors: result.dataLoadErrors,
+        amazonSpendWarnings: result.amazonSpendWarnings,
       }), escapeHtml(to));
 
       const info = await transporter.sendMail({
