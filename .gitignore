@@ -47,3 +47,18 @@ page_modifications.txt
 # connection string (supabase/.temp/pooler-url) and other machine-local
 # state, never meant to be committed.
 supabase/.temp/
+
+# generated report exports / previews / probe outputs — download or regenerate, don't commit
+/*_Historical_Analysis_Report_*.xlsx
+/Historical_Analysis_Report_*.xlsx
+/Corrected_Analysis_Report_*.xlsx
+/*_Weekly_Sales_Report_*.xlsx
+/Report_built_from_manual_data_*.xlsx
+/docs/FBA_Ad_Status_Alert_Review*.xlsx
+/docs/FBA_Ad_Status_Alert_Attachment_Preview*.csv
+/docs/FBA_Ad_Status_Alert_Email_Preview*.html
+/docs/Inventory_Reconciliation_*.csv
+/fba-low-stock-email-preview.html
+/retail_date_window_probe.json
+/retail_raw_*.json
+/tmp_uploads/
