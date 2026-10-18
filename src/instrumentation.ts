@@ -20,6 +20,12 @@ export async function register() {
   // NODE_ENV=production, so this guard is what actually separates "testing
   // locally" from "running on the host" (see the incident this guard fixed:
   // a local dev server sent a real Daily Digest + Live Alerts email).
+  // DISABLE_SCHEDULER=true turns the jobs off on an extra production host (e.g. the
+  // mna.b-arm.org VPS) so it doesn't repeat what the main deployment already runs.
+  if (/^(1|true|yes|on)$/i.test((process.env.DISABLE_SCHEDULER ?? "").trim())) {
+    console.log("[Marketplace360] Scheduler disabled (DISABLE_SCHEDULER) — no cron jobs on this host");
+    return;
+  }
   if (process.env.NEXT_RUNTIME === "nodejs" && process.env.NODE_ENV === "production") {
     const cron = (await import("node-cron")).default;
 
