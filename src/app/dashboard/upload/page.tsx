@@ -483,9 +483,9 @@ function GoogleOrdersUploadCard({ onUploaded, dataInfo, spendInfo }: { onUploade
       const parts: string[] = [];
       if (spend) {
         const windows = spend.windows
-          .map((w) => `${w.start === w.end ? w.start : `${w.start} → ${w.end}`} (${w.days === 1 ? "1 day" : `${w.days} days`}) ₹${w.spend.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`)
+          .map((w) => `${w.start === w.end ? w.start : `${w.start} → ${w.end}`} (${w.days === 1 ? "1 day" : `${w.days} days`}) spend ₹${w.spend.toLocaleString("en-IN", { maximumFractionDigits: 2 })}, ${w.conversions.toLocaleString("en-IN", { maximumFractionDigits: 2 })} orders, sales ₹${w.convValue.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`)
           .join(" · ");
-        parts.push(`Ad spend saved: ${windows}`);
+        parts.push(`Google Ads report saved: ${windows}`);
       }
       if (res) {
         if (res.rowsWithoutPrice) {
@@ -514,9 +514,10 @@ function GoogleOrdersUploadCard({ onUploaded, dataInfo, spendInfo }: { onUploade
         </div>
       </div>
       <p className="text-xs text-muted-foreground mb-4">
-        Drop the seller&apos;s own &quot;B-Arm Orders&quot; workbook (S no, Invoice, Product, Qty, Price) for
-        orders, or Google Ads&apos; &quot;Campaign report&quot; export for ad spend — one day or 7 days, or both
-        sheets in one file. Each sheet is detected and saved to its own table. Feeds the{" "}
+        Drop Google Ads&apos; &quot;Campaign report&quot; export — one day or 7 days — and that one file gives
+        both: Cost = ad spend, Conversions = orders, Conv. value = sales. The older &quot;B-Arm Orders&quot;
+        workbook (S no, Invoice, Product, Qty, Price) is still accepted and used only for dates with no
+        Google Ads report. Feeds the{" "}
         <Link href="/dashboard/reports" className="underline hover:text-foreground">Ad Spend Report</Link>&apos;s
         Summary sheet &quot;Google&quot; row.
       </p>
@@ -537,7 +538,7 @@ function GoogleOrdersUploadCard({ onUploaded, dataInfo, spendInfo }: { onUploade
       >
         <UploadCloud size={24} className="text-muted-foreground" />
         <span className="text-xs text-muted-foreground px-2 text-center truncate max-w-full">
-          {state.fileName || "Click or drop the \"B-Arm Orders\" or Google Ads \"Campaign report\" .xlsx here"}
+          {state.fileName || "Click or drop the Google Ads \"Campaign report\" .xlsx here"}
         </span>
       </label>
       {dataInfo && (

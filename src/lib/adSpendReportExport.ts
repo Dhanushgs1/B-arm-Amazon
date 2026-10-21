@@ -1319,7 +1319,10 @@ export async function fetchMeeshoProducts(
 //
 // Google Ads spend (barm_daily_google_ad_spend, see googleAdSpendRules.ts) is stored the same way
 // — one row per [report_start, report_end] window and campaign — so it goes through this same
-// day/range resolution, via fetchWindowedAdSpend.
+// day/range resolution, via fetchWindowedAdSpend. Its Conversions / Conv. value columns resolve the
+// same way (dayConversions/rangeConvValue …) and become the Google row's Orders/Sales; has* says
+// whether any report row exists for the window at all, so a window with no Google Ads report on
+// file can fall back to the B-Arm orders instead of reading as 0 orders.
 async function fetchSocialMediaAdSpend(
   range: { start: string; end: string },
   endDate: string
@@ -1331,16 +1334,19 @@ async function fetchWindowedAdSpend(
   table: string,
   range: { start: string; end: string },
   endDate: string
-): Promise<{ daySpend: number; rangeSpend: number }> {
+): Promise<{
+  daySpend: number; rangeSpend: number;
+  hasDay: boolean; hasRange: boolean;
+  dayConversions: number; dayConvValue: number; rangeConversions: number; rangeConvValue: number;
+}> {
   const rows = (await fetchAllRows(
     table,
     (q) => q.lte("report_start", endDate).gte("report_end", range.start)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ).catch(() => [])) as any[];
 
-  const daySpend = rows
-    .filter((r) => r.report_start === endDate && r.report_end === endDate)
-    .reduce((s, r) => s + num(r.spend), 0);
+  const dayRows = rows.filter((r) => r.report_start === endDate && r.report_end === endDate);
+  const daySpend = dayRows.reduce((s, r) => s + num(r.spend), 0);
 
   const byCampaign = new Map<string, typeof rows>();
   rows
@@ -1354,12 +1360,23 @@ async function fetchWindowedAdSpend(
       byCampaign.set(key, list);
     });
   let rangeSpend = 0;
+  let rangeConversions = 0;
+  let rangeConvValue = 0;
   byCampaign.forEach((campaignRows) => {
     const wideRows = campaignRows.filter((r) => r.report_start === range.start && r.report_end === endDate);
-    rangeSpend += (wideRows.length ? wideRows : campaignRows).reduce((s, r) => s + num(r.spend), 0);
+    const used = wideRows.length ? wideRows : campaignRows;
+    rangeSpend += used.reduce((s, r) => s + num(r.spend), 0);
+    rangeConversions += used.reduce((s, r) => s + num(r.conversions), 0);
+    rangeConvValue += used.reduce((s, r) => s + num(r.conv_value), 0);
   });
 
-  return { daySpend: round2(daySpend), rangeSpend: round2(rangeSpend) };
+  return {
+    daySpend: round2(daySpend), rangeSpend: round2(rangeSpend),
+    hasDay: dayRows.length > 0, hasRange: byCampaign.size > 0,
+    dayConversions: round2(dayRows.reduce((s, r) => s + num(r.conversions), 0)),
+    dayConvValue: round2(dayRows.reduce((s, r) => s + num(r.conv_value), 0)),
+    rangeConversions: round2(rangeConversions), rangeConvValue: round2(rangeConvValue),
+  };
 }
 
 // ── Google (direct/website) orders ──────────────────────────────────────────
@@ -1953,7 +1970,7 @@ export interface SocialMediaEmailSummary {
   range: ProductMetricBlock;
 }
 
-// Google — the reporting day's B-Arm orders (totalUnits/totalValue, the Summary row's Overall
+// Google — the reporting day's orders (Google Ads Conversions / Conv. value, else B-Arm orders) (totalUnits/totalValue, the Summary row's Overall
 // sales QTS/Value) plus its Google Ads spend for the day and the range (0 when no Google Ads
 // report is on file for that window).
 export interface GoogleEmailSummary {
@@ -2545,29 +2562,39 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // Ad spend (with/without tax) comes from the Google Ads "Campaign report" upload
   // (barm_daily_google_ad_spend), resolved per window exactly like Social Media's: the day block is
   // the reporting day's own daily row, the range block the row matching the full window (else the
-  // daily rows inside it). Spend with tax uses the same default GST multiplier as Meta's. CPC/ACOS
-  // stay blank: the B-Arm orders aren't attributed to the ads, so spend ÷ those orders would read
-  // as ad performance it isn't.
+  // daily rows inside it). Spend with tax uses the same default GST multiplier as Meta's.
+  //
+  // Orders/Sales come from that same Campaign report — Orders = "Conversions", Sales = "Conv. value"
+  // — for every window that has a Google Ads report on file (one file now carries both). Only a
+  // window with no Google Ads report falls back to the B-Arm orders upload, so older data still
+  // shows. CPC/ACOS stay blank, same as before.
   const googleDayAgg: WindowAgg = { spend: googleAdSpend.daySpend, units: 0 };
   const googleRangeAgg: WindowAgg = { spend: googleAdSpend.rangeSpend, units: 0 };
   const hasGoogleSpend = googleAdSpend.daySpend > 0 || googleAdSpend.rangeSpend > 0;
-  if (googleOrders.rangeUnits > 0 || googleOrders.rangeValue > 0 || hasGoogleSpend) {
+  const googleDayUnits = googleAdSpend.hasDay ? googleAdSpend.dayConversions : googleOrders.dayUnits;
+  const googleDayValue = googleAdSpend.hasDay ? googleAdSpend.dayConvValue : googleOrders.dayValue;
+  const googleRangeUnits = googleAdSpend.hasRange ? googleAdSpend.rangeConversions : googleOrders.rangeUnits;
+  const googleRangeValue = googleAdSpend.hasRange ? googleAdSpend.rangeConvValue : googleOrders.rangeValue;
+  const googleSource = googleAdSpend.hasDay || googleAdSpend.hasRange
+    ? "(Google Ads report: Cost = spend, Conversions = orders, Conv. value = sales)"
+    : "(Orders/Sales from B-Arm orders — no Google Ads report for this window)";
+  if (googleRangeUnits > 0 || googleRangeValue > 0 || hasGoogleSpend || googleAdSpend.hasDay || googleAdSpend.hasRange) {
     googleRow = sumAoa.length;
     sumAoa.push([
       "Google",
       round2(googleDayAgg.spend), round2(spendTax(googleDayAgg)),
-      hasGoogleSpend ? "(Google Ads spend + B-Arm orders)" : "(Orders/Sales only — no Google Ads report for this window)", "",
-      round2(googleDayAgg.spend), round2(spendTax(googleDayAgg)), googleOrders.dayUnits, round2(googleOrders.dayValue), "", "", "",
-      round2(googleRangeAgg.spend), round2(spendTax(googleRangeAgg)), googleOrders.rangeUnits, round2(googleOrders.rangeValue), "", "", "",
-      googleOrders.dayUnits, round2(googleOrders.dayValue),
+      googleSource, "",
+      round2(googleDayAgg.spend), round2(spendTax(googleDayAgg)), round2(googleDayUnits), round2(googleDayValue), "", "", "",
+      round2(googleRangeAgg.spend), round2(spendTax(googleRangeAgg)), round2(googleRangeUnits), round2(googleRangeValue), "", "", "",
+      round2(googleDayUnits), round2(googleDayValue),
     ]);
     // Same figures, reshaped for the emailed daily digest (see buildAdSpendDailyHtml in
     // supabase/functions/send-ad-spend-email/index.ts), which renders this as one more row
     // directly below Social Media's, per the same pattern. Day totals, matching the fix above —
     // the digest is headlined by the single reporting day, same as every other platform's summary.
     googleSummary = {
-      totalUnits: googleOrders.dayUnits,
-      totalValue: round2(googleOrders.dayValue),
+      totalUnits: round2(googleDayUnits),
+      totalValue: round2(googleDayValue),
       daySpend: round2(googleDayAgg.spend),
       daySpendTax: round2(spendTax(googleDayAgg)),
       rangeSpend: round2(googleRangeAgg.spend),
@@ -2993,7 +3020,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     ["Amazon: spend is a plain sum of the SP table (barm_amazon_sp_advertised_product), which also carries your AM-ads sheet's per-SKU split of Sponsored Brands/Display spend (each campaign-day's first split row is named, the rest have a blank campaign) — that split is how Brand/Display spend reaches each product here. An SB/SD campaign-day with no such split is spread over the SKUs mapped to it on the Upload page; SB/SD spend with neither a split nor a mapping for the range window: ₹" + round2(amz.unmappedSpend) + (amz.unmappedSpend > 0 ? " — not attributed to any product below (see the ⚠ warning at the top)." : " — every SB/SD campaign row on file is split or mapped.") + " Unsplit SB/SD rows in AM ads (no Advertised SKU) are saved per campaign by the upload and counted here, never dropped." + (amz.campaignsMissingOnEndDate.length ? " Some Brand/Display campaigns have no row on the reporting day — see the ⚠ warning at the top." : "")],
     ["Flipkart: FSN report spend is per-SKU for every campaign type, so no apportioning is needed. Price comes from the SKU's own FK Orders Invoice Amount for the window (summed Invoice Amount / summed quantity, non-cancelled rows); only a SKU with no real order in the window falls back to the Listings snapshot (then the Earn more report's realised price)."],
     ["Meesho: Ads report spend is per-SKU. Overall sales Value / Total Sales = Quantity x each order row's own Supplier Listed Price (Incl. GST + Commission), from the Orders report only. meesho_price_marketing (the live scraped listing price) is used only for the displayed Price and as the Price in the ACOS CPC / Price fallback. Column names come from the seller's own workbook, not a native Meesho export seen directly — see src/lib/meeshoReportUpload.ts if a real export's headers turn out to differ."],
-    ["Social-media (Meta) spend appears as its own Summary-sheet row when uploaded, separate from the three marketplace platforms. Google Ads spend (the Google Ads \"Campaign report\" uploaded on the Upload page's Google card) fills the Google row's Ad spend columns: the day block from that day's own export, the range block from an export covering exactly the range, else the daily exports inside it. ₹0 there means no Google Ads report is on file for that window, not ₹0 spent. The Google row's Orders/Sales are the B-Arm orders; its CPC/ACOS stay blank since those orders are not attributed to the ads."],
+    ["Social-media (Meta) spend appears as its own Summary-sheet row when uploaded, separate from the three marketplace platforms. Google Ads spend (the Google Ads \"Campaign report\" uploaded on the Upload page's Google card) fills the Google row's Ad spend columns: the day block from that day's own export, the range block from an export covering exactly the range, else the daily exports inside it. ₹0 there means no Google Ads report is on file for that window, not ₹0 spent. The Google row's Orders/Sales come from the same Google Ads report — Orders = Conversions, Sales = Conv. value — resolved per window the same way; only a window with no Google Ads report on file falls back to the B-Arm orders upload. CPC/ACOS stay blank."],
     [""],
     ["Ad Status Report matches products across Amazon, Flipkart and Meesho by product NAME only (no cross-platform SKU mapping exists) — two listings with different titles for the same physical product will show as separate rows."],
     ["Action Sheet lists every SKU whose trailing 7-day ACOS is above 14%, worst first (identified by Campaign Name + SKU ID, not product name; Spend/Spend with tax/Orders/ACOS are all the 7-day range here, unlike every other sheet's single-day figures). Every row carries a concrete bid-cut %: rows matched to a real campaign in the uploaded Amazon/Flipkart ad data get one sized to that campaign's own ad-group/SKU performance (AI-assisted); unmatched rows (e.g. Meesho, which has no campaign data in this app, or a SKU that matched no campaign) get one computed from the SKU's own 7-day ACOS instead (20%/35%/50% cut for 14-60%/60-90%/90%+ ACOS). No specific search-term/keyword name is ever invented — that data isn't captured anywhere in this app; only a live SellerMate pull (Amazon only, on request) has real keyword-level detail."],

@@ -260,7 +260,8 @@ export async function fetchGoogleOrdersDataInfo(): Promise<GoogleOrdersDataInfo>
 // The same Google card also takes Google Ads' "Campaign report" export (see googleAdSpendRules.ts):
 // a sheet with a Campaign + Cost header is ad spend and goes to barm_daily_google_ad_spend (see
 // scripts/barm_daily_google_ad_spend_table.sql); a B-Arm orders sheet goes to
-// barm_daily_google_orders exactly as before. Rows are keyed on (report_start, report_end,
+// barm_daily_google_orders exactly as before. The report's Conversions / Conv. value are saved with
+// the spend and are the Google row's Orders / Sales for that window (one file carries both). Rows are keyed on (report_start, report_end,
 // campaign_name) like the Meta table, so a single-day export and a 7-day export (one file with
 // both sheets, or two uploads) are both kept, and re-uploading a file updates its rows in place.
 // The Ad Spend Report's Google row picks between them the same way it does for Meta.
@@ -272,6 +273,10 @@ export interface GoogleAdSpendSavedWindow {
   end: string;
   days: number;
   spend: number;
+  /** Sum of the report's "Conversions" — the Ad Spend Report's Google Orders for this window. */
+  conversions: number;
+  /** Sum of the report's "Conv. value" — the Ad Spend Report's Google Sales for this window. */
+  convValue: number;
   campaigns: number;
 }
 
@@ -306,6 +311,8 @@ async function uploadGoogleAdSpendSheets(sheets: unknown[][][]): Promise<GoogleA
       end: p.report_end,
       days: Math.round((Date.parse(p.report_end) - Date.parse(p.report_start)) / 86_400_000) + 1,
       spend: p.campaignTotal,
+      conversions: Math.round(p.campaigns.reduce((s, c) => s + c.conversions, 0) * 100) / 100,
+      convValue: Math.round(p.campaigns.reduce((s, c) => s + c.conv_value, 0) * 100) / 100,
       campaigns: p.campaigns.length,
     });
     for (const c of p.campaigns) {
