@@ -138,3 +138,12 @@ test("label: in transit / order placed from the Current stock sheet, purchase qt
   assert.equal(weeklyLabel({ ...missing, transit: none, purchase: none, components: none }),
     "WARNING: no Monday 12-10-2026 snapshot (not captured) and no Current stock sheet upload. Stock Intransit, Order placed, Stock purchase sheet qty and Combo show 0; Final qty is the 180-day need only.");
 });
+
+test("label: purchase sheet qty from the last uploaded Stock Purchase Sheet (user, 2026-10-22)", () => {
+  const cur = { from: "current" as const, date: "2026-10-15", at: "2026-10-21T05:16:39Z" };
+  const up = { from: "upload" as const, date: "2026-10-22", at: "2026-10-22T04:00:00Z" };
+  const snap = { from: "snapshot" as const, date: "2026-10-19", at: "2026-10-19T04:30:00Z" };
+  const w = { weekStart: "2026-10-19", capturedAt: "2026-10-19T04:30:00Z", error: null, status: "ok" as const };
+  assert.equal(weeklyLabel({ ...w, transit: cur, purchase: up, components: snap }),
+    "In transit / Order placed: Current stock sheet of 15-10-2026 (uploaded 21 Oct 2026, 10:46 am IST) · Purchase sheet qty: Stock Purchase Sheet uploaded 22 Oct 2026, 09:30 am IST · Combo: Monday 19-10-2026 snapshot, captured 19 Oct 2026, 10:00 am IST");
+});

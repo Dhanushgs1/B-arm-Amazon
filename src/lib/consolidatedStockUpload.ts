@@ -1,7 +1,8 @@
 // Uploads and reads for the Consolidated Stock Sheet (src/lib/consolidatedStock.ts).
 //   barm_godown_stock    one row per master product per godown upload (snapshot_date = latest block)
 //   barm_godown_daily    daily Stock Out etc. per product; re-uploading a date overwrites it
-// Stock Purchase and Components are never read live. They come from whichever is newer for the picked
+// Stock Purchase and Components are never read live (purchase sheet qty: the last Stock Purchase Sheet
+// upload, else the snapshot — user, 2026-10-22). Older rule: whichever is newer for the picked
 // date (user, 2026-10-14): the restock upload (the tool's "Stock Purchase Sheet.xlsx" /
 // "Components Sheet.xlsx", given every Friday) or the weekly Monday 10:00 IST snapshot
 // (supabase/migrations/20261013120000_barm_weekly_restock_snapshot.sql):
@@ -17,7 +18,7 @@ import { fetchAllRows } from "@/lib/amazonReportShared";
 import { checkStockMapping, keptGodownName, mergeGodownDaily, mergeGodownProducts, type StockMappingIssue } from "@/lib/godownProductAliases";
 import { chunk } from "@/lib/amazonOrderUploadRules";
 import {
-  parseGodownSheet, parseNotRestockedStock, buildConsolidated, weeklyInputs, mondayOf, istToday, parseRestockRows, restockSources, mergeRestockRows, dateFromFileName, onlyRestockProducts, productKey, CONSOLIDATED_DAYS,
+  parseGodownSheet, parseNotRestockedStock, buildConsolidated, weeklyInputs, mondayOf, istToday, parseRestockRows, restockSources, mergeRestockRows, withUploadedRfq, dateFromFileName, onlyRestockProducts, productKey, CONSOLIDATED_DAYS,
   type GodownProduct, type ConsolidatedRow, type ComponentNeed, type WeeklyRfqRow, type WeeklyComponentRow,
 } from "@/lib/consolidatedStock";
 
@@ -89,13 +90,15 @@ export interface WeeklySnapshotInfo {
   components: RestockSource;                  // combo stock to buy
 }
 
-// barm_restock_inputs / barm_restock_component_inputs (the tool's Stock Purchase / Components Sheet
-// uploads) are no longer written or read; their rows are left as they are.
-const RESTOCK_TABLE = { current: "barm_restock_transit_inputs" } as const;
+// barm_restock_component_inputs (the tool's Components Sheet upload) is no longer written or read.
+// barm_restock_inputs holds the tool's Stock Purchase Sheet again (user, 2026-10-22): its Suggested RFQ
+// is the purchase sheet qty.
+const RESTOCK_TABLE = { current: "barm_restock_transit_inputs", purchase: "barm_restock_inputs" } as const;
 
-/** The client's "Current stock sheet-DD-MM-YYYY.xlsx" (told apart by its headers; the tool's exports are
- *  refused). It counts on the date in its file name (else today, IST). The new rows are saved first and
- *  only then are that date's older rows removed, so a failed upload never loses the previous file. */
+/** The client's "Current stock sheet-DD-MM-YYYY.xlsx" or the tool's "Stock Purchase Sheet.xlsx" (told
+ *  apart by their headers; the Components Sheet is refused). It counts on the date in its file name
+ *  (else today, IST). The new rows are saved first and only then are that date's older rows removed, so
+ *  a failed upload never loses the previous file. */
 export async function uploadRestockWorkbook(file: File) {
   const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
   let parsed: ReturnType<typeof parseRestockRows> | null = null, lastError: unknown = null;
@@ -103,14 +106,18 @@ export async function uploadRestockWorkbook(file: File) {
     try { parsed = parseRestockRows(rowsOf(wb.Sheets[name])); break; } catch (e) { lastError = e; }
   }
   if (!parsed) throw lastError instanceof Error ? lastError : new Error("Not a restock file.");
-  if (parsed.kind !== "current") {
-    throw new Error('Upload the "Current stock sheet-DD-MM-YYYY.xlsx" here. Purchase sheet qty and Combo come from the Monday snapshot, so the tool\'s Stock Purchase / Components Sheet is not uploaded.');
+  if (parsed.kind === "components") {
+    throw new Error('Upload the "Current stock sheet-DD-MM-YYYY.xlsx" or the tool\'s "Stock Purchase Sheet.xlsx" here. Combo comes from the Monday snapshot, so the Components Sheet is not uploaded.');
   }
   const date = dateFromFileName(file.name) ?? istToday(), now = new Date().toISOString();
-  const table = RESTOCK_TABLE.current;
-  await upsert(table, parsed.rfq.map((r) => ({
-    snapshot_date: date, product: r.product, stock_intransit: r.stock_intransit, order_placed: r.order_placed, current_stock: r.current_stock, uploaded_at: now,
-  })), "snapshot_date,product");
+  const table = RESTOCK_TABLE[parsed.kind];
+  await upsert(table, parsed.kind === "current"
+    ? parsed.rfq.map((r) => ({
+      snapshot_date: date, product: r.product, stock_intransit: r.stock_intransit, order_placed: r.order_placed, current_stock: r.current_stock, uploaded_at: now,
+    }))
+    : parsed.rfq.map((r) => ({
+      snapshot_date: date, product: r.product, stock_intransit: r.stock_intransit, order_placed: r.order_placed, purchase_qty: r.suggested_rfq, uploaded_at: now,
+    })), "snapshot_date,product");
   // products dropped from a re-uploaded file of the same date
   const { error } = await supabasePublic.from(table).delete().eq("snapshot_date", date).lt("uploaded_at", now);
   if (error) throw new Error(`${table}: ${error.message}`);
@@ -121,6 +128,14 @@ export async function uploadRestockWorkbook(file: File) {
 async function latestUpload(table: string, asOf: string): Promise<{ date: string; uploadedAt: string } | null> {
   const { data, error } = await supabasePublic.from(table).select("snapshot_date,uploaded_at")
     .lte("snapshot_date", asOf).order("snapshot_date", { ascending: false }).order("uploaded_at", { ascending: false }).limit(1);
+  if (error) throw new Error(`${table}: ${error.message}`);
+  return data?.[0] ? { date: data[0].snapshot_date as string, uploadedAt: data[0].uploaded_at as string } : null;
+}
+
+/** The last upload of `table`, whatever its date (the Stock Purchase Sheet, user 2026-10-22). */
+async function lastUpload(table: string): Promise<{ date: string; uploadedAt: string } | null> {
+  const { data, error } = await supabasePublic.from(table).select("snapshot_date,uploaded_at")
+    .order("uploaded_at", { ascending: false }).limit(1);
   if (error) throw new Error(`${table}: ${error.message}`);
   return data?.[0] ? { date: data[0].snapshot_date as string, uploadedAt: data[0].uploaded_at as string } : null;
 }
@@ -170,25 +185,36 @@ async function fetchWeeklyInputs(weekStart: string) {
 /** Restock inputs for `asOf` (user, 2026-10-14; see restockSources):
  *    in transit / order placed   the latest Current stock sheet dated on or before `asOf`, else that week's
  *                                Monday snapshot
- *    purchase sheet qty, combo   that week's Monday snapshot only */
+ *    purchase sheet qty          the last uploaded Stock Purchase Sheet (any date), else that week's
+ *                                Monday snapshot (user, 2026-10-22)
+ *    combo                       that week's Monday snapshot only */
 async function fetchRestockInputs(asOf: string) {
-  const [{ rfq, components, snap }, upCurrent] = await Promise.all([
+  const [{ rfq, components, snap }, upCurrent, upPurchase] = await Promise.all([
     fetchWeeklyInputs(mondayOf(asOf)),
     latestUpload(RESTOCK_TABLE.current, asOf),
+    lastUpload(RESTOCK_TABLE.purchase),
   ]);
-  const sources = restockSources(upCurrent, snap.status === "ok");
-  const current = upCurrent
-    ? (await readAll(RESTOCK_TABLE.current, "product,stock_intransit,order_placed", ["product"], (q) => q.eq("snapshot_date", upCurrent.date)))
-        // spellings from the 13.10.2026 godown file point at the kept name (src/lib/godownProductAliases.ts)
-        .map((r) => ({ product: keptGodownName(String(r.product)), shownAs: String(r.product), stock_intransit: r.stock_intransit, order_placed: r.order_placed, suggested_rfq: null }))
-    : null;
-  const { inputs, combos } = weeklyInputs(mergeRestockRows(current?.map(({ shownAs: _, ...r }) => r) ?? null, rfq), components); // eslint-disable-line @typescript-eslint/no-unused-vars
+  const sources = restockSources(upCurrent, snap.status === "ok", upPurchase);
+  // spellings from the 13.10.2026 godown file point at the kept name (src/lib/godownProductAliases.ts)
+  const [current, purchase] = await Promise.all([
+    upCurrent
+      ? readAll(RESTOCK_TABLE.current, "product,stock_intransit,order_placed", ["product"], (q) => q.eq("snapshot_date", upCurrent.date))
+        .then((rows) => rows.map((r) => ({ product: keptGodownName(String(r.product)), shownAs: String(r.product), stock_intransit: r.stock_intransit, order_placed: r.order_placed, suggested_rfq: null })))
+      : null,
+    upPurchase
+      ? readAll(RESTOCK_TABLE.purchase, "product,purchase_qty", ["product"], (q) => q.eq("snapshot_date", upPurchase.date))
+        .then((rows) => rows.map((r) => ({ product: keptGodownName(String(r.product)), stock_intransit: null, order_placed: null, suggested_rfq: r.purchase_qty })))
+      : null,
+  ]);
+  const { inputs, combos } = weeklyInputs(withUploadedRfq(mergeRestockRows(current?.map(({ shownAs: _, ...r }) => r) ?? null, rfq), purchase), components); // eslint-disable-line @typescript-eslint/no-unused-vars
   const fromSnapshot: RestockSource = { from: "snapshot", date: snap.weekStart, at: snap.capturedAt };
   const none: RestockSource = { from: "none", date: null, at: null };
-  const pick = (s: "current" | "snapshot" | "none"): RestockSource =>
-    s === "current" ? { from: "current", date: upCurrent!.date, at: upCurrent!.uploadedAt } : s === "snapshot" ? fromSnapshot : none;
+  const pick = (s: "current" | "upload" | "snapshot" | "none"): RestockSource =>
+    s === "current" ? { from: "current", date: upCurrent!.date, at: upCurrent!.uploadedAt }
+      : s === "upload" ? { from: "upload", date: upPurchase!.date, at: upPurchase!.uploadedAt }
+      : s === "snapshot" ? fromSnapshot : none;
   const weekly: WeeklySnapshotInfo = {
-    ...snap, status: sources.purchase === "snapshot" ? "ok" : snap.status,
+    ...snap, status: sources.purchase !== "none" ? "ok" : snap.status,
     transit: pick(sources.transit), purchase: pick(sources.purchase), components: pick(sources.components),
   };
   // With a Current stock sheet, its products are the sheet's product list (user, 2026-10-15).

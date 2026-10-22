@@ -366,13 +366,28 @@ export function dateFromFileName(name: string): string | null {
   return Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== iso ? null : iso;
 }
 
-/** Source priority (user, 2026-10-14):
+/** Source priority (user, 2026-10-14; purchase qty changed 2026-10-22):
  *    in transit / order placed   the latest Current stock sheet dated on or before the picked date
  *                                (found by the caller), else that week's Monday snapshot
- *    purchase sheet qty, combo   that week's Monday snapshot only (immutable); none = 0 + warning */
-export function restockSources(currentUpload: { date: string } | null, snapshotOk: boolean) {
+ *    purchase sheet qty          the last uploaded Stock Purchase Sheet, whatever its date, else that
+ *                                week's Monday snapshot
+ *    combo                       that week's Monday snapshot only (immutable); none = 0 + warning */
+export function restockSources(currentUpload: { date: string } | null, snapshotOk: boolean, purchaseUpload: { date: string } | null = null) {
   const snap = snapshotOk ? "snapshot" as const : "none" as const;
-  return { transit: currentUpload ? "current" as const : snap, purchase: snap, components: snap };
+  return { transit: currentUpload ? "current" as const : snap, purchase: purchaseUpload ? "upload" as const : snap, components: snap };
+}
+
+/** Suggested RFQ from the uploaded Stock Purchase Sheet (user, 2026-10-22) in place of the snapshot's.
+ *  Products not in the file get none. */
+export function withUploadedRfq(rows: WeeklyRfqRow[], upload: WeeklyRfqRow[] | null): WeeklyRfqRow[] {
+  if (!upload) return rows;
+  const rfqBy = new Map(upload.map((r) => [productKey(r.product), r.suggested_rfq]));
+  const seen = new Set(rows.map((r) => productKey(r.product)));
+  return [
+    ...rows.map((r) => ({ ...r, suggested_rfq: rfqBy.get(productKey(r.product)) ?? null })),
+    // in the file only: its RFQ, no in transit / order placed (those come from the Current stock sheet)
+    ...upload.filter((r) => !seen.has(productKey(r.product))).map((r) => ({ ...r, stock_intransit: null, order_placed: null })),
+  ];
 }
 
 /** Per product: in transit / order placed from the uploaded Current stock sheet (when there is one),

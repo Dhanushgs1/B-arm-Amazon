@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseGodownSheet, parseNotRestockedStock, buildConsolidated, componentNeeds, mondayOf, istToday, weeklyInputs, runningOut, salesDropped, noSales, blockDate, parseRestockRows, restockSources, mergeRestockRows, dateFromFileName, withExtraProducts, onlyRestockProducts } from "./consolidatedStock.ts";
+import { parseGodownSheet, parseNotRestockedStock, buildConsolidated, componentNeeds, mondayOf, istToday, weeklyInputs, runningOut, salesDropped, noSales, blockDate, parseRestockRows, restockSources, mergeRestockRows, withUploadedRfq, dateFromFileName, withExtraProducts, onlyRestockProducts } from "./consolidatedStock.ts";
 
 // Shape of the godown "FC Stock sheet": A Products, D master product, named stock columns, then
 // "Stock as on" blocks of Opening | Stock IN | Stock Out | Closing.
@@ -301,4 +301,18 @@ test("Not restocked Products tab: stock per master product, #N/A as 0, missing c
   const { mergeGodownProducts } = await import("./godownProductAliases.ts");
   const fc = { product: "Wearable Lactation Massager-Grey", currentStock: 68, inboundShipped: 0, unfulfillable: 0, warehouse: 68, qcGodown: 0, packingGodown: 0, skuRows: 2, discontinued: false };
   assert.deepEqual(mergeGodownProducts([fc, ...products]).map((p) => [p.product, p.currentStock]), [["Wearable Lactation Massager-Grey", 73], ["Nail cleaning device", 2]]);
+});
+
+test("purchase sheet qty (user, 2026-10-22): the last uploaded Stock Purchase Sheet wins over the snapshot, whatever its date", () => {
+  assert.deepEqual(restockSources({ date: "2026-10-15" }, true, { date: "2026-10-22" }), { transit: "current", purchase: "upload", components: "snapshot" });
+  // no snapshot: the upload still gives purchase qty; combo has no source
+  assert.deepEqual(restockSources(null, false, { date: "2026-10-22" }), { transit: "none", purchase: "upload", components: "none" });
+  const rows = [{ product: "gluco spark Meter With 25 Strips & 25 lancets", stock_intransit: 0, order_placed: 0, suggested_rfq: 296 }, { product: "Not in file", stock_intransit: 3, order_placed: 1, suggested_rfq: 9 }];
+  const up = [{ product: "Gluco spark Meter With 25 Strips & 25 lancets ", stock_intransit: null, order_placed: null, suggested_rfq: 308 }, { product: "Only in file", stock_intransit: null, order_placed: null, suggested_rfq: 4 }];
+  assert.deepEqual(withUploadedRfq(rows, up), [
+    { product: "gluco spark Meter With 25 Strips & 25 lancets", stock_intransit: 0, order_placed: 0, suggested_rfq: 308 },
+    { product: "Not in file", stock_intransit: 3, order_placed: 1, suggested_rfq: null },
+    { product: "Only in file", stock_intransit: null, order_placed: null, suggested_rfq: 4 },
+  ]);
+  assert.deepEqual(withUploadedRfq(rows, null), rows);
 });

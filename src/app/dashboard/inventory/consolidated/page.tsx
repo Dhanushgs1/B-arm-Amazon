@@ -3,7 +3,7 @@
 // Consolidated Stock Sheet — the client's daily "Consolidate sheet", rebuilt from the godown's
 // "Combined godown stock sheet" upload (src/lib/consolidatedStock.ts has the formulas). In transit,
 // order placed come from the latest uploaded Current stock sheet (given every Friday), else that week's
-// Monday 10:00 IST snapshot; purchase qty and combo needs always come from the Monday snapshot.
+// Monday 10:00 IST snapshot; purchase qty = the last uploaded Stock Purchase Sheet (else the snapshot); combo from the snapshot.
 
 import { useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -112,8 +112,12 @@ export default function ConsolidatedStockPage() {
     setNote(null);
     try {
       const r = await uploadRestockWorkbook(file);
-      const [fc, listing] = await Promise.all([fcCheck("restock"), listingCheck()]);
-      setNote({ ok: true, text: `Current stock sheet saved for ${dateLong(r.date)}: ${r.rows} products (in transit, order placed).${fc}${listing}` });
+      if (r.kind === "purchase") {
+        setNote({ ok: true, text: `Stock Purchase Sheet saved: ${r.rows} products (purchase sheet qty from Suggested RFQ).` });
+      } else {
+        const [fc, listing] = await Promise.all([fcCheck("restock"), listingCheck()]);
+        setNote({ ok: true, text: `Current stock sheet saved for ${dateLong(r.date)}: ${r.rows} products (in transit, order placed).${fc}${listing}` });
+      }
       await refetch();
     } catch (e) {
       setNote({ ok: false, text: e instanceof Error ? e.message : "Upload failed" });
@@ -203,7 +207,7 @@ export default function ConsolidatedStockPage() {
           {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />} Upload godown stock sheet
         </button>
         <input ref={restockRef} id="restock-file" type="file" accept=".xlsx,.xls" className="hidden" onChange={(e) => uploadRestock(e.target.files?.[0])} />
-        <button onClick={() => restockRef.current?.click()} disabled={busy} title='"Current stock sheet-DD-MM-YYYY.xlsx": in transit and order placed' className="flex items-center gap-1.5 rounded-lg border border-indigo-300 bg-background px-3.5 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50 disabled:opacity-60 dark:border-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-950">
+        <button onClick={() => restockRef.current?.click()} disabled={busy} title='"Current stock sheet-DD-MM-YYYY.xlsx": in transit and order placed · "Stock Purchase Sheet.xlsx": purchase sheet qty' className="flex items-center gap-1.5 rounded-lg border border-indigo-300 bg-background px-3.5 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50 disabled:opacity-60 dark:border-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-950">
           {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />} Upload restock inputs
         </button>
         <button onClick={exportExcel} disabled={!data?.rows.length || exporting} className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-3.5 py-2 text-xs font-bold hover:bg-muted disabled:opacity-60">
@@ -354,7 +358,7 @@ export default function ConsolidatedStockPage() {
             <span>
               Current stock = inbound shipped + unfulfillable + final stock in warehouse + QC godown + packing godown (godown FC Stock sheet).
               Day columns = Stock Out per day. Average = last {CONSOLIDATED_DAYS} days ÷ {CONSOLIDATED_DAYS}. Qty to restock = 180-day need − (current + in transit + order placed);
-              final qty = the larger of that and the purchase-sheet qty (Suggested RFQ, from the week&apos;s Monday snapshot), never below 0. Combo stock to buy is 0 for every product for now. Runs out in = current stock ÷ average per day.
+              final qty = the larger of that and the purchase-sheet qty (Suggested RFQ from the last uploaded Stock Purchase Sheet, else the week&apos;s Monday snapshot), never below 0. Combo stock to buy is 0 for every product for now. Runs out in = current stock ÷ average per day.
             </span>
           </p>
         </>

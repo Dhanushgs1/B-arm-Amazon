@@ -76,6 +76,13 @@ export function weeklyLabel(w: WeeklyInfo | null | undefined): string {
   // Purchase sheet qty and Combo: the snapshot only (user, 2026-10-14).
   const t = w.transit;
   const curText = t?.from === "current" ? `Current stock sheet of ${dmy(t.date!)} (uploaded ${istStamp(t.at!)})` : null;
+  // Purchase sheet qty: the last uploaded Stock Purchase Sheet when there is one (user, 2026-10-22).
+  const p = w.purchase;
+  const upText = p?.from === "upload" ? `Stock Purchase Sheet uploaded ${istStamp(p.at!)}` : null;
+  if (upText) {
+    const combo = w.components?.from === "snapshot" ? snapText : "none (shows 0)";
+    return `In transit / Order placed: ${curText ?? (t?.from === "snapshot" ? snapText : "none (shows 0)")} · Purchase sheet qty: ${upText} · Combo: ${combo}`;
+  }
   if (w.status === "ok") return curText ? `In transit / Order placed: ${curText} · Purchase sheet qty / Combo: ${snapText}` : `Stock Purchase / Components: ${snapText}`;
   const why = `no Monday ${dmy(w.weekStart)} snapshot (${w.status === "failed" ? "capture failed" + (w.error ? ": " + w.error : "") : "not captured"})`;
   if (curText) return `WARNING: ${why}. Stock purchase sheet qty and Combo show 0; Final qty is the 180-day need only. In transit / Order placed: ${curText}`;
