@@ -244,6 +244,18 @@ export default function ConsolidatedStockPage() {
         </div>
       )}
 
+      {!!data?.rfqIssues?.length && (
+        <div role="alert" id="rfq-matching-warning" className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2.5 text-xs font-semibold text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <p>Purchase sheet qty check: {data.rfqIssues.length} product name{data.rfqIssues.length === 1 ? "" : "s"} could not be matched safely. Check the spelling in the source file.</p>
+            <ul className="mt-1 list-disc pl-4 font-normal">
+              {data.rfqIssues.map((i) => <li key={`${i.kind}|${i.product}`}><b>{i.product}</b>: {i.note}</li>)}
+            </ul>
+          </div>
+        </div>
+      )}
+
       <div className="grid gap-3 xl:grid-cols-2">
         <FcNameAlertPanel />
         <ListingAlertPanel />

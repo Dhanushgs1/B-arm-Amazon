@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseGodownSheet, parseNotRestockedStock, buildConsolidated, componentNeeds, mondayOf, istToday, weeklyInputs, runningOut, salesDropped, noSales, blockDate, parseRestockRows, restockSources, mergeRestockRows, withUploadedRfq, dateFromFileName, withExtraProducts, onlyRestockProducts } from "./consolidatedStock.ts";
+import { parseGodownSheet, parseNotRestockedStock, buildConsolidated, componentNeeds, mondayOf, istToday, weeklyInputs, runningOut, salesDropped, noSales, blockDate, parseRestockRows, restockSources, mergeRestockRows, withUploadedRfq, matchUploadedRfq, matchRestockRows, dateFromFileName, withExtraProducts, onlyRestockProducts } from "./consolidatedStock.ts";
 
 // Shape of the godown "FC Stock sheet": A Products, D master product, named stock columns, then
 // "Stock as on" blocks of Opening | Stock IN | Stock Out | Closing.
@@ -315,4 +315,61 @@ test("purchase sheet qty (user, 2026-10-22): the last uploaded Stock Purchase Sh
     { product: "Only in file", stock_intransit: null, order_placed: null, suggested_rfq: 4 },
   ]);
   assert.deepEqual(withUploadedRfq(rows, null), rows);
+});
+
+test("purchase sheet qty is joined by name whatever the spelling (user, 2026-10-23): Pregnancy kit 0 → 22, Final qty stays 74", async () => {
+  const { keptGodownName } = await import("./godownProductAliases.ts");
+  // 21-10-2026: godown name, Current stock sheet spelling, Stock Purchase Sheet spelling
+  const godown = "Pregnancy kit(1 early, 1 normal, 2 pee cup)";
+  const current = [{ product: keptGodownName("Pregnancy Kit (1 Early 1 Normal 2 Pee Cup)"), stock_intransit: 0, order_placed: 0, suggested_rfq: null }];
+  const purchase = [{ product: keptGodownName("Pregnancy kit(1 early 1 normal 2 pee cup)"), stock_intransit: null, order_placed: null, suggested_rfq: 22 }];
+  const { rows, issues } = matchUploadedRfq(mergeRestockRows(current, []), purchase);
+  assert.deepEqual(issues, []);
+  assert.equal(rows.length, 1);
+  const p = { product: godown, currentStock: 16, inboundShipped: 0, unfulfillable: 0, warehouse: 16, qcGodown: 0, packingGodown: 0, skuRows: 1, discontinued: false };
+  const daily = [1, 0, 0, 1, 1, 0, 0, 0, 2, 0].map((stockOut, i) => ({ date: `2026-10-${String(12 + i).padStart(2, "0")}`, product: godown, stockOut }));
+  const r = buildConsolidated([p], daily, weeklyInputs(rows, []).inputs).rows[0];
+  assert.equal(r.purchaseQty, 22);
+  assert.equal(r.qtyToRestock, 74);
+  assert.equal(r.finalQtyToRestock, 74);
+});
+
+test("purchase sheet qty: real 0 stays 0, blank and missing are null, pack sizes never merge, ambiguous is left empty and flagged", () => {
+  const row = (product: string) => ({ product, stock_intransit: 0, order_placed: 0, suggested_rfq: null });
+  const up = (product: string, suggested_rfq: unknown) => ({ product, stock_intransit: null, order_placed: null, suggested_rfq });
+  const { rows, issues } = matchUploadedRfq(
+    [row("UTI Test Strips (Pack of 4)"), row("Lancing device"), row("Ovulation strips (Pack of 5)"), row("Ovulation strips (Pack of 2)"), row("Teething tube combo - green red yellow")],
+    [up("UTI Test Strips (Pack of 4)", 0), up("Lancing device", null), up("Ovulation strips (Pack of 20)", 80),
+      up("Teething tube combo (Green red yellow)", 408), up("Teething Tube Combo (Green, Red, Yellow)", 12)],
+  );
+  assert.deepEqual(rows.slice(0, 5).map((r) => [r.product, r.suggested_rfq]), [
+    ["UTI Test Strips (Pack of 4)", 0],      // genuine zero
+    ["Lancing device", null],                // in the file, quantity blank
+    ["Ovulation strips (Pack of 5)", null],  // not in the file
+    ["Ovulation strips (Pack of 2)", null],  // Pack of 20 is another product
+    ["Teething tube combo - green red yellow", null], // two candidates with different RFQ: not guessed
+  ]);
+  assert.deepEqual(issues.map((i) => [i.kind, i.product]), [
+    ["ambiguous", "Teething tube combo - green red yellow"],
+    ["unmatched", "Ovulation strips (Pack of 20)"],
+  ]);
+  // the unmatched product keeps its own row, as before
+  assert.deepEqual(rows.slice(5).map((r) => [r.product, r.suggested_rfq]), [["Ovulation strips (Pack of 20)", 80]]);
+  // the snapshot path (no purchase sheet) joins the same way
+  const snap = matchRestockRows([row("Pregnancy Kit (1 Early 1 Normal 2 Pee Cup)")], [up("Pregnancy kit(1 early 1 normal 2 pee cup)", 8)]);
+  assert.deepEqual(snap.rows.map((r) => r.suggested_rfq), [8]);
+  assert.deepEqual(snap.issues, []);
+});
+
+test("buildConsolidated: inputs are found by name across spellings; an ambiguous name gets none", () => {
+  const p = (product: string) => ({ product, currentStock: 10, inboundShipped: 0, unfulfillable: 0, warehouse: 10, qcGodown: 0, packingGodown: 0, skuRows: 1, discontinued: false });
+  const { rows } = buildConsolidated([p("IR THERMOMETER- GP 100"), p("Sensory brush")], [], [
+    { product: "IR Thermometer GP-100", stockIntransit: 2, orderPlaced: 1, purchaseQty: 12 },
+    { product: "Sensory (Brush)", stockIntransit: null, orderPlaced: null, purchaseQty: 1344 },
+    { product: "Sensory-brush", stockIntransit: null, orderPlaced: null, purchaseQty: 5 },
+  ]);
+  assert.deepEqual(rows.map((r) => [r.product, r.stockIntransit, r.orderPlaced, r.purchaseQty]), [
+    ["IR THERMOMETER- GP 100", 2, 1, 12],
+    ["Sensory brush", null, null, null],
+  ]);
 });

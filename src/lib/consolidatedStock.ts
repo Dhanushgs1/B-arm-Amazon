@@ -23,6 +23,8 @@
 // In-transit, order placed and purchase-sheet qty come from the separate "Total Orders and Minimum
 // Stock" workbook (client VLOOKUPs: column S = order placed, T = in transit, W = purchase qty).
 
+import { nameIndex } from "./productNameMatch.ts";
+
 export const CONSOLIDATED_DAYS = 10;
 export const RUNNING_OUT_DAYS = 30;
 
@@ -377,30 +379,44 @@ export function restockSources(currentUpload: { date: string } | null, snapshotO
   return { transit: currentUpload ? "current" as const : snap, purchase: purchaseUpload ? "upload" as const : snap, components: snap };
 }
 
+/** A Suggested RFQ that could not be joined to the sheet by name (productNameMatch.ts):
+ *    ambiguous  the source has several products of that name with different quantities — left empty
+ *    unmatched  a product in the source that matches no product on the sheet — kept as its own row */
+export interface RfqMatchIssue { product: string; kind: "ambiguous" | "unmatched"; source: "purchase" | "snapshot"; note: string }
+
+/** Suggested RFQ from `source` onto `rows` by product name (case, spacing and punctuation aside; see
+ *  productNameMatch.ts). A real 0 stays 0; a product not found, or found with a blank quantity, gets
+ *  null. Products only in `source` are appended with its RFQ and no in transit / order placed. */
+function joinRfq(rows: WeeklyRfqRow[], source: WeeklyRfqRow[], from: RfqMatchIssue["source"]): { rows: WeeklyRfqRow[]; issues: RfqMatchIssue[] } {
+  const label = from === "purchase" ? "Stock Purchase Sheet" : "Monday snapshot";
+  const bySource = nameIndex(source, (r) => r.product, (r) => numOrNull(r.suggested_rfq));
+  const byRow = nameIndex(rows, (r) => r.product, () => 0); // only "is it on the sheet?"
+  const issues: RfqMatchIssue[] = [];
+  const joined = rows.map((r) => {
+    const m = bySource.find(r.product);
+    if (m.status === "ambiguous") {
+      issues.push({ product: r.product, kind: "ambiguous", source: from, note: `${label} has ${m.candidates.map((c) => `"${c}"`).join(" and ")} with different Suggested RFQ; left empty` });
+    }
+    return { ...r, suggested_rfq: m.status === "exact" || m.status === "normalized" ? numOrNull(m.row.suggested_rfq) : null };
+  });
+  const extra = source.filter((r) => byRow.find(r.product).status === "missing");
+  for (const r of extra) issues.push({ product: r.product, kind: "unmatched", source: from, note: `in the ${label} but not on the sheet` });
+  return { rows: [...joined, ...extra.map((r) => ({ ...r, stock_intransit: null, order_placed: null }))], issues };
+}
+
 /** Suggested RFQ from the uploaded Stock Purchase Sheet (user, 2026-10-22) in place of the snapshot's.
  *  Products not in the file get none. */
-export function withUploadedRfq(rows: WeeklyRfqRow[], upload: WeeklyRfqRow[] | null): WeeklyRfqRow[] {
-  if (!upload) return rows;
-  const rfqBy = new Map(upload.map((r) => [productKey(r.product), r.suggested_rfq]));
-  const seen = new Set(rows.map((r) => productKey(r.product)));
-  return [
-    ...rows.map((r) => ({ ...r, suggested_rfq: rfqBy.get(productKey(r.product)) ?? null })),
-    // in the file only: its RFQ, no in transit / order placed (those come from the Current stock sheet)
-    ...upload.filter((r) => !seen.has(productKey(r.product))).map((r) => ({ ...r, stock_intransit: null, order_placed: null })),
-  ];
+export function matchUploadedRfq(rows: WeeklyRfqRow[], upload: WeeklyRfqRow[] | null) {
+  return upload ? joinRfq(rows, upload, "purchase") : { rows, issues: [] as RfqMatchIssue[] };
 }
+export const withUploadedRfq = (rows: WeeklyRfqRow[], upload: WeeklyRfqRow[] | null): WeeklyRfqRow[] => matchUploadedRfq(rows, upload).rows;
 
 /** Per product: in transit / order placed from the uploaded Current stock sheet (when there is one),
  *  Suggested RFQ from the snapshot. Products missing from the upload get no in transit / order placed. */
-export function mergeRestockRows(current: WeeklyRfqRow[] | null, snapshot: WeeklyRfqRow[]): WeeklyRfqRow[] {
-  if (!current) return snapshot;
-  const rfqBy = new Map(snapshot.map((r) => [productKey(r.product), r.suggested_rfq]));
-  const inFile = new Set(current.map((r) => productKey(r.product)));
-  return [
-    ...current.map((r) => ({ ...r, suggested_rfq: rfqBy.get(productKey(r.product)) ?? null })),
-    ...snapshot.filter((r) => !inFile.has(productKey(r.product))).map((r) => ({ ...r, stock_intransit: null, order_placed: null })),
-  ];
+export function matchRestockRows(current: WeeklyRfqRow[] | null, snapshot: WeeklyRfqRow[]) {
+  return current ? joinRfq(current, snapshot, "snapshot") : { rows: snapshot, issues: [] as RfqMatchIssue[] };
 }
+export const mergeRestockRows = (current: WeeklyRfqRow[] | null, snapshot: WeeklyRfqRow[]): WeeklyRfqRow[] => matchRestockRows(current, snapshot).rows;
 
 /** Products named in the restock file but missing from the godown sheet become rows with 0 stock
  *  (user, 2026-10-14), so every product in the file shows on the sheet. */
@@ -438,7 +454,8 @@ export function buildConsolidated(
   const dates = lastDates(daily, n);
   const out = new Map<string, number>();
   for (const d of daily) out.set(`${d.date}|${productKey(d.product)}`, (out.get(`${d.date}|${productKey(d.product)}`) ?? 0) + num(d.stockOut));
-  const inputBy = new Map(inputs.map((i) => [productKey(i.product), i]));
+  // by name, case / spacing / punctuation aside; an ambiguous name gets no inputs (productNameMatch.ts)
+  const inputBy = nameIndex(inputs, (i) => i.product, (i) => [i.stockIntransit, i.orderPlaced, i.purchaseQty]);
   const comboBy = new Map(combos.map((c) => [productKey(c.component), c.finalQty]));
   // Peak sales (user, 2026-10-13): the best single day over all days given, not just the last 10.
   const peak = new Map<string, { qty: number; date: string }>();
@@ -452,7 +469,8 @@ export function buildConsolidated(
     const key = productKey(p.product);
     const days = dates.map((d) => (out.has(`${d}|${key}`) ? out.get(`${d}|${key}`)! : null));
     const avg = days.reduce<number>((a, v) => a + (v ?? 0), 0) / n;
-    const inp = inputBy.get(key);
+    const found = inputBy.find(p.product);
+    const inp = found.status === "exact" || found.status === "normalized" ? found.row : undefined;
     const intransit = inp?.stockIntransit ?? null;
     const ordered = inp?.orderPlaced ?? null;
     const need180 = avg * 180;

@@ -18,8 +18,8 @@ import { fetchAllRows } from "@/lib/amazonReportShared";
 import { checkStockMapping, keptGodownName, mergeGodownDaily, mergeGodownProducts, type StockMappingIssue } from "@/lib/godownProductAliases";
 import { chunk } from "@/lib/amazonOrderUploadRules";
 import {
-  parseGodownSheet, parseNotRestockedStock, buildConsolidated, weeklyInputs, mondayOf, istToday, parseRestockRows, restockSources, mergeRestockRows, withUploadedRfq, dateFromFileName, onlyRestockProducts, productKey, CONSOLIDATED_DAYS,
-  type GodownProduct, type ConsolidatedRow, type ComponentNeed, type WeeklyRfqRow, type WeeklyComponentRow,
+  parseGodownSheet, parseNotRestockedStock, buildConsolidated, weeklyInputs, mondayOf, istToday, parseRestockRows, restockSources, matchRestockRows, matchUploadedRfq, dateFromFileName, onlyRestockProducts, productKey, CONSOLIDATED_DAYS,
+  type GodownProduct, type RfqMatchIssue, type ConsolidatedRow, type ComponentNeed, type WeeklyRfqRow, type WeeklyComponentRow,
 } from "@/lib/consolidatedStock";
 
 const findSheet = (wb: XLSX.WorkBook, re: RegExp) => {
@@ -149,6 +149,8 @@ export interface ConsolidatedData {
   weekly: WeeklySnapshotInfo | null;
   /** Godown stock that did not reach the sheet as expected (checkStockMapping); empty when all is mapped. */
   stockIssues?: StockMappingIssue[];
+  /** Suggested RFQ rows not joined to the sheet by name (ambiguous / not on the sheet); empty when all matched. */
+  rfqIssues?: RfqMatchIssue[];
 }
 
 /** Selected columns of a table, paged (PostgREST caps a response at 1000 rows). */
@@ -206,7 +208,11 @@ async function fetchRestockInputs(asOf: string) {
         .then((rows) => rows.map((r) => ({ product: keptGodownName(String(r.product)), stock_intransit: null, order_placed: null, suggested_rfq: r.purchase_qty })))
       : null,
   ]);
-  const { inputs, combos } = weeklyInputs(withUploadedRfq(mergeRestockRows(current?.map(({ shownAs: _, ...r }) => r) ?? null, rfq), purchase), components); // eslint-disable-line @typescript-eslint/no-unused-vars
+  const merged = matchRestockRows(current?.map(({ shownAs: _, ...r }) => r) ?? null, rfq); // eslint-disable-line @typescript-eslint/no-unused-vars
+  const withRfq = matchUploadedRfq(merged.rows, purchase);
+  const { inputs, combos } = weeklyInputs(withRfq.rows, components);
+  // only the source the purchase qty is read from: the snapshot's RFQ is replaced when a purchase sheet is uploaded
+  const rfqIssues = purchase ? withRfq.issues : merged.issues;
   const fromSnapshot: RestockSource = { from: "snapshot", date: snap.weekStart, at: snap.capturedAt };
   const none: RestockSource = { from: "none", date: null, at: null };
   const pick = (s: "current" | "upload" | "snapshot" | "none"): RestockSource =>
@@ -218,7 +224,7 @@ async function fetchRestockInputs(asOf: string) {
     transit: pick(sources.transit), purchase: pick(sources.purchase), components: pick(sources.components),
   };
   // With a Current stock sheet, its products are the sheet's product list (user, 2026-10-15).
-  return { inputs, combos, weekly, restockNames: current ? current.map((r) => r.product) : null,
+  return { inputs, combos, weekly, rfqIssues, restockNames: current ? current.map((r) => r.product) : null,
     // matched name → the spelling in the Current stock sheet, which the page and Excel show (user, 2026-10-15)
     shownAs: new Map((current ?? []).map((r) => [productKey(r.product), r.shownAs.replace(/\s+/g, " ").trim()])) };
 }
@@ -294,5 +300,6 @@ export async function fetchConsolidated(asOf?: string): Promise<ConsolidatedData
   const named = rows.map((r) => ({ ...r, product: live.shownAs.get(productKey(r.product)) || r.product, godownName: r.product }));
   const stockIssues = checkStockMapping(rawStock, products);
   if (stockIssues.length) console.warn("[Marketplace360] Consolidated stock mapping:", stockIssues);
-  return { snapshotDate, uploadedAt: fcStock[0]?.uploaded_at ?? null, dates, rows: named, combos: live.combos, weekly: live.weekly, stockIssues };
+  if (live.rfqIssues.length) console.warn("[Marketplace360] Consolidated Suggested RFQ name matching:", live.rfqIssues);
+  return { snapshotDate, uploadedAt: fcStock[0]?.uploaded_at ?? null, dates, rows: named, combos: live.combos, weekly: live.weekly, stockIssues, rfqIssues: live.rfqIssues };
 }
