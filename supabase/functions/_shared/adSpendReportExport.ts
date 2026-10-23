@@ -1329,43 +1329,79 @@ export async function fetchMeeshoProducts(
 async function fetchSocialMediaAdSpend(
   range: { start: string; end: string },
   endDate: string
-): Promise<{ daySpend: number; rangeSpend: number }> {
+): Promise<WindowedAdSpend> {
   return fetchWindowedAdSpend("barm_daily_social_media", range, endDate);
+}
+
+// Meta campaign name → the Amazon product (master Product Name) it promotes. Meta's export has no
+// SKU/product column, so the campaign name is the only link; first match wins. Several campaigns
+// for the same product (e.g. a new dated campaign replacing an old one) land on one Summary row.
+// A campaign matching none of these still gets its own row, under its campaign name, with no price.
+const SOCIAL_MEDIA_CAMPAIGN_PRODUCTS: { match: RegExp; product: string }[] = [
+  { match: /peak\s*flow/i, product: "Sonmol Peak Flow meter (without BLE)" },
+  { match: /insemin/i, product: "Insemination kit (Pack of 5)" },
+  { match: /post\s*pa/i, product: "Postpartum Recovery Essentials care kit (10 pcs kit)" },
+];
+
+function socialMediaProductFor(campaign: string): string {
+  return SOCIAL_MEDIA_CAMPAIGN_PRODUCTS.find((m) => m.match.test(campaign))?.product ?? campaign;
+}
+
+interface WindowedAdSpend {
+  daySpend: number;
+  rangeSpend: number;
+  /** Same day/range resolution as the totals, split per campaign (spelling of the first row seen). */
+  campaigns: { name: string; daySpend: number; rangeSpend: number }[];
 }
 
 async function fetchWindowedAdSpend(
   table: string,
   range: { start: string; end: string },
   endDate: string
-): Promise<{ daySpend: number; rangeSpend: number }> {
+): Promise<WindowedAdSpend> {
   const rows = (await fetchAllRows(
     table,
     (q) => q.lte("report_start", endDate).gte("report_end", range.start)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ).catch(() => [])) as any[];
 
-  const daySpend = rows
+  // Same campaign matched ignoring case/spacing (same rule as the upload, socialMediaRules.ts),
+  // so "Camp A" daily rows and a "camp a" whole-window row are never both summed.
+  const campaignKey = (r: { campaign_name?: string }) => String(r.campaign_name || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const campaigns = new Map<string, { name: string; daySpend: number; rangeSpend: number }>();
+  const campaignFor = (r: { campaign_name?: string }) => {
+    const key = campaignKey(r);
+    const hit = campaigns.get(key) ?? { name: String(r.campaign_name || "").replace(/\s+/g, " ").trim(), daySpend: 0, rangeSpend: 0 };
+    campaigns.set(key, hit);
+    return hit;
+  };
+
+  rows
     .filter((r) => r.report_start === endDate && r.report_end === endDate)
-    .reduce((s, r) => s + num(r.spend), 0);
+    .forEach((r) => { campaignFor(r).daySpend += num(r.spend); });
 
   const byCampaign = new Map<string, typeof rows>();
   rows
     .filter((r) => r.report_start >= range.start && r.report_end <= endDate) // fully inside the window only
     .forEach((r) => {
-      // Same campaign matched ignoring case/spacing (same rule as the upload, socialMediaRules.ts),
-      // so "Camp A" daily rows and a "camp a" whole-window row are never both summed.
-      const key = String(r.campaign_name || "").replace(/\s+/g, " ").trim().toLowerCase();
+      const key = campaignKey(r);
       const list = byCampaign.get(key) ?? [];
       list.push(r);
       byCampaign.set(key, list);
     });
-  let rangeSpend = 0;
   byCampaign.forEach((campaignRows) => {
     const wideRows = campaignRows.filter((r) => r.report_start === range.start && r.report_end === endDate);
-    rangeSpend += (wideRows.length ? wideRows : campaignRows).reduce((s, r) => s + num(r.spend), 0);
+    campaignFor(campaignRows[0]).rangeSpend += (wideRows.length ? wideRows : campaignRows).reduce((s, r) => s + num(r.spend), 0);
   });
 
-  return { daySpend: round2(daySpend), rangeSpend: round2(rangeSpend) };
+  const list = [...campaigns.values()]
+    .map((c) => ({ name: c.name, daySpend: round2(c.daySpend), rangeSpend: round2(c.rangeSpend) }))
+    .filter((c) => c.daySpend > 0 || c.rangeSpend > 0);
+  return {
+    daySpend: round2(list.reduce((s, c) => s + c.daySpend, 0)),
+    rangeSpend: round2(list.reduce((s, c) => s + c.rangeSpend, 0)),
+    campaigns: list,
+  };
 }
 
 // ── Google (direct/website) orders ──────────────────────────────────────────
@@ -1946,10 +1982,11 @@ export interface PlatformEmailSummary {
   allProducts: { name: string; price: number; day: ProductMetricBlock; range: ProductMetricBlock }[];
 }
 
-// Same shape as one PlatformEmailSummary row, minus the shortlist/allProducts fields (there's
-// only ever the one product) — kept as its own type instead of widening Platform/PlatformEmailSummary
-// to include "Social Media", since it's deliberately not a real platform (see the comment where
-// socialMediaRow is built in buildAdSpendReportWorkbook).
+// Kept as its own type instead of widening Platform/PlatformEmailSummary to include "Social Media",
+// since it's deliberately not a real platform (see the comment where socialMediaRows is built in
+// buildAdSpendReportWorkbook). daySpend/daySpendTax are the channel totals; `products` has one entry
+// per promoted product (Meta campaigns grouped by SOCIAL_MEDIA_CAMPAIGN_PRODUCTS). product/price/
+// day/range repeat the first entry, for an email function deployed before `products` existed.
 export interface SocialMediaEmailSummary {
   daySpend: number;
   daySpendTax: number;
@@ -1957,6 +1994,7 @@ export interface SocialMediaEmailSummary {
   price: number;
   day: ProductMetricBlock;
   range: ProductMetricBlock;
+  products: { product: string; campaigns: string[]; price: number; day: ProductMetricBlock; range: ProductMetricBlock }[];
 }
 
 // Google — the reporting day's B-Arm orders (totalUnits/totalValue, the Summary row's Overall
@@ -2490,51 +2528,69 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     }
   });
 
-  // Social Media (Meta Ads) — one extra Summary row, added only when there's actually spend to
-  // show (an empty/not-yet-uploaded barm_daily_social_media leaves the Summary sheet unchanged).
-  // Orders/CPC/ACOS are cross-referenced from the Amazon platform's own already-computed product
-  // rows for the one product currently running Meta ads — per the seller's explicit choice, since
-  // Meta's campaign name alone ("Peak flow meter - <date>") doesn't distinguish the with-BLE vs
-  // without-BLE SKU families, and only the without-BLE listing is what these campaigns promote.
-  // Overall sales QTS/Value is left blank here — that sale is already counted once under Amazon's
-  // own Overall Sales, so repeating it would double-count.
+  // Social Media (Meta Ads) — one Summary row per promoted product, added only when there's
+  // actually spend to show (an empty/not-yet-uploaded barm_daily_social_media leaves the Summary
+  // sheet unchanged). Meta campaigns are mapped to products by campaign name
+  // (SOCIAL_MEDIA_CAMPAIGN_PRODUCTS); price is looked up from the Amazon platform's own product rows
+  // for that name. The channel's total day spend sits on the first row (merged down), the same shape
+  // as a multi-product platform block. Overall sales QTS/Value is left blank — those sales are
+  // already counted once under Amazon's own Overall Sales, so repeating them would double-count.
   let socialMediaRow: number | null = null;
   let socialMediaSummary: SocialMediaEmailSummary | null = null;
+  const socialMediaProducts: { product: string; campaigns: string[]; price: number; dayAgg: WindowAgg; rangeAgg: WindowAgg }[] = [];
   if (socialMedia.daySpend > 0 || socialMedia.rangeSpend > 0) {
-    const SOCIAL_MEDIA_PRODUCT_NAME = "Sonmol Peak Flow meter (without BLE)";
     const amazonRowsForSocial = groupProductsByName([...amz.products.values()], undefined, skuToMasterSkuidName);
-    const socialProduct = amazonRowsForSocial.find((p) => p.name.trim().toLowerCase() === SOCIAL_MEDIA_PRODUCT_NAME.toLowerCase());
-    const price = socialProduct?.price ?? 0;
-    // This is a real Amazon SKU (see socialProduct above), so it gets the same listing-price
-    // lookup as every other Amazon computeAcos call site — dayAgg/rangeAgg below never carry an
-    // adOrders field, so they always take the new CPC/listingPrice-or-price gate regardless.
-    const listingPrice = socialProduct ? amazonListingPriceMap.get(socialProduct.sku) : undefined;
-    const dayAgg: WindowAgg = { spend: socialMedia.daySpend, units: socialProduct?.day.units ?? 0 };
-    const rangeAgg: WindowAgg = { spend: socialMedia.rangeSpend, units: socialProduct?.range.units ?? 0 };
+    const byProduct = new Map<string, { campaigns: string[]; daySpend: number; rangeSpend: number }>();
+    socialMedia.campaigns.forEach((c) => {
+      const product = socialMediaProductFor(c.name);
+      const hit = byProduct.get(product) ?? { campaigns: [], daySpend: 0, rangeSpend: 0 };
+      hit.campaigns.push(c.name);
+      hit.daySpend += c.daySpend;
+      hit.rangeSpend += c.rangeSpend;
+      byProduct.set(product, hit);
+    });
+    byProduct.forEach((v, product) => {
+      const amazonRow = amazonRowsForSocial.find((p) => p.name.trim().toLowerCase() === product.toLowerCase());
+      // Orders stay 0 (shown blank), per the seller's explicit instruction: Meta's export carries
+      // spend only, and these products' Amazon orders are already counted under Amazon's own rows —
+      // borrowing them here double-credited the same orders to two channels.
+      socialMediaProducts.push({
+        product: amazonRow?.name ?? product,
+        campaigns: v.campaigns,
+        price: amazonRow?.price ?? 0,
+        dayAgg: { spend: round2(v.daySpend), units: 0 },
+        rangeAgg: { spend: round2(v.rangeSpend), units: 0 },
+      });
+    });
+    socialMediaProducts.sort((a, b) => b.rangeAgg.spend - a.rangeAgg.spend || b.dayAgg.spend - a.dayAgg.spend);
+    const dayTotalAgg: WindowAgg = { spend: socialMedia.daySpend, units: 0 };
     socialMediaRow = sumAoa.length;
-    // Total Sales, Total Orders, CPC and ACOS all stay blank (both blocks), per the seller's explicit
-    // instruction: Meta's export carries spend only, and the one product it promotes already has its
-    // Amazon orders counted (and mostly ad-attributed) under Amazon's own row — borrowing them here
-    // double-credited the same orders to two channels and made Meta's CPC/ACOS look like real
-    // Meta performance. Spend is the only figure this row can honestly show.
-    sumAoa.push([
-      "Social Media",
-      round2(socialMedia.daySpend), round2(spendTax(dayAgg)),
-      socialProduct?.name ?? SOCIAL_MEDIA_PRODUCT_NAME, price,
-      round2(dayAgg.spend), round2(spendTax(dayAgg)), "", "", "", "", null,
-      round2(rangeAgg.spend), round2(spendTax(rangeAgg)), "", "", "", "", null,
+    // Total Sales, Total Orders, CPC and ACOS all stay blank (both blocks) — spend is the only
+    // figure these rows can honestly show (see the orders note above).
+    socialMediaProducts.forEach((p, i) => sumAoa.push([
+      i === 0 ? "Social Media" : "",
+      i === 0 ? round2(socialMedia.daySpend) : "", i === 0 ? round2(spendTax(dayTotalAgg)) : "",
+      p.product, p.price || "",
+      round2(p.dayAgg.spend), round2(spendTax(p.dayAgg)), "", "", "", "", null,
+      round2(p.rangeAgg.spend), round2(spendTax(p.rangeAgg)), "", "", "", "", null,
       "", "",
-    ]);
-    // Same figures as the Summary-sheet row above, reshaped for the emailed daily digest (see
+    ]));
+    if (socialMediaProducts.length > 1) {
+      [0, 1, 2, 19, 20].forEach((c) => sumMerges.push({ s: { r: socialMediaRow!, c }, e: { r: socialMediaRow! + socialMediaProducts.length - 1, c } }));
+    }
+    // Same figures as the Summary-sheet rows above, reshaped for the emailed daily digest (see
     // buildAdSpendDailyHtml in supabase/functions/send-ad-spend-email/index.ts), which renders
-    // this as one more row directly below Meesho's, per the seller's explicit request.
+    // them directly below Meesho's, per the seller's explicit request.
+    const block = (agg: WindowAgg): ProductMetricBlock => ({ spend: round2(agg.spend), spendTax: round2(spendTax(agg)), orders: 0, cpc: 0, acos: null });
+    const products = socialMediaProducts.map((p) => ({ product: p.product, campaigns: p.campaigns, price: p.price, day: block(p.dayAgg), range: block(p.rangeAgg) }));
     socialMediaSummary = {
       daySpend: round2(socialMedia.daySpend),
-      daySpendTax: round2(spendTax(dayAgg)),
-      product: socialProduct?.name ?? SOCIAL_MEDIA_PRODUCT_NAME,
-      price,
-      day: { spend: round2(dayAgg.spend), spendTax: round2(spendTax(dayAgg)), orders: dayAgg.units, cpc: round2(computeCpc(dayAgg)), acos: acosCell(dayAgg, price, listingPrice) },
-      range: { spend: round2(rangeAgg.spend), spendTax: round2(spendTax(rangeAgg)), orders: rangeAgg.units, cpc: round2(computeCpc(rangeAgg)), acos: acosCell(rangeAgg, price, listingPrice) },
+      daySpendTax: round2(spendTax(dayTotalAgg)),
+      product: products[0].product,
+      price: products[0].price,
+      day: products[0].day,
+      range: products[0].range,
+      products,
     };
   }
 
@@ -2688,6 +2744,33 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     detailAoa.push([]);
   });
 
+  // Social Media (Meta Ads) — same column layout as the platform blocks above, one row per product
+  // (same rows as the Summary sheet), with the Meta campaign name(s) in the first column instead of
+  // SKUs. Orders/CPC/ACOS stay blank: Meta's export carries spend only.
+  let socialDetailLabelRow: number | null = null;
+  if (socialMediaProducts.length) {
+    socialDetailLabelRow = detailAoa.length;
+    detailAoa.push(["Social Media", ...Array(DETAIL_COLS - 1).fill("")]);
+    detailAoa.push(Array(DETAIL_COLS).fill(""));
+    const groupRow = detailAoa.length;
+    detailHeaderRows.push(groupRow);
+    detailAoa.push(["Campaign(s)", "Product Name", "Price", dayLabel, "", "", "", "", rangeLabel, "", "", "", ""]);
+    detailAoa.push(["", "", "", ...METRIC_NAMES, ...METRIC_NAMES]);
+    detailMerges.push(
+      { s: { r: groupRow, c: 0 }, e: { r: groupRow + 1, c: 0 } },
+      { s: { r: groupRow, c: 1 }, e: { r: groupRow + 1, c: 1 } },
+      { s: { r: groupRow, c: 2 }, e: { r: groupRow + 1, c: 2 } },
+      { s: { r: groupRow, c: 3 }, e: { r: groupRow, c: 7 } },
+      { s: { r: groupRow, c: 8 }, e: { r: groupRow, c: 12 } },
+    );
+    socialMediaProducts.forEach((p) => detailAoa.push([
+      p.campaigns.join(", "), p.product, p.price || "",
+      round2(p.dayAgg.spend), round2(spendTax(p.dayAgg)), "", "", "",
+      round2(p.rangeAgg.spend), round2(spendTax(p.rangeAgg)), "", "", "",
+    ]));
+    detailAoa.push([]);
+  }
+
   // Google (direct/website) orders — appended as its own small Product/Quantity/Price/Sales
   // section, same shape as the "B Arm orders"/"Meesho (B Arm) orders" leaderboards elsewhere in
   // this workbook, rather than forced into the ad-spend column layout above: Spend/CPC/ACOS don't
@@ -2709,6 +2792,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   wsDetail["!merges"] = detailMerges;
   detailLabelCells.forEach(({ addr, platform }) => styleLabel(wsDetail, addr, PLATFORM_FILL[platform]));
   detailHeaderRows.forEach((row) => { styleHeader(wsDetail, row, DETAIL_COLS, "312E81"); styleHeader(wsDetail, row + 1, DETAIL_COLS, "312E81"); });
+  if (socialDetailLabelRow !== null) styleLabel(wsDetail, XLSX.utils.encode_cell({ r: socialDetailLabelRow, c: 0 }), "1877F2");
   if (googleDetailLabelRow !== null) styleLabel(wsDetail, XLSX.utils.encode_cell({ r: googleDetailLabelRow, c: 0 }), "4285F4");
   if (googleDetailHeaderRow !== null) styleHeader(wsDetail, googleDetailHeaderRow, 4, "312E81");
   wsDetail["!cols"] = [{ wch: 30 }, { wch: 60 }, { wch: 10 }, ...Array.from({ length: DETAIL_COLS - 3 }, () => ({ wch: 13 }))];
@@ -2999,7 +3083,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     ["Amazon: spend is a plain sum of the SP table (barm_amazon_sp_advertised_product), which also carries your AM-ads sheet's per-SKU split of Sponsored Brands/Display spend (each campaign-day's first split row is named, the rest have a blank campaign) — that split is how Brand/Display spend reaches each product here. An SB/SD campaign-day with no such split is spread over the SKUs mapped to it on the Upload page; SB/SD spend with neither a split nor a mapping for the range window: ₹" + round2(amz.unmappedSpend) + (amz.unmappedSpend > 0 ? " — not attributed to any product below (see the ⚠ warning at the top)." : " — every SB/SD campaign row on file is split or mapped.") + " Unsplit SB/SD rows in AM ads (no Advertised SKU) are saved per campaign by the upload and counted here, never dropped." + (amz.campaignsMissingOnEndDate.length ? " Some Brand/Display campaigns have no row on the reporting day — see the ⚠ warning at the top." : "")],
     ["Flipkart: FSN report spend is per-SKU for every campaign type, so no apportioning is needed. Price comes from the SKU's own FK Orders Invoice Amount for the window (summed Invoice Amount / summed quantity, non-cancelled rows); only a SKU with no real order in the window falls back to the Listings snapshot (then the Earn more report's realised price)."],
     ["Meesho: Ads report spend is per-SKU. Overall sales Value / Total Sales = Quantity x each order row's own Supplier Listed Price (Incl. GST + Commission), from the Orders report only. meesho_price_marketing (the live scraped listing price) is used only for the displayed Price and as the Price in the ACOS CPC / Price fallback. Column names come from the seller's own workbook, not a native Meesho export seen directly — see src/lib/meeshoReportUpload.ts if a real export's headers turn out to differ."],
-    ["Social-media (Meta) spend appears as its own Summary-sheet row when uploaded, separate from the three marketplace platforms. Google Ads spend (the Google Ads \"Campaign report\" uploaded on the Upload page's Google card) fills the Google row's Ad spend columns: the day block from that day's own export, the range block from an export covering exactly the range, else the daily exports inside it. ₹0 there means no Google Ads report is on file for that window, not ₹0 spent. The Google row's Orders/Sales are the B-Arm orders; its CPC/ACOS stay blank since those orders are not attributed to the ads."],
+    ["Social-media (Meta) spend appears as its own Summary-sheet block when uploaded, separate from the three marketplace platforms: one row per promoted product (Meta campaigns are matched to products by campaign name), with each campaign listed in the Ad spend report sheet's Social Media section. Google Ads spend (the Google Ads \"Campaign report\" uploaded on the Upload page's Google card) fills the Google row's Ad spend columns: the day block from that day's own export, the range block from an export covering exactly the range, else the daily exports inside it. ₹0 there means no Google Ads report is on file for that window, not ₹0 spent. The Google row's Orders/Sales are the B-Arm orders; its CPC/ACOS stay blank since those orders are not attributed to the ads."],
     [""],
     ["Ad Status Report matches products across Amazon, Flipkart and Meesho by product NAME only (no cross-platform SKU mapping exists) — two listings with different titles for the same physical product will show as separate rows."],
     ["Action Sheet lists every SKU whose trailing 7-day ACOS is above 14%, worst first (identified by Campaign Name + SKU ID, not product name; Spend/Spend with tax/Orders/ACOS are all the 7-day range here, unlike every other sheet's single-day figures). Every row carries a concrete bid-cut %: rows matched to a real campaign in the uploaded Amazon/Flipkart ad data get one sized to that campaign's own ad-group/SKU performance (AI-assisted); unmatched rows (e.g. Meesho, which has no campaign data in this app, or a SKU that matched no campaign) get one computed from the SKU's own 7-day ACOS instead (20%/35%/50% cut for 14-60%/60-90%/90%+ ACOS). No specific search-term/keyword name is ever invented — that data isn't captured anywhere in this app; only a live SellerMate pull (Amazon only, on request) has real keyword-level detail."],

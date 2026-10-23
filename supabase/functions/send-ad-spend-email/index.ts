@@ -139,28 +139,32 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
   // since there's only ever the one product).
   // Orders/CPC/ACOS render as "-": Meta's export has spend only, and borrowing the promoted
   // product's Amazon orders double-credited them to two channels (seller's explicit instruction).
+  // One row per promoted product (Meta campaigns grouped by product), the channel's day totals
+  // spanning them — same shape as a multi-product platform block.
   const socialMedia = data.socialMediaSummary;
+  const socialProducts = socialMedia ? (socialMedia.products?.length ? socialMedia.products : [socialMedia]) : [];
+  const socialSpan = socialProducts.length > 1 ? ` rowspan="${socialProducts.length}"` : "";
   const socialMediaRowHtml = socialMedia
-    ? `
+    ? socialProducts.map((p, i) => `
         <tr>
-          <td ${td} style="font-weight:800;border-left:3px solid #1877F2;">Social Media</td>
-          <td ${td}>${money(socialMedia.daySpend)}</td>
-          <td ${td}>${money(socialMedia.daySpendTax)}</td>
-          <td ${tdName}>${clip(socialMedia.product)}</td>
-          <td ${td}>${socialMedia.price ? money(socialMedia.price) : "-"}</td>
-          <td ${td}>${money(socialMedia.day.spend)}</td>
-          <td ${td}>${money(socialMedia.day.spendTax)}</td>
+          ${i === 0 ? `<td ${td}${socialSpan} style="font-weight:800;border-left:3px solid #1877F2;">Social Media</td>
+          <td ${td}${socialSpan}>${money(socialMedia.daySpend)}</td>
+          <td ${td}${socialSpan}>${money(socialMedia.daySpendTax)}</td>` : ""}
+          <td ${tdName}>${clip(p.product)}</td>
+          <td ${td}>${p.price ? money(p.price) : "-"}</td>
+          <td ${td}>${money(p.day.spend)}</td>
+          <td ${td}>${money(p.day.spendTax)}</td>
           <td ${td}>-</td>
           <td ${td}>-</td>
           <td ${td}>-</td>
-          <td ${td}>${money(socialMedia.range.spend)}</td>
-          <td ${td}>${money(socialMedia.range.spendTax)}</td>
+          <td ${td}>${money(p.range.spend)}</td>
+          <td ${td}>${money(p.range.spendTax)}</td>
           <td ${td}>-</td>
           <td ${td}>-</td>
           <td ${td}>-</td>
-          <td ${td}>-</td>
-          <td ${td}>-</td>
-        </tr>`
+          ${i === 0 ? `<td ${td}${socialSpan}>-</td>
+          <td ${td}${socialSpan}>-</td>` : ""}
+        </tr>`).join("")
     : "";
 
   // Google — same bespoke-extra-row treatment as Social Media above. Ad spend comes from the
