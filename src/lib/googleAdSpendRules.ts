@@ -66,8 +66,9 @@ function monthDayYear(s: string): string | null {
   const t = s.trim();
   const mdy = /^([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})$/.exec(t);
   const dmy = /^(\d{1,2})\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})$/.exec(t);
-  const [monName, day, year] = mdy ? [mdy[1], mdy[2], mdy[3]] : dmy ? [dmy[2], dmy[1], dmy[3]] : [];
-  if (!monName) return null;
+  const parts = mdy ? [mdy[1], mdy[2], mdy[3]] : dmy ? [dmy[2], dmy[1], dmy[3]] : null;
+  if (!parts) return null;
+  const [monName, day, year] = parts;
   const mon = MONTHS[monName.slice(0, 3).toLowerCase()];
   return mon ? `${year}-${mon}-${day.padStart(2, "0")}` : null;
 }
