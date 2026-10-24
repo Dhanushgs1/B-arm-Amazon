@@ -2,7 +2,7 @@ import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { supabasePublic } from "@/lib/amazonReportUpload";
 import { toDate as parseFlexibleDate } from "@/lib/meeshoReportUpload";
-import { detectBarmOrdersLayout, fillDownBarmDates, findBarmOrdersHeader, mapBarmOfflineRows, mergeDuplicateBarmInvoices, type BarmOrdersLayout } from "@/lib/barmOfflineOrderRules";
+import { detectBarmOrdersLayout, fillDownBarmDates, findBarmOrdersHeader, mapBarmOfflineRows, mapBarmShopifyRows, mergeDuplicateBarmInvoices, orderDateFromFileName, type BarmOrdersLayout } from "@/lib/barmOfflineOrderRules";
 import { isGoogleAdSpendSheet, parseGoogleAdSpendSheet } from "@/lib/googleAdSpendRules";
 
 // Google (direct/website) orders upload — the seller's own hand-kept "B-Arm
@@ -110,7 +110,8 @@ async function readRows(file: File): Promise<{ layout: BarmOrdersLayout | null; 
   });
   // A CSV always went through the legacy mapper (no "S no" check); only a CSV whose header is
   // the offline layout's is routed to the offline rules now.
-  const layout = detectBarmOrdersLayout(Object.keys(rows[0] || {})) === "offline" ? "offline" : "legacy";
+  const detected = detectBarmOrdersLayout(Object.keys(rows[0] || {}));
+  const layout = detected === "offline" || detected === "shopify" ? detected : "legacy";
   return { layout, rows };
 }
 
@@ -161,7 +162,15 @@ export async function parseGoogleOrdersFile(file: File): Promise<GoogleOrdersPar
   const { layout, rows: rawRows } = await readRows(file);
   let rows: Record<string, unknown>[];
   let linesWithoutPrice: number[];
-  if (layout === "offline") {
+  if (layout === "shopify") {
+    // Shopify's "Total sales by product" export has no date column — the day comes from the file
+    // name (see mapBarmShopifyRows in barmOfflineOrderRules.ts).
+    const date = orderDateFromFileName(file.name);
+    if (!date) throw new Error(`Shopify "Total sales by product" file has no date — name it with the order date, e.g. "B-arm order 24_10_2026.xlsx". Nothing saved.`);
+    const parsed = mapBarmShopifyRows(rawRows, date);
+    rows = parsed.rows as unknown as Record<string, unknown>[];
+    linesWithoutPrice = parsed.rows.filter((r) => r.price === null).map((r) => r.serial_no);
+  } else if (layout === "offline") {
     const parsed = mapBarmOfflineRows(rawRows);
     rows = parsed.rows as unknown as Record<string, unknown>[];
     // The offline rules set serial_no to the row's 1-based data-row position.
@@ -214,7 +223,7 @@ export interface GoogleOrdersUploadResult {
 export async function uploadGoogleOrdersFile(file: File): Promise<GoogleOrdersUploadResult> {
   const parsed = await parseGoogleOrdersFile(file);
   const { rows, ...summary } = parsed;
-  if (!parsed.layout) throw new Error("No \"S no\" or \"Date / Quantity / SKU ID\" header row found — nothing saved. Check the file.");
+  if (!parsed.layout) throw new Error("No \"S no\", \"Date / Quantity / SKU ID\" or Shopify \"Product title / Net items sold\" header row found — nothing saved. Check the file.");
   if (!parsed.totalRows) throw new Error("The file has no order rows (blank) — nothing saved.");
   if (!rows.length) throw new Error(`None of the ${parsed.totalRows} rows could be saved — each row needs a Date, a SKU and a Qty. Nothing saved.`);
 

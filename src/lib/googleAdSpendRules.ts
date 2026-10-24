@@ -61,14 +61,19 @@ const norm = (s: unknown) => str(s).replace(/\s+/g, " ").toLowerCase();
 /** Google writes an empty cell as " --". */
 const isBlank = (v: unknown) => { const s = str(v); return s === "" || s === "--"; };
 
+/** "October 15, 2026" or (India-locale export) "15 October 2026" → "2026-10-15". */
 function monthDayYear(s: string): string | null {
-  const m = /^([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})$/.exec(s.trim());
-  if (!m) return null;
-  const mon = MONTHS[m[1].slice(0, 3).toLowerCase()];
-  return mon ? `${m[3]}-${mon}-${m[2].padStart(2, "0")}` : null;
+  const t = s.trim();
+  const mdy = /^([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})$/.exec(t);
+  const dmy = /^(\d{1,2})\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})$/.exec(t);
+  const [monName, day, year] = mdy ? [mdy[1], mdy[2], mdy[3]] : dmy ? [dmy[2], dmy[1], dmy[3]] : [];
+  if (!monName) return null;
+  const mon = MONTHS[monName.slice(0, 3).toLowerCase()];
+  return mon ? `${year}-${mon}-${day.padStart(2, "0")}` : null;
 }
 
-/** "October 15, 2026 - October 15, 2026" / "Oct 9, 2026 – Oct 15, 2026" → [start, end]. */
+/** "October 15, 2026 - October 15, 2026" / "Oct 9, 2026 – Oct 15, 2026" /
+ *  "17 October 2026 - 23 October 2026" → [start, end]. */
 export function parseGoogleReportWindow(text: string): [string, string] | null {
   const parts = text.split(/\s+[-–—]\s+/);
   if (parts.length !== 2) return null;
@@ -105,7 +110,7 @@ export function parseGoogleAdSpendSheet(aoa: unknown[][]): GoogleAdSpendSheet {
       if (window) break;
     }
   }
-  if (!window) throw new Error("No reporting date line (e.g. \"October 15, 2026 - October 15, 2026\") above the header — download the report again with its title rows.");
+  if (!window) throw new Error("No reporting date line (e.g. \"17 October 2026 - 23 October 2026\") above the header — download the report again with its title rows.");
 
   const headers = (aoa[headerIdx] || []).map((h) => str(h));
   const col = (...names: string[]) => {

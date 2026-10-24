@@ -57,3 +57,8 @@ test("detects a campaign report but not a B-Arm orders sheet", () => {
 test("a campaign report without its date line is refused, not saved undated", () => {
   assert.throws(() => parseGoogleAdSpendSheet([HEADER, line("Google Search", "Enabled", "x", 10)]), /reporting date line/);
 });
+
+test("day-first window line from an India-locale export", () => {
+  assert.deepEqual(parseGoogleReportWindow("17 October 2026 - 23 October 2026"), ["2026-10-17", "2026-10-23"]);
+  assert.deepEqual(parseGoogleReportWindow("23 Oct 2026 - 23 Oct 2026"), ["2026-10-23", "2026-10-23"]);
+});

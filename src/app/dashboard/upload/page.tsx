@@ -514,9 +514,9 @@ function GoogleOrdersUploadCard({ onUploaded, dataInfo, spendInfo }: { onUploade
         </div>
       </div>
       <p className="text-xs text-muted-foreground mb-4">
-        Drop the seller&apos;s own &quot;B-Arm Orders&quot; workbook (S no, Invoice, Product, Qty, Price) for
-        orders, or Google Ads&apos; &quot;Campaign report&quot; export for ad spend — one day or 7 days, or both
-        sheets in one file. Each sheet is detected and saved to its own table. Feeds the{" "}
+        Drop Shopify&apos;s &quot;Total sales by product&quot; export for orders (dated by its file name, e.g.
+        &quot;B-arm order 24_10_2026.xlsx&quot;) — or the older &quot;B-Arm Orders&quot; workbook — and Google
+        Ads&apos; &quot;Campaign report&quot; export for ad spend (the 1-day and the 7-day file, one at a time). Each sheet is detected and saved to its own table. Feeds the{" "}
         <Link href="/dashboard/reports" className="underline hover:text-foreground">Ad Spend Report</Link>&apos;s
         Summary sheet &quot;Google&quot; row.
       </p>
@@ -537,7 +537,7 @@ function GoogleOrdersUploadCard({ onUploaded, dataInfo, spendInfo }: { onUploade
       >
         <UploadCloud size={24} className="text-muted-foreground" />
         <span className="text-xs text-muted-foreground px-2 text-center truncate max-w-full">
-          {state.fileName || "Click or drop the \"B-Arm Orders\" or Google Ads \"Campaign report\" .xlsx here"}
+          {state.fileName || "Click or drop the Shopify orders or Google Ads \"Campaign report\" .xlsx here"}
         </span>
       </label>
       {dataInfo && (

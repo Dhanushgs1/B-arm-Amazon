@@ -16,7 +16,7 @@ import { meeshoDate } from "./meeshoReturnRules.ts";
 
 type RawRow = Record<string, unknown>;
 
-export type BarmOrdersLayout = "legacy" | "offline";
+export type BarmOrdersLayout = "legacy" | "offline" | "shopify";
 
 function norm(s: unknown): string {
   return String(s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
@@ -29,6 +29,7 @@ export function detectBarmOrdersLayout(headers: unknown[]): BarmOrdersLayout | n
   const h = new Set(headers.map(norm));
   if (h.has("s no")) return "legacy";
   if (h.has("sku id") && h.has("date") && h.has("quantity") && !h.has("invoice")) return "offline";
+  if (h.has("product title") && h.has("net items sold")) return "shopify";
   return null;
 }
 
@@ -36,7 +37,7 @@ export function detectBarmOrdersLayout(headers: unknown[]): BarmOrdersLayout | n
  *  over the whole sheet, exactly as the legacy reader always did; only a sheet without one is
  *  checked for the offline header. */
 export function findBarmOrdersHeader(aoa: unknown[][]): { layout: BarmOrdersLayout; index: number } | null {
-  for (const layout of ["legacy", "offline"] as const) {
+  for (const layout of ["legacy", "offline", "shopify"] as const) {
     const index = aoa.findIndex((row) => detectBarmOrdersLayout(row || []) === layout);
     if (index >= 0) return { layout, index };
   }
@@ -164,4 +165,52 @@ export function mergeDuplicateBarmInvoices<T extends { invoice: string; product_
     seen.set(base, n);
     return { ...r, invoice: n === 1 ? base : `${base}-${n}` };
   });
+}
+
+// ── Shopify "Total sales by product" layout ─────────────────────────────────
+// From 2026-10-24 the seller's daily orders file is Shopify's "Total sales by product" export
+// (Product title, Product vendor, Product type, Net items sold, Gross sales, Taxes, Total sales):
+// one line per product, already summed, and NO date column — the day is the one in the file name
+// ("B-arm order 24_10_2026.xlsx" → 2026-10-24). Price is "Total sales" ÷ "Net items sold", i.e.
+// the tax-inclusive selling price, the same figure the hand-kept workbook carried (2699 for the
+// postpartum kit). Each product is keyed "SHOPIFY-<date>-<title>", so uploading that day's file
+// again updates its rows in place.
+
+/** "B-arm order 24_10_2026 (1).xlsx" / "24-10-2026" / "24.10.2026" → "2026-10-24", or null. */
+export function orderDateFromFileName(name: string): string | null {
+  const m = /(\d{1,2})[_\-. ](\d{1,2})[_\-. ](\d{4})/.exec(name);
+  if (!m) return null;
+  const iso = `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  const d = new Date(`${iso}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === iso ? iso : null;
+}
+
+/** Map the Shopify layout's data rows for one order date. Lines with no title or no positive
+ *  "Net items sold" (refund-only lines) are skipped; two lines with the same title are summed. */
+export function mapBarmShopifyRows(rows: RawRow[], date: string): BarmOfflineParseResult {
+  const byTitle = new Map<string, { row: BarmOfflineOrderRow; total: number }>();
+  const skipped: BarmOfflineParseResult["skipped"] = [];
+  rows.forEach((row, i) => {
+    if (Object.values(row).every((v) => String(v ?? "").trim() === "")) return;
+    const title = String(pick(row, "product title") ?? "").replace(/\s+/g, " ").trim();
+    const quantity = Math.round(numOrNull(pick(row, "net items sold")) ?? 0);
+    if (!title) return void skipped.push({ line: i + 1, reason: "no SKU" });
+    if (quantity <= 0) return void skipped.push({ line: i + 1, reason: "no quantity" });
+    const total = numOrNull(pick(row, "total sales")) ?? 0;
+    const hit = byTitle.get(title.toLowerCase());
+    if (hit) {
+      hit.row.quantity += quantity;
+      hit.total += total;
+      return;
+    }
+    byTitle.set(title.toLowerCase(), {
+      total,
+      row: { serial_no: i + 1, order_date: date, invoice: `SHOPIFY-${date}-${title}`, product_name: title, quantity, price: null, raw: row },
+    });
+  });
+  const out = [...byTitle.values()].map(({ row, total }) => ({
+    ...row,
+    price: total > 0 ? Math.round((total / row.quantity) * 100) / 100 : null,
+  }));
+  return { rows: out, skipped, rowsWithoutPrice: out.filter((r) => r.price === null).length };
 }

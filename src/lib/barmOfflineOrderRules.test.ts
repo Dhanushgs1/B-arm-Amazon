@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { detectBarmOrdersLayout, findBarmOrdersHeader, offlineRowPrice, mapBarmOfflineRows, fillDownBarmDates, mergeDuplicateBarmInvoices } from "./barmOfflineOrderRules.ts";
+import { detectBarmOrdersLayout, findBarmOrdersHeader, offlineRowPrice, mapBarmOfflineRows, fillDownBarmDates, mergeDuplicateBarmInvoices, mapBarmShopifyRows, orderDateFromFileName } from "./barmOfflineOrderRules.ts";
 
 const OFFLINE_HEADER = ["Date", "Product", "Quantity", "Price per Product", "Total Price", "SKU ID"];
 
@@ -103,4 +103,26 @@ test("legacy: same invoice + same SKU sums to one line; other SKUs on it get the
     ["", 1],
   ]);
   assert.equal(out.reduce((s, r) => s + r.quantity, 0), 6);
+});
+
+test("Shopify 'Total sales by product' header is detected", () => {
+  const header = ["Product title", "Product vendor", "Product type", "Net items sold", "Gross sales", "Taxes", "Total sales"];
+  assert.equal(detectBarmOrdersLayout(header), "shopify");
+  assert.deepEqual(findBarmOrdersHeader([header, ["Kit", "B-Arm", "Kit", 1, 2570.48, 128.52, 2699]]), { layout: "shopify", index: 0 });
+});
+
+test("order date comes from the Shopify file name", () => {
+  assert.equal(orderDateFromFileName("B-arm order 24_10_2026 (1).xlsx"), "2026-10-24");
+  assert.equal(orderDateFromFileName("B-arm order 5-11-2026.xlsx"), "2026-11-05");
+  assert.equal(orderDateFromFileName("B-arm order 31_02_2026.xlsx"), null);
+  assert.equal(orderDateFromFileName("orders.xlsx"), null);
+});
+
+test("Shopify rows: tax-inclusive unit price, same title summed, refund-only lines skipped", () => {
+  const row = (title: string, qty: number, total: number) => ({ "Product title": title, "Net items sold": qty, "Total sales": total });
+  const r = mapBarmShopifyRows([row("Kit", 1, 2699), row("Comb", 0, -179), row("kit", 1, 2699), row("", 1, 10)], "2026-10-24");
+  assert.deepEqual(r.rows.map((x) => [x.invoice, x.order_date, x.product_name, x.quantity, x.price]), [
+    ["SHOPIFY-2026-10-24-Kit", "2026-10-24", "Kit", 2, 2699],
+  ]);
+  assert.deepEqual(r.skipped, [{ line: 2, reason: "no quantity" }, { line: 4, reason: "no SKU" }]);
 });
