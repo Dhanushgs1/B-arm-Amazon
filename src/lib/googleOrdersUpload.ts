@@ -163,10 +163,10 @@ export async function parseGoogleOrdersFile(file: File): Promise<GoogleOrdersPar
   let rows: Record<string, unknown>[];
   let linesWithoutPrice: number[];
   if (layout === "shopify") {
-    // Shopify's "Total sales by product" export has no date column — the day comes from the file
-    // name (see mapBarmShopifyRows in barmOfflineOrderRules.ts).
+    // Shopify's "Total sales by product" export has no date column — the orders are for the day
+    // before the file-name date (see orderDateFromFileName in barmOfflineOrderRules.ts).
     const date = orderDateFromFileName(file.name);
-    if (!date) throw new Error(`Shopify "Total sales by product" file has no date — name it with the order date, e.g. "B-arm order 24_10_2026.xlsx". Nothing saved.`);
+    if (!date) throw new Error(`Shopify "Total sales by product" file has no date — name it with the download date, e.g. "B-arm order 24_10_2026.xlsx" (saved as 23 Oct orders). Nothing saved.`);
     const parsed = mapBarmShopifyRows(rawRows, date);
     rows = parsed.rows as unknown as Record<string, unknown>[];
     linesWithoutPrice = parsed.rows.filter((r) => r.price === null).map((r) => r.serial_no);

@@ -170,19 +170,23 @@ export function mergeDuplicateBarmInvoices<T extends { invoice: string; product_
 // ── Shopify "Total sales by product" layout ─────────────────────────────────
 // From 2026-10-24 the seller's daily orders file is Shopify's "Total sales by product" export
 // (Product title, Product vendor, Product type, Net items sold, Gross sales, Taxes, Total sales):
-// one line per product, already summed, and NO date column — the day is the one in the file name
-// ("B-arm order 24_10_2026.xlsx" → 2026-10-24). Price is "Total sales" ÷ "Net items sold", i.e.
+// one line per product, already summed, and NO date column. The seller downloads it the next
+// morning and names it with the download date, so the orders belong to the DAY BEFORE the date in
+// the file name ("B-arm order 24_10_2026.xlsx" → 2026-10-23). Price is "Total sales" ÷ "Net items sold", i.e.
 // the tax-inclusive selling price, the same figure the hand-kept workbook carried (2699 for the
 // postpartum kit). Each product is keyed "SHOPIFY-<date>-<title>", so uploading that day's file
 // again updates its rows in place.
 
-/** "B-arm order 24_10_2026 (1).xlsx" / "24-10-2026" / "24.10.2026" → "2026-10-24", or null. */
+/** Order date for a Shopify orders file: the day before the file-name date.
+ *  "B-arm order 24_10_2026 (1).xlsx" / "24-10-2026" / "24.10.2026" → "2026-10-23", or null. */
 export function orderDateFromFileName(name: string): string | null {
   const m = /(\d{1,2})[_\-. ](\d{1,2})[_\-. ](\d{4})/.exec(name);
   if (!m) return null;
   const iso = `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
   const d = new Date(`${iso}T00:00:00Z`);
-  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === iso ? iso : null;
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== iso) return null;
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
 }
 
 /** Map the Shopify layout's data rows for one order date. Lines with no title or no positive

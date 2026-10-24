@@ -111,9 +111,11 @@ test("Shopify 'Total sales by product' header is detected", () => {
   assert.deepEqual(findBarmOrdersHeader([header, ["Kit", "B-Arm", "Kit", 1, 2570.48, 128.52, 2699]]), { layout: "shopify", index: 0 });
 });
 
-test("order date comes from the Shopify file name", () => {
-  assert.equal(orderDateFromFileName("B-arm order 24_10_2026 (1).xlsx"), "2026-10-24");
-  assert.equal(orderDateFromFileName("B-arm order 5-11-2026.xlsx"), "2026-11-05");
+test("Shopify order date is the day before the file-name date", () => {
+  assert.equal(orderDateFromFileName("B-arm order 24_10_2026 (1).xlsx"), "2026-10-23");
+  assert.equal(orderDateFromFileName("B-arm order 5-11-2026.xlsx"), "2026-11-04");
+  assert.equal(orderDateFromFileName("B-arm order 01_11_2026.xlsx"), "2026-10-31");
+  assert.equal(orderDateFromFileName("B-arm order 01.01.2027.xlsx"), "2026-12-31");
   assert.equal(orderDateFromFileName("B-arm order 31_02_2026.xlsx"), null);
   assert.equal(orderDateFromFileName("orders.xlsx"), null);
 });
