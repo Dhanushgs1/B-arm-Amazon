@@ -39,10 +39,20 @@ export async function fetchShopifyOrdersInRange(start: string, end: string): Pro
   return (await fetchShopifyOrders()).filter((o) => o.order_date >= start && o.order_date <= end);
 }
 
-export async function fetchShopifyOrdersDataInfo(): Promise<{ orderCount: number; minDate: string | null; maxDate: string | null; error?: string }> {
+export interface ShopifyOrdersDataInfo {
+  orderCount: number;
+  minDate: string | null;
+  maxDate: string | null;
+  /** Totals over every order on file (same rules as the Shopify tab). */
+  totals?: ShopifyPeriodTotals;
+  error?: string;
+}
+
+export async function fetchShopifyOrdersDataInfo(): Promise<ShopifyOrdersDataInfo> {
   try {
-    const dates = (await fetchShopifyOrders()).map((o) => o.order_date).sort();
-    return { orderCount: dates.length, minDate: dates[0] ?? null, maxDate: dates[dates.length - 1] ?? null };
+    const orders = await fetchShopifyOrders();
+    const dates = orders.map((o) => o.order_date).sort();
+    return { orderCount: dates.length, minDate: dates[0] ?? null, maxDate: dates[dates.length - 1] ?? null, totals: shopifyTotals(orders) };
   } catch (e) {
     return { orderCount: 0, minDate: null, maxDate: null, error: e instanceof Error ? e.message : String(e) };
   }

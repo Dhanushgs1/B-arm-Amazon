@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { googleAdsRatios, mergeGoogleWebsiteOrders, type GoogleCardRow, type ShopifyReportOrder } from "./googleWebsiteOrders.ts";
+import { googleAdsRatios, mergeGoogleWebsiteOrders, metaAdsByProduct, type GoogleCardRow, type ShopifyReportOrder } from "./googleWebsiteOrders.ts";
 
 const card = (id: number, order_date: string, invoice: string, product_name: string, quantity: number, price: number): GoogleCardRow => ({ id, order_date, invoice, product_name, quantity, price: String(price) });
 const order = (order_name: string, order_date: string, title: string, price: number, ad_channel: string, opts: { cancelled?: boolean; qty?: number } = {}): ShopifyReportOrder => ({
@@ -116,4 +116,18 @@ test("ratios", () => {
   assert.deepEqual(googleAdsRatios(355.62, 0), { acos: null, roas: 0 });
   // 24 Oct case: Shopify Ad Sales exist but no Google Ads spend file yet — not a 0% ACOS.
   assert.deepEqual(googleAdsRatios(0, 599), { acos: null, roas: null });
+});
+
+test("Meta Ads credit only for fbclid orders, grouped by the product the Meta campaigns map to", () => {
+  assert.deepEqual(merged.lines.filter((l) => l.metaAds).map((l) => l.order), ["#1067", "#1072", "#1074"]);
+  const productFor = (t: string) => (/insemin/i.test(t) ? "Insemination kit (Pack of 5)" : /post\s*pa/i.test(t) ? "Postpartum kit" : t);
+  // Range 18–23 Oct, reporting day 23 Oct.
+  assert.deepEqual(metaAdsByProduct(merged.lines, "2026-10-18", "2026-10-23", productFor), [
+    { product: "Insemination kit (Pack of 5)", dayUnits: 1, dayValue: 599, dayOrders: 1, rangeUnits: 3, rangeValue: 2297, rangeOrders: 3 },
+  ]);
+  // Outside the window: nothing.
+  assert.deepEqual(metaAdsByProduct(merged.lines, "2026-10-24", "2026-10-24", productFor), []);
+  // A cancelled Meta order never counts.
+  const r = mergeGoogleWebsiteOrders([], [order("#2000", "2026-10-25", "Postpartum kit", 2699, "meta_ads", { cancelled: true })]);
+  assert.deepEqual(metaAdsByProduct(r.lines, "2026-10-19", "2026-10-25", productFor), []);
 });
