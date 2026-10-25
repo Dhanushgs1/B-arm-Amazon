@@ -21,6 +21,7 @@
 
 import * as XLSX from "xlsx";
 import { supabasePublic } from "@/lib/amazonReportUpload";
+import { reviewCountOf } from "@/lib/ratingCount";
 
 const HISTORY = "product_rating_review_history";
 const WEEKLY_VIEW = "product_rating_review_weekly";
@@ -95,6 +96,7 @@ interface HistoryRow {
   price: number | string | null;
   rating: number | string | null;
   review_count: number | null;
+  ratings_count?: number | null;
 }
 
 interface WeeklyRow {
@@ -127,7 +129,7 @@ async function fetchSnapshot(date: string): Promise<HistoryRow[]> {
   for (let page = 0; page < 50; page++) {
     const { data, error } = await supabasePublic
       .from(HISTORY)
-      .select("id,snapshot_date,platform,sku_key,sku_id,product_name,price,rating,review_count")
+      .select("id,snapshot_date,platform,sku_key,sku_id,product_name,price,rating,review_count,ratings_count")
       .eq("snapshot_date", date)
       .order("id", { ascending: true })
       .range(page * PAGE, page * PAGE + PAGE - 1);
@@ -178,13 +180,13 @@ export async function fetchRatingMetrics(): Promise<RatingMetricsData> {
 
   const items: RatingItem[] = current.map((r) => {
     const rating = cleanRating(r.rating);
-    const reviews = num(r.review_count) ?? 0;
+    const reviews = num(reviewCountOf(r)) ?? 0;
     const price = num(r.price);
     const productName = r.product_name.trim() || r.sku_id || "Unnamed";
     let prev: RatingItem["prev"];
     if (platformDates[r.platform]?.previous) {
       const p = prevByKey.get(`${r.platform}|${r.sku_key}`);
-      prev = p ? { rating: cleanRating(p.rating), reviews: num(p.review_count) ?? 0 } : null;
+      prev = p ? { rating: cleanRating(p.rating), reviews: num(reviewCountOf(p)) ?? 0 } : null;
     }
     const ratingDelta =
       prev && prev.rating !== null && rating !== null ? Math.round((rating - prev.rating) * 10) / 10 : null;

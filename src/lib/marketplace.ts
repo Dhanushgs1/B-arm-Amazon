@@ -9,17 +9,20 @@ export type MarketplaceId = "amazon" | "flipkart";
 // Meesho and BARM (the seller's own Google/B-Arm orders channel) are
 // upload-and-download-only tabs with no analytics pages, so they're tabs, not
 // MarketplaceIds — none of the demo-data generators below know about them.
-export type UploadOnlyTab = "meesho" | "barm";
+// Shopify (the seller's Shopify store, orders by webhook) is the same kind of tab, kept apart from BARM.
+export type UploadOnlyTab = "meesho" | "barm" | "shopify";
 export type MarketplaceTab = MarketplaceId | UploadOnlyTab | "compare";
 
 export const UPLOAD_ONLY_TAB_META: Record<UploadOnlyTab, { label: string; tagline: string; color: string; home: string }> = {
   meesho: { label: "Meesho", tagline: "Meesho · Overview & Download", color: "#9F2089", home: "/dashboard/meesho" },
-  // BARM Upload reuses the existing Google Orders (B-Arm) upload page.
-  barm: { label: "BARM", tagline: "BARM (Google) · Overview & Download", color: "#10B981", home: "/dashboard/barm" },
+  // The B-ARM website's own orders before it moved to Shopify (WooCommerce export, barm_online_orders
+  // — last full order 21 Sep 2026). Kept as a read-only history tab; newer website orders are on Shopify.
+  barm: { label: "B-ARM Website", tagline: "B-ARM Website (WooCommerce) · order history up to the Shopify move", color: "#10B981", home: "/dashboard/barm" },
+  shopify: { label: "Shopify", tagline: "Shopify · Overview & Download", color: "#5E8E3E", home: "/dashboard/shopify" },
 };
 
 export function isUploadOnlyTab(tab: MarketplaceTab): tab is UploadOnlyTab {
-  return tab === "meesho" || tab === "barm";
+  return tab === "meesho" || tab === "barm" || tab === "shopify";
 }
 
 export interface MarketplaceMeta {
@@ -67,12 +70,17 @@ export const MOCK_MARKETPLACES: MarketplaceId[] = ["flipkart"];
 // sync.
 // ---------------------------------------------------------------------------
 
+export const OVERALL_ONLY_PATHS = ["/dashboard/master", "/dashboard/ratings-reviews", "/dashboard/seasonal", "/dashboard/settings"];
+
 export function getMarketplaceTab(pathname: string | null): MarketplaceTab {
   const p = pathname || "";
   if (p.startsWith("/dashboard/flipkart")) return "flipkart";
   if (p.startsWith("/dashboard/meesho")) return "meesho";
   if (p.startsWith("/dashboard/barm") || p.startsWith("/dashboard/google")) return "barm";
+  if (p.startsWith("/dashboard/shopify")) return "shopify";
   if (p.startsWith("/dashboard/compare")) return "compare";
+  // Cross-platform pages that live under Overall only (user, 2026-10-25), not under Amazon.
+  if (OVERALL_ONLY_PATHS.some((x) => p === x || p.startsWith(`${x}/`))) return "compare";
   return "amazon";
 }
 

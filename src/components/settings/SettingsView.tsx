@@ -1,0 +1,1083 @@
+"use client";
+
+import { useDashboard } from "@/lib/DashboardContext";
+import {
+  Settings, Shield, RefreshCw, Key, HelpCircle, CheckCircle, Bell, Loader2, Send,
+  Building2, Bot, Zap, Palette, Sun, Moon, Globe, Database, Activity, Sparkles, Plug, Store, BookOpen
+} from "lucide-react";
+import { useState, useEffect } from "react";
+import { motion } from "framer-motion";
+import { cn } from "@/lib/utils";
+import { MARKETPLACE_META } from "@/lib/marketplace";
+import { MarkdownDoc } from "@/components/settings/MarkdownDoc";
+import { DASHBOARD_AUDIT_MD } from "@/lib/dashboardAuditDoc";
+
+type Tab = "general" | "sellermate" | "marketplaces" | "notifications" | "automation" | "ai" | "security" | "appearance" | "support" | "about";
+
+const NAV: { id: Tab; label: string; icon: any; section: string }[] = [
+  { id: "general", label: "General", icon: Settings, section: "Workspace" },
+  { id: "sellermate", label: "SellerMate Connection", icon: Plug, section: "Workspace" },
+  { id: "marketplaces", label: "Marketplace Connections", icon: Store, section: "Workspace" },
+  { id: "notifications", label: "Notifications", icon: Bell, section: "Preferences" },
+  { id: "automation", label: "Automation Rules", icon: Zap, section: "Preferences" },
+  { id: "ai", label: "AI Assistant", icon: Bot, section: "Preferences" },
+  { id: "appearance", label: "Appearance", icon: Palette, section: "Preferences" },
+  { id: "security", label: "Security", icon: Shield, section: "Account" },
+  { id: "support", label: "Support & Help", icon: HelpCircle, section: "Account" },
+  { id: "about", label: "About & Audit", icon: BookOpen, section: "Account" },
+];
+
+// Animated pill toggle
+function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={cn(
+        "relative w-11 h-6 rounded-full transition-colors duration-200 flex-shrink-0 focus:outline-none focus:ring-2 focus:ring-primary/30",
+        checked ? "bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6]" : "bg-muted border border-border"
+      )}
+    >
+      <span
+        className={cn(
+          "absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-all duration-200",
+          checked ? "left-[22px]" : "left-0.5"
+        )}
+      />
+    </button>
+  );
+}
+
+function SettingRow({ title, desc, children, border = true, tags }: { title: string; desc?: string; children: React.ReactNode; border?: boolean; tags?: string[] }) {
+  return (
+    <div className={cn("flex items-center justify-between gap-4 py-3.5", border && "border-b border-border/60 last:border-0")}>
+      <div className="min-w-0">
+        <p className="text-sm font-bold flex flex-wrap items-center gap-1.5">
+          {title}
+          {tags?.map((t) => (
+            <span key={t} className="text-[9px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-muted text-muted-foreground">{t}</span>
+          ))}
+        </p>
+        {desc && <p className="text-xs text-muted-foreground font-medium mt-0.5">{desc}</p>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function Card({ title, icon: Icon, iconColor, children }: { title: string; icon: any; iconColor: string; children: React.ReactNode }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3 }}
+      className="glass gradient-border rounded-[22px] p-6 space-y-2"
+    >
+      <div className="flex items-center gap-2.5 mb-3">
+        <div className={cn("w-9 h-9 rounded-xl flex items-center justify-center border", iconColor)}>
+          <Icon className="w-4 h-4" />
+        </div>
+        <h3 className="font-extrabold text-base tracking-tight">{title}</h3>
+      </div>
+      {children}
+    </motion.div>
+  );
+}
+
+/** Which settings to show. "all" (under Overall) has every platform's settings, each alert tagged with
+ *  the platforms it covers. "flipkart" shows only what applies to Flipkart — the same saved values,
+ *  so a change here is the same change as on the Overall settings. */
+export type SettingsScope = "all" | "flipkart";
+const FLIPKART_TABS: Tab[] = ["notifications", "appearance"];
+
+export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
+  const all = scope === "all";
+  const { account, loggedInUser, keySlot } = useDashboard();
+  const [activeTab, setActiveTab] = useState<Tab>(all ? "general" : "notifications");
+  const [saving, setSaving] = useState(false);
+  const [success, setSuccess] = useState(false);
+  const [saveEmailNote, setSaveEmailNote] = useState<string | null>(null);
+
+  // ── Existing form states (preserved) ──
+  const [emailAlerts, setEmailAlerts] = useState(true);
+  const [notifEmail, setNotifEmail] = useState("");
+  const [ccEmail, setCcEmail] = useState("");
+  const [slackAlerts, setSlackAlerts] = useState(false);
+  const [slackUrl, setSlackUrl] = useState("");
+  const [acosThreshold, setAcosThreshold] = useState(40);
+  const [lowStockThreshold, setLowStockThreshold] = useState(15);
+  const [syncSchedule, setSyncSchedule] = useState("6h");
+  const [twoFactor, setTwoFactor] = useState(false);
+  const [ipRestrict, setIpRestrict] = useState(false);
+  const [whitelistIps, setWhitelistIps] = useState("");
+
+  // ── New preference states (persisted in the same config blob) ──
+  const [timezone, setTimezone] = useState("Asia/Kolkata");
+  const [defaultRange, setDefaultRange] = useState("30d");
+  const [pushAlerts, setPushAlerts] = useState(false);
+  const [roasAlerts, setRoasAlerts] = useState(true);
+  const [inventoryAlerts, setInventoryAlerts] = useState(true);
+  const [weeklySummary, setWeeklySummary] = useState(true);
+  const [dailySummary, setDailySummary] = useState(false);
+  const [liveAlerts, setLiveAlerts] = useState(false);
+  const [fbaWarehouseAlerts, setFbaWarehouseAlerts] = useState(true);
+  const [highAcosDaily, setHighAcosDaily] = useState(false);
+  const [campaignPauseEmails, setCampaignPauseEmails] = useState(false);
+  const [ratingDropAlerts, setRatingDropAlerts] = useState(true);
+  const [highAcosThreshold, setHighAcosThreshold] = useState(14);
+  const [stockoutWarnDays, setStockoutWarnDays] = useState(10);
+  const [monthlySummary, setMonthlySummary] = useState(false);
+  const [searchTermMonthly, setSearchTermMonthly] = useState(true);
+  const [aiEnabled, setAiEnabled] = useState(true);
+  const [autoInsights, setAutoInsights] = useState(true);
+  const [smartAlerts, setSmartAlerts] = useState(true);
+  const [forecastWindow, setForecastWindow] = useState("30d");
+  const [recMode, setRecMode] = useState("balanced");
+  const [autoPause, setAutoPause] = useState(false);
+  const [autoNegatives, setAutoNegatives] = useState(false);
+  const [autoBudget, setAutoBudget] = useState(false);
+  const [roasTarget, setRoasTarget] = useState(4);
+  const [compactMode, setCompactMode] = useState(false);
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+
+  // ── Marketplace connections (Flipkart) — stored locally only. Nothing
+  // consumes these yet: there is no server-side proxy for the platform, so
+  // Flipkart pages keep showing demo data until a real integration is
+  // built. This just captures the credentials so that wiring is a backend
+  // change, not another round of UI work.
+  const [flipkartApiKey, setFlipkartApiKey] = useState("");
+  const [flipkartSellerId, setFlipkartSellerId] = useState("");
+
+  // Ingestion trigger states
+  const [syncing, setSyncing] = useState(false);
+  const [syncSuccess, setSyncSuccess] = useState(false);
+
+  // Support form states
+  const [supportSubmitting, setSupportSubmitting] = useState(false);
+  const [supportSuccess, setSupportSuccess] = useState(false);
+  const [ticketSubject, setTicketSubject] = useState("");
+  const [ticketMsg, setTicketMsg] = useState("");
+  const [testEmailStatus, setTestEmailStatus] = useState<"idle"|"sending"|"sent"|"error">("idle");
+  const [weeklyReportStatus, setWeeklyReportStatus] = useState<"idle"|"sending"|"sent"|"error">("idle");
+  const [whatsappText, setWhatsappText] = useState<string | null>(null);
+  const [whatsappCopied, setWhatsappCopied] = useState(false);
+
+  // Load configurations
+  useEffect(() => {
+    const saved = localStorage.getItem("ppcUserSettings");
+    if (saved) {
+      try {
+        const p = JSON.parse(saved);
+        // Saved theme wins over whatever class happens to be on <html> right
+        // now — the root layout's inline script already applies it on load,
+        // this just keeps this page's toggle UI in sync with that choice.
+        const savedTheme: "light" | "dark" = p.theme === "dark" ? "dark" : "light";
+        setTheme(savedTheme);
+        document.documentElement.classList.toggle("dark", savedTheme === "dark");
+        setEmailAlerts(p.emailAlerts ?? true);
+        setNotifEmail(p.notifEmail ?? "");
+        setCcEmail(p.ccEmail ?? "");
+        setSlackAlerts(p.slackAlerts ?? false);
+        setSlackUrl(p.slackUrl ?? "");
+        setAcosThreshold(p.acosThreshold ?? 40);
+        setLowStockThreshold(p.lowStockThreshold ?? 15);
+        setSyncSchedule(p.syncSchedule ?? "6h");
+        setTwoFactor(p.twoFactor ?? false);
+        setIpRestrict(p.ipRestrict ?? false);
+        setWhitelistIps(p.whitelistIps ?? "");
+        setTimezone(p.timezone ?? "Asia/Kolkata");
+        setDefaultRange(p.defaultRange ?? "30d");
+        setPushAlerts(p.pushAlerts ?? false);
+        setRoasAlerts(p.roasAlerts ?? true);
+        setInventoryAlerts(p.inventoryAlerts ?? true);
+        setWeeklySummary(p.weeklySummary ?? true);
+        setDailySummary(p.dailySummary ?? false);
+        setLiveAlerts(p.liveAlerts ?? false);
+        setFbaWarehouseAlerts(p.fbaWarehouseAlerts ?? keySlot === "B");
+        setHighAcosDaily(p.highAcosDaily ?? false);
+        setCampaignPauseEmails(p.campaignPauseEmails ?? false);
+        setRatingDropAlerts(p.ratingDropAlerts ?? keySlot === "B");
+        setHighAcosThreshold(p.highAcosThreshold ?? 14);
+        setStockoutWarnDays(p.stockoutWarnDays ?? 10);
+        setMonthlySummary(p.monthlySummary ?? false);
+        setSearchTermMonthly(p.searchTermMonthly ?? keySlot === "B");
+        setAiEnabled(p.aiEnabled ?? true);
+        setAutoInsights(p.autoInsights ?? true);
+        setSmartAlerts(p.smartAlerts ?? true);
+        setForecastWindow(p.forecastWindow ?? "30d");
+        setRecMode(p.recMode ?? "balanced");
+        setAutoPause(p.autoPause ?? false);
+        setAutoNegatives(p.autoNegatives ?? false);
+        setAutoBudget(p.autoBudget ?? false);
+        setRoasTarget(p.roasTarget ?? 4);
+        setCompactMode(p.compactMode ?? false);
+        setFlipkartApiKey(p.flipkartApiKey ?? "");
+        setFlipkartSellerId(p.flipkartSellerId ?? "");
+      } catch (e) {
+        console.error("Failed to parse settings", e);
+      }
+    } else {
+      setTheme(document.documentElement.classList.contains("dark") ? "dark" : "light");
+    }
+  }, []);
+
+  // ── Auto-save email + schedule settings to server on change ──
+  useEffect(() => {
+    if (notifEmail !== "") {
+      const saved = localStorage.getItem("ppcUserSettings");
+      const current = saved ? JSON.parse(saved) : {};
+      current.notifEmail = notifEmail;
+      current.ccEmail = ccEmail;
+      localStorage.setItem("ppcUserSettings", JSON.stringify(current));
+      // also persist to server so cron can read it — include account context
+      // so the automated stockout/report crons know which account to query
+      fetch("/api/email-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          notifEmail, ccEmail, emailAlerts,
+          keySlot, amazonAccountId: account?.id, workspaceId: account?.workspace_id, currency: account?.currency,
+        }),
+      }).catch(() => {});
+    }
+  }, [notifEmail, ccEmail, emailAlerts]);
+
+  const toggleTheme = (next: "light" | "dark") => {
+    setTheme(next);
+    document.documentElement.classList.toggle("dark", next === "dark");
+    // Persist immediately (same merge-write pattern as the notifEmail auto-save
+    // effect below) so the choice survives a reload/navigation without the
+    // user having to separately click "Save Changes".
+    const saved = localStorage.getItem("ppcUserSettings");
+    const current = saved ? JSON.parse(saved) : {};
+    current.theme = next;
+    localStorage.setItem("ppcUserSettings", JSON.stringify(current));
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setSaveEmailNote(null);
+
+    const config = {
+      emailAlerts, notifEmail, ccEmail, slackAlerts, slackUrl, acosThreshold, lowStockThreshold,
+      syncSchedule, twoFactor, ipRestrict, whitelistIps,
+      timezone, defaultRange, pushAlerts, roasAlerts, inventoryAlerts,
+      weeklySummary, dailySummary, liveAlerts, fbaWarehouseAlerts, monthlySummary, aiEnabled, autoInsights, smartAlerts,
+      highAcosDaily, highAcosThreshold, stockoutWarnDays, campaignPauseEmails, ratingDropAlerts, searchTermMonthly,
+      forecastWindow, recMode, autoPause, autoNegatives, autoBudget,
+      roasTarget, compactMode, theme,
+      flipkartApiKey, flipkartSellerId,
+      // account context for the automated crons (which account to query)
+      keySlot, amazonAccountId: account?.id, workspaceId: account?.workspace_id, currency: account?.currency,
+    };
+
+    localStorage.setItem("ppcUserSettings", JSON.stringify(config));
+
+    // Persist to server so the cron scheduler + confirmation email read the live values
+    try {
+      await fetch("/api/email-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
+      });
+    } catch {}
+
+    // Saving is what actually "activates" the alert channels — confirm it landed
+    // by emailing a summary of which alert types are now on, instead of making
+    // the user separately hit "Send Test Email" to find out.
+    if (emailAlerts && notifEmail) {
+      const activeAlerts = [
+        roasAlerts && "ROAS / ACOS Alerts",
+        inventoryAlerts && "Inventory Alerts",
+        dailySummary && "Daily Digest (9:00 AM IST)",
+        liveAlerts && `Things Need Attention (conversion drops, running out within ${stockoutWarnDays} days, spend spikes, buy box — daily 9:00 AM IST)`,
+        fbaWarehouseAlerts && "FBA Stock (products under 8 warehouses stocked or any at ≤20 units, with every product's warehouse stock attached — daily 9:00 AM IST)",
+        campaignPauseEmails && "Campaign Paused (within 30 minutes of a campaign pausing)",
+        highAcosDaily && `High ACOS (Amazon, Flipkart and Meesho campaigns above ${highAcosThreshold}% ACOS, day by day for 7 days, from the uploaded ads reports — daily, once the Last 7 days report is uploaded)`,
+        ratingDropAlerts && "Rating Drop (listings that fell from 4★+ to below 4★ — Mondays, once that week's ratings are uploaded)",
+        weeklySummary && "Weekly Summary (Monday 9:00 AM IST)",
+        monthlySummary && "Monthly Summary (1st, 9:00 AM IST)",
+        searchTermMonthly && "Search Terms Monthly (last day of the month, 9:00 AM IST — 1st to 30th / 31st; Orders 0, ACOS above 50%, 25–50% and 13–25% sheets)",
+        slackAlerts && "Slack Alerts",
+        pushAlerts && "Push Notifications",
+      ].filter(Boolean) as string[];
+
+      try {
+        const r = await fetch("/api/send-email", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "confirmation",
+            // Recipients come from the settings just saved for this slot (server-side).
+            keySlot,
+            data: { activeAlerts, acosThreshold, lowStockThreshold },
+          }),
+        });
+        setSaveEmailNote(r.ok ? `Confirmation emailed to ${notifEmail}` : "Saved, but confirmation email failed to send");
+      } catch {
+        setSaveEmailNote("Saved, but confirmation email failed to send");
+      }
+    } else if (emailAlerts && !notifEmail) {
+      setSaveEmailNote("Saved — add an email address to receive alerts");
+    }
+
+    setSaving(false);
+    setSuccess(true);
+
+    // Push a new alert to system notifications
+    const savedNotifs = localStorage.getItem("ppcNotifications");
+    const currentNotifs = savedNotifs ? JSON.parse(savedNotifs) : [];
+    const newNotif = {
+      id: Date.now(),
+      title: "Settings Updated",
+      body: "Your dashboard configurations were successfully saved.",
+      time: "Just now",
+      read: false,
+      type: "success"
+    };
+    localStorage.setItem("ppcNotifications", JSON.stringify([newNotif, ...currentNotifs].slice(0, 10)));
+    window.dispatchEvent(new Event("storage"));
+
+    setTimeout(() => { setSuccess(false); setSaveEmailNote(null); }, 4000);
+  };
+
+  const handleTriggerSync = () => {
+    setSyncing(true);
+    setTimeout(() => {
+      setSyncing(false);
+      setSyncSuccess(true);
+
+      const savedNotifs = localStorage.getItem("ppcNotifications");
+      const currentNotifs = savedNotifs ? JSON.parse(savedNotifs) : [];
+      const newNotif = {
+        id: Date.now(),
+        title: "Sync Completed",
+        body: `Manual ingestion triggered successfully. Imported updated campaigns & catalog metrics.`,
+        time: "Just now",
+        read: false,
+        type: "success"
+      };
+      localStorage.setItem("ppcNotifications", JSON.stringify([newNotif, ...currentNotifs].slice(0, 10)));
+      window.dispatchEvent(new Event("storage"));
+
+      setTimeout(() => setSyncSuccess(false), 3000);
+    }, 2000);
+  };
+
+  const handleSupportSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setSupportSubmitting(true);
+    setTimeout(() => {
+      setSupportSubmitting(false);
+      setSupportSuccess(true);
+      setTicketSubject("");
+      setTicketMsg("");
+      setTimeout(() => setSupportSuccess(false), 3000);
+    }, 1500);
+  };
+
+  const overviewCards = [
+    { label: "SellerMate", value: account ? "Connected" : "Offline", icon: Plug, good: !!account },
+    { label: "API Status", value: account ? "Healthy" : "Error", icon: Activity, good: !!account },
+    { label: "Workspace", value: account?.name?.split(" ").slice(0, 2).join(" ") || "—", icon: Building2, good: true },
+    { label: "Currency", value: account?.currency || "—", icon: Globe, good: true },
+    { label: "AI Engine", value: aiEnabled ? "Active" : "Disabled", icon: Sparkles, good: aiEnabled },
+    { label: "Version", value: "v2.0", icon: Database, good: true },
+  ];
+
+  const inputCls = "bg-background border border-border text-foreground px-3 py-2 rounded-xl text-sm font-semibold focus:border-primary focus:ring-2 focus:ring-primary/20 focus:outline-none transition-all";
+
+  return (
+    <div className="space-y-8 pb-12">
+      {/* ── Hero ── */}
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="relative overflow-hidden rounded-[26px] border border-white/40 dark:border-white/5 bg-gradient-to-br from-[#6D5EF8] via-[#7B5CF6] to-[#10B981] text-white shadow-[0_24px_60px_-20px_rgba(108,99,255,0.45)]"
+      >
+        <div className="absolute -top-24 -right-16 w-80 h-80 rounded-full bg-white/10 blur-3xl pointer-events-none" />
+        <div className="relative z-10 p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+          <div className="flex items-center gap-4 min-w-0">
+            <div className="w-14 h-14 rounded-2xl bg-white/15 border border-white/20 flex items-center justify-center text-xl font-extrabold backdrop-blur-sm flex-shrink-0">
+              {(account?.name || "BA").slice(0, 2).toUpperCase()}
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h1 className="text-[30px] font-extrabold tracking-tight leading-tight">{all ? "Workspace Settings" : "Flipkart Settings"}</h1>
+                <span className="flex items-center gap-1.5 text-[11px] font-extrabold bg-emerald-400/20 border border-emerald-300/30 text-emerald-100 px-2.5 py-1 rounded-full">
+                  <span className="w-1.5 h-1.5 bg-emerald-300 rounded-full animate-pulse" /> {account ? "Connected" : "Offline"}
+                </span>
+              </div>
+              <p className="text-white/75 text-[15px] font-medium mt-1">
+                {all
+                  ? "Every platform's settings in one place: Amazon, Flipkart, Meesho, Shopify. Each alert shows which platforms it covers."
+                  : "Only the settings that apply to Flipkart. They are the same saved values as on the Overall settings page."}
+              </p>
+              <p className="text-white/60 text-[11px] font-bold mt-1">
+                {account?.name || "—"} · {loggedInUser === "Lkn" ? "Account A" : "Account B"} · Last sync: just now
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2.5 flex-wrap flex-shrink-0">
+            {success && (
+              <span className="text-xs text-emerald-100 font-bold flex items-center gap-1.5 animate-pulse">
+                <CheckCircle size={14} /> {saveEmailNote || "Settings saved!"}
+              </span>
+            )}
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="flex items-center gap-2 bg-white text-[#5B4FE0] hover:bg-white/90 px-5 py-2.5 rounded-xl text-sm font-bold transition-all shadow-lg shadow-black/10 disabled:opacity-60"
+            >
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />} Save Changes
+            </button>
+            {all && <button
+              onClick={handleTriggerSync}
+              disabled={syncing}
+              className="flex items-center gap-2 bg-white/10 hover:bg-white/20 border border-white/20 px-5 py-2.5 rounded-xl text-sm font-bold transition-all backdrop-blur-sm disabled:opacity-60"
+            >
+              <RefreshCw className={cn("w-4 h-4", syncing && "animate-spin")} /> Sync SellerMate
+            </button>}
+          </div>
+        </div>
+      </motion.div>
+
+      {/* ── Workspace Overview Cards ── */}
+      {all && <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        {overviewCards.map((c, i) => (
+          <motion.div
+            key={c.label}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: i * 0.04 }}
+            className="glass gradient-border rounded-2xl p-4 hover:-translate-y-0.5 transition-transform"
+          >
+            <div className="flex items-center justify-between">
+              <c.icon className="w-4 h-4 text-indigo-500" />
+              <span className={cn("w-1.5 h-1.5 rounded-full", c.good ? "bg-emerald-500" : "bg-red-500")} />
+            </div>
+            <p className="text-[10px] font-extrabold uppercase tracking-widest text-muted-foreground mt-2.5">{c.label}</p>
+            <p className="text-sm font-extrabold truncate mt-0.5" title={String(c.value)}>{c.value}</p>
+          </motion.div>
+        ))}
+      </div>}
+
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        {/* ── Left Navigation ── */}
+        <div className="space-y-4 md:sticky md:top-4 self-start">
+          {["Workspace", "Preferences", "Account"].filter((section) => all || NAV.some((n) => n.section === section && FLIPKART_TABS.includes(n.id))).map((section) => (
+            <div key={section} className="space-y-1">
+              <p className="px-3 text-[10px] font-extrabold uppercase tracking-widest text-muted-foreground">{section}</p>
+              {NAV.filter((n) => n.section === section && (all || FLIPKART_TABS.includes(n.id))).map((n) => (
+                <button
+                  key={n.id}
+                  onClick={() => setActiveTab(n.id)}
+                  className={cn(
+                    "w-full text-left px-3 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2.5 transition-all",
+                    activeTab === n.id
+                      ? "bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white shadow-md shadow-indigo-500/20"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground hover:translate-x-0.5"
+                  )}
+                >
+                  <n.icon size={16} /> {n.label}
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+
+        {/* ── Dynamic Settings Panel ── */}
+        <div className="md:col-span-3 space-y-6">
+          {activeTab === "about" && (
+            <div className="glass rounded-2xl border border-border p-6">
+              {/* docs/DASHBOARD_AUDIT.md in the repo (copied by scripts/sync-audit-doc.mjs) */}
+              <MarkdownDoc markdown={DASHBOARD_AUDIT_MD} />
+            </div>
+          )}
+
+          {activeTab === "general" && (
+            <Card title="General" icon={Settings} iconColor="bg-indigo-500/10 border-indigo-500/15 text-indigo-500">
+              <SettingRow title="Workspace Name" desc="Synced from your SellerMate workspace.">
+                <span className="text-sm font-bold bg-muted px-3 py-1.5 rounded-xl max-w-[220px] truncate">{account?.name || "—"}</span>
+              </SettingRow>
+              <SettingRow title="Active Account" desc="Key slot used for all API requests.">
+                <span className="text-sm font-bold bg-muted px-3 py-1.5 rounded-xl">{loggedInUser === "Lkn" ? "Account A" : "Account B"}</span>
+              </SettingRow>
+              <SettingRow title="Currency" desc="Reported by the connected marketplace.">
+                <span className="text-sm font-bold bg-muted px-3 py-1.5 rounded-xl">{account?.currency || "—"}</span>
+              </SettingRow>
+              <SettingRow title="Timezone" desc="Used for report boundaries and dayparting.">
+                <select value={timezone} onChange={(e) => setTimezone(e.target.value)} className={inputCls}>
+                  <option value="Asia/Kolkata">Asia/Kolkata (IST)</option>
+                  <option value="America/Los_Angeles">America/Los_Angeles (PT)</option>
+                  <option value="America/New_York">America/New_York (ET)</option>
+                  <option value="Europe/London">Europe/London (GMT)</option>
+                  <option value="UTC">UTC</option>
+                </select>
+              </SettingRow>
+              <SettingRow title="Default Date Range" desc="Applied when the dashboard opens." border={false}>
+                <select value={defaultRange} onChange={(e) => setDefaultRange(e.target.value)} className={inputCls}>
+                  <option value="7d">Last 7 Days</option>
+                  <option value="14d">Last 14 Days</option>
+                  <option value="30d">Last 30 Days</option>
+                  <option value="90d">Last 90 Days</option>
+                </select>
+              </SettingRow>
+            </Card>
+          )}
+
+          {activeTab === "sellermate" && (
+            <>
+              <Card title="Connection Status" icon={Plug} iconColor="bg-emerald-500/10 border-emerald-500/15 text-emerald-500">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-2">
+                  {[
+                    { l: "Status", v: account ? "Connected" : "Offline", good: !!account },
+                    { l: "API Health", v: account ? "Healthy" : "Check keys", good: !!account },
+                    { l: "Workspace ID", v: account?.workspace_id ? `…${String(account.workspace_id).slice(-6)}` : "—", good: true },
+                    { l: "Sync Mode", v: "Automatic", good: true },
+                  ].map((s) => (
+                    <div key={s.l} className="p-3 rounded-2xl border border-border bg-card/60">
+                      <p className="text-[10px] font-extrabold uppercase tracking-widest text-muted-foreground">{s.l}</p>
+                      <p className={cn("text-sm font-extrabold mt-0.5", s.good ? "text-emerald-600 dark:text-emerald-400" : "text-red-600")}>{s.v}</p>
+                    </div>
+                  ))}
+                </div>
+                <SettingRow title="API Key" desc="Managed server-side for security — never exposed to the browser.">
+                  <span className="font-mono text-xs bg-muted px-3 py-1.5 rounded-xl text-muted-foreground">••••••••••••••••</span>
+                </SettingRow>
+                <SettingRow title="Sync Schedule" desc="How often report data is fetched from Amazon." border={false}>
+                  <select value={syncSchedule} onChange={(e) => setSyncSchedule(e.target.value)} className={inputCls}>
+                    <option value="3h">Every 3 Hours</option>
+                    <option value="6h">Every 6 Hours</option>
+                    <option value="12h">Every 12 Hours</option>
+                    <option value="24h">Daily (24h)</option>
+                  </select>
+                </SettingRow>
+              </Card>
+              <Card title="Manual Ingestion" icon={RefreshCw} iconColor="bg-blue-500/10 border-blue-500/15 text-blue-500">
+                <p className="text-xs text-muted-foreground font-semibold leading-relaxed">
+                  Reports are queued on a schedule. Trigger a manual sync to pull the latest PPC and inventory metrics from Amazon instantly.
+                </p>
+                <div className="flex items-center gap-3 pt-3">
+                  <button
+                    onClick={handleTriggerSync}
+                    disabled={syncing}
+                    className="px-4 py-2.5 bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white font-bold text-sm rounded-xl flex items-center gap-2 transition-all shadow-md shadow-indigo-500/20 disabled:opacity-50"
+                  >
+                    {syncing ? (<><Loader2 className="w-4 h-4 animate-spin" /> Ingesting Live Data...</>) : (<><RefreshCw size={15} /> Synchronize Now</>)}
+                  </button>
+                  {syncSuccess && (
+                    <span className="text-xs text-emerald-600 dark:text-emerald-400 font-bold flex items-center gap-1.5 animate-pulse">
+                      <CheckCircle size={14} /> Sync Successful!
+                    </span>
+                  )}
+                </div>
+              </Card>
+            </>
+          )}
+
+          {activeTab === "marketplaces" && (
+            <>
+              <Card title="Amazon" icon={Plug} iconColor="bg-emerald-500/10 border-emerald-500/15 text-emerald-500">
+                <SettingRow title="Connection" desc="Live via SellerMate Public API — see the SellerMate Connection tab.">
+                  <span className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full">
+                    <CheckCircle size={12} /> Connected
+                  </span>
+                </SettingRow>
+                <SettingRow title="Data" desc="Campaigns, catalog, inventory and orders — all real-time." border={false}>
+                  <span className="text-xs font-bold text-muted-foreground">Live</span>
+                </SettingRow>
+              </Card>
+
+              {(["flipkart"] as const).map((mp) => {
+                const meta = MARKETPLACE_META[mp];
+                const apiKey = flipkartApiKey;
+                const setApiKey = setFlipkartApiKey;
+                const idValue = flipkartSellerId;
+                const setIdValue = setFlipkartSellerId;
+                const idLabel = "Seller ID";
+                const isConnected = apiKey.trim().length > 0 && idValue.trim().length > 0;
+
+                return (
+                  <Card key={mp} title={meta.label} icon={Store} iconColor={cn(meta.bg, meta.border, meta.text)}>
+                    <div className="-mt-2 mb-2">
+                      <span className="flex items-center gap-1.5 text-xs font-extrabold px-2.5 py-1 rounded-full w-fit"
+                        style={{ color: isConnected ? "#059669" : meta.color, background: isConnected ? "#05966915" : `${meta.color}15` }}>
+                        {isConnected ? <CheckCircle size={12} /> : <Key size={12} />}
+                        {isConnected ? "Credentials saved" : "Not connected — showing demo data"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground font-semibold leading-relaxed mb-3">
+                      Generate an API key from Flipkart Seller Hub → Settings → API Access, then paste it below.
+                    </p>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-widest">{meta.label} API Key</label>
+                        <input
+                          type="password"
+                          placeholder="Paste API key..."
+                          value={apiKey}
+                          onChange={(e) => setApiKey(e.target.value)}
+                          className={cn(inputCls, "w-full mt-1 font-mono")}
+                          autoComplete="off"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-widest">{idLabel}</label>
+                        <input
+                          type="text"
+                          placeholder={`Your ${idLabel}...`}
+                          value={idValue}
+                          onChange={(e) => setIdValue(e.target.value)}
+                          className={cn(inputCls, "w-full mt-1")}
+                        />
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground font-medium mt-3">
+                      Saved locally when you hit "Save Changes" below. {meta.label} pages will keep showing illustrative demo data until a live data connection is built for it.
+                    </p>
+                  </Card>
+                );
+              })}
+            </>
+          )}
+
+          {activeTab === "notifications" && (
+            <>
+              <Card title="Alert Channels" icon={Bell} iconColor="bg-amber-500/10 border-amber-500/15 text-amber-500">
+                <SettingRow title="Email Notifications" desc="Daily metrics updates and critical stockout warnings.">
+                  <Toggle checked={emailAlerts} onChange={setEmailAlerts} />
+                </SettingRow>
+                {emailAlerts && (
+                  <div className="pb-1">
+                    <label className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-widest">Recipient Email Address</label>
+                    <input
+                      type="email"
+                      placeholder="you@example.com"
+                      value={notifEmail}
+                      onChange={(e) => setNotifEmail(e.target.value)}
+                      className={cn(inputCls, "w-full mt-1")}
+                      autoComplete="email"
+                    />
+                    <p className="text-[10px] text-muted-foreground font-medium mt-1">✅ Saved automatically as you type. Inventory alerts, campaign reports &amp; daily summaries will be sent here.</p>
+
+                    <label className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-widest mt-3 block">CC Email Address (optional)</label>
+                    <input
+                      type="email"
+                      multiple
+                      placeholder="teammate@example.com, another@example.com"
+                      value={ccEmail}
+                      onChange={(e) => setCcEmail(e.target.value)}
+                      className={cn(inputCls, "w-full mt-1")}
+                      autoComplete="email"
+                    />
+                    <p className="text-[10px] text-muted-foreground font-medium mt-1">Optional — comma-separated for multiple recipients. CC&apos;d on every report and alert alongside the recipient above.</p>
+
+                    <div className="mt-3 flex items-center gap-3">
+                      <button
+                        type="button"
+                        disabled={!notifEmail || testEmailStatus === "sending"}
+                        onClick={async () => {
+                          if (!notifEmail) return;
+                          setTestEmailStatus("sending");
+                          try {
+                            const r = await fetch("/api/send-email", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ type: "test", to: notifEmail, cc: ccEmail || undefined }),
+                            });
+                            const json = await r.json();
+                            if (r.ok) { setTestEmailStatus("sent"); setTimeout(() => setTestEmailStatus("idle"), 4000); }
+                            else { console.error(json.error); setTestEmailStatus("error"); setTimeout(() => setTestEmailStatus("idle"), 4000); }
+                          } catch { setTestEmailStatus("error"); setTimeout(() => setTestEmailStatus("idle"), 4000); }
+                        }}
+                        className="px-4 py-2 bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm disabled:opacity-50 hover:opacity-90 transition-all"
+                      >
+                        {testEmailStatus === "sending" ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Sending...</> :
+                         testEmailStatus === "sent" ? <><CheckCircle className="w-3.5 h-3.5" /> Sent!</> :
+                         testEmailStatus === "error" ? "❌ Failed — check email" :
+                         <><Send className="w-3.5 h-3.5" /> Send Test Email</>}
+                      </button>
+                      {testEmailStatus === "sent" && <span className="text-xs text-emerald-600 dark:text-emerald-400 font-bold animate-pulse">Check your inbox! 📬</span>}
+                      {testEmailStatus === "error" && <span className="text-xs text-red-500 font-bold">Something went wrong. Try again.</span>}
+                    </div>
+                  </div>
+                )}
+                {all && <>
+                <SettingRow title="Slack Alerts" desc="Real-time alerts posted to your Slack channel.">
+                  <Toggle checked={slackAlerts} onChange={setSlackAlerts} />
+                </SettingRow>
+                {slackAlerts && (
+                  <div className="pb-3">
+                    <label className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-widest">Slack Webhook URL</label>
+                    <input
+                      type="text"
+                      placeholder="https://hooks.slack.com/services/..."
+                      value={slackUrl}
+                      onChange={(e) => setSlackUrl(e.target.value)}
+                      className={cn(inputCls, "w-full mt-1")}
+                    />
+                  </div>
+                )}
+                <SettingRow title="Push Notifications" desc="Browser push for urgent alerts." border={false}>
+                  <Toggle checked={pushAlerts} onChange={setPushAlerts} />
+                </SettingRow>
+                </>}
+              </Card>
+              <Card title="Alert Types" icon={Activity} iconColor="bg-pink-500/10 border-pink-500/15 text-pink-500">
+                {all && (
+                  <SettingRow tags={["Amazon"]} title="ROAS / ACOS Alerts" desc="When performance crosses your thresholds.">
+                    <Toggle checked={roasAlerts} onChange={setRoasAlerts} />
+                  </SettingRow>
+                )}
+                {all && (
+                  <SettingRow tags={["Amazon"]} title="Inventory Alerts" desc="Low stock and stockout-risk warnings.">
+                    <Toggle checked={inventoryAlerts} onChange={setInventoryAlerts} />
+                  </SettingRow>
+                )}
+                {all && (
+                  <SettingRow tags={["Amazon"]} title="Daily Digest" desc="One morning email: KPIs, out-of-stock ad spend, bleeding campaigns and wasted search terms.">
+                    <Toggle checked={dailySummary} onChange={setDailySummary} />
+                  </SettingRow>
+                )}
+                {all && (
+                  <SettingRow tags={["Amazon"]} title="Things Need Attention" desc="Daily 9:00 AM IST: conversion drops, products running out within the days set below, spend spikes and buy box losses. Sent only on days when something fires; new items are marked NEW.">
+                    <Toggle checked={liveAlerts} onChange={setLiveAlerts} />
+                  </SettingRow>
+                )}
+                {all && (
+                  <SettingRow tags={["Amazon"]} title="FBA Stock" desc="Daily 9:00 AM IST, across all 24 eligible FBA warehouses: every product with stock in fewer than 8 warehouses or a warehouse at 20 units or less (new ones marked NEW), plus a CSV of every product's stock per warehouse. Not sent when every product passes or stock data is unavailable.">
+                    <Toggle checked={fbaWarehouseAlerts} onChange={setFbaWarehouseAlerts} />
+                  </SettingRow>
+                )}
+                <SettingRow tags={["Amazon", "Flipkart", "Meesho"]} title="High ACOS" desc="Once a day, after the Last 7 days report is uploaded (at upload, or 9:00 AM IST if already uploaded): every Amazon, Flipkart and Meesho (B-ARM) campaign above the High ACOS limit set below, with its ACOS for each of the last 7 days, read from the uploaded ads reports. Not sent when no campaign is above the limit.">
+                  <Toggle checked={highAcosDaily} onChange={setHighAcosDaily} />
+                </SettingRow>
+                {all && (
+                  <SettingRow tags={["Amazon"]} title="Campaign Paused" desc="An email within 30 minutes whenever a campaign stops running. Pauses are always recorded on the dashboard; this only controls the email.">
+                    <Toggle checked={campaignPauseEmails} onChange={setCampaignPauseEmails} />
+                  </SettingRow>
+                )}
+                <SettingRow tags={["Amazon", "Flipkart", "Meesho"]} title="Rating Drop" desc="Mondays, once that week's ratings are uploaded (at upload, or 9:00 AM IST if already uploaded): every listing that was 4★ or higher last week and is now below 4★. Product names link to the Amazon / Flipkart page. Not sent when nothing dropped below 4★.">
+                  <Toggle checked={ratingDropAlerts} onChange={setRatingDropAlerts} />
+                </SettingRow>
+                {all && (
+                  <SettingRow tags={["Amazon"]} title="Weekly Summary" desc="Sent every Monday at 9:00 AM IST.">
+                    <Toggle checked={weeklySummary} onChange={setWeeklySummary} />
+                  </SettingRow>
+                )}
+                {all && (
+                  <SettingRow tags={["Amazon"]} title="Monthly Summary" desc="Sent on the 1st of every month at 9:00 AM IST.">
+                    <Toggle checked={monthlySummary} onChange={setMonthlySummary} />
+                  </SettingRow>
+                )}
+                {all && (
+                  <SettingRow tags={["Amazon"]} title="Search Terms Monthly" desc="On the last day of every month at 9:00 AM IST: that month's search terms, 1st to the last day (30th / 31st; February 28th / 29th), in four sheets — Orders 0, ACOS above 50%, 25–50% and 13–25%. Status and Send now are on the Search Terms page's Mail tab.">
+                    <Toggle checked={searchTermMonthly} onChange={setSearchTermMonthly} />
+                  </SettingRow>
+                )}
+                {(dailySummary || liveAlerts || fbaWarehouseAlerts || highAcosDaily || ratingDropAlerts || weeklySummary || monthlySummary || searchTermMonthly) && (
+                  <div className="mt-1 mb-2 px-3 py-2.5 bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 rounded-xl">
+                    <p className="text-[11px] font-extrabold text-indigo-600 dark:text-indigo-400 flex items-center gap-1.5">
+                      <span>📬</span> Reports will be sent to: <span className="font-black">{notifEmail || "—"}</span>
+                      {ccEmail && <span className="font-semibold">(cc: {ccEmail})</span>}
+                    </p>
+                    <p className="text-[10px] text-indigo-500/80 font-semibold mt-0.5">
+                      {[dailySummary && "Daily digest 9AM", liveAlerts && "Things need attention 9AM", fbaWarehouseAlerts && "FBA stock 9AM", highAcosDaily && "High ACOS after upload", ratingDropAlerts && "Rating drop Monday", weeklySummary && "Weekly Monday", monthlySummary && "Monthly 1st", searchTermMonthly && "Search terms month-end"].filter(Boolean).join(" · ")}
+                    </p>
+                  </div>
+                )}
+                {all && weeklySummary && (
+                  <div className="pb-3">
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        disabled={!notifEmail || !account?.id || !account?.workspace_id || weeklyReportStatus === "sending"}
+                        onClick={async () => {
+                          if (!notifEmail || !account?.id || !account?.workspace_id) return;
+                          setWeeklyReportStatus("sending");
+                          setWhatsappText(null);
+                          try {
+                            const r = await fetch("/api/weekly-report", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({
+                                slot: keySlot, amazon_account_id: account.id, workspace_id: account.workspace_id,
+                                // Server sends to this slot's saved notifEmail/ccEmail.
+                                recipients: "saved", currency: account?.currency || "INR",
+                              }),
+                            });
+                            const json = await r.json();
+                            if (r.ok && !json.error) {
+                              setWeeklyReportStatus("sent"); setTimeout(() => setWeeklyReportStatus("idle"), 4000);
+                              setWhatsappText(json.whatsappText || null);
+                            } else {
+                              console.error(json.error); setWeeklyReportStatus("error"); setTimeout(() => setWeeklyReportStatus("idle"), 4000);
+                            }
+                          } catch { setWeeklyReportStatus("error"); setTimeout(() => setWeeklyReportStatus("idle"), 4000); }
+                        }}
+                        className="px-4 py-2 bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm disabled:opacity-50 hover:opacity-90 transition-all"
+                      >
+                        {weeklyReportStatus === "sending" ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Sending...</> :
+                         weeklyReportStatus === "sent" ? <><CheckCircle className="w-3.5 h-3.5" /> Sent!</> :
+                         weeklyReportStatus === "error" ? "❌ Failed — check console" :
+                         <><Send className="w-3.5 h-3.5" /> Send Weekly Report Now</>}
+                      </button>
+                      {weeklyReportStatus === "sent" && <span className="text-xs text-emerald-600 dark:text-emerald-400 font-bold animate-pulse">Emailed to {notifEmail} 📬</span>}
+                    </div>
+                    {whatsappText && (
+                      <div className="mt-3">
+                        <label className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-widest">WhatsApp Message (copy &amp; send manually)</label>
+                        <textarea readOnly rows={5} value={whatsappText} className={cn(inputCls, "w-full mt-1 font-mono text-[11px] leading-relaxed")} />
+                        <button
+                          type="button"
+                          onClick={() => { navigator.clipboard.writeText(whatsappText); setWhatsappCopied(true); setTimeout(() => setWhatsappCopied(false), 2500); }}
+                          className="mt-1.5 px-3 py-1.5 border border-border text-xs font-bold rounded-lg hover:bg-muted transition-colors"
+                        >
+                          {whatsappCopied ? "✅ Copied!" : "Copy to clipboard"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div className="pt-3 space-y-4">
+                  {all && (
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-xs font-bold">
+                        <span className="text-muted-foreground">Notify when ACOS exceeds:</span>
+                        <span className="text-primary font-extrabold">{acosThreshold}%</span>
+                      </div>
+                      <input type="range" min="10" max="100" value={acosThreshold} onChange={(e) => setAcosThreshold(parseInt(e.target.value))} className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-[#6C63FF]" />
+                    </div>
+                  )}
+                  {all && (
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-xs font-bold">
+                        <span className="text-muted-foreground">Notify when stock drops below:</span>
+                        <span className="text-primary font-extrabold">{lowStockThreshold} units</span>
+                      </div>
+                      <input type="range" min="5" max="100" value={lowStockThreshold} onChange={(e) => setLowStockThreshold(parseInt(e.target.value))} className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-[#6C63FF]" />
+                    </div>
+                  )}
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-xs font-bold">
+                      <span className="text-muted-foreground">High ACOS email: campaigns above</span>
+                      <span className="text-primary font-extrabold">{highAcosThreshold}%</span>
+                    </div>
+                    <input type="range" min="5" max="100" value={highAcosThreshold} onChange={(e) => setHighAcosThreshold(parseInt(e.target.value))} className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-[#6C63FF]" />
+                  </div>
+                  {all && (
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-xs font-bold">
+                        <span className="text-muted-foreground">Things need attention: running out within</span>
+                        <span className="text-primary font-extrabold">{stockoutWarnDays} days</span>
+                      </div>
+                      <input type="range" min="3" max="30" value={stockoutWarnDays} onChange={(e) => setStockoutWarnDays(parseInt(e.target.value))} className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-[#6C63FF]" />
+                    </div>
+                  )}
+                </div>
+              </Card>
+            </>
+          )}
+
+          {activeTab === "automation" && (
+            <Card title="Automation Rules" icon={Zap} iconColor="bg-violet-500/10 border-violet-500/15 text-violet-500">
+              <p className="text-xs text-muted-foreground font-semibold -mt-1 mb-2">
+                Rules run on the AI engine and surface as recommendations. Auto-apply requires write access (not enabled on this read-only dashboard).
+              </p>
+              <SettingRow title="Flag campaigns for auto-pause" desc="Suggest pausing when spend has zero orders past your threshold.">
+                <Toggle checked={autoPause} onChange={setAutoPause} />
+              </SettingRow>
+              <SettingRow title="Suggest negative keywords" desc="Harvest zero-conversion search terms as negative candidates.">
+                <Toggle checked={autoNegatives} onChange={setAutoNegatives} />
+              </SettingRow>
+              <SettingRow title="Budget scale suggestions" desc="Recommend budget increases for campaigns beating your ROAS target.">
+                <Toggle checked={autoBudget} onChange={setAutoBudget} />
+              </SettingRow>
+              <div className="pt-3 space-y-2">
+                <div className="flex justify-between text-xs font-bold">
+                  <span className="text-muted-foreground">ROAS target for scale suggestions:</span>
+                  <span className="text-primary font-extrabold">{roasTarget}x</span>
+                </div>
+                <input type="range" min="1" max="10" step="0.5" value={roasTarget} onChange={(e) => setRoasTarget(parseFloat(e.target.value))} className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-[#6C63FF]" />
+              </div>
+            </Card>
+          )}
+
+          {activeTab === "ai" && (
+            <Card title="AI Assistant" icon={Bot} iconColor="bg-indigo-500/10 border-indigo-500/15 text-indigo-500">
+              <SettingRow title="Enable AI Engine" desc="Powers recommendations, health scores and the copilot.">
+                <Toggle checked={aiEnabled} onChange={setAiEnabled} />
+              </SettingRow>
+              <SettingRow title="Auto Insights" desc="Generate insights automatically when data refreshes.">
+                <Toggle checked={autoInsights} onChange={setAutoInsights} />
+              </SettingRow>
+              <SettingRow title="Smart Alerts" desc="AI decides which anomalies are worth alerting.">
+                <Toggle checked={smartAlerts} onChange={setSmartAlerts} />
+              </SettingRow>
+              <SettingRow title="Forecast Window" desc="Horizon used for sales & inventory forecasts.">
+                <select value={forecastWindow} onChange={(e) => setForecastWindow(e.target.value)} className={inputCls}>
+                  <option value="7d">7 Days</option>
+                  <option value="14d">14 Days</option>
+                  <option value="30d">30 Days</option>
+                  <option value="90d">90 Days</option>
+                </select>
+              </SettingRow>
+              <SettingRow title="Recommendation Mode" desc="How aggressive AI suggestions should be." border={false}>
+                <div className="flex gap-1.5">
+                  {(["conservative", "balanced", "aggressive"] as const).map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => setRecMode(m)}
+                      className={cn(
+                        "px-3 py-1.5 rounded-full text-xs font-bold capitalize transition-all border",
+                        recMode === m
+                          ? "bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white border-transparent shadow-sm"
+                          : "bg-card border-border text-muted-foreground hover:border-primary/40"
+                      )}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
+              </SettingRow>
+            </Card>
+          )}
+
+          {activeTab === "appearance" && (
+            <Card title="Appearance" icon={Palette} iconColor="bg-cyan-500/10 border-cyan-500/15 text-cyan-500">
+              <SettingRow title="Theme" desc="Switch between light and dark mode.">
+                <div className="flex gap-1.5">
+                  <button
+                    onClick={() => toggleTheme("light")}
+                    className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border transition-all", theme === "light" ? "bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white border-transparent" : "bg-card border-border text-muted-foreground")}
+                  >
+                    <Sun size={13} /> Light
+                  </button>
+                  <button
+                    onClick={() => toggleTheme("dark")}
+                    className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border transition-all", theme === "dark" ? "bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white border-transparent" : "bg-card border-border text-muted-foreground")}
+                  >
+                    <Moon size={13} /> Dark
+                  </button>
+                </div>
+              </SettingRow>
+              <SettingRow title="Compact Mode" desc="Denser tables and tighter spacing (applies on next reload)." border={false}>
+                <Toggle checked={compactMode} onChange={setCompactMode} />
+              </SettingRow>
+            </Card>
+          )}
+
+          {activeTab === "security" && (
+            <Card title="Security Center" icon={Shield} iconColor="bg-red-500/10 border-red-500/15 text-red-500">
+              <SettingRow title="Two-Factor Authentication" desc="Extra protection using an authenticator app (Google Auth, Duo, etc.).">
+                <Toggle checked={twoFactor} onChange={setTwoFactor} />
+              </SettingRow>
+              <SettingRow title="IP Restrictions" desc="Restrict dashboard access to whitelisted IP addresses.">
+                <Toggle checked={ipRestrict} onChange={setIpRestrict} />
+              </SettingRow>
+              {ipRestrict && (
+                <div className="pb-3">
+                  <label className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-widest">Whitelisted IPs (comma separated)</label>
+                  <textarea
+                    placeholder="e.g. 192.168.1.1, 203.0.113.50"
+                    value={whitelistIps}
+                    onChange={(e) => setWhitelistIps(e.target.value)}
+                    className={cn(inputCls, "w-full h-16 mt-1 font-mono text-xs")}
+                  />
+                </div>
+              )}
+              <SettingRow title="API Key Access" desc="Keys are stored server-side in environment variables only." border={false}>
+                <span className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full">
+                  <Key size={12} /> Server-managed
+                </span>
+              </SettingRow>
+            </Card>
+          )}
+
+          {activeTab === "support" && (
+            <>
+              <Card title="Documentation & Help" icon={HelpCircle} iconColor="bg-blue-500/10 border-blue-500/15 text-blue-500">
+                <p className="text-xs text-muted-foreground font-semibold leading-relaxed">
+                  Need help integrating your SP-API keys or setting up target harvesting? Review our knowledge base tutorials.
+                </p>
+                <div className="flex flex-wrap gap-2 pt-3">
+                  <a href="https://docs.sellermate.ai" target="_blank" rel="noreferrer" className="px-4 py-2 border border-border bg-card rounded-xl hover:border-primary/50 text-sm font-bold transition-all">Documentation Hub</a>
+                  <a href="https://sellermate.ai/contact" target="_blank" rel="noreferrer" className="px-4 py-2 border border-border bg-card rounded-xl hover:border-primary/50 text-sm font-bold transition-all">Contact Sales</a>
+                </div>
+              </Card>
+              <Card title="Submit a Ticket" icon={Send} iconColor="bg-emerald-500/10 border-emerald-500/15 text-emerald-500">
+                <form onSubmit={handleSupportSubmit} className="space-y-3">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-widest">Subject</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g., API Key sync failing"
+                      value={ticketSubject}
+                      onChange={(e) => setTicketSubject(e.target.value)}
+                      className={cn(inputCls, "w-full")}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-extrabold text-muted-foreground uppercase tracking-widest">Message / Issue Details</label>
+                    <textarea
+                      required
+                      placeholder="Explain what's happening..."
+                      value={ticketMsg}
+                      onChange={(e) => setTicketMsg(e.target.value)}
+                      className={cn(inputCls, "w-full h-24")}
+                    />
+                  </div>
+                  <div className="flex items-center gap-3 justify-end pt-1">
+                    {supportSuccess && (
+                      <span className="text-xs text-emerald-600 dark:text-emerald-400 font-bold flex items-center gap-1.5 animate-pulse">
+                        <CheckCircle size={14} /> Ticket submitted!
+                      </span>
+                    )}
+                    <button
+                      type="submit"
+                      disabled={supportSubmitting}
+                      className="px-5 py-2.5 bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white font-bold text-sm rounded-xl flex items-center gap-2 shadow-md shadow-indigo-500/20 disabled:opacity-50"
+                    >
+                      {supportSubmitting ? (<><Loader2 className="w-4 h-4 animate-spin" /> Submitting...</>) : (<><Send size={13} /> Send Ticket</>)}
+                    </button>
+                  </div>
+                </form>
+              </Card>
+            </>
+          )}
+
+          {/* Save bar for configurable tabs */}
+          {activeTab !== "support" && (
+            <div className="flex items-center gap-3 justify-end">
+              {success && (
+                <span className="text-xs text-emerald-600 dark:text-emerald-400 font-bold flex items-center gap-1.5 animate-pulse">
+                  <CheckCircle size={14} /> {saveEmailNote || "Settings saved!"}
+                </span>
+              )}
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="px-6 py-2.5 bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white font-bold text-sm rounded-xl shadow-md shadow-indigo-500/20 hover:opacity-95 transition-all flex items-center gap-2 disabled:opacity-60"
+              >
+                {saving ? (<><Loader2 className="w-4 h-4 animate-spin" /> Saving...</>) : "Save Changes"}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Footer ── */}
+      <div className="flex items-center justify-between flex-wrap gap-3 text-[11px] font-bold text-muted-foreground border-t border-border pt-5">
+        <span>Marketplace360 v2.0 · SellerMate Public API v1 · Next.js 16</span>
+        <span className="flex items-center gap-1.5">
+          <span className={cn("w-1.5 h-1.5 rounded-full", account ? "bg-emerald-500 animate-pulse" : "bg-red-500")} />
+          {account ? "All systems operational" : "Connection issue"}
+        </span>
+      </div>
+    </div>
+  );
+}

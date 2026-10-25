@@ -2,12 +2,13 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { Loader2, Package, Megaphone, RotateCcw, ArrowRight, RefreshCw, TrendingUp } from "lucide-react";
+import { Package, Megaphone, RotateCcw, ArrowRight, RefreshCw, TrendingUp } from "lucide-react";
 import { useDashboard } from "@/lib/DashboardContext";
 import { KPICard } from "@/components/KPICard";
 import { TrendChart } from "@/components/TrendChart";
 import { fetchFlipkartOverview } from "@/lib/flipkartData";
 import { ChannelSummaryStrip } from "@/components/marketplace/ChannelSummaryStrip";
+import { FlipkartBreakdowns } from "@/components/marketplace/FlipkartBreakdowns";
 import { fetchFlipkartOrderSummary } from "@/lib/channelSummary";
 import { cn } from "@/lib/utils";
 
@@ -20,28 +21,22 @@ export function FlipkartOverview() {
   const router = useRouter();
   const { loggedInUser, startDate, endDate } = useDashboard();
 
-  const { data: overview, isLoading, isFetching } = useQuery({
+  const { data: overview, isFetching } = useQuery({
     queryKey: ["flipkart-overview", loggedInUser, startDate, endDate],
     queryFn: () => fetchFlipkartOverview(loggedInUser, startDate, endDate),
     enabled: !!startDate && !!endDate,
   });
 
-  if (isLoading || !overview) {
-    return (
-      <div className="flex h-[60vh] items-center justify-center flex-col gap-4 text-muted-foreground">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-        <p className="font-semibold text-sm">Loading Flipkart data...</p>
-      </div>
-    );
-  }
-
   const accountLabel = loggedInUser === "Barm" ? "Barm" : "Lkn";
-  const hasAnyData = overview.grossSales > 0 || overview.adSpend > 0;
+  // The ads (FSN) / "Earn more" sections below come from separate uploads. With none on file for the
+  // range they would only show ₹0 / 0.00% everywhere, so they are left out until that data exists;
+  // the order-report sections (strip + breakdowns) always show, without waiting for this query.
+  const hasAnyData = !!overview && (overview.grossSales > 0 || overview.adSpend > 0);
   // Ad data (FSN report) and retail sales (Earn More report) come from two
   // separate uploads — it's common to have one without the other yet, which
   // otherwise reads as "Gross/Net/Organic Sales are genuinely ₹0" instead of
   // "that report just isn't uploaded".
-  const missingRetailSalesOnly = overview.adSpend > 0 && !overview.hasOverallSalesData;
+  const missingRetailSalesOnly = !!overview && overview.adSpend > 0 && !overview.hasOverallSalesData;
 
   return (
     <div className="space-y-6 pb-12">
@@ -67,18 +62,6 @@ export function FlipkartOverview() {
         </div>
       </div>
 
-      {!hasAnyData && (
-        <div className="rounded-2xl border border-amber-300/40 bg-amber-50 dark:bg-amber-950/20 px-4 py-3 text-xs font-semibold text-amber-700 dark:text-amber-300 flex items-center justify-between gap-3 flex-wrap">
-          <span>No {accountLabel} Flipkart data found for this date range yet. Upload data on the Upload page, or pick a different range.</span>
-          <button
-            onClick={() => router.push("/dashboard/flipkart/upload")}
-            className="flex items-center gap-1.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-700 dark:text-amber-300 px-3 py-1.5 rounded-full text-[11px] font-bold transition-all flex-shrink-0"
-          >
-            Go to Upload <ArrowRight className="w-3 h-3" />
-          </button>
-        </div>
-      )}
-
       {missingRetailSalesOnly && (
         <div className="rounded-2xl border border-amber-300/40 bg-amber-50 dark:bg-amber-950/20 px-4 py-3 text-xs font-semibold text-amber-700 dark:text-amber-300 flex items-center justify-between gap-3 flex-wrap">
           <span>Ad data is in, but no "Earn more" report has been uploaded for this range yet — Gross Sales, Net Sales and Organic Sales below read ₹0 because that report is the only source with real settlement amounts (the order report alone carries no monetary columns).</span>
@@ -91,7 +74,13 @@ export function FlipkartOverview() {
         </div>
       )}
 
-      {/* Top Row: 5 Large KPI Cards */}
+      <ChannelSummaryStrip channel="Flipkart" fetcher={fetchFlipkartOrderSummary} title="Sales, Orders & Returns" />
+
+      <FlipkartBreakdowns />
+
+      {overview && hasAnyData && (
+      <>
+      {/* Ads & settlement uploads (FSN / Earn more) — shown only when that data is on file */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         <KPICard title="Gross Sales" value={cur(overview.grossSales)} subtitle={`${num(overview.units)} units sold`} trend={overview.growthPct ?? undefined} delay={0.02} accent="green" />
         <KPICard title="Net Sales" value={cur(overview.netSales)} subtitle="After cancels & returns" delay={0.03} accent="cyan" />
@@ -99,8 +88,6 @@ export function FlipkartOverview() {
         <KPICard title="Ad Sales" value={cur(overview.adSales)} subtitle="Ads-attributed" delay={0.06} accent="blue" />
         <KPICard title="Organic Sales" value={cur(overview.organicSales)} subtitle="Non-ads revenue" delay={0.08} accent="orange" />
       </div>
-
-      <ChannelSummaryStrip channel="Flipkart" fetcher={fetchFlipkartOrderSummary} title="Sales, Orders & Returns" />
 
       {/* Charts Row */}
       <div className="grid grid-cols-1 xl:grid-cols-4 gap-4">
@@ -253,6 +240,8 @@ export function FlipkartOverview() {
           </div>
         </div>
       </div>
+      </>
+      )}
 
       <div className="flex justify-end">
         <button

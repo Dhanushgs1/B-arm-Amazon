@@ -14,6 +14,7 @@ import {
   Legend,
 } from "recharts";
 import { motion, useReducedMotion } from "framer-motion";
+import { axisTick } from "@/lib/axisTick";
 
 const EASE_OUT_EXPO = [0.16, 1, 0.3, 1] as const;
 
@@ -81,7 +82,7 @@ export function TrendChart({
                 axisLine={false}
                 tickLine={false}
                 tick={{ fontSize: 10, fill: "var(--muted-foreground)" }}
-                tickFormatter={(val) => `${valuePrefix}${val}`}
+                tickFormatter={(val) => axisTick(val, valuePrefix)}
               />
               <Tooltip cursor={{ stroke: color, strokeWidth: 1, strokeDasharray: "4 4", opacity: 0.4 }}
                 contentStyle={{
@@ -120,7 +121,7 @@ export function TrendChart({
                 axisLine={false}
                 tickLine={false}
                 tick={{ fontSize: 10, fill: "var(--muted-foreground)" }}
-                tickFormatter={(val) => `${valuePrefix}${val}`}
+                tickFormatter={(val) => axisTick(val, valuePrefix)}
               />
               <Tooltip cursor={{ stroke: color, strokeWidth: 1, strokeDasharray: "4 4", opacity: 0.4 }}
                 contentStyle={{

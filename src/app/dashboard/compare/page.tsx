@@ -5,6 +5,7 @@ import { motion } from "framer-motion";
 import { Brain, ArrowRight, GitCompare } from "lucide-react";
 import { useDashboard } from "@/lib/DashboardContext";
 import { AllMarketplacesSummary } from "@/components/marketplace/AllMarketplacesSummary";
+import { OverallDashboard } from "@/components/marketplace/OverallDashboard";
 
 // The "All" tab. Everything on it comes from AllMarketplacesSummary, i.e. the same Supabase data
 // and rules as each marketplace's own reports. The earlier Amazon + Flipkart sections were built on
@@ -25,11 +26,11 @@ export default function ComparePage() {
               <div className="w-8 h-8 rounded-xl bg-white/10 flex items-center justify-center">
                 <GitCompare className="w-4 h-4 text-indigo-300" />
               </div>
-              <span className="text-indigo-300 text-[10px] font-black uppercase tracking-widest">Combined Overview</span>
+              <span className="text-indigo-300 text-[10px] font-black uppercase tracking-widest">Overall</span>
             </div>
             <h1 className="text-2xl font-black tracking-tight text-white">Marketplace Intelligence Dashboard</h1>
             <p className="text-indigo-300/80 text-xs mt-1 font-semibold">
-              {dot(startDate)} – {dot(endDate)} · Amazon, Flipkart, Meesho &amp; BARM
+              {dot(startDate)} – {dot(endDate)} · Amazon, Flipkart, Meesho, Shopify, Google Ads &amp; Meta
             </p>
           </div>
           <Link
@@ -41,6 +42,9 @@ export default function ComparePage() {
         </div>
       </div>
 
+      <OverallDashboard />
+
+      {/* returns, net orders and cancellations per marketplace; shares the sales loads above */}
       <AllMarketplacesSummary />
     </motion.div>
   );

@@ -10,7 +10,9 @@ export const RATING_DROP_LIMIT = 4;
 export const RATING_DROP_MIN_REVIEWS = 1;
 
 /** A snapshot older than this is last week's data, not "this week's ratings came in". */
-export const RATING_SNAPSHOT_MAX_AGE_DAYS = 6;
+// 7 days, not 6: an upload made last Monday AFTER that day's 9 AM run (19 Oct 2026) goes out the next
+// Monday instead of being skipped. Already-mailed channel snapshots are never re-sent (platformsToMail).
+export const RATING_SNAPSHOT_MAX_AGE_DAYS = 7;
 
 export interface RatingDrop {
   platform: string;
@@ -49,10 +51,13 @@ export function daysBetween(a: string, b: string): number {
   return Math.round((Date.parse(b + "T00:00:00Z") - Date.parse(a + "T00:00:00Z")) / 86_400_000);
 }
 
-/** Is the latest snapshot this week's? (taken within RATING_SNAPSHOT_MAX_AGE_DAYS of today, IST) */
+/** Is the snapshot ready to mail? Ratings reach Supabase from the weekly collection, which is dated the
+ *  Monday it starts and fills in over the next days (19 Oct 2026: collected 19–21 Oct) — so a snapshot
+ *  dated today may still be half-collected and is left for next Monday's run. Ready = 1 to
+ *  RATING_SNAPSHOT_MAX_AGE_DAYS days old (IST). */
 export function isThisWeeksSnapshot(snapshotDate: string, todayIst: string): boolean {
   const age = daysBetween(snapshotDate, todayIst);
-  return age >= 0 && age <= RATING_SNAPSHOT_MAX_AGE_DAYS;
+  return age >= 1 && age <= RATING_SNAPSHOT_MAX_AGE_DAYS;
 }
 
 export function toRatingDrop(l: Listing, idBySku: Map<string, string>): RatingDrop {
@@ -64,4 +69,26 @@ export function toRatingDrop(l: Listing, idBySku: Map<string, string>): RatingDr
     prevRating: l.prevRating as number, rating: l.rating as number,
     prevReviews, reviews: l.reviews, url: productUrl(l.platform, id),
   };
+}
+
+/** State entity for one channel's snapshot, e.g. "Amazon|2026-10-19". */
+export const platformSnapshotKey = (platform: string, date: string) => `${platform}|${date}`;
+
+/** Channels whose newest snapshot still needs mailing: taken this week, and not mailed before.
+ *  Each channel uploads on its own day, so one mail per channel snapshot — otherwise a later upload
+ *  of one channel (Meesho 14 Oct) re-sent another channel's already-mailed drops (Amazon 12 Oct),
+ *  which is what happened on 19 Oct 2026. `sent` holds the state entity_ids already recorded:
+ *  "Platform|date", or (before this fix) a plain date meaning every channel snapshot up to it. */
+export function platformsToMail(
+  platformDates: Record<string, { current: string; previous: string | null }>,
+  sent: string[],
+  todayIst: string,
+): { platform: string; current: string; previous: string }[] {
+  const sentSet = new Set(sent);
+  const legacy = sent.filter((s) => /^\d{4}-\d{2}-\d{2}$/.test(s)).sort();
+  const lastLegacy = legacy[legacy.length - 1] ?? "";
+  return Object.entries(platformDates)
+    .filter((e): e is [string, { current: string; previous: string }] => !!e[1].previous)
+    .filter(([p, d]) => isThisWeeksSnapshot(d.current, todayIst) && !sentSet.has(platformSnapshotKey(p, d.current)) && d.current > lastLegacy)
+    .map(([platform, d]) => ({ platform, current: d.current, previous: d.previous }));
 }

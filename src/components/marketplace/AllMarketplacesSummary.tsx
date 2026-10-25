@@ -10,9 +10,9 @@ import {
   fetchAmazonSummary,
   fetchFlipkartAllSummary,
   fetchMeeshoSummary,
-  fetchBarmSummary,
   type ChannelSummary,
 } from "@/lib/channelSummary";
+import { fetchShopifyAllSummary } from "@/lib/shopifyOrders";
 
 const cur = (v: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(v || 0))}`;
 const num = (v: number) => new Intl.NumberFormat("en-IN").format(Math.round(v || 0));
@@ -20,11 +20,13 @@ const growth = (now: number, before: number): number | undefined =>
   before > 0 ? Math.round(((now - before) / before) * 1000) / 10 : undefined;
 const dot = (isoDate: string) => isoDate.split("-").reverse().join(".");
 
+// The old B-ARM Website (WooCommerce, barm_online_orders) is left out — it stopped on 21 Sep 2026
+// when Shopify took over the website; its history stays on its own tab.
 const CHANNELS = [
   { id: "amazon", label: "Amazon", color: "#FF9900", href: "/dashboard", fetcher: fetchAmazonSummary },
   { id: "flipkart", label: "Flipkart", color: "#2874F0", href: "/dashboard/flipkart", fetcher: fetchFlipkartAllSummary },
   { id: "meesho", label: "Meesho", color: "#9F2089", href: "/dashboard/meesho", fetcher: fetchMeeshoSummary },
-  { id: "barm", label: "BARM", color: "#10B981", href: "/dashboard/barm", fetcher: fetchBarmSummary },
+  { id: "shopify", label: "Shopify", color: "#5E8E3E", href: "/dashboard/shopify", fetcher: fetchShopifyAllSummary },
 ] as const;
 
 function Growth({ v, inverse }: { v: number | undefined; inverse?: boolean }) {
@@ -44,7 +46,7 @@ export function AllMarketplacesSummary() {
   const { startDate, endDate } = useDashboard();
   const queries = useQueries({
     queries: CHANNELS.map((c) => ({
-      queryKey: ["all-marketplaces", c.id, startDate, endDate],
+      queryKey: ["all-marketplaces-v2", c.id, startDate, endDate],
       queryFn: () => c.fetcher(startDate, endDate),
       enabled: !!startDate && !!endDate,
     })),
@@ -100,7 +102,7 @@ export function AllMarketplacesSummary() {
     <div className="glass rounded-2xl border border-border p-5 shadow-sm space-y-5">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
-          <h3 className="text-sm font-black tracking-tight">All Marketplaces — Amazon · Flipkart · Meesho · BARM</h3>
+          <h3 className="text-sm font-black tracking-tight">All Marketplaces — Amazon · Flipkart · Meesho · Shopify</h3>
           <p className="text-[11px] text-muted-foreground">
             Gross Sales = sales before returns, on the same basis for every marketplace, so the totals add up.
           </p>
@@ -133,7 +135,7 @@ export function AllMarketplacesSummary() {
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
           <KPICard title="Total Gross Sales" value={cur(totals.sales)} subtitle={`Last period ${cur(totals.salesPrev)}`} trend={growth(totals.sales, totals.salesPrev)} accent="green" />
           <KPICard title="Orders" value={num(totals.units)} subtitle={`units · ${num(totals.orders)} orders`} trend={growth(totals.units, totals.unitsPrev)} accent="blue" />
-          <KPICard title="Returns" value={num(totals.returns)} subtitle="BARM not tracked" trend={growth(totals.returns, totals.returnsPrev)} inverseTrend accent="orange" />
+          <KPICard title="Returns" value={num(totals.returns)} subtitle="Shopify not tracked" trend={growth(totals.returns, totals.returnsPrev)} inverseTrend accent="orange" />
           <KPICard title="Net Orders" value={num(totals.net)} subtitle="Orders − Returns" trend={growth(totals.net, totals.netPrev)} accent="cyan" />
           <KPICard title="Ad Spend" value={cur(totals.spend)} subtitle={totals.sales > 0 ? `${((totals.spend / totals.sales) * 100).toFixed(1)}% of gross sales (TACOS)` : "incl. 18% GST"} trend={growth(totals.spend, totals.spendPrev)} inverseTrend accent="pink" />
         </div>
@@ -149,6 +151,7 @@ export function AllMarketplacesSummary() {
               <th className="py-2 pr-3 w-32">Share</th>
               <th className="py-2 pr-3 text-right">Orders (units)</th>
               <th className="py-2 pr-3 text-right">Returns</th>
+              <th className="py-2 pr-3 text-right">Cancelled</th>
               <th className="py-2 pr-3 text-right">Net Orders</th>
               <th className="py-2 pr-3 text-right">Ad Spend</th>
               <th className="py-2 pr-3 text-right">Data up to</th>
@@ -166,7 +169,7 @@ export function AllMarketplacesSummary() {
                     </Link>
                   </td>
                   {!s ? (
-                    <td colSpan={8} className="py-2.5 text-muted-foreground">
+                    <td colSpan={9} className="py-2.5 text-muted-foreground">
                       {r.q.error ? `Couldn't load — ${r.q.error instanceof Error ? r.q.error.message : String(r.q.error)}` : (
                         <span className="inline-flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" /> Loading…</span>
                       )}
@@ -191,6 +194,7 @@ export function AllMarketplacesSummary() {
                           <>{num(s.current.allReturns)} <span className="text-muted-foreground">({num(s.current.customerReturns)} cust.)</span></>
                         )}
                       </td>
+                      <td className="py-2.5 pr-3 text-right">{s.current.cancelledOrders === undefined ? <span className="text-muted-foreground">Not tracked</span> : num(s.current.cancelledOrders)}</td>
                       <td className="py-2.5 pr-3 text-right">{num(s.current.netOrders)}</td>
                       <td className="py-2.5 pr-3 text-right">{s.current.adSpendTax === null ? <span className="text-muted-foreground">No ads</span> : cur(s.current.adSpendTax)}</td>
                       <td className={`py-2.5 pr-3 text-right ${s.dataThrough && s.dataThrough < s.currentRange.end ? "text-amber-600 dark:text-amber-400 font-bold" : "text-muted-foreground"}`}>
@@ -224,7 +228,7 @@ export function AllMarketplacesSummary() {
       )}
 
       <p className="text-[11px] text-muted-foreground">
-        Gross Sales basis — Amazon: order item prices · Flipkart: listing price × units (computed) · Meesho: Quantity × Supplier Listed Price · BARM: Order Total Amount once per order. Returns include courier RTO; BARM has no returns data. Ad Spend includes 18% GST. An amber &quot;Data up to&quot; date means that marketplace&apos;s data stops before the end of the selected range.
+        Gross Sales basis — Amazon: order item prices · Flipkart: listing price × units (computed) · Meesho: Quantity × Supplier Listed Price · Shopify: order total of non-cancelled orders (test orders never count). Cancelled = orders cancelled before shipping (every line cancelled; not in Orders or Gross Sales). Returns include courier RTO; Shopify has no returns data. Ad Spend includes 18% GST. An amber &quot;Data up to&quot; date means that marketplace&apos;s data stops before the end of the selected range.
       </p>
     </div>
   );

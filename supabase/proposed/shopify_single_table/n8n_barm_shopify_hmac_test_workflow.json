@@ -1,0 +1,84 @@
+{
+  "name": "B-ARM Shopify Orders v2 - HMAC via Supabase (INACTIVE until cutover approval)",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false
+  },
+  "nodes": [
+    {
+      "name": "Shopify webhook (raw body)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "barm-shopify-orders-v2",
+        "responseMode": "responseNode",
+        "options": { "rawBody": true }
+      }
+    },
+    {
+      "name": "Package raw body + headers",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Sends the exact request bytes (base64) and the Shopify headers to Supabase.\n// No secret here and no signature check here: Supabase verifies the HMAC before anything is written.\n// Webhook node 'Raw Body' = on puts req.rawBody (the untouched bytes) in binary property 'data'.\nconst item = $input.first();\nconst h = item.json.headers || {};\nif (!item.binary || !item.binary.data) {\n  throw new Error('Raw body missing - enable Raw Body on the Webhook node');\n}\n// getBinaryDataBuffer works for both in-memory and filesystem binary storage modes\nconst raw = await this.helpers.getBinaryDataBuffer(0, 'data');\nreturn [{ json: { rpc: {\n  p_raw_body_b64: raw.toString('base64'),\n  p_hmac: h['x-shopify-hmac-sha256'] ?? null,\n  p_topic: h['x-shopify-topic'] ?? null,\n  p_event_id: h['x-shopify-event-id'] ?? null,\n  p_shop_domain: h['x-shopify-shop-domain'] ?? null,\n  p_triggered_at: h['x-shopify-triggered-at'] ?? null,\n} } }];"
+      }
+    },
+    {
+      "name": "Supabase ingest_shopify_webhook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "https://zslujuqitousvywjzqwc.supabase.co/rest/v1/rpc/ingest_shopify_webhook",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "supabaseApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.rpc) }}",
+        "options": {
+          "timeout": 4000,
+          "response": { "response": { "fullResponse": true, "neverError": true } }
+        }
+      },
+      "credentials": {
+        "supabaseApi": { "id": "REPLACE_WITH_SUPABASE_CREDENTIAL_ID", "name": "B-ARM Supabase (service role)" }
+      }
+    },
+    {
+      "name": "Decide reply (no payload data)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 0],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Keeps only the outcome. Supabase or network failures become 500 so Shopify retries.\nconst r = $input.first().json;\nconst b = r.body || {};\nif (r.statusCode === 200 && typeof b.http_status === 'number') {\n  return [{ json: { status: b.http_status, outcome: b.outcome } }];\n}\nreturn [{ json: { status: 500, outcome: 'supabase_call_failed', supabase_status: r.statusCode ?? null } }];"
+      }
+    },
+    {
+      "name": "Reply to Shopify",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [960, 0],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ outcome: $json.outcome }) }}",
+        "options": { "responseCode": "={{ $json.status }}" }
+      }
+    }
+  ],
+  "connections": {
+    "Shopify webhook (raw body)": { "main": [[{ "node": "Package raw body + headers", "type": "main", "index": 0 }]] },
+    "Package raw body + headers": { "main": [[{ "node": "Supabase ingest_shopify_webhook", "type": "main", "index": 0 }]] },
+    "Supabase ingest_shopify_webhook": { "main": [[{ "node": "Decide reply (no payload data)", "type": "main", "index": 0 }]] },
+    "Decide reply (no payload data)": { "main": [[{ "node": "Reply to Shopify", "type": "main", "index": 0 }]] }
+  }
+}

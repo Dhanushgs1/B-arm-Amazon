@@ -41,6 +41,7 @@ import {
   type RatingItem,
 } from "@/lib/productRatingMetrics";
 import { RatingUploadDialog } from "@/components/ratings/RatingUploadDialog";
+import { findRatingDrops } from "@/lib/ratingDropAlert";
 import { cn } from "@/lib/utils";
 
 const DEFAULT_PLATFORM: Partial<Record<MarketplaceId, string>> = {
@@ -234,7 +235,8 @@ function exportExcel(rows: RatingItem[], name: string) {
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
-export function RatingsReviewsIntelligence({ marketplace }: { marketplace: MarketplaceId }) {
+/** `marketplace` picks the channel shown first; without it (the Overall page) every channel is shown. */
+export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: MarketplaceId }) {
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ["product-rating-review-metrics"],
     queryFn: fetchRatingMetrics,
@@ -251,7 +253,7 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace: Marke
   const [uploadOpen, setUploadOpen] = useState(false);
 
   const ratedPlatforms = useMemo(() => data?.ratedPlatforms ?? [], [data]);
-  const defaultPlatform = DEFAULT_PLATFORM[marketplace];
+  const defaultPlatform = marketplace ? DEFAULT_PLATFORM[marketplace] : undefined;
   const platform = platformSel ?? (defaultPlatform && ratedPlatforms.includes(defaultPlatform) ? defaultPlatform : ALL);
   const showPlatform = platform === ALL;
 
@@ -340,6 +342,28 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace: Marke
     }
     return { rows: Array.from(byDate.values()).sort((a, b) => String(a.date).localeCompare(String(b.date))), plats };
   }, [data, platform, ratedPlatforms]);
+
+  // One at-a-glance card per channel: average rating and its change, how many listings sit below 4★,
+  // how many fell below 4★ since the previous snapshot, and new reviews.
+  const scorecards = useMemo(
+    () =>
+      ratedPlatforms.map((p) => {
+        const items = (data?.items ?? []).filter((i) => i.platform === p);
+        const ls = groupListings(items);
+        const rated = ls.filter((l) => l.rating !== null);
+        return {
+          platform: p,
+          avg: summarize(items).weightedRating,
+          prevAvg: summarizePrevious(items)?.weightedRating ?? null,
+          rated: rated.length,
+          below4: rated.filter((l) => l.rating! < 4 && !l.lowConfidence).length,
+          crossed: findRatingDrops(ls).length,
+          newReviews: ls.reduce((a, l) => a + Math.max(0, l.reviewsDelta ?? 0), 0),
+          dates: data?.platformDates[p],
+        };
+      }),
+    [data, ratedPlatforms]
+  );
 
   const untracked = useMemo(() => (data?.platforms ?? []).filter((p) => !ratedPlatforms.includes(p)), [data, ratedPlatforms]);
 
@@ -494,6 +518,49 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace: Marke
             <Upload className="h-3.5 w-3.5" /> Upload weekly data
           </button>
         </div>
+      </div>
+
+      {/* Channel scorecards — click one to focus the page on it */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {scorecards.map((c) => {
+          const change = c.avg !== null && c.prevAvg !== null ? c.avg - c.prevAvg : null;
+          const active = platform === c.platform;
+          return (
+            <button
+              key={c.platform}
+              onClick={() => {
+                setPlatformSel(active ? ALL : c.platform);
+                setPage(0);
+              }}
+              className={cn(
+                "rounded-2xl border bg-card p-4 text-left shadow-sm transition-colors hover:border-indigo-400",
+                active ? "border-indigo-500 ring-2 ring-indigo-500/20" : "border-border"
+              )}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-bold text-foreground">{c.platform}</span>
+                <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-bold", c.crossed > 0 ? "bg-red-500/10 text-red-600 dark:text-red-400" : c.below4 > 0 ? "bg-amber-500/10 text-amber-700 dark:text-amber-300" : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300")}>
+                  {c.crossed > 0 ? `${c.crossed} fell below 4★` : c.below4 > 0 ? "Watch" : "Healthy"}
+                </span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-3xl font-black tracking-tight text-foreground">{c.avg !== null ? c.avg.toFixed(2) : "—"}</span>
+                <Star className="h-4 w-4 fill-amber-400 text-amber-400" />
+                {change !== null && <Delta value={Math.round(change * 100) / 100} digits={2} />}
+              </div>
+              <div className="mt-3 grid grid-cols-3 gap-2 text-[11px]">
+                <div><p className="font-bold text-foreground">{fmtInt(c.rated)}</p><p className="text-muted-foreground">rated listings</p></div>
+                <div><p className={cn("font-bold", c.below4 ? "text-amber-600 dark:text-amber-400" : "text-foreground")}>{fmtInt(c.below4)}</p><p className="text-muted-foreground">below 4★</p></div>
+                <div><p className="font-bold text-foreground">+{fmtInt(c.newReviews)}</p><p className="text-muted-foreground">new reviews</p></div>
+              </div>
+              {c.dates && (
+                <p className="mt-2 text-[10px] text-muted-foreground">
+                  Snapshot {fmtDate(c.dates.current)}{c.dates.previous ? ` vs ${fmtDate(c.dates.previous)}` : " · first upload"}
+                </p>
+              )}
+            </button>
+          );
+        })}
       </div>
 
       {/* Platform switch */}

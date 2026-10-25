@@ -19,6 +19,8 @@ export interface PeriodSummary {
   customerReturns: number;
   netOrders: number; // units − all returns
   adSpendTax: number | null;
+  /** Orders cancelled before shipping (every line cancelled); undefined = not tracked for this channel. */
+  cancelledOrders?: number;
 }
 
 export interface ChannelSummary {
@@ -54,7 +56,7 @@ function periodsFor(start: string, end: string): PeriodWindow[] {
   ];
 }
 
-function summarize(data: WeeklySkuPeriodData, label: string, basis: "total" | "gross" = "total"): PeriodSummary {
+function summarize(data: WeeklySkuPeriodData & { cancelledOrdersByPeriod?: Map<string, Set<string>> }, label: string, basis: "total" | "gross" = "total"): PeriodSummary {
   const t = data.periodTotals.find((p) => p.label === label)!;
   // Distinct orders across all SKUs — an order holding two SKUs is one order, not two (same as the
   // weekly report's own order count).
@@ -72,6 +74,10 @@ function summarize(data: WeeklySkuPeriodData, label: string, basis: "total" | "g
     customerReturns: t.customerReturns,
     netOrders: t.totalOrders,
     adSpendTax: null,
+    // an order with any live line counts as an order, not a cancellation
+    cancelledOrders: data.cancelledOrdersByPeriod
+      ? [...(data.cancelledOrdersByPeriod.get(label) ?? [])].filter((id) => !orderIds.has(id)).length
+      : undefined,
   };
 }
 
@@ -131,11 +137,15 @@ export async function fetchFlipkartOrderSummary(start: string, end: string): Pro
   const sum = (p: PeriodWindow): PeriodSummary => {
     const inP = (d: string | null | undefined) => !!d && d.slice(0, 10) >= p.start && d.slice(0, 10) <= p.end;
     const ids = new Set<string>();
+    const cancelledIds = new Set<string>();
     let units = 0;
     let sales = 0;
     orderRows.forEach((r) => {
       if (!inP(r.order_date) || isFkSkeletonOrderRow(r)) return;
-      if (String(r.order_item_status || "").toUpperCase().startsWith("CANCEL")) return;
+      if (String(r.order_item_status || "").toUpperCase().startsWith("CANCEL")) {
+        if (r.order_id) cancelledIds.add(r.order_id);
+        return;
+      }
       const qty = Number(r.quantity) || 0;
       units += qty;
       sales += qty * (priceBySku.get(String(r.sku || "").trim()) || 0);
@@ -149,7 +159,8 @@ export async function fetchFlipkartOrderSummary(start: string, end: string): Pro
       allReturns += q;
       if (String(r.return_type || "").toLowerCase() === "customer_return") customerReturns += q;
     });
-    return { sales: priceBySku.size ? sales : null, units, orders: ids.size, allReturns, customerReturns, netOrders: units - allReturns, adSpendTax: null };
+    const cancelledOrders = [...cancelledIds].filter((id) => !ids.has(id)).length;
+    return { sales: priceBySku.size ? sales : null, units, orders: ids.size, allReturns, customerReturns, netOrders: units - allReturns, adSpendTax: null, cancelledOrders };
   };
   const dates = orderRows.map((r) => r.order_date).filter((d): d is string => !!d).sort();
   return {
@@ -178,7 +189,7 @@ export async function fetchAmazonSummary(start: string, end: string): Promise<Ch
   const periods = periodsFor(start, end);
   const { loadAmazonSkuPeriodData } = await import("@/lib/amazonSkuPeriodData");
   const [data, spendCur, spendPrev] = await Promise.all([
-    loadAmazonSkuPeriodData({ periods, includeAds: false }),
+    loadAmazonSkuPeriodData({ periods, includeAds: false, includeStock: false }),
     spendTaxIn("barm_amazon_sp_advertised_product", "spend", start, end),
     spendTaxIn("barm_amazon_sp_advertised_product", "spend", periods[0].start, periods[0].end),
   ]);

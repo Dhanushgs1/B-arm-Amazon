@@ -34,9 +34,10 @@ import {
   CalendarRange,
   Radio,
   Layers,
+  ShoppingBag,
   type LucideIcon
 } from "lucide-react";
-import { MARKETPLACE_META, UPLOAD_ONLY_TAB_META, getMarketplaceTab, isUploadOnlyTab } from "@/lib/marketplace";
+import { MARKETPLACE_META, UPLOAD_ONLY_TAB_META, getMarketplaceTab, isUploadOnlyTab, type UploadOnlyTab } from "@/lib/marketplace";
 
 interface SidebarNavItem {
   id: string;
@@ -79,17 +80,13 @@ const NAV_SECTIONS: SidebarNavSection[] = [
       { id: "live", label: "Live Inventory", icon: Radio, path: "/dashboard/inventory/live" },
       { id: "consolidated", label: "Consolidated Stock Sheet", icon: Layers, path: "/dashboard/inventory/consolidated" },
       { id: "marketshare", label: "Market Share", icon: TrendingUp },
-      { id: "master", label: "Master", icon: Database },
     ],
   },
   {
     label: "Intelligence",
     items: [
-      { id: "ratings-reviews", label: "⭐ Ratings & Reviews Intelligence", icon: Star },
-      { id: "seasonal", label: "Seasonal Analytics", icon: CalendarRange, path: "/dashboard/seasonal" },
       { id: "daily-ad-spend", label: "Daily Ad Spend", icon: Sparkles, path: "/dashboard/daily-ad-spend" },
       { id: "ai", label: "AI Assistant", icon: Bot },
-      { id: "settings", label: "Settings", icon: Settings },
     ],
   },
 ];
@@ -97,7 +94,18 @@ const NAV_SECTIONS: SidebarNavSection[] = [
 // Flipkart doesn't expose an ads API the way Amazon Ads does, so it gets a
 // lighter nav — Overview, Orders, Inventory, Sales — instead of trying to
 // mirror every Amazon Advertising page.
-function marketplaceNavSections(marketplace: "flipkart"): SidebarNavSection[] {
+// Flipkart pages with no real B-ARM data — they only ever show demo numbers (FlipkartDemoGate) or an
+// empty table (Products: barm_flipkart_overall_sales is empty) — so the B-ARM sidebar leaves them out
+// (user, 2026-10-25). Campaigns reads the daily ads upload and stays.
+const FLIPKART_NO_DATA_FOR_BARM = new Set(["adgroups", "placements", "keywords", "searchterms", "bids", "optimization", "products", "inventory", "marketshare"]);
+
+function marketplaceNavSections(marketplace: "flipkart", hideNoData = false): SidebarNavSection[] {
+  return flipkartSections(marketplace)
+    .map((sec) => ({ ...sec, items: sec.items.filter((i) => !(hideNoData && FLIPKART_NO_DATA_FOR_BARM.has(i.id))) }))
+    .filter((sec) => sec.items.length > 0);
+}
+
+function flipkartSections(marketplace: "flipkart"): SidebarNavSection[] {
   const mName = MARKETPLACE_META[marketplace].label;
   return [
     {
@@ -137,18 +145,18 @@ function marketplaceNavSections(marketplace: "flipkart"): SidebarNavSection[] {
         { id: "seasonal", label: "Seasonal Analytics", icon: CalendarRange, path: "/dashboard/seasonal" },
         { id: "daily-ad-spend", label: "Daily Ad Spend", icon: Sparkles, path: "/dashboard/daily-ad-spend" },
         { id: "ai", label: "AI Assistant", icon: Bot, path: `/dashboard/${marketplace}/ai` },
-        { id: "compare", label: "Combined Overall View", icon: GitCompare, path: "/dashboard/compare" },
-        { id: "settings", label: "Settings", icon: Settings, path: "/dashboard/settings" },
+        { id: "compare", label: "Overall", icon: GitCompare, path: "/dashboard/compare" },
+        { id: "settings", label: "Settings", icon: Settings, path: `/dashboard/${marketplace}/settings` },
       ],
     },
   ];
 }
 
-// Shown on the Meesho and BARM tabs — both have only Overview and Download
-// (their orders come from Supabase tables meesho_barm_ord / barm_online_orders,
-// no upload page), so each tab lists just its own items (like Flipkart's
+// Shown on the Meesho, B-ARM Website and Shopify tabs — each has only Overview and Download
+// (their orders come from Supabase: meesho_barm_ord / barm_online_orders (the old WooCommerce site) /
+// barm_shopify_orders_summary, no upload page), so each tab lists just its own items (like Flipkart's
 // sidebar lists only Flipkart pages). Active state is matched on the full path.
-const UPLOAD_ONLY_NAV_SECTIONS: Record<"meesho" | "barm", SidebarNavSection[]> = {
+const UPLOAD_ONLY_NAV_SECTIONS: Record<UploadOnlyTab, SidebarNavSection[]> = {
   meesho: [
     {
       label: "Meesho",
@@ -160,10 +168,20 @@ const UPLOAD_ONLY_NAV_SECTIONS: Record<"meesho" | "barm", SidebarNavSection[]> =
   ],
   barm: [
     {
-      label: "BARM (Google)",
+      label: "B-ARM Website (WooCommerce)",
       items: [
         { id: "barm-overview", label: "Overview", icon: LayoutDashboard, path: "/dashboard/barm" },
         { id: "barm-reports", label: "Download", icon: BarChart3, path: "/dashboard/barm/reports" },
+      ],
+    },
+  ],
+  shopify: [
+    {
+      label: "Shopify",
+      items: [
+        { id: "shopify-overview", label: "Overview", icon: LayoutDashboard, path: "/dashboard/shopify" },
+        { id: "shopify-sources", label: "Google & Meta", icon: Megaphone, path: "/dashboard/shopify/sources" },
+        { id: "shopify-reports", label: "Download", icon: BarChart3, path: "/dashboard/shopify/reports" },
       ],
     },
   ],
@@ -173,7 +191,7 @@ const COMPARE_NAV_SECTIONS: SidebarNavSection[] = [
   {
     label: "Combined Workspace",
     items: [
-      { id: "compare", label: "Combined Overall View", icon: GitCompare, path: "/dashboard/compare" },
+      { id: "compare", label: "Overall", icon: GitCompare, path: "/dashboard/compare" },
     ],
   },
   {
@@ -181,12 +199,17 @@ const COMPARE_NAV_SECTIONS: SidebarNavSection[] = [
     items: [
       { id: "amazon", label: "Amazon Analytics", icon: ShoppingCart, path: "/dashboard" },
       { id: "flipkart", label: "Flipkart Analytics", icon: Store, path: "/dashboard/flipkart" },
+      { id: "meesho", label: "Meesho", icon: ShoppingCart, path: "/dashboard/meesho" },
+      { id: "shopify", label: "Shopify", icon: ShoppingBag, path: "/dashboard/shopify" },
+      { id: "shopify-sources", label: "Google & Meta Ads", icon: Megaphone, path: "/dashboard/shopify/sources" },
     ],
   },
   {
     label: "Intelligence & Settings",
     items: [
       { id: "seasonal", label: "Seasonal Analytics", icon: CalendarRange, path: "/dashboard/seasonal" },
+      { id: "ratings-reviews", label: "⭐ Ratings & Reviews Intelligence", icon: Star, path: "/dashboard/ratings-reviews" },
+      { id: "master", label: "Master", icon: Database, path: "/dashboard/master" },
       { id: "daily-ad-spend", label: "Daily Ad Spend", icon: Sparkles, path: "/dashboard/daily-ad-spend" },
       { id: "ai", label: "✨ AI Assistant", icon: Bot, path: "/dashboard/ai" },
       { id: "optimization", label: "Amazon Rules Engine", icon: Wand2, path: "/dashboard/optimization" },
@@ -229,7 +252,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
 
   const sections =
     marketplace === "flipkart"
-      ? marketplaceNavSections(marketplace)
+      ? marketplaceNavSections(marketplace, loggedInUser === "Barm")
       : marketplace === "compare"
       ? COMPARE_NAV_SECTIONS
       : isUploadOnlyTab(marketplace)
@@ -245,7 +268,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
 
   const sidebarTagline =
     marketplace === "amazon" ? "Amazon Analytics"
-    : marketplace === "compare" ? "Marketplace Comparison"
+    : marketplace === "compare" ? "Overall"
     : isUploadOnlyTab(marketplace) ? `${UPLOAD_ONLY_TAB_META[marketplace].label} Reports`
     : `${MARKETPLACE_META[marketplace].label} Analytics`;
 

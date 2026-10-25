@@ -169,27 +169,34 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
 
   // Google — same bespoke-extra-row treatment as Social Media above. Ad spend comes from the
   // Google Ads "Campaign report" upload (0 when none is on file for the window); QTS/Value are the
-  // reporting day's B-Arm orders. CPC/ACOS stay "-": those orders aren't attributed to the ads
-  // (see GoogleEmailSummary/the Google Summary row in adSpendReportExport.ts).
+  // reporting day's website orders. Orders/CPC stay "-". ACOS = Spend ÷ the Shopify orders whose
+  // visit came from a Google Ads click ("–" when there are none), and ROAS rides in the label cell
+  // (see GoogleEmailSummary/the Google Summary row in adSpendReportExport.ts). A summary that isn't
+  // `attributed` (a reporting day before the first Shopify day, or one saved before this field
+  // existed) renders exactly as the row did before: old label, "-" ACOS cells, no ROAS line.
   const google = data.googleSummary;
+  const googleAttributed = google?.attributed === true;
+  const roasText = (v: number | null | undefined) => (v == null ? "–" : v.toFixed(2));
+  const googleAcosCell = (v: number | null | undefined) =>
+    googleAttributed ? `<td class="aspd-td ${acosClass(v ?? null)}">${acosPct(v ?? null)}</td>` : `<td ${td}>-</td>`;
   const googleRowHtml = google
     ? `
         <tr>
           <td ${td} style="font-weight:800;border-left:3px solid #4285F4;">Google</td>
           <td ${td}>${money(google.daySpend)}</td>
           <td ${td}>${money(google.daySpendTax)}</td>
-          <td ${tdName}>${google.daySpend > 0 || google.rangeSpend > 0 ? "(Google Ads spend + B-Arm orders)" : "(Orders/Sales only — no Google Ads report for this window)"}</td>
+          <td ${tdName}>${google.daySpend > 0 || google.rangeSpend > 0 ? (googleAttributed ? "(Google Ads spend + website orders)" : "(Google Ads spend + B-Arm orders)") : "(Orders/Sales only — no Google Ads report for this window)"}${googleAttributed ? `<br>ROAS ${roasText(google.dayRoas)} day · ${roasText(google.rangeRoas)} range` : ""}</td>
           <td ${td}>-</td>
           <td ${td}>${money(google.daySpend)}</td>
           <td ${td}>${money(google.daySpendTax)}</td>
           <td ${td}>-</td>
           <td ${td}>-</td>
-          <td ${td}>-</td>
+          ${googleAcosCell(google.dayAcos)}
           <td ${td}>${money(google.rangeSpend)}</td>
           <td ${td}>${money(google.rangeSpendTax)}</td>
           <td ${td}>-</td>
           <td ${td}>-</td>
-          <td ${td}>-</td>
+          ${googleAcosCell(google.rangeAcos)}
           <td ${td}>${google.totalUnits}</td>
           <td ${td}>${money(google.totalValue)}</td>
         </tr>`

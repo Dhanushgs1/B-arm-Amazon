@@ -10,6 +10,7 @@ import { ProductDetailDrawer } from "@/components/ProductDetailDrawer";
 import { ConnectionBanner } from "@/components/ConnectionBanner";
 import { BidsPrefetcher } from "@/components/BidsPrefetcher";
 import { getMarketplaceTab } from "@/lib/marketplace";
+import { UploadStatusTray } from "@/components/UploadStatusTray";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -22,6 +23,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   return (
     <div className="flex h-screen w-full bg-background overflow-hidden">
       <Sidebar mobileOpen={mobileNavOpen} onCloseMobile={() => setMobileNavOpen(false)} />
+      {/* uploads keep showing their progress / result on every page */}
+      <UploadStatusTray />
       <div className="flex flex-col flex-1 min-w-0">
         <TopNav onOpenMobileNav={() => setMobileNavOpen(true)} />
         <main className="premium-canvas flex-1 overflow-y-auto overflow-x-hidden p-3 sm:p-5 relative">

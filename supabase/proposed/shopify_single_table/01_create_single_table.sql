@@ -1,0 +1,299 @@
+-- PHASE 1 (additive only): build the single-table design next to the existing tables.
+-- Touches nothing that exists today. barm_shopify_orders / barm_shopify_order_items are left as they are.
+-- One row per line item; order-level fields repeat on every row of the same order.
+
+begin;
+
+create table public.barm_shopify_orders_v2 (
+  id                              bigserial primary key,
+
+  -- identifiers
+  order_gid                       text not null,               -- admin_graphql_api_id (exact; numeric ids get rounded in n8n)
+  line_item_gid                   text not null,               -- line item admin_graphql_api_id, or 'NO_LINE_ITEMS' placeholder
+  line_position                   smallint not null,           -- 1..n in payload order; 0 on the placeholder row
+  is_order_primary_row            boolean not null,            -- true on exactly one row per order: sum order totals here only
+
+  -- latest webhook applied
+  shop_domain                     text,
+  webhook_topic                   text,                        -- orders/create, orders/updated, orders/cancelled ...
+  webhook_event_id                text,
+  webhook_triggered_at            timestamptz,
+  is_test                         boolean not null default false,
+
+  -- order-level (repeated on every row of the order)
+  shopify_order_id                bigint,
+  order_name                      text,                        -- e.g. #1234
+  order_number                    integer,
+  confirmation_number             text,
+  source_name                     text,
+  currency                        text,
+  financial_status                text,
+  fulfillment_status              text,
+  confirmed                       boolean,
+  cancel_reason                   text,
+  cancelled_at                    timestamptz,
+  closed_at                       timestamptz,
+  processed_at                    timestamptz,
+  order_created_at                timestamptz,
+  order_updated_at                timestamptz,
+  order_subtotal_price            numeric(12,2),
+  order_current_subtotal_price    numeric(12,2),
+  order_total_line_items_price    numeric(12,2),
+  order_total_discounts           numeric(12,2),
+  order_current_total_discounts   numeric(12,2),
+  order_total_shipping            numeric(12,2),
+  order_total_tax                 numeric(12,2),
+  order_total_price               numeric(12,2),
+  order_current_total_price       numeric(12,2),
+  order_total_outstanding         numeric(12,2),
+  taxes_included                  boolean,
+  discount_codes                  jsonb,
+  payment_gateway_names           text[],
+  tags                            text,
+  note                            text,
+  order_line_count                integer,                     -- number of line items in the latest payload
+
+  -- customer and addresses (order-level, repeated)
+  customer_id                     bigint,
+  customer_first_name             text,
+  customer_last_name              text,
+  email                           text,
+  phone                           text,
+  buyer_accepts_marketing         boolean,
+  shipping_name                   text,
+  shipping_phone                  text,
+  shipping_address1               text,
+  shipping_address2               text,
+  shipping_city                   text,
+  shipping_province               text,
+  shipping_zip                    text,
+  shipping_country_code           text,
+  billing_name                    text,
+  billing_city                    text,
+  billing_province                text,
+  billing_zip                     text,
+  billing_country_code            text,
+
+  -- line-item level (null on the placeholder row)
+  product_id                      bigint,
+  variant_id                      bigint,
+  sku                             text,
+  title                           text,
+  variant_title                   text,
+  vendor                          text,
+  quantity                        integer,                     -- originally ordered
+  current_quantity                integer,                     -- after edits/removals
+  fulfillable_quantity            integer,
+  refunded_quantity               integer not null default 0,
+  price                           numeric(12,2),
+  line_discount                   numeric(12,2),
+  line_total                      numeric(12,2) generated always as
+                                    (coalesce(price, 0) * coalesce(current_quantity, quantity, 0) - coalesce(line_discount, 0)) stored,
+  grams                           integer,
+  line_fulfillment_status         text,
+  requires_shipping               boolean,
+  taxable                         boolean,
+  gift_card                       boolean,
+  product_exists                  boolean,
+
+  raw_payload                     jsonb not null,              -- full webhook body of the latest webhook applied
+  inserted_at                     timestamptz not null default now(),  -- first time this order was seen
+  updated_at                      timestamptz not null default now(),
+
+  constraint barm_shopify_orders_v2_order_line_key unique (order_gid, line_item_gid)
+);
+
+create unique index barm_shopify_orders_v2_one_primary_row_idx
+  on public.barm_shopify_orders_v2 (order_gid) where is_order_primary_row;
+create index barm_shopify_orders_v2_created_idx on public.barm_shopify_orders_v2 (order_created_at desc);
+create index barm_shopify_orders_v2_sku_idx on public.barm_shopify_orders_v2 (sku);
+create index barm_shopify_orders_v2_fin_status_idx on public.barm_shopify_orders_v2 (financial_status);
+
+alter table public.barm_shopify_orders_v2 enable row level security;  -- service role only, as before
+-- project default privileges grant SELECT to anon/authenticated on new tables; RLS already blocks rows, this removes the grant too
+revoke all on public.barm_shopify_orders_v2 from anon, authenticated;
+revoke all on sequence public.barm_shopify_orders_v2_id_seq from anon, authenticated;
+
+-- Writes one order atomically. n8n passes the raw webhook body + headers; the function does the split.
+-- Safe for duplicate and out-of-order webhooks (see notes in the proposal).
+create or replace function public.upsert_shopify_order(
+  p_body          jsonb,
+  p_topic         text default null,
+  p_event_id      text default null,
+  p_shop_domain   text default null,
+  p_triggered_at  timestamptz default null
+) returns integer
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_order_gid  text := p_body->>'admin_graphql_api_id';
+  v_updated    timestamptz := nullif(p_body->>'updated_at', '')::timestamptz;
+  v_items      jsonb := coalesce(p_body->'line_items', '[]'::jsonb);
+  v_stored     timestamptz;
+  v_stored_trg timestamptz;
+  v_stored_evt text;
+  v_first_seen timestamptz;
+  v_rows       integer;
+begin
+  if v_order_gid is null then
+    raise exception 'Shopify payload has no admin_graphql_api_id';
+  end if;
+  -- without updated_at we cannot tell old from new, so fail loudly (n8n shows the error) instead of guessing
+  if v_updated is null then
+    raise exception 'Shopify payload for % has no updated_at', v_order_gid;
+  end if;
+
+  -- serialise concurrent webhooks for the same order
+  perform pg_advisory_xact_lock(hashtext('barm_shopify_order:' || v_order_gid));
+
+  -- every row of an order is written from one payload, so the primary row speaks for the whole order
+  select order_updated_at, webhook_triggered_at, webhook_event_id
+    into v_stored, v_stored_trg, v_stored_evt
+    from barm_shopify_orders_v2
+   where order_gid = v_order_gid and is_order_primary_row;
+  select min(inserted_at) into v_first_seen from barm_shopify_orders_v2 where order_gid = v_order_gid;
+
+  if v_stored is not null then
+    -- an older webhook arriving late must not overwrite newer data
+    if v_updated < v_stored then
+      return 0;
+    end if;
+    if v_updated = v_stored then
+      -- Shopify retry of the event already applied
+      if p_event_id is not null and p_event_id = v_stored_evt then
+        return 0;
+      end if;
+      -- two changes in the same second: the later X-Shopify-Triggered-At wins
+      if p_triggered_at is not null and v_stored_trg is not null and p_triggered_at < v_stored_trg then
+        return 0;
+      end if;
+    end if;
+  end if;
+
+  -- replace the order's rows with the latest payload (same transaction, so readers never see a half-written order)
+  delete from barm_shopify_orders_v2 where order_gid = v_order_gid;
+
+  insert into barm_shopify_orders_v2 (
+    order_gid, line_item_gid, line_position, is_order_primary_row,
+    shop_domain, webhook_topic, webhook_event_id, webhook_triggered_at, is_test,
+    shopify_order_id, order_name, order_number, confirmation_number, source_name, currency,
+    financial_status, fulfillment_status, confirmed, cancel_reason, cancelled_at, closed_at,
+    processed_at, order_created_at, order_updated_at,
+    order_subtotal_price, order_current_subtotal_price, order_total_line_items_price,
+    order_total_discounts, order_current_total_discounts, order_total_shipping, order_total_tax,
+    order_total_price, order_current_total_price, order_total_outstanding, taxes_included,
+    discount_codes, payment_gateway_names, tags, note, order_line_count,
+    customer_id, customer_first_name, customer_last_name, email, phone, buyer_accepts_marketing,
+    shipping_name, shipping_phone, shipping_address1, shipping_address2, shipping_city,
+    shipping_province, shipping_zip, shipping_country_code,
+    billing_name, billing_city, billing_province, billing_zip, billing_country_code,
+    product_id, variant_id, sku, title, variant_title, vendor,
+    quantity, current_quantity, fulfillable_quantity, refunded_quantity,
+    price, line_discount, grams, line_fulfillment_status,
+    requires_shipping, taxable, gift_card, product_exists,
+    raw_payload, inserted_at, updated_at
+  )
+  select
+    v_order_gid,
+    case when li is null then 'NO_LINE_ITEMS' else coalesce(li->>'admin_graphql_api_id', 'LINE_' || pos) end,
+    pos,
+    pos <= 1,
+    coalesce(p_shop_domain, split_part(p_body->>'order_status_url', '/', 3)),
+    p_topic, p_event_id, p_triggered_at,
+    coalesce((p_body->>'test')::boolean, false),
+    nullif(split_part(v_order_gid, '/', 5), '')::bigint,
+    p_body->>'name',
+    nullif(p_body->>'order_number', '')::integer,
+    p_body->>'confirmation_number',
+    p_body->>'source_name',
+    p_body->>'currency',
+    p_body->>'financial_status',
+    p_body->>'fulfillment_status',
+    (p_body->>'confirmed')::boolean,
+    p_body->>'cancel_reason',
+    nullif(p_body->>'cancelled_at', '')::timestamptz,
+    nullif(p_body->>'closed_at', '')::timestamptz,
+    nullif(p_body->>'processed_at', '')::timestamptz,
+    nullif(p_body->>'created_at', '')::timestamptz,
+    v_updated,
+    nullif(p_body->>'subtotal_price', '')::numeric,
+    nullif(p_body->>'current_subtotal_price', '')::numeric,
+    nullif(p_body->>'total_line_items_price', '')::numeric,
+    nullif(p_body->>'total_discounts', '')::numeric,
+    nullif(p_body->>'current_total_discounts', '')::numeric,
+    nullif(p_body #>> '{total_shipping_price_set,shop_money,amount}', '')::numeric,
+    nullif(p_body->>'total_tax', '')::numeric,
+    nullif(p_body->>'total_price', '')::numeric,
+    nullif(p_body->>'current_total_price', '')::numeric,
+    nullif(p_body->>'total_outstanding', '')::numeric,
+    (p_body->>'taxes_included')::boolean,
+    p_body->'discount_codes',
+    array(select jsonb_array_elements_text(coalesce(p_body->'payment_gateway_names', '[]'::jsonb))),
+    p_body->>'tags',
+    p_body->>'note',
+    jsonb_array_length(v_items),
+    nullif(split_part(p_body #>> '{customer,admin_graphql_api_id}', '/', 5), '')::bigint,
+    p_body #>> '{customer,first_name}',
+    p_body #>> '{customer,last_name}',
+    coalesce(p_body->>'email', p_body->>'contact_email'),
+    coalesce(p_body->>'phone', p_body #>> '{shipping_address,phone}'),
+    (p_body->>'buyer_accepts_marketing')::boolean,
+    p_body #>> '{shipping_address,name}',
+    p_body #>> '{shipping_address,phone}',
+    p_body #>> '{shipping_address,address1}',
+    p_body #>> '{shipping_address,address2}',
+    p_body #>> '{shipping_address,city}',
+    p_body #>> '{shipping_address,province}',
+    p_body #>> '{shipping_address,zip}',
+    p_body #>> '{shipping_address,country_code}',
+    p_body #>> '{billing_address,name}',
+    p_body #>> '{billing_address,city}',
+    p_body #>> '{billing_address,province}',
+    p_body #>> '{billing_address,zip}',
+    p_body #>> '{billing_address,country_code}',
+    nullif(li->>'product_id', '')::bigint,
+    nullif(li->>'variant_id', '')::bigint,
+    li->>'sku',
+    li->>'title',
+    li->>'variant_title',
+    li->>'vendor',
+    nullif(li->>'quantity', '')::integer,
+    nullif(li->>'current_quantity', '')::integer,
+    nullif(li->>'fulfillable_quantity', '')::integer,
+    coalesce((
+      select sum((rli->>'quantity')::integer)
+        from jsonb_array_elements(coalesce(p_body->'refunds', '[]'::jsonb)) r,
+             jsonb_array_elements(coalesce(r->'refund_line_items', '[]'::jsonb)) rli
+       where rli #>> '{line_item,admin_graphql_api_id}' = li->>'admin_graphql_api_id'
+    ), 0),
+    nullif(li->>'price', '')::numeric,
+    -- discount_allocations is where Shopify puts line discounts; total_discount is deprecated and often 0
+    coalesce(
+      (select sum(nullif(da->>'amount', '')::numeric) from jsonb_array_elements(coalesce(li->'discount_allocations', '[]'::jsonb)) da),
+      nullif(li->>'total_discount', '')::numeric),
+    nullif(li->>'grams', '')::integer,
+    li->>'fulfillment_status',
+    (li->>'requires_shipping')::boolean,
+    (li->>'taxable')::boolean,
+    (li->>'gift_card')::boolean,
+    (li->>'product_exists')::boolean,
+    p_body,
+    coalesce(v_first_seen, now()),
+    now()
+  from (
+    select null::jsonb as li, 0::bigint as pos where jsonb_array_length(v_items) = 0
+    union all
+    select e, o from jsonb_array_elements(v_items) with ordinality as t(e, o)
+  ) items;
+
+  get diagnostics v_rows = row_count;
+  return v_rows;
+end;
+$$;
+
+revoke all on function public.upsert_shopify_order(jsonb, text, text, text, timestamptz) from public, anon, authenticated;
+grant execute on function public.upsert_shopify_order(jsonb, text, text, text, timestamptz) to service_role;
+
+commit;

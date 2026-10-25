@@ -44,7 +44,7 @@ export default function BarmReportsPage() {
     <div className="space-y-8 pb-10">
       <div>
         <h1 className="text-2xl font-bold tracking-tight mb-0.5">Download</h1>
-        <p className="text-muted-foreground text-sm">BARM (Google) · Download and export analytics reports</p>
+        <p className="text-muted-foreground text-sm">B-ARM Website (WooCommerce history) · Download and export analytics reports</p>
       </div>
 
       <div className="glass rounded-2xl border border-border p-6 shadow-sm">

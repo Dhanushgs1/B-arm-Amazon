@@ -28,7 +28,7 @@ function fmtDot(iso: string): string {
   return `${d}.${m}.${y}`;
 }
 
-export async function loadMeeshoSkuPeriodData(opts: { periods: PeriodWindow[] }): Promise<WeeklySkuPeriodData> {
+export async function loadMeeshoSkuPeriodData(opts: { periods: PeriodWindow[] }): Promise<WeeklySkuPeriodData & { cancelledOrdersByPeriod: Map<string, Set<string>> }> {
   const { periods } = opts;
   if (periods.length === 0) throw new Error("loadMeeshoSkuPeriodData: no periods");
   const rangeStart = periods[0].start;
@@ -78,6 +78,8 @@ export async function loadMeeshoSkuPeriodData(opts: { periods: PeriodWindow[] })
   };
   const orderIdsBySkuPeriod = new Map<string, Set<string>>();
   const orderCountOf = (sku: string, label: string) => orderIdsBySkuPeriod.get(`${sku}|${label}`)?.size || 0;
+  // Orders with a cancelled line, per period (the Overall page counts the ones with no live line).
+  const cancelledOrdersByPeriod = new Map<string, Set<string>>();
 
   // Latest listed price per SKU, for displaying a price in a period the SKU didn't sell in.
   const latestPriceBySku = new Map<string, { date: string; price: number }>();
@@ -93,7 +95,12 @@ export async function loadMeeshoSkuPeriodData(opts: { periods: PeriodWindow[] })
   orderRows.forEach((r) => {
     const pd = periodForDate(r.order_date);
     if (!r.sku || !pd) return;
-    if (r.order_status.toUpperCase().startsWith("CANCEL")) return;
+    if (r.order_status.toUpperCase().startsWith("CANCEL")) {
+      const set = cancelledOrdersByPeriod.get(pd.label) ?? new Set<string>();
+      set.add(r.sub_order_no.replace(/_d+$/, ""));
+      cancelledOrdersByPeriod.set(pd.label, set);
+      return;
+    }
     const qty = Number(r.quantity) || 0;
     const s = ensurePeriodStat(r.sku, pd.label);
     s.orders += qty;
@@ -207,6 +214,6 @@ export async function loadMeeshoSkuPeriodData(opts: { periods: PeriodWindow[] })
   return {
     dataPulledAt, dataThrough, staleDays, returnCoverageWarnings,
     visibleRows, rowsByCategory, catBySku, categoryAgg, periodTotals,
-    stockOf, adsOf, hasAdData, orderCountOf, orderIdsBySkuPeriod,
+    stockOf, adsOf, hasAdData, orderCountOf, orderIdsBySkuPeriod, cancelledOrdersByPeriod,
   };
 }

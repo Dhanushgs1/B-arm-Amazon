@@ -4,6 +4,8 @@
 // marketplace pages can read genuine Supabase data instead of the deterministic
 // demo data in src/lib/marketplace.ts.
 
+import { fetchAllRows } from "@/lib/amazonReportShared";
+
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 
@@ -490,8 +492,19 @@ export async function fetchFlipkartCampaigns(
   startDate: string,
   endDate: string
 ): Promise<FlipkartCampaignsData> {
-  const cpTable = getFlipkartTableName("flipkart_campaign_performance", loggedInUser);
-  const rows_raw = await fetchTableForRange(cpTable, "report_date", startDate, endDate);
+  // B-ARM: the daily ads upload (barm_flipkart_fsn_report, one row per day / campaign / ad group / SKU).
+  // barm_flipkart_campaign_performance stopped on 10 Sep 2026, so the page showed no campaigns.
+  const rows_raw = loggedInUser === "Barm"
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ? (await fetchAllRows("barm_flipkart_fsn_report", (q) => q.gte("report_date", startDate).lte("report_date", endDate))).map((r: any) => ({
+        campaign_name: r.campaign_name || r.campaign_id,
+        ad_spend: r.ad_spend,
+        total_revenue_rs: r.total_revenue,
+        total_orders: (Number(r.direct_units_sold) || 0) + (Number(r.indirect_units_sold) || 0),
+        clicks: r.clicks,
+        impressions: r.views,
+      }))
+    : await fetchTableForRange(getFlipkartTableName("flipkart_campaign_performance", loggedInUser), "report_date", startDate, endDate);
 
   const map: Record<string, FlipkartCampaignRow> = {};
   rows_raw.forEach((row: any) => {

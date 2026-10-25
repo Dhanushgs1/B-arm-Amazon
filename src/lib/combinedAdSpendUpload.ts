@@ -760,13 +760,18 @@ export interface CombinedUploadResult {
   spAdsRows: Record<string, unknown>[];
 }
 
-export async function uploadCombinedWorkbook(file: File): Promise<CombinedUploadResult> {
+export async function uploadCombinedWorkbook(
+  file: File,
+  onProgress?: (p: { done: number; total: number; step?: string }) => void,
+): Promise<CombinedUploadResult> {
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: "array" });
   const results: SheetUploadOutcome[] = [];
   let spAdsRows: Record<string, unknown>[] = [];
 
-  for (const sheet of Object.keys(SHEET_LABELS)) {
+  const sheets = Object.keys(SHEET_LABELS);
+  for (const [i, sheet] of sheets.entries()) {
+    onProgress?.({ done: i, total: sheets.length, step: SHEET_LABELS[sheet] });
     const ws = findSheet(wb, sheet);
     if (!ws) {
       results.push({ sheet, label: SHEET_LABELS[sheet], status: "missing", detail: `No "${sheet}" sheet found in this file.` });

@@ -2,6 +2,7 @@ import { supabasePublic } from "@/lib/amazonReportUpload";
 import type { MarketplaceTab } from "@/lib/marketplace";
 import { fetchMeeshoOrdersDataInfo } from "@/lib/meeshoBarmOrd";
 import { fetchBarmOnlineOrdersDataInfo } from "@/lib/barmOnlineOrders";
+import { fetchShopifyOrdersDataInfo } from "@/lib/shopifyOrders";
 import { fetchAllMisReportDataInfo, fetchMisFkOrdersInfo, fetchMisFkReturnsInfo } from "@/lib/misAdapters";
 
 // The last date that actually has data for a marketplace tab — the date-range picker's presets
@@ -36,6 +37,7 @@ const settledMax = async (p: Promise<{ maxDate: string | null } | undefined>) =>
 async function compute(tab: MarketplaceTab): Promise<string | null> {
   if (tab === "meesho") return settledMax(fetchMeeshoOrdersDataInfo());
   if (tab === "barm") return settledMax(fetchBarmOnlineOrdersDataInfo());
+  if (tab === "shopify") return settledMax(fetchShopifyOrdersDataInfo());
   if (tab === "flipkart") {
     return majorityDate(
       await Promise.all([
@@ -55,8 +57,9 @@ async function compute(tab: MarketplaceTab): Promise<string | null> {
     return majorityDate([mis.am_orders?.maxDate, mis.am_returns?.maxDate, mis.fba_returns?.maxDate, mis.sf_return?.maxDate, spAds]);
   }
   if (tab === "compare") {
-    // The "All" tab: the date most of the four marketplaces reach.
-    const tabs: MarketplaceTab[] = ["amazon", "flipkart", "meesho", "barm"];
+    // The Overall tab: the date most of the live marketplaces reach. The B-ARM Website tab is the
+    // old WooCommerce history (ends 21 Sep 2026), so it would only drag this date back.
+    const tabs: MarketplaceTab[] = ["amazon", "flipkart", "meesho", "shopify"];
     return majorityDate(await Promise.all(tabs.map((t) => fetchChannelLastDataDate(t))));
   }
   return null;

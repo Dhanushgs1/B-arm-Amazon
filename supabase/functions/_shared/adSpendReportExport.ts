@@ -7,7 +7,8 @@
 import XLSX from "npm:xlsx-js-style@1.2.0";
 import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } from "./deps/amazonReportShared.ts";
 import { spCampaignDays, isSplitCoveredCampaignRow, unmappedCampaignSpend, campaignsMissingOnDay } from "./deps/amazonSpendRules.ts";
-import { upsertInChunks } from "./deps/amazonReportUpload.ts";
+import { upsertInChunks, supabasePublic } from "./deps/amazonReportUpload.ts";
+import { mergeGoogleWebsiteOrders, googleAdsRatios, type DroppedCardRow, type ShopifyReportOrder } from "./deps/googleWebsiteOrders.ts";
 import { toDate as parseFlexibleDate } from "./deps/meeshoReportUpload.ts";
 import { resolveProductName } from "./deps/categoryMap.ts";
 import { fetchProductMasterMap, buildProductMasterResolver } from "./deps/productMasterUpload.ts";
@@ -1426,6 +1427,12 @@ async function fetchWindowedAdSpend(
 // table is meant to list every product active across the window, not just
 // today's; only the Summary sheet's own Total Orders/Total Sales (both the
 // day block and the range block) and Overall Sales QTS/Value change.
+//
+// Shopify (24 Oct 2026, seller's approval): the website moved to Shopify, whose orders now arrive by
+// webhook. Order lines = the Google card rows merged with those Shopify orders by the rules in
+// googleWebsiteOrders.ts (Shopify exports and hand-typed copies of a Shopify order are left out from
+// the first Shopify day; cancelled orders never count). Google Ads gets credit (Ad Sales, ACOS,
+// ROAS) only for Shopify orders whose visit came from a Google Ads click.
 async function fetchGoogleOrders(range: { start: string; end: string }, endDate: string): Promise<{
   perProduct: { name: string; quantity: number; price: number }[];
   // One row per (order_date, product) across the full 7-day range — for the "B Arm orders" sheet,
@@ -1440,34 +1447,67 @@ async function fetchGoogleOrders(range: { start: string; end: string }, endDate:
   dayValue: number;
   rangeUnits: number;
   rangeValue: number;
+  /** Google Ads-attributed Shopify sales (line value) and order counts. */
+  adDayValue: number;
+  adRangeValue: number;
+  adDayOrders: number;
+  adRangeOrders: number;
+  /** Card rows in the range left out as Shopify duplicates (kept in the table, not counted). */
+  dropped: DroppedCardRow[];
+  /** Set when the Shopify orders could not be read — card rows are then used alone. */
+  shopifyLoadError: string | null;
+  /** First day with Shopify orders on file (null = none) — reports before it have no attribution. */
+  shopifyFrom: string | null;
 }> {
-  const rows = (await fetchAllRows("barm_daily_google_orders", (q) =>
-    q.gte("order_date", range.start).lte("order_date", range.end)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ).catch(() => [])) as any[];
+  const [cardRows, shopify] = await Promise.all([
+    fetchAllRows("barm_daily_google_orders", (q) =>
+      q.gte("order_date", range.start).lte("order_date", range.end)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ).catch(() => []) as Promise<any[]>,
+    // Every real Shopify order (small), so the first Shopify day is known — see googleWebsiteOrders.ts.
+    // GET: the function is read-only, and a report build must send no writes (readonly.test.ts).
+    supabasePublic.rpc("barm_shopify_orders_summary", {}, { get: true }).then(
+      ({ data, error }) => (error ? { orders: [] as ShopifyReportOrder[], error: error.message } : { orders: (data ?? []) as ShopifyReportOrder[], error: null }),
+      (e: unknown) => ({ orders: [] as ShopifyReportOrder[], error: e instanceof Error ? e.message : String(e) })
+    ),
+  ]);
+  const merged = mergeGoogleWebsiteOrders(cardRows, shopify.orders);
+  const rows = merged.lines.filter((l) => l.date >= range.start && l.date <= range.end);
   const byProduct = new Map<string, { name: string; quantity: number; priceSum: number; priceCount: number }>();
   const byDateProduct = new Map<string, { date: string; name: string; quantity: number; priceSum: number; priceCount: number }>();
   let dayUnits = 0;
   let dayValue = 0;
   let rangeUnits = 0;
   let rangeValue = 0;
+  let adDayValue = 0;
+  let adRangeValue = 0;
+  const adDayOrders = new Set<string>();
+  const adRangeOrders = new Set<string>();
   rows.forEach((r) => {
-    const name = String(r.product_name || "").replace(/\s+/g, " ").trim() || "(no product name)";
+    const name = r.name;
     // The B-Arm workbook is hand-typed: the same SKU on two lines ("10PIC KIT" 1 + "10pickit" 1)
     // must add up to one 2-unit line, not two 1-unit lines — so lines are grouped by the SKU
     // ignoring case, spaces, "-", "_" and ".", shown under the first spelling seen. Google-only rule.
     const nameKey = name.toLowerCase().replace(/[\s\-_.]+/g, "");
-    const date = r.order_date || "";
-    const qty = num(r.quantity);
-    const price = num(r.price);
-    const value = qty * price;
+    const date = r.date;
+    const qty = r.quantity;
+    const price = r.price;
+    const value = r.value;
     rangeUnits += qty;
     rangeValue += value;
+    if (r.googleAds) {
+      adRangeValue += value;
+      if (r.order) adRangeOrders.add(r.order);
+      if (r.date === endDate) {
+        adDayValue += value;
+        if (r.order) adDayOrders.add(r.order);
+      }
+    }
     const acc = byProduct.get(nameKey) || { name, quantity: 0, priceSum: 0, priceCount: 0 };
     acc.quantity += qty;
     if (price > 0) { acc.priceSum += price; acc.priceCount += 1; }
     byProduct.set(nameKey, acc);
-    if (r.order_date === endDate) {
+    if (r.date === endDate) {
       dayUnits += qty;
       dayValue += value;
     }
@@ -1487,6 +1527,13 @@ async function fetchGoogleOrders(range: { start: string; end: string }, endDate:
     dailyPerProduct,
     dayUnits, dayValue: Math.round(dayValue * 100) / 100,
     rangeUnits, rangeValue: Math.round(rangeValue * 100) / 100,
+    adDayValue: Math.round(adDayValue * 100) / 100,
+    adRangeValue: Math.round(adRangeValue * 100) / 100,
+    adDayOrders: adDayOrders.size,
+    adRangeOrders: adRangeOrders.size,
+    dropped: merged.dropped.filter((d) => d.date >= range.start && d.date <= range.end),
+    shopifyLoadError: shopify.error,
+    shopifyFrom: merged.shopifyFrom,
   };
 }
 
@@ -2007,6 +2054,16 @@ export interface GoogleEmailSummary {
   daySpendTax: number;
   rangeSpend: number;
   rangeSpendTax: number;
+  /** False for a reporting day before the first Shopify day: no attribution exists, the ad fields
+   *  below are null and the email shows the row exactly as before. */
+  attributed: boolean;
+  /** Google Ads-attributed Shopify sales, and Spend (without tax) ÷ / into them; null = nothing to divide by. */
+  dayAdSales: number | null;
+  rangeAdSales: number | null;
+  dayAcos: number | null;
+  rangeAcos: number | null;
+  dayRoas: number | null;
+  rangeRoas: number | null;
 }
 
 export interface AdSpendReportResult {
@@ -2595,8 +2652,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   }
 
   // Google (direct/website) orders — one extra Summary row, same lightweight treatment as Social
-  // Media above, added only when there's actually data on file. Ad spend/CPC/ACOS columns are left
-  // at 0/blank throughout (this channel has no ad campaign data at all — see fetchGoogleOrders).
+  // Media above, added only when there's actually data on file. CPC stays blank; ACOS/Ad Sales are
+  // filled from Google Ads-attributed Shopify orders only (see below and fetchGoogleOrders).
   // Total Orders/Total Sales are shown for BOTH the day block and the range block (same shape as
   // every real platform's row), and Overall Sales QTS/Value are the SINGLE reporting day's total —
   // fixed from the previous version, which put the 7-day range total in that last column, mislabeled
@@ -2607,20 +2664,29 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // Ad spend (with/without tax) comes from the Google Ads "Campaign report" upload
   // (barm_daily_google_ad_spend), resolved per window exactly like Social Media's: the day block is
   // the reporting day's own daily row, the range block the row matching the full window (else the
-  // daily rows inside it). Spend with tax uses the same default GST multiplier as Meta's. CPC/ACOS
-  // stay blank: the B-Arm orders aren't attributed to the ads, so spend ÷ those orders would read
-  // as ad performance it isn't.
+  // daily rows inside it). Spend with tax uses the same default GST multiplier as Meta's. CPC stays
+  // blank. ACOS = Spend (without tax) ÷ Ad Sales and Ad Sales = only the Shopify orders whose visit
+  // came from a Google Ads click (see fetchGoogleOrders); ACOS is blank when there are none — the
+  // other website orders aren't attributed to the ads, so spend ÷ them would read as ad
+  // performance it isn't. A reporting day before the first Shopify day has no attribution at all,
+  // so that report is written exactly as before (old label, blank ACOS/Ad Sales, old Notes text).
   const googleDayAgg: WindowAgg = { spend: googleAdSpend.daySpend, units: 0 };
   const googleRangeAgg: WindowAgg = { spend: googleAdSpend.rangeSpend, units: 0 };
   const hasGoogleSpend = googleAdSpend.daySpend > 0 || googleAdSpend.rangeSpend > 0;
+  const googleAttributed = !!googleOrders.shopifyFrom && endDate >= googleOrders.shopifyFrom;
+  const googleDayRatios = googleAdsRatios(googleDayAgg.spend, googleOrders.adDayValue);
+  const googleRangeRatios = googleAdsRatios(googleRangeAgg.spend, googleOrders.adRangeValue);
+  const ratio4 = (v: number | null) => (v === null ? null : Math.round(v * 10000) / 10000);
   if (googleOrders.rangeUnits > 0 || googleOrders.rangeValue > 0 || hasGoogleSpend) {
     googleRow = sumAoa.length;
     sumAoa.push([
       "Google",
       round2(googleDayAgg.spend), round2(spendTax(googleDayAgg)),
-      hasGoogleSpend ? "(Google Ads spend + B-Arm orders)" : "(Orders/Sales only — no Google Ads report for this window)", "",
-      round2(googleDayAgg.spend), round2(spendTax(googleDayAgg)), googleOrders.dayUnits, round2(googleOrders.dayValue), "", "", "",
-      round2(googleRangeAgg.spend), round2(spendTax(googleRangeAgg)), googleOrders.rangeUnits, round2(googleOrders.rangeValue), "", "", "",
+      hasGoogleSpend ? (googleAttributed ? "(Google Ads spend + website orders)" : "(Google Ads spend + B-Arm orders)") : "(Orders/Sales only — no Google Ads report for this window)", "",
+      round2(googleDayAgg.spend), round2(spendTax(googleDayAgg)), googleOrders.dayUnits, round2(googleOrders.dayValue), "",
+      googleAttributed ? ratio4(googleDayRatios.acos) ?? "" : "", googleAttributed ? round2(googleOrders.adDayValue) : "",
+      round2(googleRangeAgg.spend), round2(spendTax(googleRangeAgg)), googleOrders.rangeUnits, round2(googleOrders.rangeValue), "",
+      googleAttributed ? ratio4(googleRangeRatios.acos) ?? "" : "", googleAttributed ? round2(googleOrders.adRangeValue) : "",
       googleOrders.dayUnits, round2(googleOrders.dayValue),
     ]);
     // Same figures, reshaped for the emailed daily digest (see buildAdSpendDailyHtml in
@@ -2634,6 +2700,13 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       daySpendTax: round2(spendTax(googleDayAgg)),
       rangeSpend: round2(googleRangeAgg.spend),
       rangeSpendTax: round2(spendTax(googleRangeAgg)),
+      attributed: googleAttributed,
+      dayAdSales: googleAttributed ? round2(googleOrders.adDayValue) : null,
+      rangeAdSales: googleAttributed ? round2(googleOrders.adRangeValue) : null,
+      dayAcos: googleAttributed ? ratio4(googleDayRatios.acos) : null,
+      rangeAcos: googleAttributed ? ratio4(googleRangeRatios.acos) : null,
+      dayRoas: googleAttributed ? ratio4(googleDayRatios.roas) : null,
+      rangeRoas: googleAttributed ? ratio4(googleRangeRatios.roas) : null,
     };
   }
 
@@ -3083,7 +3156,22 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     ["Amazon: spend is a plain sum of the SP table (barm_amazon_sp_advertised_product), which also carries your AM-ads sheet's per-SKU split of Sponsored Brands/Display spend (each campaign-day's first split row is named, the rest have a blank campaign) — that split is how Brand/Display spend reaches each product here. An SB/SD campaign-day with no such split is spread over the SKUs mapped to it on the Upload page; SB/SD spend with neither a split nor a mapping for the range window: ₹" + round2(amz.unmappedSpend) + (amz.unmappedSpend > 0 ? " — not attributed to any product below (see the ⚠ warning at the top)." : " — every SB/SD campaign row on file is split or mapped.") + " Unsplit SB/SD rows in AM ads (no Advertised SKU) are saved per campaign by the upload and counted here, never dropped." + (amz.campaignsMissingOnEndDate.length ? " Some Brand/Display campaigns have no row on the reporting day — see the ⚠ warning at the top." : "")],
     ["Flipkart: FSN report spend is per-SKU for every campaign type, so no apportioning is needed. Price comes from the SKU's own FK Orders Invoice Amount for the window (summed Invoice Amount / summed quantity, non-cancelled rows); only a SKU with no real order in the window falls back to the Listings snapshot (then the Earn more report's realised price)."],
     ["Meesho: Ads report spend is per-SKU. Overall sales Value / Total Sales = Quantity x each order row's own Supplier Listed Price (Incl. GST + Commission), from the Orders report only. meesho_price_marketing (the live scraped listing price) is used only for the displayed Price and as the Price in the ACOS CPC / Price fallback. Column names come from the seller's own workbook, not a native Meesho export seen directly — see src/lib/meeshoReportUpload.ts if a real export's headers turn out to differ."],
-    ["Social-media (Meta) spend appears as its own Summary-sheet block when uploaded, separate from the three marketplace platforms: one row per promoted product (Meta campaigns are matched to products by campaign name), with each campaign listed in the Ad spend report sheet's Social Media section. Google Ads spend (the Google Ads \"Campaign report\" uploaded on the Upload page's Google card) fills the Google row's Ad spend columns: the day block from that day's own export, the range block from an export covering exactly the range, else the daily exports inside it. ₹0 there means no Google Ads report is on file for that window, not ₹0 spent. The Google row's Orders/Sales are the B-Arm orders; its CPC/ACOS stay blank since those orders are not attributed to the ads."],
+    ["Social-media (Meta) spend appears as its own Summary-sheet block when uploaded, separate from the three marketplace platforms: one row per promoted product (Meta campaigns are matched to products by campaign name), with each campaign listed in the Ad spend report sheet's Social Media section. Google Ads spend (the Google Ads \"Campaign report\" uploaded on the Upload page's Google card) fills the Google row's Ad spend columns: the day block from that day's own export, the range block from an export covering exactly the range, else the daily exports inside it. ₹0 there means no Google Ads report is on file for that window, not ₹0 spent." +
+      (googleAttributed
+        ? " The Google row's Orders/Sales are the website orders: the Google card's B-Arm orders plus the Shopify orders received by webhook, cancelled and test orders excluded. From the first day Shopify orders are on file, Google card rows from a Shopify \"Total sales by product\" export, and B-Arm lines that are the same sale as a Shopify order (same date, unit price and quantity), are left out so nothing is counted twice; no row is deleted. Google Ads Ad Sales = only the Shopify orders whose visit came from a Google Ads click (gclid / gbraid / wbraid / gad_* on the landing URL) — Google Ads' own export reports 0 conversions. ACOS = Spend (without tax) / Ad Sales, blank when there are no Ad Sales or no Google Ads report; ROAS = Ad Sales / Spend (without tax). CPC stays blank."
+        : " The Google row's Orders/Sales are the B-Arm orders; its CPC/ACOS stay blank since those orders are not attributed to the ads.")],
+    ...(googleAttributed
+      ? [[
+          `Google, this report: ROAS ${googleDayRatios.roas === null ? "—" : googleDayRatios.roas.toFixed(2)} on ${dotDate(endDate)} (Ad Sales ₹${round2(googleOrders.adDayValue).toFixed(2)}, ${googleOrders.adDayOrders} order(s)), ` +
+            `${googleRangeRatios.roas === null ? "—" : googleRangeRatios.roas.toFixed(2)} over the range (Ad Sales ₹${round2(googleOrders.adRangeValue).toFixed(2)}, ${googleOrders.adRangeOrders} order(s)).` +
+            (googleOrders.dropped.length
+              ? ` Left out as Shopify duplicates: ${googleOrders.dropped.map((d) => `${d.invoice} (₹${round2(d.value).toFixed(2)}${d.matchedOrder ? ` = ${d.matchedOrder}` : ""})`).join("; ")}.`
+              : ""),
+        ]]
+      : []),
+    ...(googleOrders.shopifyLoadError
+      ? [[`⚠ SHOPIFY ORDERS COULD NOT BE LOADED (${googleOrders.shopifyLoadError}) — the Google row uses the Google card rows alone, so Shopify orders are missing and Ad Sales/ACOS/ROAS read as 0 until it's fixed and the report is regenerated.`]]
+      : []),
     [""],
     ["Ad Status Report matches products across Amazon, Flipkart and Meesho by product NAME only (no cross-platform SKU mapping exists) — two listings with different titles for the same physical product will show as separate rows."],
     ["Action Sheet lists every SKU whose trailing 7-day ACOS is above 14%, worst first (identified by Campaign Name + SKU ID, not product name; Spend/Spend with tax/Orders/ACOS are all the 7-day range here, unlike every other sheet's single-day figures). Every row carries a concrete bid-cut %: rows matched to a real campaign in the uploaded Amazon/Flipkart ad data get one sized to that campaign's own ad-group/SKU performance (AI-assisted); unmatched rows (e.g. Meesho, which has no campaign data in this app, or a SKU that matched no campaign) get one computed from the SKU's own 7-day ACOS instead (20%/35%/50% cut for 14-60%/60-90%/90%+ ACOS). No specific search-term/keyword name is ever invented — that data isn't captured anywhere in this app; only a live SellerMate pull (Amazon only, on request) has real keyword-level detail."],

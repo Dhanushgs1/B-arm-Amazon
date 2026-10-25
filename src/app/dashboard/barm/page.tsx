@@ -15,13 +15,13 @@ export default function BarmOverviewPage() {
 
   return (
     <UploadOnlyOverview
-      title="BARM Overview"
-      subtitle="BARM (Google) · Data on file at a glance"
+      title="B-ARM Website Overview"
+      subtitle={`B-ARM website orders before the move to Shopify (WooCommerce export${info?.maxDate ? `, up to ${info.maxDate}` : ""}) · newer website orders are on the Shopify tab`}
       downloadHref="/dashboard/barm/reports"
-      summary={<ChannelSummaryStrip channel="BARM" fetcher={fetchBarmSummary} />}
+      summary={<ChannelSummaryStrip channel="B-ARM Website" fetcher={fetchBarmSummary} />}
       dataOnFile={[
         {
-          label: "B-Arm Online Orders (barm_online_orders)",
+          label: "B-ARM Website orders — WooCommerce (barm_online_orders)",
           value: !info
             ? null
             : info.error

@@ -45,10 +45,11 @@ test("builds Amazon and Flipkart product links", () => {
   assert.equal(productUrl("Meesho", "X"), null);
 });
 
-test("this week's snapshot is at most 6 days old", () => {
-  assert.equal(isThisWeeksSnapshot("2026-10-12", "2026-10-12"), true);
-  assert.equal(isThisWeeksSnapshot("2026-10-06", "2026-10-12"), true);
-  assert.equal(isThisWeeksSnapshot("2026-10-05", "2026-10-12"), false);
+test("a snapshot up to 7 days old is still mailed (last Monday's after-9AM upload)", () => {
+  assert.equal(isThisWeeksSnapshot("2026-10-12", "2026-10-12"), false); // dated today: may still be collecting
+  assert.equal(isThisWeeksSnapshot("2026-10-12", "2026-10-13"), true);
+  assert.equal(isThisWeeksSnapshot("2026-10-19", "2026-10-26"), true);
+  assert.equal(isThisWeeksSnapshot("2026-10-18", "2026-10-26"), false);
   assert.equal(isThisWeeksSnapshot("2026-10-13", "2026-10-12"), false);
 });
 
@@ -58,4 +59,37 @@ test("toRatingDrop resolves the link from any variant SKU", () => {
   assert.equal(d.url, "https://www.amazon.in/dp/B0GQTV6MZW");
   assert.equal(d.prevReviews, 8);
   assert.deepEqual(d.skus, ["PAD-1(AM)", "PAD(AM)"]);
+});
+
+test("platformsToMail: one mail per channel snapshot, this week's only", async () => {
+  const { platformsToMail } = await import("./ratingDropAlert.ts");
+  const dates = {
+    Amazon: { current: "2026-10-12", previous: "2026-10-06" },
+    Flipkart: { current: "2026-10-12", previous: "2026-10-06" },
+    Meesho: { current: "2026-10-14", previous: null },
+  };
+  // 19 Oct, the run that re-sent Amazon's 12 Oct drops: already mailed (legacy "2026-10-12")
+  assert.deepEqual(platformsToMail(dates, ["2026-10-12"], "2026-10-19"), []);
+  // 26 Oct: the 19 Oct upload (after that Monday's 9 AM run) was never mailed → it goes out now
+  const live = {
+    Amazon: { current: "2026-10-19", previous: "2026-10-12" },
+    Flipkart: { current: "2026-10-19", previous: "2026-10-12" },
+    Meesho: { current: "2026-10-19", previous: "2026-10-14" },
+  };
+  assert.deepEqual(platformsToMail(live, ["2026-10-12", "2026-10-14"], "2026-10-26").map((x) => x.platform), ["Amazon", "Flipkart", "Meesho"]);
+  // a fresh week: everyone uploaded 19 Oct; only channels with a previous snapshot to compare
+  const fresh = { Amazon: { current: "2026-10-19", previous: "2026-10-12" }, Meesho: { current: "2026-10-19", previous: "2026-10-14" } };
+  assert.deepEqual(platformsToMail(fresh, ["2026-10-12", "2026-10-14"], "2026-10-21").map((x) => x.platform), ["Amazon", "Meesho"]);
+  // Amazon mailed already; Meesho uploaded later the same week → only Meesho
+  assert.deepEqual(platformsToMail(fresh, ["Amazon|2026-10-19"], "2026-10-21").map((x) => x.platform), ["Meesho"]);
+  // legacy plain date covers every channel snapshot up to it
+  assert.deepEqual(platformsToMail(fresh, ["2026-10-19"], "2026-10-21"), []);
+});
+
+test("Amazon's count comes from ratings_count when the collector filled it", async () => {
+  const { reviewCountOf } = await import("./ratingCount.ts");
+  assert.equal(reviewCountOf({ platform: "Amazon", review_count: null, ratings_count: 120 }), 120);
+  assert.equal(reviewCountOf({ platform: "Amazon", review_count: 0, ratings_count: 35 }), 35);
+  assert.equal(reviewCountOf({ platform: "Amazon", review_count: 80 }), 80); // older sheet uploads
+  assert.equal(reviewCountOf({ platform: "Flipkart", review_count: 12, ratings_count: 300 }), 12);
 });

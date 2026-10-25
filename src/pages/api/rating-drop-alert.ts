@@ -2,8 +2,9 @@
 // the previous ratings snapshot and are below 4★ in the latest, at any review count. Each product name
 // links to its Amazon (ASIN) or Flipkart (FSN) page. No mail when nothing crossed (user, 2026-10-12).
 //
-// Monday mail, sent only once that week's ratings upload is in (snapshot ≤ 6 days old), at most once
-// per snapshot (state in barm_alert_state, alert_type "ratingDropWeekly", entity_id = snapshot date):
+// Monday mail, sent only once that week's ratings upload is in (snapshot ≤ 7 days old), at most once
+// per CHANNEL snapshot (state in barm_alert_state, alert_type "ratingDropWeekly", entity_id =
+// "Platform|snapshot date"; plain-date rows are from before 2026-10-25 — see platformsToMail):
 //   - the 9:00 AM IST Monday cron (scheduled-reports.ts), if the upload was already done;
 //   - the Ratings & Reviews page, right after "Upload weekly data" (signed-in browser session;
 //     account and recipients come from that slot's saved Settings, never from the request).
@@ -19,7 +20,7 @@ import { resolveSellerMateKey } from "@/lib/adAlerts";
 import { supabasePublic } from "@/lib/amazonReportUpload";
 import { readEmailSettings } from "@/lib/emailSettingsStore";
 import { fetchRatingMetrics, groupListings } from "@/lib/productRatingMetrics";
-import { findRatingDrops, toRatingDrop, bareSku, isThisWeeksSnapshot, RATING_DROP_LIMIT, RATING_DROP_MIN_REVIEWS } from "@/lib/ratingDropAlert";
+import { findRatingDrops, toRatingDrop, bareSku, platformsToMail, platformSnapshotKey, RATING_DROP_LIMIT, RATING_DROP_MIN_REVIEWS } from "@/lib/ratingDropAlert";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
 import { checkSessionOrInternal, guard, isInternalRequest } from "@/lib/apiAuth";
 
@@ -62,11 +63,12 @@ async function fsnBySku(skus: string[]) {
   return out;
 }
 
-async function alreadySent(slot: string, snapshot: string): Promise<boolean> {
+/** Channel snapshots already mailed for this slot (state entity_ids). */
+async function sentSnapshots(slot: string): Promise<string[]> {
   const { data, error } = await supabasePublic
-    .from(STATE_TABLE).select("entity_id").eq("key_slot", slot).eq("alert_type", ALERT_TYPE).eq("entity_id", snapshot).limit(1);
+    .from(STATE_TABLE).select("entity_id").eq("key_slot", slot).eq("alert_type", ALERT_TYPE).limit(1000);
   if (error) throw new Error(`alert state read failed: ${error.message}`);
-  return (data || []).length > 0;
+  return (data || []).map((r) => String(r.entity_id));
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -95,21 +97,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!m.snapshotDate || !m.previousDate) {
       return res.status(200).json({ emailed: false, skipped: "need two ratings snapshots to compare" });
     }
-    const snapshot = m.snapshotDate;
+    // Channels to mail: each channel's newest snapshot, if taken this week and not mailed before.
+    // dryRun / preview show every channel; force ignores what was already mailed.
+    const pending = platformsToMail(m.platformDates, force ? [] : await sentSnapshots(slot), istToday());
     if (sending) {
       // Mondays only (user, 2026-10-12): an upload on another day is mailed by the next Monday's 9 AM run.
       if (new Date(istToday() + "T00:00:00Z").getUTCDay() !== 1) {
         return res.status(200).json({ emailed: false, skipped: "goes out on Monday — the next Monday 9 AM run will send it" });
       }
-      if (!isThisWeeksSnapshot(snapshot, istToday())) {
-        return res.status(200).json({ emailed: false, skipped: `waiting for this week's ratings upload (latest is ${snapshot})` });
-      }
-      if (!force && await alreadySent(slot, snapshot)) {
-        return res.status(200).json({ emailed: false, skipped: `already sent for ${snapshot}` });
+      if (!pending.length) {
+        return res.status(200).json({ emailed: false, skipped: `no new ratings upload this week to mail (latest is ${m.snapshotDate})` });
       }
     }
+    const mailPlatforms = new Set(pending.map((x) => x.platform));
+    const snapshot = sending ? pending.map((x) => x.current).sort().reverse()[0] : m.snapshotDate;
+    const previousDate = sending ? pending.map((x) => x.previous).sort().reverse()[0] : m.previousDate;
 
-    const listings = findRatingDrops(groupListings(m.items));
+    const listings = findRatingDrops(groupListings(m.items)).filter((l) => !sending || mailPlatforms.has(l.platform));
     const skusOf = (platform: string) => [...new Set(listings.filter((l) => l.platform === platform).flatMap((l) => l.skus.map((s) => bareSku(s.skuId))).filter(Boolean))];
     const apiKey = resolveSellerMateKey(slot === "B" ? "B" : "A");
     const [asins, fsns] = await Promise.all([
@@ -117,7 +121,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       fsnBySku(skusOf("Flipkart")),
     ]);
     const drops = listings.map((l) => toRatingDrop(l, l.platform === "Flipkart" ? fsns : asins));
-    const summary = { snapshotDate: snapshot, previousDate: m.previousDate, drops: drops.length };
+    const summary = { snapshotDate: snapshot, previousDate, channels: sending ? [...mailPlatforms] : undefined, drops: drops.length };
 
     if (dryRun) return res.status(200).json({ ...summary, dryRun: true, rows: drops });
 
@@ -130,18 +134,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         body: JSON.stringify({
           type: "ratingDrop", to, cc, preview: preview || undefined,
           subject: `⭐ Marketplace360 - ${drops.length} listing${drops.length === 1 ? "" : "s"} dropped below ${RATING_DROP_LIMIT}★ this week`,
-          data: { drops, snapshotDate: snapshot, previousDate: m.previousDate, minReviews: RATING_DROP_MIN_REVIEWS, accountName, channel: null },
+          data: { drops, snapshotDate: snapshot, previousDate, minReviews: RATING_DROP_MIN_REVIEWS, accountName, channel: null },
         }),
       });
       emailResult = await r.json().catch(() => ({}));
       if (!r.ok) emailResult = { error: emailResult?.error || "send-email failed" };
     }
     const emailed = sending && !!(to && drops.length && emailResult && !emailResult.error);
-    // Mark the snapshot done once mailed, or once checked with nothing below 4★. A failed send is retried.
+    // Mark each channel snapshot done once mailed, or once checked with nothing below 4★. A failed send is retried.
     if (sending && (emailed || drops.length === 0)) {
       const { error: upErr } = await supabasePublic.from(STATE_TABLE).upsert(
-        [{ key_slot: slot, alert_type: ALERT_TYPE, entity_id: snapshot, severity: 1, last_sent_at: new Date().toISOString(),
-          details: { title: `Rating drop ${snapshot}`, drops: drops.length, emailed } }],
+        pending.map((x) => ({ key_slot: slot, alert_type: ALERT_TYPE, entity_id: platformSnapshotKey(x.platform, x.current), severity: 1, last_sent_at: new Date().toISOString(),
+          details: { title: `Rating drop ${x.platform} ${x.current} vs ${x.previous}`, drops: drops.filter((d) => d.platform === x.platform).length, emailed } })),
         { onConflict: "key_slot,alert_type,entity_id" },
       );
       if (upErr) console.error("[Marketplace360] rating-drop state write failed:", upErr.message);

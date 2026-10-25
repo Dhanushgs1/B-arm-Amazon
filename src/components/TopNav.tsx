@@ -1,7 +1,8 @@
 "use client";
 
 import { useDashboard } from "@/lib/DashboardContext";
-import { Bell, Moon, Sun, Search, RefreshCw, Loader2, ShoppingBag, Store, GitCompare, Menu, ShoppingCart, Globe, type LucideIcon } from "lucide-react";
+import { Bell, Moon, Sun, Search, RefreshCw, Loader2, LayoutGrid, Menu, type LucideIcon } from "lucide-react";
+import { BrandLogo, type BrandId } from "@/components/BrandLogo";
 import { useState, useEffect } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import Link from "next/link";
@@ -10,12 +11,16 @@ import { DateRangePicker } from "@/components/DateRangePicker";
 import { cn } from "@/lib/utils";
 import { MARKETPLACE_META, UPLOAD_ONLY_TAB_META, getMarketplaceTab, isUploadOnlyTab, marketplaceHome, type MarketplaceTab } from "@/lib/marketplace";
 
-const MARKETPLACE_TABS: { id: MarketplaceTab; label: string; icon: LucideIcon }[] = [
-  { id: "amazon", label: "Amazon", icon: ShoppingBag },
-  { id: "flipkart", label: "Flipkart", icon: Store },
-  { id: "meesho", label: "Meesho", icon: ShoppingCart },
-  { id: "barm", label: "BARM", icon: Globe },
-  { id: "compare", label: "All", icon: GitCompare },
+// Overall first, then one tab per platform with its own brand mark. The old B-ARM website's
+// WooCommerce history (/dashboard/barm) is off the navigation by the seller's choice (24 Oct 2026) —
+// its page and data are kept and it is still linked from its row on the Overall tab.
+type SwitcherTab = { id: MarketplaceTab; label: string; brand?: BrandId; icon?: LucideIcon };
+const MARKETPLACE_TABS: SwitcherTab[] = [
+  { id: "compare", label: "Overall", icon: LayoutGrid },
+  { id: "amazon", label: "Amazon", brand: "amazon" },
+  { id: "flipkart", label: "Flipkart", brand: "flipkart" },
+  { id: "meesho", label: "Meesho", brand: "meesho" },
+  { id: "shopify", label: "Shopify", brand: "shopify" },
 ];
 
 function MarketplaceSwitcher() {
@@ -24,7 +29,10 @@ function MarketplaceSwitcher() {
   const reduceMotion = useReducedMotion();
 
   return (
-    <div className="flex items-center gap-1 bg-slate-100/80 dark:bg-slate-900 p-1 rounded-xl ring-1 ring-slate-200/70 dark:ring-slate-800 flex-wrap">
+    <nav
+      aria-label="Marketplaces"
+      className="flex items-center gap-1 bg-slate-100/80 dark:bg-slate-900 p-1 rounded-xl ring-1 ring-slate-200/70 dark:ring-slate-800 min-w-0 max-w-full overflow-x-auto scrollbar-none"
+    >
       {MARKETPLACE_TABS.map((tab) => {
         const isActive = activeTab === tab.id;
         const meta =
@@ -38,30 +46,37 @@ function MarketplaceSwitcher() {
           : marketplaceHome(tab.id);
 
         return (
-          <Link
-            key={tab.id}
-            href={targetHref}
-            className={cn(
-              "relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-black transition-colors cursor-pointer",
-              isActive ? "text-white" : "text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200"
-            )}
-            title={meta ? meta.tagline : "Compare every connected marketplace"}
-          >
-            {/* One shared highlight that slides between marketplaces, in each one's own colour. */}
-            {isActive && (
-              <motion.span
-                layoutId="marketplace-switcher-active"
-                transition={reduceMotion ? { duration: 0 } : { type: "spring", stiffness: 420, damping: 34 }}
-                className={cn("absolute inset-0 rounded-lg shadow-sm", tab.id === "compare" && "bg-gradient-to-r from-indigo-500 to-purple-600")}
-                style={meta ? { background: `linear-gradient(90deg, ${meta.color}, ${meta.color}cc)`, boxShadow: `0 4px 14px -4px ${meta.color}80` } : undefined}
-              />
-            )}
-            <Icon className="relative w-3.5 h-3.5" />
-            <span className="relative">{tab.label}</span>
-          </Link>
+          <div key={tab.id} className="flex items-center flex-shrink-0">
+            <Link
+              href={targetHref}
+              aria-current={isActive ? "page" : undefined}
+              aria-label={tab.label}
+              className={cn(
+                "relative flex items-center gap-1.5 h-8 px-2 sm:px-2.5 rounded-lg text-[11px] font-black whitespace-nowrap transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/60",
+                isActive ? "text-white" : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-white/70 dark:hover:bg-slate-800/70"
+              )}
+              title={meta ? meta.tagline : "Overall — every platform's KPIs together"}
+            >
+              {/* One shared highlight that slides between marketplaces, in each one's own colour. */}
+              {isActive && (
+                <motion.span
+                  layoutId="marketplace-switcher-active"
+                  transition={reduceMotion ? { duration: 0 } : { type: "spring", stiffness: 420, damping: 34 }}
+                  className={cn("absolute inset-0 rounded-lg shadow-sm", tab.id === "compare" && "bg-gradient-to-r from-indigo-500 to-purple-600")}
+                  style={meta ? { background: `linear-gradient(90deg, ${meta.color}, ${meta.color}cc)`, boxShadow: `0 4px 14px -4px ${meta.color}80` } : undefined}
+                />
+              )}
+              {/* Every mark sits on the same 20px white tile, so brand colours stay readable on
+                  the active tab's coloured highlight and in dark mode. */}
+              <span className={cn("relative flex items-center justify-center w-5 h-5 rounded-md flex-shrink-0", tab.brand ? "bg-white ring-1 ring-slate-200/80 dark:ring-0 shadow-sm" : "")}>
+                {tab.brand ? <BrandLogo brand={tab.brand} size={14} /> : Icon ? <Icon className="w-3.5 h-3.5" /> : null}
+              </span>
+              <span className="relative hidden sm:inline">{tab.label}</span>
+            </Link>
+          </div>
         );
       })}
-    </div>
+    </nav>
   );
 }
 
@@ -157,7 +172,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
         <span className="text-slate-700 dark:text-slate-300 uppercase tracking-wider">{accountLabel}</span>
       </div>
 
-      {/* Marketplace Switcher — Amazon / Flipkart / Meesho / BARM / All */}
+      {/* Marketplace Switcher — Overall / Amazon / Flipkart / Meesho / Shopify */}
       <MarketplaceSwitcher />
 
       {/* Global Search */}

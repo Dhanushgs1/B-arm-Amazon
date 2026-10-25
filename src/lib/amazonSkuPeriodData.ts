@@ -58,8 +58,11 @@ export async function loadAmazonSkuPeriodData(opts: {
   // Sponsored Products spend/clicks per SKU per period (adsOf/hasAdData) — only the weekly
   // report's insights use it, so callers that don't can skip the fetch.
   includeAds?: boolean;
+  // Stock on hand (the inventory ledger, ~73k rows) — only the reports' "Low stock" reason uses it,
+  // so the Overall summary skips it; stock then reads as unknown, never as 0.
+  includeStock?: boolean;
 }) {
-  const { periods, includeAds = true } = opts;
+  const { periods, includeAds = true, includeStock = true } = opts;
   if (periods.length === 0) throw new Error("loadAmazonSkuPeriodData: no periods");
   const rangeStart = periods[0].start;
   const rangeEnd = periods[periods.length - 1].end;
@@ -102,7 +105,7 @@ export async function loadAmazonSkuPeriodData(opts: {
     // it to `ledger_date <= rangeEnd` matched nothing, so every FBA SKU read as 0 units and
     // every decliner was labelled "Low stock — check replenishment" (A019-14 was flagged at 0 units
     // while actually holding 277). Take the whole snapshot and pick its latest date below.
-    fetchAllRows("barm_amazon_inventory_ledger", (q) => q.eq("disposition", "SELLABLE")),
+    includeStock ? fetchAllRows("barm_amazon_inventory_ledger", (q) => q.eq("disposition", "SELLABLE")) : Promise.resolve([]),
     // Sponsored-Products performance per advertised SKU per day — lets the category insights below
     // attribute a decline to ad pull-back rather than guessing. Optional: an account with no ads
     // uploaded simply yields no rows, and the campaign reason never fires.
@@ -182,6 +185,8 @@ export async function loadAmazonSkuPeriodData(opts: {
     set.add(orderId);
   };
   const orderCountOf = (sku: string, label: string) => orderIdsBySkuPeriod.get(`${sku}|${label}`)?.size || 0;
+  // Order ids with a cancelled line, per period (the Overall page counts the ones with no live line).
+  const cancelledOrdersByPeriod = new Map<string, Set<string>>();
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows.forEach((r: any) => {
@@ -195,7 +200,14 @@ export async function loadAmazonSkuPeriodData(opts: {
     if (r.product_name && !nameBySku.has(r.sku)) nameBySku.set(r.sku, r.product_name);
     // A cancelled order never became revenue. Amazon still exports a row for it, usually with no
     // quantity but occasionally carrying a price — counting those added phantom sales.
-    if (String(r.order_status || "").toLowerCase().startsWith("cancelled")) return;
+    if (String(r.order_status || "").toLowerCase().startsWith("cancelled")) {
+      if (r.amazon_order_id && isStandardOrderId(r.amazon_order_id)) {
+        const set = cancelledOrdersByPeriod.get(pd.label) ?? new Set<string>();
+        set.add(String(r.amazon_order_id));
+        cancelledOrdersByPeriod.set(pd.label, set);
+      }
+      return;
+    }
     // Non-standard order IDs ("S02-..." instead of "NNN-NNNNNNN-NNNNNNN") aren't
     // real sales — historicalAnalysisReportExport.ts already excludes these,
     // verified against the seller's own workbook (every S02- row is absent from
@@ -451,6 +463,6 @@ export async function loadAmazonSkuPeriodData(opts: {
   return {
     dataPulledAt, dataThrough, staleDays, returnCoverageWarnings,
     products, rows, visibleRows, rowsByCategory, catBySku, categoryAgg, periodTotals,
-    stockOf, adsOf, hasAdData, orderCountOf, orderIdsBySkuPeriod,
+    stockOf, adsOf, hasAdData, orderCountOf, orderIdsBySkuPeriod, cancelledOrdersByPeriod,
   };
 }
