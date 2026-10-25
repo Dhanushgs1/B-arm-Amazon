@@ -10,9 +10,10 @@
 //   - Shopify orders by webhook (barm_shopify_orders_v2, read through barm_shopify_orders_summary).
 // From the first day Shopify webhook data exists ("shopifyFrom"), Shopify is the source of truth:
 //   - a card row from a Shopify export is always left out;
-//   - any other card row is left out only when it is the same sale as a Shopify line — same date,
-//     same unit price, same quantity — matched one-to-one; unmatched card rows are kept (non-Shopify
-//     orders);
+//   - any other card row is left out only when it is the same sale as a Shopify line — same unit
+//     price and quantity, dated the same day as the Shopify order or the day after (the workbook is
+//     often filled in the next morning; seller's approval, 25 Oct 2026) — matched one-to-one,
+//     same-day matches first; unmatched card rows are kept (non-Shopify orders);
 //   - Shopify lines are added, except cancelled orders (test orders never reach this code).
 // Before shopifyFrom every card row counts, exactly as before. No row is deleted anywhere.
 // Google Ads credit = Shopify lines whose order's visit came from a Google Ads click
@@ -75,6 +76,13 @@ const num = (v: unknown): number => {
   return Number.isFinite(n) ? n : 0;
 };
 const cents = (v: number) => Math.round(v * 100);
+/** 'YYYY-MM-DD' moved by `days` calendar days (UTC arithmetic, so no time-zone drift). */
+const shiftDate = (iso: string, days: number): string => {
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return iso;
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+};
 
 export const isShopifyExportRow = (r: GoogleCardRow): boolean => /^SHOPIFY-/i.test(String(r.invoice ?? ""));
 
@@ -104,35 +112,48 @@ export function mergeGoogleWebsiteOrders(cardRows: GoogleCardRow[], shopifyOrder
     unmatched.set(k, [...(unmatched.get(k) ?? []), l]);
   });
 
-  const lines: GoogleWebsiteLine[] = [];
-  const dropped: DroppedCardRow[] = [];
-  [...cardRows]
+  const rows = [...cardRows]
     .sort((a, b) => num(a.id) - num(b.id))
-    .forEach((r) => {
+    .map((r) => {
       const date = r.order_date ?? "";
       const quantity = num(r.quantity);
       const price = num(r.price);
-      const value = quantity * price;
-      const covered = !!shopifyFrom && !!date && date >= shopifyFrom;
-      if (covered) {
-        const match = unmatched.get(matchKey(date, price, quantity))?.find((l) => !l.used);
-        if (match) match.used = true;
-        if (match || isShopifyExportRow(r)) {
-          dropped.push({ invoice: String(r.invoice ?? ""), date, value, matchedOrder: match ? match.o.order_name : null });
-          return;
-        }
-      }
-      lines.push({
-        date,
-        name: String(r.product_name ?? "").replace(/\s+/g, " ").trim() || "(no product name)",
-        quantity,
-        price,
-        value,
-        source: "card",
-        order: null,
-        googleAds: false,
-      });
+      return { r, date, quantity, price, value: quantity * price, covered: !!shopifyFrom && !!date && date >= shopifyFrom, match: null as (typeof shopifyLines)[number] | null };
     });
+  // Two passes, one-to-one: first every card row against a Shopify line on its own date, then the
+  // rows still unmatched against one on the day before (the B-Arm workbook often logs an order the
+  // next day). Same-day matches are settled first so a next-day row can never take a Shopify line
+  // that another row matches exactly.
+  [0, 1].forEach((daysBefore) => {
+    rows
+      .filter((x) => x.covered && !x.match)
+      .forEach((x) => {
+        const match = unmatched.get(matchKey(shiftDate(x.date, -daysBefore), x.price, x.quantity))?.find((l) => !l.used);
+        if (match) {
+          match.used = true;
+          x.match = match;
+        }
+      });
+  });
+
+  const lines: GoogleWebsiteLine[] = [];
+  const dropped: DroppedCardRow[] = [];
+  rows.forEach(({ r, date, quantity, price, value, covered, match }) => {
+    if (covered && (match || isShopifyExportRow(r))) {
+      dropped.push({ invoice: String(r.invoice ?? ""), date, value, matchedOrder: match ? match.o.order_name : null });
+      return;
+    }
+    lines.push({
+      date,
+      name: String(r.product_name ?? "").replace(/\s+/g, " ").trim() || "(no product name)",
+      quantity,
+      price,
+      value,
+      source: "card",
+      order: null,
+      googleAds: false,
+    });
+  });
 
   shopifyLines
     .filter((l) => !l.o.is_cancelled)

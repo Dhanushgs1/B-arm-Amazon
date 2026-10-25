@@ -117,3 +117,77 @@ test("ratios", () => {
   // 24 Oct case: Shopify Ad Sales exist but no Google Ads spend file yet — not a 0% ACOS.
   assert.deepEqual(googleAdsRatios(0, 599), { acos: null, roas: null });
 });
+
+// Next-day matching (seller's approval, 25 Oct 2026): real B-Arm workbook rows 71–82 and the Shopify
+// orders of 17–22 Oct 2026, including the nine read from Shopify admin before their backfill.
+const multi = (order_name: string, order_date: string, items: [string, number, number][], ad_channel = "direct", cancelled = false): ShopifyReportOrder => ({
+  order_name,
+  order_date,
+  is_cancelled: cancelled,
+  ad_channel,
+  items: items.map(([title, price, qty]) => ({ title, quantity: qty, price: price.toFixed(2), line_total: (price * qty).toFixed(2) })),
+});
+const CARD_17_22: GoogleCardRow[] = [
+  card(71, "2026-10-20", "ORDER-2026-10-20-pp belt grey-1", "pp belt grey", 1, 399),
+  card(73, "2026-10-21", "ORDER-2026-10-21-Bulb 10.5cm PK5-1", "Bulb 10.5cm PK5", 2, 599),
+  card(74, "2026-10-21", "ORDER-2026-10-21-PP belt grey-1", "PP belt grey", 1, 399),
+  ...CARD.filter((r) => r.order_date === "2026-10-22"),
+];
+const SHOPIFY_17_22: ShopifyReportOrder[] = [
+  order("#1056", "2026-10-17", "Bulb kit PK5", 599, "google_ads"),
+  order("#1057", "2026-10-18", "Dilator Set (Firm)", 789, "google_organic"),
+  order("#1058", "2026-10-18", "Bulb kit PK5", 599, "meta_ads", { cancelled: true }),
+  order("#1059", "2026-10-19", "Postpartum Belly Belt (Grey)", 399, "meta_ads"),
+  order("#1060", "2026-10-20", "Bulb kit PK5", 599, "meta_ads"),
+  order("#1061", "2026-10-21", "Menopause Test Cassettes – Pack of 3", 299, "meta_ads"),
+  order("#1062", "2026-10-21", "Bulb kit PK5", 599, "google_organic", { qty: 2 }),
+  order("#1063", "2026-10-21", "Bulb kit PK5", 599, "meta_ads"),
+  order("#1064", "2026-10-21", "Bulb kit PK5", 599, "meta_ads"),
+  order("#1065", "2026-10-21", "Dilator Set (Firm)", 789, "google_organic"),
+  multi("#1066", "2026-10-21", [["Pad Liners & Healing Foam Combo", 1499, 1], ["Sitz Bath Salt", 203, 1], ["Neem Wood Comb", 179, 1], ["Postpartum kit", 2699, 1]], "google_organic"),
+  ...SHOPIFY.filter((o) => o.order_date === "2026-10-22"),
+];
+const mergedNext = mergeGoogleWebsiteOrders(CARD_17_22, SHOPIFY_17_22);
+const matchOf = (invoicePrefix: string) => mergedNext.dropped.find((d) => d.invoice.startsWith(invoicePrefix))?.matchedOrder ?? null;
+
+test("a workbook row dated the day after a Shopify order is the same sale", () => {
+  assert.equal(matchOf("ORDER-2026-10-20-pp belt grey"), "#1059");
+  assert.equal(matchOf("ORDER-2026-10-22-menopause"), "#1061");
+  assert.equal(matchOf("ORDER-2026-10-22-VD plastic"), "#1065");
+  assert.equal(matchOf("ORDER-2026-10-22-Pad Liners"), "#1066");
+  assert.equal(matchOf("ORDER-2026-10-22-Sitz"), "#1066");
+  assert.equal(matchOf("ORDER-2026-10-22-Neem"), "#1066");
+});
+
+test("same-day matches win over next-day ones", () => {
+  // 21 Oct Bulb ×2 is #1062 the same day; the 22 Oct Bulb row is #1072 (22 Oct), not a 21 Oct order;
+  // the 22 Oct Postpartum row is #1069 (22 Oct), not #1066's Postpartum line.
+  assert.equal(matchOf("ORDER-2026-10-21-Bulb"), "#1062");
+  assert.equal(matchOf("ORDER-2026-10-22-Bulb"), "#1072");
+  assert.equal(matchOf("ORDER-2026-10-22-Postpartum"), "#1069");
+  assert.equal(matchOf("ORDER-2026-10-22-dual kit"), "#1067");
+});
+
+test("a workbook row with no Shopify sale that day or the day before stays", () => {
+  // 21 Oct belt: the only belt order (#1059, 19 Oct) is two days earlier and already matched.
+  const kept = mergedNext.lines.filter((l) => l.source === "card");
+  assert.deepEqual(kept.map((l) => l.name), ["PP belt grey"]);
+  assert.equal(mergedNext.dropped.length, CARD_17_22.length - 1);
+});
+
+test("never matches a row dated before the order, or two days after it", () => {
+  const before = mergeGoogleWebsiteOrders([card(1, "2026-10-21", "ORDER-x", "Belt", 1, 399)], [order("#2001", "2026-10-22", "Belt", 399, "direct")]);
+  assert.equal(before.dropped.length, 0);
+  const twoAfter = mergeGoogleWebsiteOrders([card(1, "2026-10-24", "ORDER-x", "Belt", 1, 399)], [order("#2001", "2026-10-22", "Belt", 399, "direct")]);
+  assert.equal(twoAfter.dropped.length, 0);
+  // Month boundary: 1 Nov row is the next day of a 31 Oct order.
+  const monthEnd = mergeGoogleWebsiteOrders([card(1, "2026-11-01", "ORDER-x", "Belt", 1, 399)], [order("#2001", "2026-10-31", "Belt", 399, "direct")]);
+  assert.equal(monthEnd.dropped[0]?.matchedOrder, "#2001");
+});
+
+test("Shopify totals are unchanged by the matching; only workbook copies drop", () => {
+  const live = mergedNext.lines.filter((l) => l.source === "shopify");
+  // 17–21 Oct real order lines (line value, before shipping), cancelled #1058 left out.
+  assert.equal(live.filter((l) => l.date <= "2026-10-21").length, 13);
+  assert.equal(sum(live.filter((l) => l.date <= "2026-10-21")), 599 + 789 + 399 + 599 + 299 + 1198 + 599 + 599 + 789 + 4580);
+});
