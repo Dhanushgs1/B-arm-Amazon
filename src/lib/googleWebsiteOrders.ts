@@ -16,8 +16,6 @@
 // Before shopifyFrom every card row counts, exactly as before. No row is deleted anywhere.
 // Google Ads credit = Shopify lines whose order's visit came from a Google Ads click
 // (ad_channel "google_ads": gclid / gbraid / wbraid / gad_* on the landing URL).
-// Meta Ads credit (Social Media row, seller's request 25 Oct 2026) = Shopify lines whose order's visit
-// came from a Meta ad click (ad_channel "meta_ads": fbclid on the landing URL) — see metaAdsByProduct.
 
 export interface GoogleCardRow {
   id?: number | null;
@@ -55,7 +53,6 @@ export interface GoogleWebsiteLine {
   /** Shopify order name, for Shopify lines. */
   order: string | null;
   googleAds: boolean;
-  metaAds: boolean;
 }
 
 export interface DroppedCardRow {
@@ -133,7 +130,6 @@ export function mergeGoogleWebsiteOrders(cardRows: GoogleCardRow[], shopifyOrder
         source: "card",
         order: null,
         googleAds: false,
-        metaAds: false,
       });
     });
 
@@ -150,7 +146,6 @@ export function mergeGoogleWebsiteOrders(cardRows: GoogleCardRow[], shopifyOrder
         source: "shopify",
         order: l.o.order_name,
         googleAds: l.o.ad_channel === "google_ads",
-        metaAds: l.o.ad_channel === "meta_ads",
       });
     });
 
@@ -166,51 +161,4 @@ export function googleAdsRatios(spend: number, adSales: number): { acos: number 
     acos: adSales > 0 ? spend / adSales : null,
     roas: adSales / spend,
   };
-}
-
-export interface MetaAdsProductSales {
-  product: string;
-  dayUnits: number;
-  dayValue: number;
-  dayOrders: number;
-  rangeUnits: number;
-  rangeValue: number;
-  rangeOrders: number;
-}
-
-/** Meta Ads-attributed Shopify lines (cancelled orders are already left out by the merge) inside
- *  [start, endDate], grouped by `productFor(line title)` — the same name the Meta campaigns map to,
- *  so a product's orders land on its own Social Media row. Day = endDate only. */
-export function metaAdsByProduct(
-  lines: GoogleWebsiteLine[],
-  start: string,
-  endDate: string,
-  productFor: (title: string) => string
-): MetaAdsProductSales[] {
-  const byProduct = new Map<string, { product: string; dayUnits: number; dayValue: number; rangeUnits: number; rangeValue: number; dayOrders: Set<string>; rangeOrders: Set<string> }>();
-  lines
-    .filter((l) => l.metaAds && l.date >= start && l.date <= endDate)
-    .forEach((l) => {
-      const product = productFor(l.name);
-      const acc = byProduct.get(product) ?? { product, dayUnits: 0, dayValue: 0, rangeUnits: 0, rangeValue: 0, dayOrders: new Set<string>(), rangeOrders: new Set<string>() };
-      acc.rangeUnits += l.quantity;
-      acc.rangeValue += l.value;
-      if (l.order) acc.rangeOrders.add(l.order);
-      if (l.date === endDate) {
-        acc.dayUnits += l.quantity;
-        acc.dayValue += l.value;
-        if (l.order) acc.dayOrders.add(l.order);
-      }
-      byProduct.set(product, acc);
-    });
-  const r2 = (v: number) => Math.round(v * 100) / 100;
-  return [...byProduct.values()].map((a) => ({
-    product: a.product,
-    dayUnits: a.dayUnits,
-    dayValue: r2(a.dayValue),
-    dayOrders: a.dayOrders.size,
-    rangeUnits: a.rangeUnits,
-    rangeValue: r2(a.rangeValue),
-    rangeOrders: a.rangeOrders.size,
-  }));
 }

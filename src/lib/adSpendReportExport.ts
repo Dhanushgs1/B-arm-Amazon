@@ -2,7 +2,7 @@ import * as XLSX from "xlsx-js-style";
 import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
 import { spCampaignDays, isSplitCoveredCampaignRow, unmappedCampaignSpend, campaignsMissingOnDay } from "@/lib/amazonSpendRules";
 import { upsertInChunks, supabasePublic } from "@/lib/amazonReportUpload";
-import { mergeGoogleWebsiteOrders, googleAdsRatios, metaAdsByProduct, type DroppedCardRow, type MetaAdsProductSales, type ShopifyReportOrder } from "@/lib/googleWebsiteOrders";
+import { mergeGoogleWebsiteOrders, googleAdsRatios, type DroppedCardRow, type ShopifyReportOrder } from "@/lib/googleWebsiteOrders";
 import { toDate as parseFlexibleDate } from "@/lib/meeshoReportUpload";
 import { resolveProductName } from "@/lib/categoryMap";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
@@ -1452,8 +1452,6 @@ async function fetchGoogleOrders(range: { start: string; end: string }, endDate:
   shopifyLoadError: string | null;
   /** First day with Shopify orders on file (null = none) — reports before it have no attribution. */
   shopifyFrom: string | null;
-  /** Meta Ads-attributed Shopify sales per Social Media product (see metaAdsByProduct). */
-  metaAds: MetaAdsProductSales[];
 }> {
   const [cardRows, shopify] = await Promise.all([
     fetchAllRows("barm_daily_google_orders", (q) =>
@@ -1530,7 +1528,6 @@ async function fetchGoogleOrders(range: { start: string; end: string }, endDate:
     dropped: merged.dropped.filter((d) => d.date >= range.start && d.date <= range.end),
     shopifyLoadError: shopify.error,
     shopifyFrom: merged.shopifyFrom,
-    metaAds: metaAdsByProduct(merged.lines, range.start, endDate, socialMediaProductFor),
   };
 }
 
@@ -2038,10 +2035,7 @@ export interface SocialMediaEmailSummary {
   price: number;
   day: ProductMetricBlock;
   range: ProductMetricBlock;
-  products: { product: string; campaigns: string[]; price: number; day: ProductMetricBlock; range: ProductMetricBlock; dayAdSales?: number | null; rangeAdSales?: number | null; dayRoas?: number | null; rangeRoas?: number | null }[];
-  /** True from the first Shopify day: Orders/ACOS/Ad Sales come from the Shopify orders whose visit
-   *  came from a Meta ad click. False (or missing, for a summary saved earlier) = spend only, as before. */
-  attributed?: boolean;
+  products: { product: string; campaigns: string[]; price: number; day: ProductMetricBlock; range: ProductMetricBlock }[];
 }
 
 // Google — the reporting day's B-Arm orders (totalUnits/totalValue, the Summary row's Overall
@@ -2591,17 +2585,11 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // (SOCIAL_MEDIA_CAMPAIGN_PRODUCTS); price is looked up from the Amazon platform's own product rows
   // for that name. The channel's total day spend sits on the first row (merged down), the same shape
   // as a multi-product platform block. Overall sales QTS/Value is left blank — those sales are
-  // already counted once under Amazon's own Overall Sales (and website orders under Google's), so
-  // repeating them would double-count.
-  // From the first Shopify day (seller's request, 25 Oct 2026) Orders / Total Sales / Ad Sales / ACOS
-  // are filled from the Shopify orders whose visit came from a Meta ad click (fbclid), per product;
-  // ACOS = Spend (without tax) ÷ Ad Sales, blank when there are none. Before that day: spend only.
+  // already counted once under Amazon's own Overall Sales, so repeating them would double-count.
   let socialMediaRow: number | null = null;
   let socialMediaSummary: SocialMediaEmailSummary | null = null;
-  const metaAttributed = !!googleOrders.shopifyFrom && endDate >= googleOrders.shopifyFrom;
-  const metaRatio = (v: number | null) => (v === null ? null : Math.round(v * 10000) / 10000);
-  const socialMediaProducts: { product: string; campaigns: string[]; price: number; dayAgg: WindowAgg; rangeAgg: WindowAgg; meta: MetaAdsProductSales | null }[] = [];
-  if (socialMedia.daySpend > 0 || socialMedia.rangeSpend > 0 || (metaAttributed && googleOrders.metaAds.length > 0)) {
+  const socialMediaProducts: { product: string; campaigns: string[]; price: number; dayAgg: WindowAgg; rangeAgg: WindowAgg }[] = [];
+  if (socialMedia.daySpend > 0 || socialMedia.rangeSpend > 0) {
     const amazonRowsForSocial = groupProductsByName([...amz.products.values()], undefined, skuToMasterSkuidName);
     const byProduct = new Map<string, { campaigns: string[]; daySpend: number; rangeSpend: number }>();
     socialMedia.campaigns.forEach((c) => {
@@ -2612,38 +2600,30 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       hit.rangeSpend += c.rangeSpend;
       byProduct.set(product, hit);
     });
-    // A product with Meta-attributed orders but no Meta spend on file still gets its row.
-    if (metaAttributed) googleOrders.metaAds.forEach((m) => { if (!byProduct.has(m.product)) byProduct.set(m.product, { campaigns: [], daySpend: 0, rangeSpend: 0 }); });
     byProduct.forEach((v, product) => {
       const amazonRow = amazonRowsForSocial.find((p) => p.name.trim().toLowerCase() === product.toLowerCase());
-      // Orders never borrow the product's Amazon orders (seller's explicit instruction — that
-      // double-credited the same orders to two channels); they are only the Meta-attributed Shopify
-      // orders above, and stay 0 (shown blank) before the first Shopify day.
-      const meta = metaAttributed ? googleOrders.metaAds.find((m) => m.product === product) ?? null : null;
+      // Orders stay 0 (shown blank), per the seller's explicit instruction: Meta's export carries
+      // spend only, and these products' Amazon orders are already counted under Amazon's own rows —
+      // borrowing them here double-credited the same orders to two channels.
       socialMediaProducts.push({
         product: amazonRow?.name ?? product,
         campaigns: v.campaigns,
         price: amazonRow?.price ?? 0,
-        dayAgg: { spend: round2(v.daySpend), units: meta?.dayUnits ?? 0 },
-        rangeAgg: { spend: round2(v.rangeSpend), units: meta?.rangeUnits ?? 0 },
-        meta,
+        dayAgg: { spend: round2(v.daySpend), units: 0 },
+        rangeAgg: { spend: round2(v.rangeSpend), units: 0 },
       });
     });
     socialMediaProducts.sort((a, b) => b.rangeAgg.spend - a.rangeAgg.spend || b.dayAgg.spend - a.dayAgg.spend);
     const dayTotalAgg: WindowAgg = { spend: socialMedia.daySpend, units: 0 };
     socialMediaRow = sumAoa.length;
-    // Before the first Shopify day Total Sales, Total Orders, CPC and ACOS all stay blank (both
-    // blocks) — spend is the only figure those rows can honestly show. CPC always stays blank.
-    const metaCells = (spend: number, units: number, value: number) => {
-      if (!metaAttributed) return ["", "", "", "", null];
-      return [units, round2(value), "", metaRatio(googleAdsRatios(spend, value).acos) ?? "", round2(value)];
-    };
+    // Total Sales, Total Orders, CPC and ACOS all stay blank (both blocks) — spend is the only
+    // figure these rows can honestly show (see the orders note above).
     socialMediaProducts.forEach((p, i) => sumAoa.push([
       i === 0 ? "Social Media" : "",
       i === 0 ? round2(socialMedia.daySpend) : "", i === 0 ? round2(spendTax(dayTotalAgg)) : "",
       p.product, p.price || "",
-      round2(p.dayAgg.spend), round2(spendTax(p.dayAgg)), ...metaCells(p.dayAgg.spend, p.dayAgg.units, p.meta?.dayValue ?? 0),
-      round2(p.rangeAgg.spend), round2(spendTax(p.rangeAgg)), ...metaCells(p.rangeAgg.spend, p.rangeAgg.units, p.meta?.rangeValue ?? 0),
+      round2(p.dayAgg.spend), round2(spendTax(p.dayAgg)), "", "", "", "", null,
+      round2(p.rangeAgg.spend), round2(spendTax(p.rangeAgg)), "", "", "", "", null,
       "", "",
     ]));
     if (socialMediaProducts.length > 1) {
@@ -2652,18 +2632,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     // Same figures as the Summary-sheet rows above, reshaped for the emailed daily digest (see
     // buildAdSpendDailyHtml in supabase/functions/send-ad-spend-email/index.ts), which renders
     // them directly below Meesho's, per the seller's explicit request.
-    const block = (agg: WindowAgg, adSales: number): ProductMetricBlock => ({
-      spend: round2(agg.spend), spendTax: round2(spendTax(agg)), orders: agg.units, cpc: 0,
-      acos: metaAttributed ? metaRatio(googleAdsRatios(agg.spend, adSales).acos) : null,
-    });
-    const products = socialMediaProducts.map((p) => ({
-      product: p.product, campaigns: p.campaigns, price: p.price,
-      day: block(p.dayAgg, p.meta?.dayValue ?? 0), range: block(p.rangeAgg, p.meta?.rangeValue ?? 0),
-      dayAdSales: metaAttributed ? round2(p.meta?.dayValue ?? 0) : null,
-      rangeAdSales: metaAttributed ? round2(p.meta?.rangeValue ?? 0) : null,
-      dayRoas: metaAttributed ? metaRatio(googleAdsRatios(p.dayAgg.spend, p.meta?.dayValue ?? 0).roas) : null,
-      rangeRoas: metaAttributed ? metaRatio(googleAdsRatios(p.rangeAgg.spend, p.meta?.rangeValue ?? 0).roas) : null,
-    }));
+    const block = (agg: WindowAgg): ProductMetricBlock => ({ spend: round2(agg.spend), spendTax: round2(spendTax(agg)), orders: 0, cpc: 0, acos: null });
+    const products = socialMediaProducts.map((p) => ({ product: p.product, campaigns: p.campaigns, price: p.price, day: block(p.dayAgg), range: block(p.rangeAgg) }));
     socialMediaSummary = {
       daySpend: round2(socialMedia.daySpend),
       daySpendTax: round2(spendTax(dayTotalAgg)),
@@ -2672,7 +2642,6 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       day: products[0].day,
       range: products[0].range,
       products,
-      attributed: metaAttributed,
     };
   }
 
@@ -2844,8 +2813,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
 
   // Social Media (Meta Ads) — same column layout as the platform blocks above, one row per product
   // (same rows as the Summary sheet), with the Meta campaign name(s) in the first column instead of
-  // SKUs. Orders/ACOS are the Meta-attributed Shopify orders from the first Shopify day (blank
-  // before it); CPC stays blank.
+  // SKUs. Orders/CPC/ACOS stay blank: Meta's export carries spend only.
   let socialDetailLabelRow: number | null = null;
   if (socialMediaProducts.length) {
     socialDetailLabelRow = detailAoa.length;
@@ -2864,8 +2832,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     );
     socialMediaProducts.forEach((p) => detailAoa.push([
       p.campaigns.join(", "), p.product, p.price || "",
-      round2(p.dayAgg.spend), round2(spendTax(p.dayAgg)), metaAttributed ? p.dayAgg.units : "", "", metaAttributed ? metaRatio(googleAdsRatios(p.dayAgg.spend, p.meta?.dayValue ?? 0).acos) ?? "" : "",
-      round2(p.rangeAgg.spend), round2(spendTax(p.rangeAgg)), metaAttributed ? p.rangeAgg.units : "", "", metaAttributed ? metaRatio(googleAdsRatios(p.rangeAgg.spend, p.meta?.rangeValue ?? 0).acos) ?? "" : "",
+      round2(p.dayAgg.spend), round2(spendTax(p.dayAgg)), "", "", "",
+      round2(p.rangeAgg.spend), round2(spendTax(p.rangeAgg)), "", "", "",
     ]));
     detailAoa.push([]);
   }
@@ -3193,12 +3161,6 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
             (googleOrders.dropped.length
               ? ` Left out as Shopify duplicates: ${googleOrders.dropped.map((d) => `${d.invoice} (₹${round2(d.value).toFixed(2)}${d.matchedOrder ? ` = ${d.matchedOrder}` : ""})`).join("; ")}.`
               : ""),
-        ]]
-      : []),
-    ...(metaAttributed && socialMediaProducts.length
-      ? [[
-          "Social Media (Meta) Orders / Total Sales / Ad Sales = the Shopify website orders whose visit came from a Meta ad click (fbclid on the landing URL), cancelled and test orders excluded, matched to each product by name the same way as the Meta campaigns; ACOS = Spend (without tax) / Ad Sales, blank when there are none; CPC stays blank. These orders are also inside the Google row's website orders total, so the Social Media row has no Overall sales." +
-            ` This report: ${socialMediaProducts.map((p) => `${p.product} — ${p.meta?.dayOrders ?? 0} order(s) ₹${round2(p.meta?.dayValue ?? 0).toFixed(2)} on ${dotDate(endDate)}, ${p.meta?.rangeOrders ?? 0} order(s) ₹${round2(p.meta?.rangeValue ?? 0).toFixed(2)} over the range`).join("; ")}.`,
         ]]
       : []),
     ...(googleOrders.shopifyLoadError

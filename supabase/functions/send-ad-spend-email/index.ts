@@ -137,39 +137,31 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
   // extra row appended after the real platform rows below — same column shape as a one-product
   // platform block, just built from a differently-shaped object (no topProducts/allProducts list,
   // since there's only ever the one product).
-  // Orders/CPC/ACOS render as "-" when the summary isn't `attributed` (before the first Shopify day,
-  // or saved before that field existed): Meta's export has spend only, and borrowing the promoted
+  // Orders/CPC/ACOS render as "-": Meta's export has spend only, and borrowing the promoted
   // product's Amazon orders double-credited them to two channels (seller's explicit instruction).
-  // When `attributed`, Orders/ACOS are the Shopify orders whose visit came from a Meta ad click
-  // (ACOS "–" when there are none) and ROAS rides in the product cell, like Google's; CPC stays "-".
   // One row per promoted product (Meta campaigns grouped by product), the channel's day totals
   // spanning them — same shape as a multi-product platform block.
   const socialMedia = data.socialMediaSummary;
-  const socialAttributed = socialMedia?.attributed === true;
   const socialProducts = socialMedia ? (socialMedia.products?.length ? socialMedia.products : [socialMedia]) : [];
   const socialSpan = socialProducts.length > 1 ? ` rowspan="${socialProducts.length}"` : "";
-  const socialRoas = (v: number | null | undefined) => (v == null ? "–" : v.toFixed(2));
-  const socialOrdersCell = (v: number) => `<td ${td}>${socialAttributed ? v || 0 : "-"}</td>`;
-  const socialAcosCell = (v: number | null | undefined) =>
-    socialAttributed ? `<td class="aspd-td ${acosClass(v ?? null)}">${acosPct(v ?? null)}</td>` : `<td ${td}>-</td>`;
   const socialMediaRowHtml = socialMedia
     ? socialProducts.map((p, i) => `
         <tr>
           ${i === 0 ? `<td ${td}${socialSpan} style="font-weight:800;border-left:3px solid #1877F2;">Social Media</td>
           <td ${td}${socialSpan}>${money(socialMedia.daySpend)}</td>
           <td ${td}${socialSpan}>${money(socialMedia.daySpendTax)}</td>` : ""}
-          <td ${tdName}>${clip(p.product)}${socialAttributed ? `<br>ROAS ${socialRoas(p.dayRoas)} day · ${socialRoas(p.rangeRoas)} range` : ""}</td>
+          <td ${tdName}>${clip(p.product)}</td>
           <td ${td}>${p.price ? money(p.price) : "-"}</td>
           <td ${td}>${money(p.day.spend)}</td>
           <td ${td}>${money(p.day.spendTax)}</td>
-          ${socialOrdersCell(p.day.orders)}
           <td ${td}>-</td>
-          ${socialAcosCell(p.day.acos)}
+          <td ${td}>-</td>
+          <td ${td}>-</td>
           <td ${td}>${money(p.range.spend)}</td>
           <td ${td}>${money(p.range.spendTax)}</td>
-          ${socialOrdersCell(p.range.orders)}
           <td ${td}>-</td>
-          ${socialAcosCell(p.range.acos)}
+          <td ${td}>-</td>
+          <td ${td}>-</td>
           ${i === 0 ? `<td ${td}${socialSpan}>-</td>
           <td ${td}${socialSpan}>-</td>` : ""}
         </tr>`).join("")
