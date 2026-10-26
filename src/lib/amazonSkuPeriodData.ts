@@ -3,6 +3,7 @@ import { istDayWindowUtc, istDateOnly, isStandardOrderId } from "@/lib/amazonRep
 import { dedupeSellerFlexReturns } from "@/lib/amazonSpendRules";
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns, fetchAllMisReportDataInfo } from "@/lib/misAdapters";
 import { staleSourceWarnings } from "@/lib/reportCoverage";
+import { dailyAmRowAsMis, dailyFallbackStart, dedupeOrderLines } from "@/lib/dailyOrderFallbackRules";
 import { categorizeTitle, resolveProductName } from "@/lib/categoryMap";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog } from "@/lib/masterProductSkuid";
@@ -61,8 +62,11 @@ export async function loadAmazonSkuPeriodData(opts: {
   // Stock on hand (the inventory ledger, ~73k rows) — only the reports' "Low stock" reason uses it,
   // so the Overall summary skips it; stock then reads as unknown, never as 0.
   includeStock?: boolean;
+  // Overall page only: days after the last MIS amazon_orders day are read from the daily "Last 7
+  // days" upload (barm_daily_am_orders) instead of showing ₹0 — see dailyOrderFallbackRules.ts.
+  fillFromDailyUpload?: boolean;
 }) {
-  const { periods, includeAds = true, includeStock = true } = opts;
+  const { periods, includeAds = true, includeStock = true, fillFromDailyUpload = false } = opts;
   if (periods.length === 0) throw new Error("loadAmazonSkuPeriodData: no periods");
   const rangeStart = periods[0].start;
   const rangeEnd = periods[periods.length - 1].end;
@@ -89,7 +93,7 @@ export async function loadAmazonSkuPeriodData(opts: {
   const coveragePromise = fetchAllMisReportDataInfo();
   // Fetch every relevant row once across the whole span of the periods, split by date in memory
   // below — same "fetch once, filter per window" approach historicalAnalysisReportExport.ts uses for its 30/7-day windows.
-  const [orderRows, amReturnRows, fbaReturnRows, sfReturnRows, priceListingRows, ledgerRows, adRows, productMaster, masterSkuid, masterSkuidCatalog, productMarketing] = await Promise.all([
+  const [misOrderRows, amReturnRows, fbaReturnRows, sfReturnRows, priceListingRows, ledgerRows, adRows, productMaster, masterSkuid, masterSkuidCatalog, productMarketing] = await Promise.all([
     fetchMisAmazonOrders((q) => q.gte("purchase_datetime", ordersWindow.gte).lt("purchase_datetime", ordersWindow.lt)),
     fetchMisAmazonReturns((q) => q.gte("return_request_date", rangeStart).lte("return_request_date", rangeEnd)),
     fetchMisFbaReturns((q) =>
@@ -134,6 +138,15 @@ export async function loadAmazonSkuPeriodData(opts: {
   // days than the one it's compared against, and every Growth % reads
   // catastrophically negative for no reason other than missing data — see
   // the identical check in flipkartWeeklySalesExport.ts, which this mirrors.
+  let orderRows = misOrderRows;
+  if (fillFromDailyUpload) {
+    const fillFrom = dailyFallbackStart((await coveragePromise).am_orders?.maxDate ?? null, rangeStart, rangeEnd);
+    if (fillFrom) {
+      const daily = await fetchAllRows("barm_daily_am_orders", (q) => q.gte("report_date", fillFrom).lte("report_date", rangeEnd), ["report_date", "id"]);
+      const mapped = dedupeOrderLines(daily.map(dailyAmRowAsMis), (r) => r.item_status);
+      orderRows = [...misOrderRows, ...(mapped as unknown as typeof misOrderRows)];
+    }
+  }
   const orderDates = orderRows.map((r) => r.purchase_date).filter((d): d is string => !!d).sort();
   const dataThrough = orderDates.length ? orderDates[orderDates.length - 1] : null;
   const staleDays = dataThrough
