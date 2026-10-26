@@ -296,9 +296,9 @@ export interface GoogleUploadResult {
   spend: GoogleAdSpendUploadResult | null;
 }
 
-async function uploadGoogleAdSpendSheets(sheets: unknown[][][]): Promise<GoogleAdSpendUploadResult> {
+async function uploadGoogleAdSpendSheets(sheets: { aoa: unknown[][]; sheetName: string }[], fileName: string): Promise<GoogleAdSpendUploadResult> {
   // Parse every sheet first, so a bad sheet saves nothing at all.
-  const parsed = sheets.map(parseGoogleAdSpendSheet);
+  const parsed = sheets.map((s) => parseGoogleAdSpendSheet(s.aoa, { sheetName: s.sheetName, fileName }));
   for (const p of parsed) {
     if (p.accountTotal !== null && Math.abs(p.accountTotal - p.campaignTotal) > 0.01) {
       throw new Error(`Google Ads report ${p.report_start} → ${p.report_end}: campaigns add up to ₹${p.campaignTotal} but its "Total: Account" line says ₹${p.accountTotal} — nothing saved. Download the report again without filters.`);
@@ -344,15 +344,21 @@ async function uploadGoogleAdSpendSheets(sheets: unknown[][][]): Promise<GoogleA
  *  workbook with both — each sheet goes to its own table. */
 export async function uploadGoogleFile(file: File): Promise<GoogleUploadResult> {
   const name = file.name.toLowerCase();
-  if (!name.endsWith(".xlsx") && !name.endsWith(".xls")) return { orders: await uploadGoogleOrdersFile(file), spend: null };
+  if (!name.endsWith(".xlsx") && !name.endsWith(".xls")) {
+    // A CSV with a Campaign + Cost / Amount Spent header is ad spend (window from the file name);
+    // any other CSV is orders, as before.
+    const aoa = XLSX.utils.sheet_to_json<unknown[]>(XLSX.read(await file.text(), { type: "string" }).Sheets.Sheet1, { header: 1, defval: "" }) as unknown[][];
+    if (isGoogleAdSpendSheet(aoa)) return { orders: null, spend: await uploadGoogleAdSpendSheets([{ aoa, sheetName: "" }], file.name) };
+    return { orders: await uploadGoogleOrdersFile(file), spend: null };
+  }
 
   const wb = await readWorkbook(file);
-  const aoas = wb.SheetNames.map((n) => sheetAoa(wb.Sheets[n]));
-  const spendSheets = aoas.filter(isGoogleAdSpendSheet);
-  const hasOrdersSheet = aoas.some((a) => !isGoogleAdSpendSheet(a) && findBarmOrdersHeader(a));
+  const sheets = wb.SheetNames.map((n) => ({ sheetName: n, aoa: sheetAoa(wb.Sheets[n]) }));
+  const spendSheets = sheets.filter((s) => isGoogleAdSpendSheet(s.aoa));
+  const hasOrdersSheet = sheets.some((s) => !isGoogleAdSpendSheet(s.aoa) && findBarmOrdersHeader(s.aoa));
   if (!spendSheets.length) return { orders: await uploadGoogleOrdersFile(file), spend: null };
 
-  const spend = await uploadGoogleAdSpendSheets(spendSheets);
+  const spend = await uploadGoogleAdSpendSheets(spendSheets, file.name);
   const orders = hasOrdersSheet ? await uploadGoogleOrdersFile(file) : null;
   return { orders, spend };
 }

@@ -573,7 +573,9 @@ function GoogleOrdersUploadCard({ onUploaded, dataInfo, spendInfo, shopifyInfo }
       <p className="text-xs text-muted-foreground mb-4">
         Drop Shopify&apos;s &quot;Total sales by product&quot; export for orders (saved as the day before its file-name date —
         &quot;B-arm order 24_10_2026.xlsx&quot; = 23 Oct orders) — or the older &quot;B-Arm Orders&quot; workbook — and Google
-        Ads&apos; &quot;Campaign report&quot; export for ad spend (the 1-day and the 7-day file, one at a time). Each sheet is detected and saved to its own table. Feeds the{" "}
+        Ads&apos; &quot;Campaign report&quot; export for ad spend (the 1-day and the 7-day file, one at a time), or the daily
+        &quot;Google_Ads_Spend_2026-10-25.xlsx&quot; (file-name date = the previous day: its &quot;Previous Day&quot; sheet is
+        saved as 25 Oct, its &quot;Last 7 Days&quot; sheet as 19–25 Oct). Each sheet is detected and saved to its own table. Feeds the{" "}
         <Link href="/dashboard/reports" className="underline hover:text-foreground">Ad Spend Report</Link>&apos;s
         Summary sheet &quot;Google&quot; row.
       </p>
