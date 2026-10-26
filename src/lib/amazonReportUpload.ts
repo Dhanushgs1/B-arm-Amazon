@@ -418,7 +418,10 @@ function mapPriceListingRow(row: RawRow) {
   return {
     seller_sku: pick(row, /^seller-sku$/i),
     item_name: pick(row, /^item-name$/i),
-    price: toNum(pick(row, /^price$/i)),
+    // The custom-column All-Listings export (Manage All Inventory) can carry
+    // only "maximum-retail-price" and no "price" — user rule (2026-10-26):
+    // store the MRP as the price then, instead of 0 for every SKU.
+    price: toNum(pick(row, /^price$/i) || pick(row, /^maximum-retail-price$/i)),
     business_price: toNum(pick(row, /^Business Price$/i)),
     quantity: toInt(pick(row, /^quantity$/i)),
     fulfillment_channel: pick(row, /^fulfillment-channel$/i),
