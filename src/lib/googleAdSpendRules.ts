@@ -84,13 +84,48 @@ export function parseGoogleReportWindow(text: string): [string, string] | null {
   return [start, end];
 }
 
+// The seller's own daily "Google_Ads_Spend_2026-10-25.xlsx" is a simpler two-column file with no
+// date line: sheets "Previous Day Ad Spend" and "Last 7 Days Ad Spend", each "Campaign Name |
+// Amount Spent (INR)". Its file-name date is the previous day itself (downloaded on the 26th, named
+// 25 → the 1-day sheet is 25 Oct and the 7-day sheet is 19–25 Oct).
+const CAMPAIGN_HEADERS = ["campaign", "campaign name"];
+const COST_HEADERS = ["cost", "amount spent (inr)", "amount spent"];
+
 /** Index of the header row (has both a "Campaign" and a "Cost" cell), or -1. */
 export function findGoogleAdSpendHeader(aoa: unknown[][]): number {
   for (let i = 0; i < Math.min(aoa.length, 15); i++) {
     const cells = (aoa[i] || []).map(norm);
-    if (cells.includes("campaign") && cells.includes("cost")) return i;
+    if (cells.some((c) => CAMPAIGN_HEADERS.includes(c)) && cells.some((c) => COST_HEADERS.includes(c))) return i;
   }
   return -1;
+}
+
+/** "Google_Ads_Spend_2026-10-25.xlsx" / "GAds_PrevDay_25_10_2026.csv" → "2026-10-25" (no shift). */
+export function googleSpendDateFromFileName(name: string): string | null {
+  const ymd = /(\d{4})[-_.](\d{1,2})[-_.](\d{1,2})/.exec(name);
+  const dmy = /(\d{1,2})[-_.](\d{1,2})[-_.](\d{4})/.exec(name);
+  const parts = ymd ? [ymd[1], ymd[2], ymd[3]] : dmy ? [dmy[3], dmy[2], dmy[1]] : null;
+  if (!parts) return null;
+  const [y, m, d] = parts;
+  const iso = `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  const t = new Date(`${iso}T00:00:00Z`);
+  return !Number.isNaN(t.getTime()) && t.toISOString().slice(0, 10) === iso ? iso : null;
+}
+
+/** 1 or 7 from a sheet / file name ("Previous Day Ad Spend", "Last 7 Days Ad Spend", "GAds_PrevDay"). */
+export function googleSpendWindowDays(label: string): number | null {
+  const s = label.toLowerCase();
+  if (/\b7\s*-?\s*days?\b|last\s*7|7d\b/.test(s)) return 7;
+  if (/prev(ious)?\s*_?\s*day|yesterday|\b1\s*-?\s*day\b|1d\b/.test(s)) return 1;
+  return null;
+}
+
+function windowFromNames(sheetName: string, fileName: string): [string, string] | null {
+  const end = googleSpendDateFromFileName(fileName);
+  const days = googleSpendWindowDays(sheetName) ?? googleSpendWindowDays(fileName);
+  if (!end || !days) return null;
+  const start = new Date(Date.parse(`${end}T00:00:00Z`) - (days - 1) * 86_400_000).toISOString().slice(0, 10);
+  return [start, end];
 }
 
 /** True when the sheet is a Google Ads campaign report (not a B-Arm orders sheet). */
@@ -100,7 +135,7 @@ export function isGoogleAdSpendSheet(aoa: unknown[][]): boolean {
 
 /** Parses one sheet. Throws with a readable message when it is a campaign report that can't be
  *  saved as-is (no date window line), so nothing half-read is stored. */
-export function parseGoogleAdSpendSheet(aoa: unknown[][]): GoogleAdSpendSheet {
+export function parseGoogleAdSpendSheet(aoa: unknown[][], names: { sheetName?: string; fileName?: string } = {}): GoogleAdSpendSheet {
   const headerIdx = findGoogleAdSpendHeader(aoa);
   if (headerIdx < 0) throw new Error("No \"Campaign\" + \"Cost\" header row found.");
 
@@ -111,16 +146,18 @@ export function parseGoogleAdSpendSheet(aoa: unknown[][]): GoogleAdSpendSheet {
       if (window) break;
     }
   }
-  if (!window) throw new Error("No reporting date line (e.g. \"17 October 2026 - 23 October 2026\") above the header — download the report again with its title rows.");
+  // No date line (the two-column daily file) → the file-name date + "Previous Day" / "Last 7 Days".
+  window ??= windowFromNames(names.sheetName ?? "", names.fileName ?? "");
+  if (!window) throw new Error("No reporting date line (e.g. \"17 October 2026 - 23 October 2026\") above the header, and the file / sheet name doesn't give one (e.g. \"Google_Ads_Spend_2026-10-25.xlsx\" with a \"Previous Day\" or \"Last 7 Days\" sheet).");
 
   const headers = (aoa[headerIdx] || []).map((h) => str(h));
   const col = (...names: string[]) => {
     const wanted = names.map((n) => n.toLowerCase());
     return headers.findIndex((h) => wanted.includes(norm(h)));
   };
-  const cCampaign = col("Campaign");
+  const cCampaign = col(...CAMPAIGN_HEADERS);
   const cStatus = col("Campaign status");
-  const cCost = col("Cost");
+  const cCost = col(...COST_HEADERS);
   const cClicks = col("Clicks");
   const cConv = col("Conversions");
   const cConvValue = col("Conv. value", "Conversion value");
@@ -138,7 +175,10 @@ export function parseGoogleAdSpendSheet(aoa: unknown[][]): GoogleAdSpendSheet {
       continue;
     }
     const name = str(at(cells, cCampaign)).replace(/\s+/g, " ");
-    if (isBlank(name)) continue;
+    // Two-column daily file: its "--" row is the grand total (used as the check, like "Total:
+    // Account") and its "Total" row is a partial roll-up — neither is a campaign.
+    if (cStatus < 0 && isBlank(name) && str(at(cells, cCost)) !== "") { accountTotal = round2(num(at(cells, cCost))); continue; }
+    if (isBlank(name) || /^total\b/i.test(name)) continue;
     const key = name.toLowerCase();
     const line: Record<string, unknown> = {};
     headers.forEach((h, i) => { if (h) line[h] = cells[i] ?? ""; });

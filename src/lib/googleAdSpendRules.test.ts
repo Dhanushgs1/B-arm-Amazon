@@ -54,6 +54,25 @@ test("detects a campaign report but not a B-Arm orders sheet", () => {
   assert.equal(isGoogleAdSpendSheet([["B-Arm Orders:04"], ["S no", "Date", "Invoice", "Sku", "Qty", "Price"], [1, "15.10.2026", "INV1", "KIT", 1, 499]]), false);
 });
 
+// Shape of the seller's daily "Google_Ads_Spend_2026-10-25.xlsx" (no date line, two columns).
+// Its "--" row is the grand total; its "Total" row is only part of it (the real file: 312.82 vs 293.32).
+const simple = [["Campaign Name", "Amount Spent (INR)"], ["Breast Shells", 0], ["Chewy Tube", 120.5], ["Chewy tube", 10], ["Steth - Shopping", 300.25], ["--", 430.75], ["Total", 300.25]];
+
+test("two-column daily file: file-name date is the 1-day date, 7-day sheet ends on it", () => {
+  assert.equal(isGoogleAdSpendSheet(simple), true);
+  const day = parseGoogleAdSpendSheet(simple, { sheetName: "Previous Day Ad Spend", fileName: "Google_Ads_Spend_2026-10-25.xlsx" });
+  assert.deepEqual([day.report_start, day.report_end], ["2026-10-25", "2026-10-25"]);
+  assert.equal(day.campaignTotal, 430.75);
+  assert.equal(day.accountTotal, 430.75);
+  assert.equal(day.campaigns.length, 3);
+  assert.equal(day.campaigns.find((c) => c.campaign_name === "Chewy Tube")?.spend, 130.5);
+  const week = parseGoogleAdSpendSheet(simple, { sheetName: "Last 7 Days Ad Spend", fileName: "Google_Ads_Spend_2026-10-25.xlsx" });
+  assert.deepEqual([week.report_start, week.report_end], ["2026-10-19", "2026-10-25"]);
+  const csv = parseGoogleAdSpendSheet(simple, { sheetName: "", fileName: "GAds_PrevDay_2026-10-25.csv" });
+  assert.deepEqual([csv.report_start, csv.report_end], ["2026-10-25", "2026-10-25"]);
+  assert.throws(() => parseGoogleAdSpendSheet(simple, { sheetName: "Sheet1", fileName: "spend.xlsx" }), /reporting date line/);
+});
+
 test("a campaign report without its date line is refused, not saved undated", () => {
   assert.throws(() => parseGoogleAdSpendSheet([HEADER, line("Google Search", "Enabled", "x", 10)]), /reporting date line/);
 });
