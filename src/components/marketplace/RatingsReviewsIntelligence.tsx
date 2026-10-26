@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import * as XLSX from "xlsx";
 import {
@@ -8,7 +8,6 @@ import {
   ArrowDown,
   ArrowUp,
   CalendarClock,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -24,13 +23,15 @@ import {
   TrendingDown,
   TrendingUp,
   Upload,
+  X,
 } from "lucide-react";
-import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, CartesianGrid, ComposedChart, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { MarketplaceId } from "@/lib/marketplace";
 import {
   HEALTH_META,
   MIN_REVIEWS,
-  crossPlatformListings,
+  crossChannelListings,
+  fetchListingHistory,
   fetchRatingMetrics,
   groupListings,
   listingImpact,
@@ -195,20 +196,219 @@ function Kpi({
   );
 }
 
-function ListingLine({ l, showPlatform, right }: { l: Listing; showPlatform: boolean; right: React.ReactNode }) {
+function ListingLine({ l, showPlatform, right, onOpen }: { l: Listing; showPlatform: boolean; right: React.ReactNode; onOpen: (l: Listing) => void }) {
   return (
-    <li className="flex items-center gap-3 py-2.5">
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium text-foreground" title={l.name}>
-          {l.name}
+    <li>
+      <button onClick={() => onOpen(l)} className="-mx-2 flex w-[calc(100%+1rem)] items-center gap-3 rounded-lg px-2 py-2.5 text-left hover:bg-muted/60">
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium text-foreground" title={l.name}>
+            {l.name}
+          </span>
+          <span className="block truncate text-[11px] text-muted-foreground">
+            {showPlatform && `${l.platform} · `}
+            {l.skus.length > 1 ? `${l.skus.length} variants` : l.skus[0].skuId}
+          </span>
         </span>
-        <span className="block truncate text-[11px] text-muted-foreground">
-          {showPlatform && `${l.platform} · `}
-          {l.skus.length > 1 ? `${l.skus.length} variants` : l.skus[0].skuId}
-        </span>
-      </span>
-      {right}
+        {right}
+      </button>
     </li>
+  );
+}
+
+/** Full-width tiny trend line with a soft fill; null points are skipped. */
+function Sparkline({ values, color, height = 28 }: { values: (number | null)[]; color: string; height?: number }) {
+  const W = 100;
+  const pts = values.map((v, i) => ({ v, i })).filter((p): p is { v: number; i: number } => p.v !== null);
+  if (pts.length < 2) return <div style={{ height }} />;
+  const min = Math.min(...pts.map((p) => p.v));
+  const max = Math.max(...pts.map((p) => p.v));
+  const span = max - min || 1;
+  const x = (i: number) => (i / Math.max(1, values.length - 1)) * W;
+  const y = (v: number) => height - 2 - ((v - min) / span) * (height - 4);
+  const line = pts.map((p, k) => `${k ? "L" : "M"}${x(p.i).toFixed(2)},${y(p.v).toFixed(2)}`).join(" ");
+  const area = `${line} L${x(pts[pts.length - 1].i).toFixed(2)},${height} L${x(pts[0].i).toFixed(2)},${height} Z`;
+  return (
+    <svg width="100%" height={height} viewBox={`0 0 ${W} ${height}`} preserveAspectRatio="none" aria-hidden className="block">
+      <path d={area} fill={color} fillOpacity={0.12} />
+      <path d={line} fill="none" stroke={color} strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
+type Risk = "high" | "medium" | "low";
+const RISK_META: Record<Risk, { label: string; cls: string; why: string }> = {
+  high: { label: "High risk", cls: "bg-red-500/10 text-red-600 dark:text-red-400", why: "Below 3.5★, or below 4★ and still falling" },
+  medium: { label: "Medium risk", cls: "bg-amber-500/10 text-amber-700 dark:text-amber-300", why: "Below 4★, or dropped 0.2★+ since last week" },
+  low: { label: "Low risk", cls: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300", why: "4★+ and not falling" },
+};
+
+/** Health band plus direction: a 3.9★ listing that is still dropping is worse than a steady one. */
+function riskOf(l: Listing): Risk | null {
+  if (l.rating === null) return null;
+  const falling = (l.ratingDelta ?? 0) < 0;
+  if (!l.lowConfidence && (l.rating < 3.5 || (l.rating < 4 && falling))) return "high";
+  if (l.rating < 4 || (l.ratingDelta ?? 0) <= -0.2) return "medium";
+  return "low";
+}
+
+function RiskBadge({ l }: { l: Listing }) {
+  const r = riskOf(l);
+  if (!r) return null;
+  const m = RISK_META[r];
+  return (
+    <span className={cn("whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold", m.cls)} title={m.why}>
+      {m.label}
+    </span>
+  );
+}
+
+const shortDate = (v: string) => new Date(`${v}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+const tooltipStyle = {
+  background: "var(--popover)",
+  border: "1px solid var(--border)",
+  borderRadius: 8,
+  fontSize: 12,
+  color: "var(--popover-foreground)",
+};
+
+/** Side panel for one listing: every stored weekly snapshot plus its variant SKUs. */
+function ListingDrawer({ l, onClose }: { l: Listing; onClose: () => void }) {
+  const keys = l.skus.map((s) => s.skuKey);
+  const { data: history, isLoading, isError } = useQuery({
+    queryKey: ["rating-listing-history", l.platform, keys],
+    queryFn: () => fetchListingHistory(l.platform, keys),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const rows = history ?? [];
+  const first = rows.find((r) => r.rating !== null);
+  const sinceFirst = first && l.rating !== null && first.date !== rows[rows.length - 1]?.date ? Math.round((l.rating - first.rating!) * 10) / 10 : null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label={l.name}>
+      <button className="absolute inset-0 bg-black/40 backdrop-blur-[1px]" onClick={onClose} aria-label="Close" />
+      <div className="relative flex h-full w-full max-w-xl flex-col overflow-y-auto border-l border-border bg-background shadow-2xl">
+        <div className="sticky top-0 z-10 flex items-start gap-3 border-b border-border bg-background/95 p-4 backdrop-blur sm:p-5">
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{l.platform}</p>
+            <h2 className="mt-0.5 text-base font-bold leading-snug text-foreground">{l.name}</h2>
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <HealthBadge health={l.health} />
+              <RiskBadge l={l} />
+              {l.lowConfidence && <LowConfidence />}
+            </div>
+          </div>
+          <button onClick={onClose} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="Close panel">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="space-y-5 p-4 sm:p-5">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {[
+              { label: "Rating", value: <Stars rating={l.rating} size={11} /> },
+              { label: "Reviews", value: <span className="text-sm font-bold tabular-nums text-foreground">{fmtInt(l.reviews)}</span> },
+              {
+                label: "vs last week",
+                value: l.isNew ? <span className="text-xs font-semibold text-indigo-600 dark:text-indigo-400">New</span> : <Delta value={l.ratingDelta} />,
+              },
+              { label: `Since ${first ? shortDate(first.date) : "first week"}`, value: <Delta value={sinceFirst} /> },
+            ].map((s) => (
+              <div key={s.label} className="rounded-xl bg-muted/50 px-3 py-2">
+                <div className="text-[11px] text-muted-foreground">{s.label}</div>
+                <div className="mt-0.5">{s.value}</div>
+              </div>
+            ))}
+          </div>
+
+          <div>
+            <p className="mb-2 text-xs font-semibold text-muted-foreground">Weekly history</p>
+            {isLoading ? (
+              <div className="flex h-[180px] items-center justify-center text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin" />
+              </div>
+            ) : isError ? (
+              <p className="py-6 text-center text-xs text-red-600 dark:text-red-400">Couldn&apos;t load this listing&apos;s history.</p>
+            ) : rows.length < 2 ? (
+              <p className="py-6 text-center text-xs text-muted-foreground">Only one snapshot so far — history builds up week by week.</p>
+            ) : (
+              <div className="h-[200px] text-muted-foreground">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={rows} margin={{ top: 5, right: 0, left: -18, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                    <XAxis dataKey="date" tickFormatter={shortDate} tick={{ fontSize: 11, fill: "currentColor" }} tickLine={false} axisLine={false} />
+                    <YAxis yAxisId="r" domain={[(min: number) => Math.max(0, Math.floor(min * 2) / 2 - 0.5), 5]} tick={{ fontSize: 11, fill: "currentColor" }} tickLine={false} axisLine={false} tickFormatter={(v: number) => v.toFixed(1)} />
+                    {/* bars stay in the lower part so the rating line reads first */}
+                    <YAxis yAxisId="c" orientation="right" hide domain={[0, (max: number) => Math.max(1, max * 2.5)]} />
+                    <Tooltip
+                      contentStyle={tooltipStyle}
+                      labelFormatter={(v) => fmtDate(String(v))}
+                      formatter={(v, name) => (name === "Rating" && typeof v === "number" ? `${v.toFixed(1)}★` : typeof v === "number" ? fmtInt(v) : String(v))}
+                    />
+                    <Bar yAxisId="c" dataKey="reviews" name="Reviews" fill="#6366f1" fillOpacity={0.18} radius={[4, 4, 0, 0]} />
+                    <Line yAxisId="r" type="monotone" dataKey="rating" name="Rating" stroke="#f59e0b" strokeWidth={2.5} dot={{ r: 3 }} connectNulls />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+            {rows.length > 0 && (
+              <table className="mt-3 w-full text-xs">
+                <thead className="text-left text-[11px] text-muted-foreground">
+                  <tr className="border-b border-border">
+                    <th className="py-1.5 font-semibold">Snapshot</th>
+                    <th className="py-1.5 text-right font-semibold">Rating</th>
+                    <th className="py-1.5 text-right font-semibold">Change</th>
+                    <th className="py-1.5 text-right font-semibold">Reviews</th>
+                    <th className="py-1.5 text-right font-semibold">New</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {[...rows].reverse().map((r, i, arr) => {
+                    const prev = arr[i + 1];
+                    const dr = prev && prev.rating !== null && r.rating !== null ? Math.round((r.rating - prev.rating) * 10) / 10 : null;
+                    const dn = prev && r.rating !== null ? r.reviews - prev.reviews : null;
+                    return (
+                      <tr key={r.date}>
+                        <td className="py-1.5 text-foreground">{fmtDate(r.date)}</td>
+                        <td className="py-1.5 text-right tabular-nums text-foreground">{r.rating === null ? "—" : `${r.rating.toFixed(1)}★`}</td>
+                        <td className="py-1.5 text-right">{prev ? <Delta value={dr} /> : <span className="text-muted-foreground">—</span>}</td>
+                        <td className="py-1.5 text-right tabular-nums text-foreground">{r.rating === null ? "—" : fmtInt(r.reviews)}</td>
+                        <td className="py-1.5 text-right tabular-nums text-muted-foreground">{dn ? `${dn > 0 ? "+" : ""}${fmtInt(dn)}` : "—"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div>
+            <p className="mb-2 text-xs font-semibold text-muted-foreground">
+              {l.skus.length} SKU{l.skus.length === 1 ? "" : "s"} on this listing
+            </p>
+            <ul className="divide-y divide-border rounded-xl border border-border">
+              {l.skus.map((s) => (
+                <li key={s.id} className="flex items-center gap-3 px-3 py-2">
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs text-foreground" title={s.productName}>
+                      {s.productName}
+                    </span>
+                    <span className="block truncate font-mono text-[11px] text-muted-foreground">{s.skuId || "—"}</span>
+                  </span>
+                  <span className="text-xs tabular-nums text-foreground">{s.price === null ? "—" : fmtRupee(s.price)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -249,7 +449,8 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "reviews", dir: "desc" });
   const [page, setPage] = useState(0);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [detail, setDetail] = useState<Listing | null>(null);
+  const [trendMetric, setTrendMetric] = useState<"avg" | "below4">("avg");
   const [uploadOpen, setUploadOpen] = useState(false);
 
   const ratedPlatforms = useMemo(() => data?.ratedPlatforms ?? [], [data]);
@@ -326,9 +527,10 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
     };
   }, [listings]);
 
+  // Every rated channel side by side, not just the first two.
   const comparison = useMemo(() => {
     if (ratedPlatforms.length < 2) return [];
-    return crossPlatformListings(allListings, ratedPlatforms[0], ratedPlatforms[1]).filter((r) => Math.abs(r.gap) >= 0.3);
+    return crossChannelListings(allListings, ratedPlatforms).filter((r) => r.spread >= 0.3);
   }, [allListings, ratedPlatforms]);
 
   const trend = useMemo(() => {
@@ -337,33 +539,43 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
     for (const w of data?.weekly ?? []) {
       if (!plats.includes(w.platform)) continue;
       const row = byDate.get(w.date) ?? { date: w.date };
-      row[w.platform] = w.avgRating;
+      row[w.platform] = trendMetric === "avg" ? w.avgRating : w.below4;
       byDate.set(w.date, row);
     }
     return { rows: Array.from(byDate.values()).sort((a, b) => String(a.date).localeCompare(String(b.date))), plats };
-  }, [data, platform, ratedPlatforms]);
+  }, [data, platform, ratedPlatforms, trendMetric]);
 
-  // One at-a-glance card per channel: average rating and its change, how many listings sit below 4★,
-  // how many fell below 4★ since the previous snapshot, and new reviews.
-  const scorecards = useMemo(
-    () =>
-      ratedPlatforms.map((p) => {
-        const items = (data?.items ?? []).filter((i) => i.platform === p);
-        const ls = groupListings(items);
-        const rated = ls.filter((l) => l.rating !== null);
-        return {
-          platform: p,
-          avg: summarize(items).weightedRating,
-          prevAvg: summarizePrevious(items)?.weightedRating ?? null,
-          rated: rated.length,
-          below4: rated.filter((l) => l.rating! < 4 && !l.lowConfidence).length,
-          crossed: findRatingDrops(ls).length,
-          newReviews: ls.reduce((a, l) => a + Math.max(0, l.reviewsDelta ?? 0), 0),
-          dates: data?.platformDates[p],
-        };
-      }),
-    [data, ratedPlatforms]
-  );
+  // One at-a-glance card per channel (plus an "All channels" card first): average rating and its change,
+  // its weekly trend, how many listings sit below 4★, how many fell below 4★ since the previous snapshot,
+  // and new reviews. Clicking a card focuses the page on it.
+  const scorecards = useMemo(() => {
+    const weekly = data?.weekly ?? [];
+    const dates = Array.from(new Set(weekly.map((w) => w.date))).sort();
+    const card = (key: string, plats: string[]) => {
+      const items = (data?.items ?? []).filter((i) => plats.includes(i.platform));
+      const ls = groupListings(items);
+      const rated = ls.filter((l) => l.rating !== null);
+      // Weekly average across these channels, weighted by how many SKUs each rated that week.
+      const spark = dates.map((d) => {
+        const ws = weekly.filter((w) => w.date === d && plats.includes(w.platform) && w.avgRating !== null);
+        const n = ws.reduce((a, w) => a + w.rated, 0);
+        return n ? ws.reduce((a, w) => a + w.avgRating! * w.rated, 0) / n : null;
+      });
+      return {
+        key,
+        label: key === ALL ? "All channels" : key,
+        avg: summarize(items).weightedRating,
+        prevAvg: summarizePrevious(items)?.weightedRating ?? null,
+        rated: rated.length,
+        below4: rated.filter((l) => l.rating! < 4 && !l.lowConfidence).length,
+        crossed: findRatingDrops(ls).length,
+        newReviews: ls.reduce((a, l) => a + Math.max(0, l.reviewsDelta ?? 0), 0),
+        spark,
+        dates: key === ALL ? undefined : data?.platformDates[key],
+      };
+    };
+    return [...(ratedPlatforms.length > 1 ? [card(ALL, ratedPlatforms)] : []), ...ratedPlatforms.map((p) => card(p, [p]))];
+  }, [data, ratedPlatforms]);
 
   const untracked = useMemo(() => (data?.platforms ?? []).filter((p) => !ratedPlatforms.includes(p)), [data, ratedPlatforms]);
 
@@ -410,13 +622,6 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
     setPage(0);
     document.getElementById("rr-table")?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
-  const toggleExpand = (key: string) =>
-    setExpanded((s) => {
-      const n = new Set(s);
-      if (n.has(key)) n.delete(key);
-      else n.add(key);
-      return n;
-    });
 
   if (isLoading) {
     return (
@@ -463,7 +668,7 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
     hasPrev && now !== null && before !== null && before !== undefined ? now - before : null;
   const maxBand = Math.max(1, ...RATED_BANDS.map((h) => stats.bands[h]));
   const scopeLabel = platform === ALL ? "All channels" : platform;
-  const colCount = 6 + (showPlatform ? 1 : 0) + (hasPrev ? 1 : 0);
+  const colCount = 7 + (showPlatform ? 1 : 0) + (hasPrev ? 1 : 0);
 
   const sortHead = (k: SortKey, label: string, className?: string) => (
     <th key={k} className={cn("px-3 py-2.5 font-semibold", className)}>
@@ -480,7 +685,12 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground">Ratings & Reviews</h1>
-          <p className="mt-1 flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground">
+          {/* Phones: each channel card carries its own snapshot dates, so the header stays one line. */}
+          <p className="mt-1 flex items-center gap-2 text-sm text-muted-foreground sm:hidden">
+            <CalendarClock className="h-4 w-4" />
+            Latest {fmtDate(data.snapshotDate)} · {data.snapshotDates.length} week{data.snapshotDates.length === 1 ? "" : "s"} of history
+          </p>
+          <p className="mt-1 hidden flex-wrap items-center gap-x-2 text-sm text-muted-foreground sm:flex">
             <CalendarClock className="h-4 w-4" />
             {/* each channel shows its own latest upload (user, 2026-10-16) */}
             {Object.entries(data.platformDates).map(([p, d], i) => (
@@ -520,73 +730,68 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
         </div>
       </div>
 
-      {/* Channel scorecards — click one to focus the page on it */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {scorecards.map((c) => {
-          const change = c.avg !== null && c.prevAvg !== null ? c.avg - c.prevAvg : null;
-          const active = platform === c.platform;
-          return (
-            <button
-              key={c.platform}
-              onClick={() => {
-                setPlatformSel(active ? ALL : c.platform);
-                setPage(0);
-              }}
-              className={cn(
-                "rounded-2xl border bg-card p-4 text-left shadow-sm transition-colors hover:border-indigo-400",
-                active ? "border-indigo-500 ring-2 ring-indigo-500/20" : "border-border"
-              )}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-bold text-foreground">{c.platform}</span>
-                <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-bold", c.crossed > 0 ? "bg-red-500/10 text-red-600 dark:text-red-400" : c.below4 > 0 ? "bg-amber-500/10 text-amber-700 dark:text-amber-300" : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300")}>
-                  {c.crossed > 0 ? `${c.crossed} fell below 4★` : c.below4 > 0 ? "Watch" : "Healthy"}
-                </span>
-              </div>
-              <div className="mt-2 flex items-baseline gap-2">
-                <span className="text-3xl font-black tracking-tight text-foreground">{c.avg !== null ? c.avg.toFixed(2) : "—"}</span>
-                <Star className="h-4 w-4 fill-amber-400 text-amber-400" />
-                {change !== null && <Delta value={Math.round(change * 100) / 100} digits={2} />}
-              </div>
-              <div className="mt-3 grid grid-cols-3 gap-2 text-[11px]">
-                <div><p className="font-bold text-foreground">{fmtInt(c.rated)}</p><p className="text-muted-foreground">rated listings</p></div>
-                <div><p className={cn("font-bold", c.below4 ? "text-amber-600 dark:text-amber-400" : "text-foreground")}>{fmtInt(c.below4)}</p><p className="text-muted-foreground">below 4★</p></div>
-                <div><p className="font-bold text-foreground">+{fmtInt(c.newReviews)}</p><p className="text-muted-foreground">new reviews</p></div>
-              </div>
-              {c.dates && (
+      {/* Channel cards — they are also the channel switch: click one to focus the whole page on it */}
+      <div>
+        {/* Phones: a swipeable row; wider screens: a grid that fits however many channels carry ratings */}
+        <div className="scrollbar-none -mx-3 flex snap-x snap-mandatory gap-3 overflow-x-auto px-3 py-1 sm:mx-0 sm:grid sm:overflow-visible sm:px-0 sm:py-0" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))" }}>
+          {scorecards.map((c) => {
+            const change = c.avg !== null && c.prevAvg !== null ? c.avg - c.prevAvg : null;
+            const active = platform === c.key;
+            const idx = ratedPlatforms.indexOf(c.key);
+            const color = idx >= 0 ? PLATFORM_COLORS[idx % PLATFORM_COLORS.length] : "#64748b";
+            return (
+              <button
+                key={c.key}
+                aria-pressed={active}
+                onClick={() => {
+                  setPlatformSel(c.key);
+                  setPage(0);
+                }}
+                className={cn(
+                  "relative w-[82%] flex-shrink-0 snap-start overflow-hidden rounded-2xl border bg-card p-4 text-left shadow-sm transition-[transform,box-shadow,border-color] sm:w-auto hover:-translate-y-0.5 hover:shadow-md",
+                  active ? "border-indigo-500 ring-2 ring-indigo-500/20" : "border-border hover:border-indigo-300"
+                )}
+              >
+                <span className="absolute inset-x-0 top-0 h-1" style={{ background: color, opacity: active ? 1 : 0.55 }} />
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-bold text-foreground">{c.label}</span>
+                  <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-bold", c.crossed > 0 ? "bg-red-500/10 text-red-600 dark:text-red-400" : c.below4 > 0 ? "bg-amber-500/10 text-amber-700 dark:text-amber-300" : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300")}>
+                    {c.crossed > 0 ? `${c.crossed} fell below 4★` : c.below4 > 0 ? `${c.below4} at risk` : "Healthy"}
+                  </span>
+                </div>
+                <div className="mt-2 flex items-baseline gap-1.5">
+                  <span className="text-3xl font-black tracking-tight text-foreground">{c.avg !== null ? c.avg.toFixed(2) : "—"}</span>
+                  <Star className="h-4 w-4 flex-shrink-0 fill-amber-400 text-amber-400" />
+                  {change !== null && <Delta value={Math.round(change * 100) / 100} digits={2} />}
+                </div>
+                <div className="mt-1" title={`Weekly average rating, ${c.spark.filter((v) => v !== null).length} snapshots`}>
+                  <Sparkline values={c.spark} color={color} />
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-2 border-t border-border pt-3 text-[11px]">
+                  <div><p className="font-bold tabular-nums text-foreground">{fmtInt(c.rated)}</p><p className="text-muted-foreground">rated</p></div>
+                  <div><p className={cn("font-bold tabular-nums", c.below4 ? "text-amber-600 dark:text-amber-400" : "text-foreground")}>{fmtInt(c.below4)}</p><p className="text-muted-foreground">below 4★</p></div>
+                  <div><p className="font-bold tabular-nums text-foreground">+{fmtInt(c.newReviews)}</p><p className="text-muted-foreground">new reviews</p></div>
+                </div>
                 <p className="mt-2 text-[10px] text-muted-foreground">
-                  Snapshot {fmtDate(c.dates.current)}{c.dates.previous ? ` vs ${fmtDate(c.dates.previous)}` : " · first upload"}
+                  {c.dates
+                    ? <>Snapshot {fmtDate(c.dates.current)}{c.dates.previous ? ` vs ${fmtDate(c.dates.previous)}` : " · first upload"}</>
+                    : `${ratedPlatforms.length} channels combined`}
                 </p>
-              )}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Platform switch */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="inline-flex rounded-xl border border-border bg-muted/50 p-1">
-          {[...ratedPlatforms, ALL].map((p) => (
-            <button
-              key={p}
-              onClick={() => {
-                setPlatformSel(p);
-                setPage(0);
-              }}
-              className={cn(
-                "rounded-lg px-4 py-1.5 text-xs font-semibold transition-colors",
-                platform === p ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              {p === ALL ? "All channels" : p}
-            </button>
-          ))}
+              </button>
+            );
+          })}
         </div>
         {untracked.length > 0 && (
-          <p className="text-xs text-muted-foreground" title={untracked.join(", ")}>
-            Ratings tracked for {ratedPlatforms.join(" & ")} only · {untracked.length} other channels have no rating data yet
+          <p className="mt-2 text-xs text-muted-foreground" title={untracked.join(", ")}>
+            Ratings tracked for {ratedPlatforms.join(", ")} · {untracked.length} other channel{untracked.length === 1 ? " has" : "s have"} no rating data yet
           </p>
         )}
+      </div>
+
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <span className="h-px flex-1 bg-border" />
+        <span className="font-semibold uppercase tracking-wide">{scopeLabel}</span>
+        <span className="h-px flex-1 bg-border" />
       </div>
 
       {/* KPIs */}
@@ -650,7 +855,7 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
           </button>
         </div>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-5">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
           <Card className="lg:col-span-3">
             <CardTitle
               icon={CalendarClock}
@@ -686,6 +891,7 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
                           key={l.key}
                           l={l}
                           showPlatform={showPlatform}
+                          onOpen={setDetail}
                           right={
                             <span className="text-right">
                               <span className="block text-xs tabular-nums text-muted-foreground">
@@ -704,39 +910,54 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
           </Card>
 
           <Card className="lg:col-span-2">
-            <CardTitle icon={TrendingUp} title="Average rating trend" hint="Simple average of rated SKUs per snapshot" />
+            <CardTitle
+              icon={TrendingUp}
+              title={trendMetric === "avg" ? "Average rating trend" : "SKUs below 4★"}
+              hint={trendMetric === "avg" ? "Simple average of rated SKUs per snapshot" : "Rated SKUs under 4★ per snapshot"}
+              right={
+                <div className="inline-flex flex-shrink-0 rounded-lg border border-border bg-muted/50 p-0.5">
+                  {(
+                    [
+                      ["avg", "Avg ★"],
+                      ["below4", "< 4★"],
+                    ] as const
+                  ).map(([k, label]) => (
+                    <button
+                      key={k}
+                      onClick={() => setTrendMetric(k)}
+                      className={cn(
+                        "rounded-md px-2.5 py-1 text-[11px] font-semibold",
+                        trendMetric === k ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              }
+            />
             <div className="h-[230px] text-muted-foreground">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={trend.rows} margin={{ top: 5, right: 8, left: -18, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
-                  <XAxis
-                    dataKey="date"
-                    tickFormatter={(v: string) => new Date(`${v}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}
-                    tick={{ fontSize: 11, fill: "currentColor" }}
-                    tickLine={false}
-                    axisLine={false}
-                  />
+                  <XAxis dataKey="date" tickFormatter={shortDate} tick={{ fontSize: 11, fill: "currentColor" }} tickLine={false} axisLine={false} />
                   <YAxis
-                    domain={["dataMin - 0.1", "dataMax + 0.1"]}
-                    tickFormatter={(v: number) => v.toFixed(1)}
+                    domain={trendMetric === "avg" ? ["dataMin - 0.1", "dataMax + 0.1"] : [0, "auto"]}
+                    allowDecimals={trendMetric === "avg"}
+                    tickFormatter={(v: number) => (trendMetric === "avg" ? v.toFixed(1) : fmtInt(v))}
                     tick={{ fontSize: 11, fill: "currentColor" }}
                     tickLine={false}
                     axisLine={false}
                   />
                   <Tooltip
-                    formatter={(v) => (typeof v === "number" ? `${v.toFixed(2)}★` : String(v))}
+                    formatter={(v) => (typeof v !== "number" ? String(v) : trendMetric === "avg" ? `${v.toFixed(2)}★` : `${fmtInt(v)} SKUs`)}
                     labelFormatter={(v) => fmtDate(String(v))}
-                    contentStyle={{
-                      background: "var(--popover)",
-                      border: "1px solid var(--border)",
-                      borderRadius: 8,
-                      fontSize: 12,
-                      color: "var(--popover-foreground)",
-                    }}
+                    contentStyle={tooltipStyle}
                   />
                   {trend.plats.length > 1 && <Legend wrapperStyle={{ fontSize: 11 }} />}
-                  {trend.plats.map((p, idx) => (
-                    <Line key={p} type="monotone" dataKey={p} stroke={PLATFORM_COLORS[idx % PLATFORM_COLORS.length]} strokeWidth={2} dot={{ r: 3 }} connectNulls />
+                  {/* Same colour per channel as its card's accent and sparkline */}
+                  {trend.plats.map((p) => (
+                    <Line key={p} type="monotone" dataKey={p} stroke={PLATFORM_COLORS[Math.max(0, ratedPlatforms.indexOf(p)) % PLATFORM_COLORS.length]} strokeWidth={2} dot={{ r: 3 }} connectNulls />
                   ))}
                 </LineChart>
               </ResponsiveContainer>
@@ -746,7 +967,7 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
       )}
 
       {/* Health + attention */}
-      <div className="grid gap-4 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
         <Card className="lg:col-span-2">
           <CardTitle icon={Star} title="Rating health" hint={`${scopeLabel} · ${fmtInt(stats.rated)} rated listings · click to filter`} />
           {/* Stacked overview bar */}
@@ -826,6 +1047,7 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
                   key={l.key}
                   l={l}
                   showPlatform={showPlatform}
+                  onOpen={setDetail}
                   right={
                     <>
                       <span className="text-right">
@@ -853,8 +1075,8 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
       </div>
 
       {/* Top performers + cross-platform */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
+        <Card className={ratedPlatforms.length >= 2 ? "lg:col-span-2" : "lg:col-span-5"}>
           <CardTitle icon={Trophy} title="Top performers" hint="4.5★ and above with 20+ reviews" />
           {topRated.length === 0 ? (
             <p className="py-8 text-center text-sm text-muted-foreground">No listing at 4.5★ with 20+ reviews yet.</p>
@@ -865,6 +1087,7 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
                   key={l.key}
                   l={l}
                   showPlatform={showPlatform}
+                  onOpen={setDetail}
                   right={
                     <span className="text-right">
                       <Stars rating={l.rating} size={11} />
@@ -878,48 +1101,62 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
         </Card>
 
         {ratedPlatforms.length >= 2 && (
-          <Card>
+          <Card className="lg:col-span-3">
             <CardTitle
               icon={Layers}
-              title={`${ratedPlatforms[0]} vs ${ratedPlatforms[1]}`}
-              hint={`Same product, ${MIN_REVIEWS}+ reviews on both, gap ≥ 0.3★ · ${comparison.length} products`}
+              title="Same product, different channel"
+              hint={`Rated on 2+ of ${ratedPlatforms.join(", ")} (${MIN_REVIEWS}+ reviews each), spread ≥ 0.3★ · ${comparison.length} products`}
             />
             {comparison.length === 0 ? (
-              <p className="py-8 text-center text-sm text-muted-foreground">Ratings line up across both channels.</p>
+              <p className="py-8 text-center text-sm text-muted-foreground">Ratings line up across channels.</p>
             ) : (
-              <div className="max-h-[330px] overflow-y-auto">
-                <table className="w-full text-sm">
-                  <thead className="sticky top-0 bg-card text-[11px] text-muted-foreground">
+              <div className="max-h-[330px] overflow-auto">
+                <table className="w-full min-w-[420px] text-sm">
+                  <thead className="sticky top-0 z-[1] bg-card text-[11px] text-muted-foreground">
                     <tr className="text-left">
                       <th className="py-2 pr-2 font-semibold">Product</th>
-                      <th className="px-2 py-2 text-right font-semibold">{ratedPlatforms[0]}</th>
-                      <th className="px-2 py-2 text-right font-semibold">{ratedPlatforms[1]}</th>
-                      <th className="py-2 pl-2 text-right font-semibold">Gap</th>
+                      {ratedPlatforms.map((p) => (
+                        <th key={p} className="px-2 py-2 text-right font-semibold">
+                          {p}
+                        </th>
+                      ))}
+                      <th className="py-2 pl-2 text-right font-semibold" title="Best channel rating minus worst">
+                        Spread
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {comparison.map((r) => (
-                      <tr key={r.name}>
-                        <td className="max-w-[220px] truncate py-2 pr-2 text-foreground" title={r.name}>
-                          {r.name}
-                        </td>
-                        <td className="px-2 py-2 text-right tabular-nums text-foreground">
-                          {r.a.rating.toFixed(1)}★ <span className="text-[11px] text-muted-foreground">({fmtInt(r.a.reviews)})</span>
-                        </td>
-                        <td className="px-2 py-2 text-right tabular-nums text-foreground">
-                          {r.b.rating.toFixed(1)}★ <span className="text-[11px] text-muted-foreground">({fmtInt(r.b.reviews)})</span>
-                        </td>
-                        <td
-                          className={cn(
-                            "py-2 pl-2 text-right font-semibold tabular-nums",
-                            r.gap > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"
-                          )}
-                        >
-                          {r.gap > 0 ? "+" : ""}
-                          {r.gap.toFixed(1)}
-                        </td>
-                      </tr>
-                    ))}
+                    {comparison.map((r) => {
+                      const rs = Object.values(r.byPlatform).map((x) => x.rating);
+                      const best = Math.max(...rs);
+                      const worst = Math.min(...rs);
+                      return (
+                        <tr key={r.name}>
+                          <td className="max-w-[200px] truncate py-2 pr-2 text-foreground" title={r.name}>
+                            {r.name}
+                          </td>
+                          {ratedPlatforms.map((p) => {
+                            const x = r.byPlatform[p];
+                            return (
+                              <td key={p} className="whitespace-nowrap px-2 py-2 text-right tabular-nums">
+                                {x ? (
+                                  <span
+                                    className={cn(
+                                      x.rating === best ? "font-semibold text-emerald-600 dark:text-emerald-400" : x.rating === worst ? "font-semibold text-red-600 dark:text-red-400" : "text-foreground"
+                                    )}
+                                  >
+                                    {x.rating.toFixed(1)}★ <span className="text-[11px] font-normal text-muted-foreground">({fmtInt(x.reviews)})</span>
+                                  </span>
+                                ) : (
+                                  <span className="text-muted-foreground">—</span>
+                                )}
+                              </td>
+                            );
+                          })}
+                          <td className="py-2 pl-2 text-right font-semibold tabular-nums text-foreground">{r.spread.toFixed(1)}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -976,7 +1213,7 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
                 <option value={20}>20+ reviews</option>
                 <option value={100}>100+ reviews</option>
               </select>
-              <div className="relative">
+              <div className="relative w-full sm:w-56">
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                 <input
                   value={query}
@@ -985,14 +1222,47 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
                     setPage(0);
                   }}
                   placeholder="Search product or SKU"
-                  className="w-56 rounded-lg border border-border bg-background py-2 pl-8 pr-3 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+                  className="w-full rounded-lg border border-border bg-background py-2 pl-8 pr-3 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
                 />
               </div>
             </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[820px] text-sm">
+          {/* Phones: one card per listing instead of a sideways-scrolling table */}
+          <ul className="divide-y divide-border md:hidden">
+            {pageRows.map((l) => (
+              <li key={l.key}>
+                <button onClick={() => setDetail(l)} className="flex w-full items-start gap-3 px-4 py-3 text-left active:bg-muted/60">
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-medium leading-snug text-foreground">{l.name}</span>
+                    <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                      {showPlatform && `${l.platform} · `}
+                      {l.skus.length > 1 ? `${l.skus.length} variants` : l.skus[0].skuId} · {fmtPriceRange(l.priceMin, l.priceMax)}
+                    </span>
+                    <span className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                      <HealthBadge health={l.health} />
+                      <RiskBadge l={l} />
+                      {l.lowConfidence && <LowConfidence />}
+                    </span>
+                  </span>
+                  <span className="flex flex-shrink-0 flex-col items-end gap-0.5">
+                    <Stars rating={l.rating} size={10} />
+                    {l.rating !== null && <span className="text-[11px] tabular-nums text-muted-foreground">{fmtInt(l.reviews)} reviews</span>}
+                    {hasPrev && (l.isNew ? <span className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400">New</span> : <Delta value={l.ratingDelta} />)}
+                  </span>
+                </button>
+              </li>
+            ))}
+            {pageRows.length === 0 && (
+              <li className="py-12 text-center text-sm text-muted-foreground">
+                <StarOff className="mx-auto mb-2 h-6 w-6" />
+                No listings match these filters.
+              </li>
+            )}
+          </ul>
+
+          <div className="hidden overflow-x-auto md:block">
+            <table className="w-full min-w-[860px] text-sm">
               <thead className="bg-muted/40 text-left text-[11px] text-muted-foreground">
                 <tr>
                   {sortHead("name", "Product", "pl-4")}
@@ -1002,16 +1272,15 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
                   {hasPrev && sortHead("change", "vs last week", "text-right")}
                   {sortHead("price", "Price", "text-right")}
                   <th className="px-3 py-2.5 font-semibold">Health</th>
+                  <th className="px-3 py-2.5 font-semibold">Risk</th>
                   <th className="w-10 px-3 py-2.5 pr-4" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {pageRows.map((l) => {
                   const multi = l.skus.length > 1;
-                  const open = expanded.has(l.key);
                   return (
-                    <Fragment key={l.key}>
-                      <tr className={cn("hover:bg-muted/40", multi && "cursor-pointer", open && "bg-muted/30")} onClick={() => multi && toggleExpand(l.key)}>
+                      <tr key={l.key} className="cursor-pointer hover:bg-muted/40" onClick={() => setDetail(l)} title="Open weekly history">
                         <td className="max-w-[380px] py-2.5 pl-4 pr-3">
                           <span className="block truncate font-medium text-foreground" title={l.name}>
                             {l.name}
@@ -1050,25 +1319,13 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
                         <td className="px-3 py-2.5">
                           <HealthBadge health={l.health} />
                         </td>
+                        <td className="px-3 py-2.5">
+                          <RiskBadge l={l} />
+                        </td>
                         <td className="px-3 py-2.5 pr-4 text-muted-foreground">
-                          {multi && <ChevronDown className={cn("h-4 w-4 transition-transform", open && "rotate-180")} />}
+                          <ChevronRight className="h-4 w-4" />
                         </td>
                       </tr>
-                      {open &&
-                        l.skus.map((s) => (
-                          <tr key={s.id} className="bg-muted/20 text-xs">
-                            <td className="py-2 pl-9 pr-3" colSpan={showPlatform ? 2 : 1}>
-                              <span className="block truncate text-foreground" title={s.productName}>
-                                {s.productName}
-                              </span>
-                              <span className="block font-mono text-[11px] text-muted-foreground">{s.skuId}</span>
-                            </td>
-                            <td colSpan={2 + (hasPrev ? 1 : 0)} />
-                            <td className="px-3 py-2 text-right tabular-nums text-foreground">{s.price === null ? "—" : fmtRupee(s.price)}</td>
-                            <td colSpan={2} />
-                          </tr>
-                        ))}
-                    </Fragment>
                   );
                 })}
                 {pageRows.length === 0 && (
@@ -1115,6 +1372,7 @@ export function RatingsReviewsIntelligence({ marketplace }: { marketplace?: Mark
       </div>
 
       {uploadDialog}
+      {detail && <ListingDrawer l={detail} onClose={() => setDetail(null)} />}
     </div>
   );
 }

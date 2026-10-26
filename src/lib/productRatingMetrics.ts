@@ -54,6 +54,7 @@ export interface RatingItem {
   id: number;
   platform: string;
   skuId: string;
+  skuKey: string; // history key, for the per-listing drill-down
   productName: string;
   price: number | null;
   rating: number | null; // null == not rated
@@ -195,6 +196,7 @@ export async function fetchRatingMetrics(): Promise<RatingMetricsData> {
       id: r.id,
       platform: r.platform,
       skuId: r.sku_id ?? "",
+      skuKey: r.sku_key,
       productName,
       price: price && price > 0 ? price : null,
       rating,
@@ -405,6 +407,59 @@ export function crossPlatformListings(listings: Listing[], pa: string, pb: strin
     });
   }
   return out.sort((p, q) => Math.abs(q.gap) - Math.abs(p.gap) || q.a.reviews + q.b.reviews - (p.a.reviews + p.b.reviews));
+}
+
+/** One row per product rated on 2+ channels (MIN_REVIEWS+ reviews each), widest rating spread first. */
+export interface CrossChannelRow {
+  name: string;
+  byPlatform: Record<string, { rating: number; reviews: number }>;
+  spread: number; // best − worst channel rating
+}
+
+export function crossChannelListings(listings: Listing[], platforms: string[]): CrossChannelRow[] {
+  const map = new Map<string, CrossChannelRow>();
+  for (const l of listings) {
+    if (!platforms.includes(l.platform) || l.rating === null || l.reviews < MIN_REVIEWS) continue;
+    const k = l.name.toLowerCase();
+    const row = map.get(k) ?? { name: l.name, byPlatform: {}, spread: 0 };
+    const cur = row.byPlatform[l.platform];
+    if (!cur || l.reviews > cur.reviews) row.byPlatform[l.platform] = { rating: l.rating, reviews: l.reviews };
+    map.set(k, row);
+  }
+  const out: CrossChannelRow[] = [];
+  for (const row of map.values()) {
+    const rs = Object.values(row.byPlatform).map((x) => x.rating);
+    if (rs.length < 2) continue;
+    row.spread = Math.round((Math.max(...rs) - Math.min(...rs)) * 10) / 10;
+    out.push(row);
+  }
+  const reach = (r: CrossChannelRow) => Object.values(r.byPlatform).reduce((a, x) => a + x.reviews, 0);
+  return out.sort((a, b) => b.spread - a.spread || reach(b) - reach(a));
+}
+
+export interface ListingHistoryPoint {
+  date: string;
+  rating: number | null;
+  reviews: number;
+}
+
+/** Every stored snapshot of one listing. Its variant SKUs share rating and reviews, so the best-reviewed row wins per date. */
+export async function fetchListingHistory(platform: string, skuKeys: string[]): Promise<ListingHistoryPoint[]> {
+  const { data, error } = await supabasePublic
+    .from(HISTORY)
+    .select("snapshot_date,platform,sku_key,rating,review_count,ratings_count")
+    .eq("platform", platform)
+    .in("sku_key", skuKeys.slice(0, 200))
+    .order("snapshot_date", { ascending: true })
+    .limit(5000);
+  if (error) throw new Error(`Fetch ${HISTORY} failed: ${error.message}`);
+  const byDate = new Map<string, ListingHistoryPoint>();
+  for (const r of (data ?? []) as HistoryRow[]) {
+    const pt = { date: r.snapshot_date, rating: cleanRating(r.rating), reviews: num(reviewCountOf(r)) ?? 0 };
+    const cur = byDate.get(pt.date);
+    if (!cur || (cur.rating === null && pt.rating !== null) || (pt.rating !== null && pt.reviews > cur.reviews)) byDate.set(pt.date, pt);
+  }
+  return Array.from(byDate.values());
 }
 
 // ── Weekly upload ────────────────────────────────────────────────────────────
