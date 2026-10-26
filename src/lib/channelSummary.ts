@@ -6,6 +6,9 @@ import { loadBarmSkuPeriodData } from "@/lib/barmSkuPeriodData";
 import { fetchMisFkOrders, fetchMisFkReturns } from "@/lib/misAdapters";
 import { isFkSkeletonOrderRow } from "@/lib/flipkartOrderRules";
 import { DEFAULT_GST_MULTIPLIER } from "@/lib/masterProductSkuid";
+import { supabasePublic } from "@/lib/amazonReportUpload";
+import { spCampaignDays, isSplitCoveredCampaignRow } from "@/lib/amazonSpendRules";
+import { dailyFallbackStart, dailyFkRowAsMis, dedupeOrderLines } from "@/lib/dailyOrderFallbackRules";
 
 // Short "this period vs the previous period" summary for the Meesho, BARM and Flipkart Overview
 // pages, for the date range selected at the top of the dashboard. Meesho and BARM reuse the same
@@ -122,11 +125,21 @@ export async function fetchBarmSummary(start: string, end: string): Promise<Chan
 // price (barm_flipkart_listings) × units, a COMPUTED figure (the order report carries no prices).
 export async function fetchFlipkartOrderSummary(start: string, end: string): Promise<ChannelSummary> {
   const periods = periodsFor(start, end);
-  const [orderRows, returnRows, listingRows] = await Promise.all([
+  const [misOrderRows, returnRows, listingRows, misMax] = await Promise.all([
     fetchMisFkOrders((q) => q.gte("order_date", periods[0].start).lte("order_date", end)),
     fetchMisFkReturns((q) => q.gte("return_requested_date", periods[0].start).lte("return_requested_date", end)).catch(() => []),
     fetchAllRows("barm_flipkart_listings", (q) => q).catch(() => []),
+    supabasePublic.from("fk_orders").select("order_date").not("order_date", "is", null).order("order_date", { ascending: false }).limit(1),
   ]);
+  // Days after the last fk_orders day come from the daily "Last 7 days" upload (see
+  // dailyOrderFallbackRules.ts). If the MIS max can't be read, MIS alone is used, as before.
+  let orderRows = misOrderRows;
+  const fillFrom = misMax.error ? null : dailyFallbackStart((misMax.data?.[0] as { order_date?: string } | undefined)?.order_date ?? null, periods[0].start, end);
+  if (fillFrom) {
+    const daily = await fetchAllRows("barm_daily_fk_orders", (q) => q.gte("report_date", fillFrom).lte("report_date", end), ["report_date", "id"]).catch(() => []);
+    const mapped = dedupeOrderLines(daily.map(dailyFkRowAsMis), (r) => r.order_item_status);
+    orderRows = [...misOrderRows, ...(mapped as unknown as typeof misOrderRows)];
+  }
   const priceBySku = new Map<string, number>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (listingRows as any[]).forEach((r) => {
@@ -184,14 +197,29 @@ async function spendTaxIn(table: string, col: string, start: string, end: string
   return (rows as any[]).reduce((t, r) => t + (Number(r[col]) || 0), 0) * DEFAULT_GST_MULTIPLIER;
 }
 
-/** Amazon, from the same MIS tables and rules as the Amazon Weekly Sales Report. */
+/** Amazon ad spend (with GST) the same way the Ad Spend Report counts it: every Sponsored Products
+ *  row (which already carries the seller's per-SKU split of Brand/Display spend) plus each Sponsored
+ *  Brands / Display campaign-day that has no such split, so nothing is counted twice. */
+async function amazonSpendTaxIn(start: string, end: string): Promise<number> {
+  const [sp, sb, sd] = await Promise.all(
+    ["barm_amazon_sp_advertised_product", "barm_amazon_sb_campaign", "barm_amazon_sd_campaign"].map((t) =>
+      fetchAllRows(t, (q) => q.gte("report_date", start).lte("report_date", end)).catch(() => [])
+    )
+  );
+  const splitDays = spCampaignDays(sp);
+  const sum = (rows: { spend?: unknown }[]) => rows.reduce((t, r) => t + (Number(r.spend) || 0), 0);
+  return (sum(sp) + sum([...sb, ...sd].filter((r) => !isSplitCoveredCampaignRow(r, splitDays)))) * DEFAULT_GST_MULTIPLIER;
+}
+
+/** Amazon, from the same MIS tables and rules as the Amazon Weekly Sales Report — plus the daily
+ *  upload for days the MIS orders table doesn't reach yet. */
 export async function fetchAmazonSummary(start: string, end: string): Promise<ChannelSummary> {
   const periods = periodsFor(start, end);
   const { loadAmazonSkuPeriodData } = await import("@/lib/amazonSkuPeriodData");
   const [data, spendCur, spendPrev] = await Promise.all([
-    loadAmazonSkuPeriodData({ periods, includeAds: false, includeStock: false }),
-    spendTaxIn("barm_amazon_sp_advertised_product", "spend", start, end),
-    spendTaxIn("barm_amazon_sp_advertised_product", "spend", periods[0].start, periods[0].end),
+    loadAmazonSkuPeriodData({ periods, includeAds: false, includeStock: false, fillFromDailyUpload: true }),
+    amazonSpendTaxIn(start, end),
+    amazonSpendTaxIn(periods[0].start, periods[0].end),
   ]);
   const gross = (label: string) => data.visibleRows.reduce((t, p) => { const s = p.periods[label]; return t + (s ? s.price * s.orders : 0); }, 0);
   return {
@@ -201,7 +229,7 @@ export async function fetchAmazonSummary(start: string, end: string): Promise<Ch
     previousRange: periods[0],
     dataThrough: data.dataThrough,
     salesLabel: "Gross Sales",
-    note: "Amazon: order item prices before returns; returns = AM + FBA + SellerFlex; Sponsored Products spend.",
+    note: "Amazon: order item prices before returns; returns = AM + FBA + SellerFlex; ad spend = Sponsored Products + Brand/Display. Days the MIS orders table doesn't reach yet come from the daily \"Last 7 days\" upload.",
   };
 }
 
@@ -224,6 +252,6 @@ export async function fetchFlipkartAllSummary(start: string, end: string): Promi
     current: { ...s.current, adSpendTax: cur },
     previous: { ...s.previous, adSpendTax: before },
     salesLabel: "Gross Sales",
-    note: "Flipkart: listing price × units (computed); returns from the returns report; FSN ad spend.",
+    note: "Flipkart: listing price × units (computed); returns from the returns report; FSN ad spend. Days the MIS orders table doesn't reach yet come from the daily \"Last 7 days\" upload.",
   };
 }
