@@ -313,3 +313,32 @@ export function ledgerBalancesBySku(
   }
   return { bySku, states, areas };
 }
+
+export type PriceBasis = "sale" | "listing" | "none";
+
+// Price used for ACOS/TACOS (approved 28 Oct 2026): the SKU's median actual unit sale price
+// (item-price / quantity) over the counted order lines in the window, falling back to the
+// uploaded listing price (MRP-level) when the SKU had no priced sale, else 0. The caller passes
+// only lines it counts as Orders (not cancelled, standard order id). An even count takes the
+// upper middle value, so the price is always one a customer actually paid.
+export function medianUnitSalePriceBySku(lines: Iterable<{ sku: string; quantity: number; itemPrice: number }>): Map<string, number> {
+  const unitPrices = new Map<string, number[]>();
+  for (const l of lines) {
+    if (!l.sku || !(l.quantity > 0) || !(l.itemPrice > 0)) continue;
+    const list = unitPrices.get(l.sku) ?? [];
+    list.push(l.itemPrice / l.quantity);
+    unitPrices.set(l.sku, list);
+  }
+  const out = new Map<string, number>();
+  unitPrices.forEach((list, sku) => {
+    const sorted = [...list].sort((a, b) => a - b);
+    out.set(sku, Math.round(sorted[Math.floor(sorted.length / 2)] * 100) / 100);
+  });
+  return out;
+}
+
+export function reportPrice(salePrice: number | undefined, listingPrice: number): { price: number; basis: PriceBasis } {
+  if (salePrice && salePrice > 0) return { price: salePrice, basis: "sale" };
+  if (listingPrice > 0) return { price: listingPrice, basis: "listing" };
+  return { price: 0, basis: "none" };
+}

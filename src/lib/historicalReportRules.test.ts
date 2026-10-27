@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createJiti } from "jiti";
 import { readFileSync } from "node:fs";
 import {
-  isOrdersCardRow, refreshOrderStatuses, ledgerBalancesBySku, snapshotLedgerBalances, carryForwardLedgerBalances, isEmptyUnmappedRow, capReturnsAtOrderedQuantity,
+  isOrdersCardRow, refreshOrderStatuses, ledgerBalancesBySku, snapshotLedgerBalances, carryForwardLedgerBalances, isEmptyUnmappedRow, capReturnsAtOrderedQuantity, medianUnitSalePriceBySku, reportPrice,
   orderStatusHistoryRows, historyRowAsOrderLine, unresolvedPendingOrderLines, ORDER_STATUS_HISTORY_KEY, UNRESOLVED_SOURCE_DATA,
   type OrderStatusHistoryRow,
 } from "./historicalReportRules.ts";
@@ -331,4 +331,26 @@ test("the two ledger modes differ only where a location is missing from the newe
   const carry = carryForwardLedgerBalances(rows, "2026-10-21").map((r) => `${r.msku}|${r.location}`).sort();
   assert.deepEqual(snap, ["A|BLR7", "B|BLR7"]);
   assert.deepEqual(carry, ["A|BLR7", "A|CCX2", "B|BLR7"]);
+});
+
+test("medianUnitSalePriceBySku: per-unit median, upper middle on even counts, skips unpriced lines", () => {
+  const m = medianUnitSalePriceBySku([
+    { sku: "A", quantity: 1, itemPrice: 2699 },
+    { sku: "A", quantity: 2, itemPrice: 5080 },
+    { sku: "A", quantity: 1, itemPrice: 2600 },
+    { sku: "B", quantity: 1, itemPrice: 100 },
+    { sku: "B", quantity: 1, itemPrice: 120 },
+    { sku: "C", quantity: 1, itemPrice: 0 },
+    { sku: "D", quantity: 0, itemPrice: 50 },
+  ]);
+  assert.equal(m.get("A"), 2600);
+  assert.equal(m.get("B"), 120);
+  assert.equal(m.has("C"), false);
+  assert.equal(m.has("D"), false);
+});
+
+test("reportPrice: sale price first, then listing (MRP) price, else blank", () => {
+  assert.deepEqual(reportPrice(2540, 2700), { price: 2540, basis: "sale" });
+  assert.deepEqual(reportPrice(undefined, 2700), { price: 2700, basis: "listing" });
+  assert.deepEqual(reportPrice(undefined, 0), { price: 0, basis: "none" });
 });

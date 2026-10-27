@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx-js-style";
 import { fcToState, fcToAreaManual } from "@/lib/analysisReportExport";
-import { refreshOrderStatuses, ledgerBalancesBySku, snapshotLedgerBalances, carryForwardLedgerBalances, isEmptyUnmappedRow, type LedgerBalanceMode, type LedgerBalanceRow, capReturnsAtOrderedQuantity, historyRowAsOrderLine, unresolvedPendingOrderLines, UNRESOLVED_SOURCE_DATA, type ReturnLine, type CappedReturn } from "@/lib/historicalReportRules";
+import { refreshOrderStatuses, ledgerBalancesBySku, snapshotLedgerBalances, carryForwardLedgerBalances, isEmptyUnmappedRow, medianUnitSalePriceBySku, reportPrice, type PriceBasis, type LedgerBalanceMode, type LedgerBalanceRow, capReturnsAtOrderedQuantity, historyRowAsOrderLine, unresolvedPendingOrderLines, UNRESOLVED_SOURCE_DATA, type ReturnLine, type CappedReturn } from "@/lib/historicalReportRules";
 import { spCampaignDays, isSplitCoveredCampaignRow, dedupeSellerFlexReturns } from "@/lib/amazonSpendRules";
 import { fetchAllRows, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn, isStandardOrderId, istDayWindowUtc, istDateOnly } from "@/lib/amazonReportShared";
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns, fetchAllMisReportDataInfo } from "@/lib/misAdapters";
@@ -468,17 +468,33 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     m.name = resolveMasterName(sku, m.name);
   });
 
-  // Price / FBA-MFN channel — from the uploaded Price (All Listings) report.
-  // Without it, price stays 0, which zeroes ACOS and TACOS (both guard on
-  // price > 0). That is the honest outcome: those ratios are meaningless
-  // without the price the SKU actually sold at during the window, and the
-  // Notes sheet says so rather than substituting today's live catalog price.
+  // FBA-MFN channel and the fallback listing price — from the uploaded Price
+  // (All Listings) report. A SKU with neither a sale nor a listing price keeps
+  // price 0, which zeroes ACOS and TACOS (both guard on price > 0); the Notes
+  // sheet says so rather than substituting today's live catalog price.
   priceBySku.forEach((info, sku) => {
     const m = ensureMeta(sku);
     m.isFba = info.isFba;
     m.channel = info.channel;
     if (info.price > 0) m.price = info.price;
     m.fbmQty += info.fbmQty;
+  });
+
+  // Price basis (approved 28 Oct 2026): the median actual unit sale price from the
+  // window's counted order lines replaces the listing price above, which is MRP-level;
+  // a SKU with no priced sale keeps the listing price — see reportPrice.
+  const salePriceBySku = medianUnitSalePriceBySku(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (orderRows as any[])
+      .filter((r) => r.sku && !isCancelledOrder(r) && isStandardOrderId(r.amazon_order_id))
+      .map((r) => ({ sku: r.sku, quantity: r.quantity || 0, itemPrice: r.item_price || 0 })),
+  );
+  const priceBasisBySku = new Map<string, PriceBasis>();
+  new Set([...priceBySku.keys(), ...salePriceBySku.keys()]).forEach((sku) => {
+    const m = ensureMeta(sku);
+    const { price, basis } = reportPrice(salePriceBySku.get(sku), m.price);
+    m.price = price;
+    priceBasisBySku.set(sku, basis);
   });
 
   // FBA availability — from the uploaded Inventory Ledger, taken as of endDate
@@ -1887,6 +1903,8 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   XLSX.utils.book_append_sheet(wb, wsInsights, "Key Insights");
 
   // ── Notes sheet ──
+  const priceBasisCount: Record<PriceBasis, number> = { sale: 0, listing: 0, none: 0 };
+  new Set(rows.map((r) => r.sku)).forEach((sku) => { if (sku !== UNMAPPED) priceBasisCount[priceBasisBySku.get(sku) ?? "none"]++; });
   const wsNote = XLSX.utils.aoa_to_sheet([
     ["Historical Analysis Report — Ad Performance"],
     [`Account: ${accountName || "-"}`],
@@ -1933,9 +1951,10 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     ["Sponsored Products spend is a plain sum of every SP-table row's raw Spend, matching the raw export and the Ad Spend Report. That table also carries the seller's own per-SKU split of Brand/Display spend (each campaign-day's first split row is named, the rest have a blank campaign; all have 0 units), and that split is how Brand/Display spend is counted here. An SB/SD campaign-day already split that way is NOT added again from the SB/SD tables; only SB/SD spend with no split lands in the Unmapped row."],
     [
       hasUploadedPrice
-        ? "Price and FBA/MFN channel come from the uploaded Price (All Listings) report."
-        : "⚠ NO Price (All Listings) report uploaded — Price reads 0 for every SKU, and because ACOS and TACOS both divide by Price they read 0 too. Those two columns are therefore NOT usable in this file. Upload the Price report and regenerate. (Nothing is substituted from the live catalog: today's price is not the price this window sold at.)",
+        ? "FBA/MFN channel comes from the uploaded Price (All Listings) report."
+        : "⚠ NO Price (All Listings) report uploaded — FBA/MFN channel is unknown, and a SKU with no priced sale in the window has Price 0, so its ACOS and TACOS read 0. Upload the Price report and regenerate. (Nothing is substituted from the live catalog.)",
     ],
+    [`Price basis: the median actual unit sale price (item-price / quantity) over the SKU's counted 30-day order lines (not cancelled, standard order id; an even count takes the upper middle value) — ${priceBasisCount.sale} of this report's SKU(s). A SKU with no priced sale uses the uploaded listing price, which is MRP-level — ${priceBasisCount.listing} SKU(s). Neither available: Price 0, so ACOS/TACOS read 0 — ${priceBasisCount.none} SKU(s). The same Price is used for both windows.`],
     [
       hasUploadedLedger
         ? (ledgerIsAfterWindow
