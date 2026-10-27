@@ -13,7 +13,7 @@
 // Kept to one sibling import so it can be unit tested directly and copied for the Edge job
 // (supabase/functions/_shared/deps/amazonAdSourceRules.ts — keep the two identical).
 
-import { collectSkuLessSpend, type AmAdsSpendRow } from "./amazonSpendRules.ts";
+import { collectSkuLessSpend, spCampaignDays, isSplitCoveredCampaignRow, type AmAdsSpendRow } from "./amazonSpendRules.ts";
 
 /** raw.source on a Brand/Display campaign row the combined upload saved without an Advertised SKU. */
 export const SKU_LESS_SOURCE = "AM ads (no Advertised SKU)";
@@ -133,4 +133,69 @@ export function dailyAmAdsReportRows(dailyRows: Row[], cardSbRows: Row[], cardSd
     (d.ad_type === "SD" ? sdRows : sbRows).push(row);
   }
   return { spRows, sbRows, sdRows };
+}
+
+/**
+ * Amazon ad-spend rows for every consumer except the 7-Day Ad Spend Report (27 Oct 2026 rule): the SP
+ * card rows, plus each SB/SD card row whose campaign-day the SP card doesn't already split per SKU
+ * (24 Sep 2026 duplicate-skip). Legacy combined-upload rows in the SP table are never counted, and they
+ * never mark a campaign-day as split.
+ */
+export function amazonCardSpendRows(sp: Row[], sb: Row[], sd: Row[]): { spRows: Row[]; campaignRows: Row[] } {
+  const spRows = sp.filter(isSpCardRow);
+  const splitDays = spCampaignDays(spRows);
+  const campaignRows = [...sb, ...sd].filter(isCampaignCardRow).filter((r) => !isSplitCoveredCampaignRow(r, splitDays));
+  return { spRows, campaignRows };
+}
+
+/**
+ * Brand/Display campaign-day spend from amazonCardSpendRows, spread over the mapped SKUs (allocateCampaignSpend)
+ * and returned as spend-only SP-shaped rows, so a consumer can aggregate them like SP rows. The SB/SD cards carry
+ * no per-SKU sales or units, so those stay 0. Unmapped campaign spend is not returned. A SKU with no ASIN keeps an
+ * empty advertised_asin; the Live aggregation drops it, as it does for SP rows.
+ */
+export function brandDisplayAdRows(campaignRows: Row[], map: Row[], asinForSku: (sku: string) => string | undefined): Row[] {
+  const { allocations } = allocateCampaignSpend(campaignRows, map);
+  return allocations.map((a) => ({
+    report_date: a.report_date,
+    campaign_name: a.campaign_name,
+    advertised_sku: a.sku,
+    advertised_asin: asinForSku(a.sku) ?? "",
+    spend: a.spend,
+    sales_7d: 0,
+    advertised_sku_sales_7d: 0,
+    units_7d: 0,
+    orders_7d: 0,
+  }));
+}
+
+// Ad spend/units per ASIN, from the uploaded SP advertised-product report —
+// same table historicalAnalysisReportExport.ts reads (there, keyed by SKU;
+// here, by the row's own advertised_asin since this report is ASIN-grain).
+// SB/SD (campaign-level, no ASIN column) aren't included here, same as the
+// live get_advertised_product_performance call this replaces — that endpoint
+// only ever covered Sponsored Products too.
+//
+// A blank-ASIN row is the seller's per-SKU split of Brand/Display spend (each campaign-day's first
+// split row is named, the rest have a blank campaign; all have 0 units). That split is how the seller
+// wants Brand/Display spend counted (24 Sep 2026), so it is kept — plain sum, like every SP row — by
+// resolving the ASIN from the row's SKU.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function spRowsToAdRows(spRows: any[], asinForSku: (sku: string) => string | undefined): any[] {
+  return spRows
+    .map((r) => ({ r, asin: r.advertised_asin || asinForSku(r.advertised_sku || "") }))
+    .filter(({ asin }) => !!asin)
+    .map(({ r, asin }) => ({
+      adAsin: asin,
+      // This SP row's own SKU — GST is a per-SKU rate (see aggregateWindow),
+      // so it must travel with the row even though ProductRow itself is keyed
+      // by ASIN, not SKU.
+      adSku: r.advertised_sku || "",
+      spend: r.spend || 0,
+      sales: r.advertised_sku_sales_7d || r.sales_7d || 0,
+      // "7 Day Total Units" (units_7d), NOT advertised_sku_units_7d — the column the seller's own
+      // workbook uses for Advertised SKU Units, verified in historicalAnalysisReportExport.ts. Reading
+      // the other one first understated units (1,696 vs 2,062 over 30 days) and inflated CPC/ACOS.
+      orders: r.units_7d || 0,
+    }));
 }

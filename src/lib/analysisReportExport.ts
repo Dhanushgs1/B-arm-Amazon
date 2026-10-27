@@ -5,7 +5,7 @@ import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } fr
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns, fetchAllMisReportDataInfo } from "@/lib/misAdapters";
 import { staleSourceWarnings } from "@/lib/reportCoverage";
 import { dedupeSellerFlexReturns } from "@/lib/amazonSpendRules";
-import { isSpCardRow } from "@/lib/amazonAdSourceRules";
+import { amazonCardSpendRows, brandDisplayAdRows, spRowsToAdRows } from "@/lib/amazonAdSourceRules";
 import { trailingWindow } from "@/lib/reportWindows";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, gstMultiplierFromTax } from "@/lib/masterProductSkuid";
 import { fetchProductMarketingMap, buildProductMarketingResolver } from "@/lib/productMarketingUpload";
@@ -193,36 +193,6 @@ interface ProductRow {
 
 export type ToolCaller = (tool: string, args: any) => Promise<any>;
 
-// Ad spend/units per ASIN, from the uploaded SP advertised-product report —
-// same table historicalAnalysisReportExport.ts reads (there, keyed by SKU;
-// here, by the row's own advertised_asin since this report is ASIN-grain).
-// SB/SD (campaign-level, no ASIN column) aren't included here, same as the
-// live get_advertised_product_performance call this replaces — that endpoint
-// only ever covered Sponsored Products too.
-//
-// A blank-ASIN row is the seller's per-SKU split of Brand/Display spend (each campaign-day's first
-// split row is named, the rest have a blank campaign; all have 0 units). That split is how the seller
-// wants Brand/Display spend counted (24 Sep 2026), so it is kept — plain sum, like every SP row — by
-// resolving the ASIN from the row's SKU.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function spRowsToAdRows(spRows: any[], asinForSku: (sku: string) => string | undefined): any[] {
-  return spRows
-    .map((r) => ({ r, asin: r.advertised_asin || asinForSku(r.advertised_sku || "") }))
-    .filter(({ asin }) => !!asin)
-    .map(({ r, asin }) => ({
-      adAsin: asin,
-      // This SP row's own SKU — GST is a per-SKU rate (see aggregateWindow),
-      // so it must travel with the row even though ProductRow itself is keyed
-      // by ASIN, not SKU.
-      adSku: r.advertised_sku || "",
-      spend: r.spend || 0,
-      sales: r.advertised_sku_sales_7d || r.sales_7d || 0,
-      // "7 Day Total Units" (units_7d), NOT advertised_sku_units_7d — the column the seller's own
-      // workbook uses for Advertised SKU Units, verified in historicalAnalysisReportExport.ts. Reading
-      // the other one first understated units (1,696 vs 2,062 over 30 days) and inflated CPC/ACOS.
-      orders: r.units_7d || 0,
-    }));
-}
 
 // Orders (units ordered, all channels) per ASIN, from the uploaded AM orders
 // table — same source + cancelled-order/non-standard-order-id exclusion as
@@ -408,10 +378,15 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
   // same tables.
   const coveragePromise = fetchAllMisReportDataInfo();
   const [
-    spRows30, orderRows30, amReturnRows30, fbaReturnRows30, sfReturnRows30, inventory, catalog, masterSkuid, productMarketing, fbaReportRows,
+    spRowsRaw30, sbRows30, sdRows30, campaignMap, orderRows30, amReturnRows30, fbaReturnRows30, sfReturnRows30, inventory, catalog, masterSkuid, productMarketing, fbaReportRows,
   ] = await Promise.all([
-    // SP-card rows only — the daily combined upload feeds the 7-Day Ad Spend Report alone (amazonAdSourceRules.ts).
-    fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", start30).lte("report_date", end)).then((rows) => rows.filter(isSpCardRow)),
+    // SP rows as stored; amazonCardSpendRows keeps the SP-card rows only (the daily combined upload feeds the 7-Day Ad Spend Report alone).
+    fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", start30).lte("report_date", end)),
+    // Sponsored Brands / Display card rows and the campaign-to-SKU mapping: their spend reaches the
+    // SKU/ASIN aggregates through brandDisplayAdRows (same rule as the Weekly Sales loader).
+    fetchAllRows("barm_amazon_sb_campaign", (q) => q.gte("report_date", start30).lte("report_date", end)).catch(() => []),
+    fetchAllRows("barm_amazon_sd_campaign", (q) => q.gte("report_date", start30).lte("report_date", end)).catch(() => []),
+    fetchAllRows("barm_amazon_campaign_sku_map", (q) => q, ["campaign_name", "sku"]).catch(() => []),
     fetchMisAmazonOrders((q) => q.gte("purchase_datetime", win30Ist.gte).lt("purchase_datetime", win30Ist.lt)),
     fetchMisAmazonReturns((q) => q.gte("return_request_date", start30).lte("return_request_date", end)),
     fetchMisFbaReturns((q) => q.gte("return_date", win30Ist.gte).lt("return_date", win30Ist.lt)),
@@ -423,6 +398,7 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
     // Amazon's FBA Inventory report — the only source of inbound quantities (SellerMate sends none)
     fetchAllRows("barm_amazon_fba_inventory", (q) => q).catch(() => []),
   ]);
+  const { spRows: spRows30, campaignRows: brandRows30 } = amazonCardSpendRows(spRowsRaw30, sbRows30, sdRows30);
   const inboundShippedBySku = new Map<string, number>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (fbaReportRows as any[]).forEach((r) => {
@@ -485,13 +461,15 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   catalog.forEach((c: any) => { if (c.sku && c.asin && !asinBySku.has(c.sku)) asinBySku.set(c.sku, c.asin); });
   const asinForSku = (sku: string) => asinBySku.get(sku);
+  const brandAdRows30 = brandDisplayAdRows(brandRows30, campaignMap, asinForSku);
+  const brandAdRows7 = brandAdRows30.filter((r) => r.report_date >= start7);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const isDeletedCampaignRow = (r: any) => !r.advertised_asin;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const unresolvedDeletedSpend30 = spRows30.filter((r: any) => isDeletedCampaignRow(r) && !asinForSku(r.advertised_sku || "")).reduce((t: number, r: any) => t + (r.spend || 0), 0);
 
-  aggregateWindow(products, ensure, (p) => p.w30, spRowsToAdRows(spRows30, asinForSku), ordersToRetailRows(orderRows30), returnsToReturnRows(amReturnRows30, fbaReturnRows30, sfReturnRows30), resolveSkuidTax);
-  aggregateWindow(products, ensure, (p) => p.w7, spRowsToAdRows(spRows7, asinForSku), ordersToRetailRows(orderRows7), returnsToReturnRows(amReturnRows7, fbaReturnRows7, sfReturnRows7), resolveSkuidTax);
+  aggregateWindow(products, ensure, (p) => p.w30, [...spRowsToAdRows(spRows30, asinForSku), ...spRowsToAdRows(brandAdRows30, asinForSku)], ordersToRetailRows(orderRows30), returnsToReturnRows(amReturnRows30, fbaReturnRows30, sfReturnRows30), resolveSkuidTax);
+  aggregateWindow(products, ensure, (p) => p.w7, [...spRowsToAdRows(spRows7, asinForSku), ...spRowsToAdRows(brandAdRows7, asinForSku)], ordersToRetailRows(orderRows7), returnsToReturnRows(amReturnRows7, fbaReturnRows7, sfReturnRows7), resolveSkuidTax);
 
   // Inventory (per-location): FBA warehouse balance per FC → aggregate by state,
   // keyed to the specific SKU each location row carries.

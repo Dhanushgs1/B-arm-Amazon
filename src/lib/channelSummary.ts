@@ -7,7 +7,7 @@ import { fetchMisFkOrders, fetchMisFkReturns } from "@/lib/misAdapters";
 import { isFkSkeletonOrderRow } from "@/lib/flipkartOrderRules";
 import { DEFAULT_GST_MULTIPLIER } from "@/lib/masterProductSkuid";
 import { supabasePublic } from "@/lib/amazonReportUpload";
-import { spCampaignDays, isSplitCoveredCampaignRow } from "@/lib/amazonSpendRules";
+import { amazonCardSpendRows } from "@/lib/amazonAdSourceRules";
 import { dailyFallbackStart, dailyFkRowAsMis, dedupeOrderLines } from "@/lib/dailyOrderFallbackRules";
 
 // Short "this period vs the previous period" summary for the Meesho, BARM and Flipkart Overview
@@ -206,9 +206,9 @@ async function amazonSpendTaxIn(start: string, end: string): Promise<number> {
       fetchAllRows(t, (q) => q.gte("report_date", start).lte("report_date", end)).catch(() => [])
     )
   );
-  const splitDays = spCampaignDays(sp);
+  const { spRows, campaignRows } = amazonCardSpendRows(sp, sb, sd);
   const sum = (rows: { spend?: unknown }[]) => rows.reduce((t, r) => t + (Number(r.spend) || 0), 0);
-  return (sum(sp) + sum([...sb, ...sd].filter((r) => !isSplitCoveredCampaignRow(r, splitDays)))) * DEFAULT_GST_MULTIPLIER;
+  return (sum(spRows) + sum(campaignRows)) * DEFAULT_GST_MULTIPLIER;
 }
 
 /** Amazon, from the same MIS tables and rules as the Amazon Weekly Sales Report — plus the daily
