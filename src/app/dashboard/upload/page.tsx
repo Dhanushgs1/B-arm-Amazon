@@ -27,6 +27,7 @@ import {
   type GoogleOrdersDataInfo,
   type GoogleAdSpendDataInfo,
 } from "@/lib/googleOrdersUpload";
+import { fetchShopifyOrdersDataInfo, type ShopifyOrdersDataInfo } from "@/lib/shopifyOrders";
 import Link from "next/link";
 import { trackUpload, type UploadJob } from "@/lib/uploadTracker";
 import { useUploadJob } from "@/components/UploadStatusTray";
@@ -520,7 +521,7 @@ interface GoogleOrdersState {
 // adSpendReportExport.ts. Needs scripts/google_orders_table.sql run once in Supabase first.
 // The same card also takes Google Ads' "Campaign report" export (ad spend) — each sheet is detected
 // and saved to its own table (see uploadGoogleFile in googleOrdersUpload.ts).
-function GoogleOrdersUploadCard({ onUploaded, dataInfo, spendInfo }: { onUploaded: () => void; dataInfo: GoogleOrdersDataInfo | undefined; spendInfo: GoogleAdSpendDataInfo | undefined }) {
+function GoogleOrdersUploadCard({ onUploaded, dataInfo, spendInfo, shopifyInfo }: { onUploaded: () => void; dataInfo: GoogleOrdersDataInfo | undefined; spendInfo: GoogleAdSpendDataInfo | undefined; shopifyInfo: ShopifyOrdersDataInfo | undefined }) {
   const [state, setState] = useState<GoogleOrdersState>({ status: "idle" });
   const [dragOver, setDragOver] = useState(false);
   const job = useUploadJob("amazon:google");
@@ -615,6 +616,17 @@ function GoogleOrdersUploadCard({ onUploaded, dataInfo, spendInfo }: { onUploade
             : spendInfo.rowCount > 0
               ? `Ad spend: ${spendInfo.minDate} to ${spendInfo.maxDate} (${spendInfo.rowCount} rows)`
               : "Ad spend: no data"}
+        </p>
+      )}
+      {/* Shopify orders arrive by webhook (no upload needed) and are what the Ad Spend Report's
+          Google and Social Media rows read from their first day on — see googleWebsiteOrders.ts. */}
+      {shopifyInfo && (
+        <p className="text-[10px] text-muted-foreground mt-0.5">
+          {shopifyInfo.error
+            ? `Shopify orders could not be read — ${shopifyInfo.error}`
+            : shopifyInfo.orderCount > 0 && shopifyInfo.totals
+              ? `Shopify orders (live, by webhook): ${shopifyInfo.minDate} to ${shopifyInfo.maxDate} · ${shopifyInfo.totals.netOrders} orders${shopifyInfo.totals.cancelled ? ` (+${shopifyInfo.totals.cancelled} cancelled)` : ""}, ₹${shopifyInfo.totals.sales.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`
+              : "Shopify orders: none yet"}
         </p>
       )}
       <input
@@ -801,10 +813,12 @@ export default function UploadReportsPage() {
 
   const [googleDataInfo, setGoogleDataInfo] = useState<GoogleOrdersDataInfo | undefined>(undefined);
   const [googleSpendInfo, setGoogleSpendInfo] = useState<GoogleAdSpendDataInfo | undefined>(undefined);
+  const [shopifyDataInfo, setShopifyDataInfo] = useState<ShopifyOrdersDataInfo | undefined>(undefined);
   const refreshGoogleMeta = useCallback(async () => {
-    const [info, spendInfo] = await Promise.all([fetchGoogleOrdersDataInfo(), fetchGoogleAdSpendDataInfo()]);
+    const [info, spendInfo, shopifyInfo] = await Promise.all([fetchGoogleOrdersDataInfo(), fetchGoogleAdSpendDataInfo(), fetchShopifyOrdersDataInfo()]);
     setGoogleDataInfo(info);
     setGoogleSpendInfo(spendInfo);
+    setShopifyDataInfo(shopifyInfo);
   }, []);
 
   useEffect(() => {
@@ -874,7 +888,7 @@ export default function UploadReportsPage() {
       <CombinedAdSpendUploadCard onUploaded={refreshCombinedMeta} dataInfo={combinedDataInfo} keySlot={keySlot} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-        <GoogleOrdersUploadCard onUploaded={refreshGoogleMeta} dataInfo={googleDataInfo} spendInfo={googleSpendInfo} />
+        <GoogleOrdersUploadCard onUploaded={refreshGoogleMeta} dataInfo={googleDataInfo} spendInfo={googleSpendInfo} shopifyInfo={shopifyDataInfo} />
         <SocialMediaUploadCard onUploaded={refreshSocialMediaMeta} dataInfo={socialMediaDataInfo} />
       </div>
 
