@@ -78,13 +78,16 @@ export async function buildFlipkartWeeklySalesWorkbook(opts: {
 
   // One fetch across the combined 2-week span; each period is a filter over it.
   // Listings is a current snapshot with no date column, so it is fetched whole.
-  const [orderRows, returnRows, listingRows, fsnRows, masterSkuid, productMarketing] = await Promise.all([
+  const [orderRows, returnRows, listingRows, fsnRows, adSpendRows, masterSkuid, productMarketing] = await Promise.all([
     fetchMisFkOrders((q) => q.gte("order_date", lastWeek.start).lte("order_date", thisWeek.end)),
     fetchMisFkReturns((q) =>
       q.gte("return_requested_date", lastWeek.start).lte("return_requested_date", thisWeek.end)
     ).catch(() => []),
     fetchAllRows("barm_flipkart_listings", (q) => q).catch(() => []),
     fetchAllRows("barm_flipkart_fsn_report", (q) => q.gte("report_date", lastWeek.start).lte("report_date", thisWeek.end)).catch(
+      () => []
+    ),
+    fetchAllRows("barm_daily_fk_ads", (q) => q.gte("report_date", lastWeek.start).lte("report_date", thisWeek.end)).catch(
       () => []
     ),
     fetchMasterSkuidMap(),
@@ -180,13 +183,14 @@ export async function buildFlipkartWeeklySalesWorkbook(opts: {
     });
   }
 
-  // Ad spend per SKU per week, from the FSN report. Spend+Tax applies that
+  // Ad spend per SKU per week, from the daily ads upload (barm_daily_fk_ads) — it matches the
+  // FSN report SKU-day for SKU-day. Spend+Tax applies that
   // SKU's own GST rate from the product master (18% used when a SKU has none
   // on file) — most products are actually 5%, not the flat 18% this used to
   // apply to everyone.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (fsnRows as any[]).forEach((r) => {
-    const sku = String(r.sku_id || "").trim();
+  (adSpendRows as any[]).forEach((r) => {
+    const sku = String(r.sku || "").trim();
     if (!sku || !r.report_date) return;
     const pd = periodForDate(String(r.report_date).slice(0, 10));
     if (!pd) return;
