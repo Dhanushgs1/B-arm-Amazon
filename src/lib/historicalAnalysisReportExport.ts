@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx-js-style";
 import { fcToState, fcToAreaManual } from "@/lib/analysisReportExport";
-import { refreshOrderStatuses, ledgerBalancesBySku, capReturnsAtOrderedQuantity, historyRowAsOrderLine, unresolvedPendingOrderLines, UNRESOLVED_SOURCE_DATA, type ReturnLine, type CappedReturn } from "@/lib/historicalReportRules";
+import { refreshOrderStatuses, ledgerBalancesBySku, snapshotLedgerBalances, carryForwardLedgerBalances, isEmptyUnmappedRow, type LedgerBalanceMode, type LedgerBalanceRow, capReturnsAtOrderedQuantity, historyRowAsOrderLine, unresolvedPendingOrderLines, UNRESOLVED_SOURCE_DATA, type ReturnLine, type CappedReturn } from "@/lib/historicalReportRules";
 import { spCampaignDays, isSplitCoveredCampaignRow, dedupeSellerFlexReturns } from "@/lib/amazonSpendRules";
 import { fetchAllRows, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn, isStandardOrderId, istDayWindowUtc, istDateOnly } from "@/lib/amazonReportShared";
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns, fetchAllMisReportDataInfo } from "@/lib/misAdapters";
@@ -200,10 +200,13 @@ interface BuildOpts {
    *  every figure comes from the uploaded tables rather than the live API. */
   accountName: string | undefined;
   endDate: string; // 'YYYY-MM-DD' — both windows are trailing windows ending here
+  /** How FBA balances are read from the ledger. Defaults to the production
+   *  carry-forward rule; "snapshot" reads only the chosen snapshot date. */
+  ledgerBalanceMode?: LedgerBalanceMode;
 }
 
 export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
-  const { accountName, endDate } = opts;
+  const { accountName, endDate, ledgerBalanceMode = "carry_forward" } = opts;
   // Stamped once, at the moment this build actually reads its source tables —
   // written to the Notes sheet below so a reader can tell this file and a
   // Weekly Sales Report apart when the two were generated minutes (or days)
@@ -385,12 +388,6 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   // stand-in for "current" when nothing inside the window exists.
   const ledgerAsOf: string | null = atOrBefore.length ? atOrBefore[atOrBefore.length - 1] : (ledgerDates[ledgerDates.length - 1] ?? null);
   const ledgerIsAfterWindow = !!ledgerAsOf && ledgerAsOf > endDate;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ledgerInScope = (ledgerRows as any[]).filter((r) => r.ledger_date && r.ledger_date <= (ledgerAsOf ?? ""));
-  // When the only snapshots are after the window, `ledgerInScope` is empty by
-  // that test, so use the chosen snapshot's own rows instead.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ledgerEffective: any[] = ledgerInScope.length ? ledgerInScope : (ledgerRows as any[]).filter((r) => r.ledger_date === ledgerAsOf);
 
   // Raw "Inventory ledger" sheet: every currently-uploaded row, every date it
   // covers — no single-snapshot narrowing. Deliberately just ledgerRawRows
@@ -399,20 +396,17 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   // the raw dump vs which backs the FBA status sheet's deduped stock numbers.
   const ledgerRawEffective = ledgerRawRows;
 
-  const ledgerLatestByKey = new Map<string, { ledger_date: string; msku: string; location: string; ending_balance: number }>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ledgerEffective.forEach((r: any) => {
-    if (!r.msku) return;
-    const key = `${r.msku}|${r.location}`;
-    const cur = ledgerLatestByKey.get(key);
-    if (!cur || r.ledger_date > cur.ledger_date) ledgerLatestByKey.set(key, r);
-  });
+  // Default "carry_forward" keeps the production rule (see carryForwardLedgerBalances).
+  // "snapshot" reads only the ledgerAsOf date (see snapshotLedgerBalances). Both use the same rows.
+  const ledgerLatestByKey = ledgerBalanceMode === "snapshot"
+    ? snapshotLedgerBalances(ledgerRows as LedgerBalanceRow[], ledgerAsOf)
+    : carryForwardLedgerBalances(ledgerRows as LedgerBalanceRow[], ledgerAsOf);
   // Grouped by STATE (Key Insights joins it against order ship_state) and by the seller's FC AREA
   // (BANGALORE, HYDERABAD, JAIPUR, LUCKNOW, ... — the columns of their own FBA status pivot, used for the
   // FBA status sheet and the Analysis report's Available columns). A location whose latest balance is 0
   // is still registered (a real literal 0, the seller's own not-available signal), so "the ledger never
   // had a row for this SKU there" stays blank — see ledgerBalancesBySku.
-  const { bySku: ledgerBySku, states: ledgerStates, areas: ledgerAreas } = ledgerBalancesBySku(ledgerLatestByKey.values(), fcToState, fcToAreaManual);
+  const { bySku: ledgerBySku, states: ledgerStates, areas: ledgerAreas } = ledgerBalancesBySku(ledgerLatestByKey, fcToState, fcToAreaManual);
   const hasUploadedLedger = ledgerBySku.size > 0;
 
   // No live-API fallback here by design — see this file's header comment. Every
@@ -667,7 +661,9 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
       meta: metaMap.get(id.sku) || emptyMeta(id.sku),
       wA: combineAgg(winAMap.pairs.get(k), winAMap.skus.get(id.sku)),
       wB: combineAgg(winBMap.pairs.get(k), winBMap.skus.get(id.sku)),
-    }));
+    }))
+    // An unmapped bucket with no spend in either window is an empty placeholder — drop it.
+    .filter((r) => !isEmptyUnmappedRow(r.sku === UNMAPPED, r.wA.spendTax, r.wB.spendTax));
 
   // Every SKU with orders/returns in the 30-day window gets a row even when it
   // was never advertised — winAMap.skus already holds it (orders are recorded

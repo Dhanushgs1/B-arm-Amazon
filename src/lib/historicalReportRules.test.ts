@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createJiti } from "jiti";
 import { readFileSync } from "node:fs";
 import {
-  isOrdersCardRow, refreshOrderStatuses, ledgerBalancesBySku, capReturnsAtOrderedQuantity,
+  isOrdersCardRow, refreshOrderStatuses, ledgerBalancesBySku, snapshotLedgerBalances, carryForwardLedgerBalances, isEmptyUnmappedRow, capReturnsAtOrderedQuantity,
   orderStatusHistoryRows, historyRowAsOrderLine, unresolvedPendingOrderLines, ORDER_STATUS_HISTORY_KEY, UNRESOLVED_SOURCE_DATA,
   type OrderStatusHistoryRow,
 } from "./historicalReportRules.ts";
@@ -250,4 +250,85 @@ test("UNRESOLVED_SOURCE_DATA: counted lines still Pending 7+ days before the end
   const flagged = unresolvedPendingOrderLines(rows, "2026-10-22", (r) => r.day, (r) => !/^cancel/i.test(r.order_status));
   assert.deepEqual(flagged.map((l) => [l.flag, l.amazon_order_id, l.quantity]), [[UNRESOLVED_SOURCE_DATA, "407-5482406-5557937", 1], [UNRESOLVED_SOURCE_DATA, "W1", 1]]);
   assert.equal(JSON.stringify(rows), before);
+});
+
+test("snapshotLedgerBalances reads only the chosen snapshot date (historical balance)", () => {
+  const rows = [
+    { ledger_date: "2026-10-20", msku: "A", location: "BLR7", fnsku: "X1", ending_balance: 9 },
+    { ledger_date: "2026-10-21", msku: "A", location: "BLR7", fnsku: "X1", ending_balance: 4 },
+    { ledger_date: "2026-10-21", msku: "B", location: "DEL2", fnsku: "X2", ending_balance: 6 },
+  ];
+  assert.deepEqual(
+    snapshotLedgerBalances(rows, "2026-10-21").map((r) => [r.msku, r.location, r.ending_balance]),
+    [["A", "BLR7", 4], ["B", "DEL2", 6]],
+  );
+  assert.deepEqual(snapshotLedgerBalances(rows, null), []);
+});
+
+test("snapshotLedgerBalances does not carry a location forward from an older snapshot (missing location is zero)", () => {
+  const rows = [
+    { ledger_date: "2026-10-05", msku: "A", location: "CCX2", fnsku: "X1", ending_balance: 7 },
+    { ledger_date: "2026-10-21", msku: "A", location: "BLR7", fnsku: "X1", ending_balance: 2 },
+  ];
+  const out = snapshotLedgerBalances(rows, "2026-10-21");
+  assert.deepEqual(out.map((r) => [r.location, r.ending_balance]), [["BLR7", 2]]);
+  const bySku = ledgerBalancesBySku(out, (fc) => fc, (fc) => fc).bySku.get("A");
+  assert.equal(bySku?.fbaTotal, 2);
+  assert.equal(bySku?.areaBalances.has("CCX2"), false);
+});
+
+test("snapshotLedgerBalances sums distinct FNSKUs at one MSKU and location, and counts an identical line once", () => {
+  const rows = [
+    { ledger_date: "2026-10-21", msku: "A015", location: "AMD2", fnsku: "X0021Q1AHV", ending_balance: 8 },
+    { ledger_date: "2026-10-21", msku: "A015", location: "AMD2", fnsku: "X0021OTHER", ending_balance: 3 },
+    { ledger_date: "2026-10-21", msku: "A015", location: "AMD2", fnsku: "X0021Q1AHV", ending_balance: 8 },
+  ];
+  const out = snapshotLedgerBalances(rows, "2026-10-21");
+  assert.equal(out.length, 1);
+  assert.equal(out[0].ending_balance, 11);
+});
+
+test("snapshotLedgerBalances ignores rows with no MSKU", () => {
+  const rows = [{ ledger_date: "2026-10-21", msku: "", location: "BLR7", fnsku: "X1", ending_balance: 5 }];
+  assert.deepEqual(snapshotLedgerBalances(rows, "2026-10-21"), []);
+});
+
+test("isEmptyUnmappedRow drops only zero-spend unmapped buckets", () => {
+  assert.equal(isEmptyUnmappedRow(true, 0, 0), true);
+  assert.equal(isEmptyUnmappedRow(true, 0, 12.5), false);
+  assert.equal(isEmptyUnmappedRow(true, 3, 0), false);
+  assert.equal(isEmptyUnmappedRow(false, 0, 0), false);
+});
+
+test("a mapped campaign row with the ₹4.34 spend is never treated as an unmapped placeholder", () => {
+  assert.equal(isEmptyUnmappedRow(false, 4.3424, 4.3424), false);
+});
+
+test("carryForwardLedgerBalances keeps a location's last reported balance from an older snapshot (original rule)", () => {
+  const rows = [
+    { ledger_date: "2026-10-05", msku: "A", location: "CCX2", fnsku: "X1", ending_balance: 0 },
+    { ledger_date: "2026-10-21", msku: "A", location: "BLR7", fnsku: "X1", ending_balance: 2 },
+  ];
+  const out = carryForwardLedgerBalances(rows, "2026-10-21");
+  assert.deepEqual(out.map((r) => [r.location, r.ending_balance]).sort(), [["BLR7", 2], ["CCX2", 0]]);
+});
+
+test("carryForwardLedgerBalances uses only asOf rows when nothing is dated on or before asOf", () => {
+  const rows = [
+    { ledger_date: "2026-10-25", msku: "A", location: "BLR7", fnsku: "X1", ending_balance: 3 },
+    { ledger_date: "2026-10-26", msku: "A", location: "DEL2", fnsku: "X2", ending_balance: 9 },
+  ];
+  assert.deepEqual(carryForwardLedgerBalances(rows, "2026-10-25").map((r) => r.location), ["BLR7"]);
+});
+
+test("the two ledger modes differ only where a location is missing from the newest snapshot", () => {
+  const rows = [
+    { ledger_date: "2026-10-05", msku: "A", location: "CCX2", fnsku: "X1", ending_balance: 0 },
+    { ledger_date: "2026-10-21", msku: "A", location: "BLR7", fnsku: "X1", ending_balance: 2 },
+    { ledger_date: "2026-10-21", msku: "B", location: "BLR7", fnsku: "X3", ending_balance: 1 },
+  ];
+  const snap = snapshotLedgerBalances(rows, "2026-10-21").map((r) => `${r.msku}|${r.location}`).sort();
+  const carry = carryForwardLedgerBalances(rows, "2026-10-21").map((r) => `${r.msku}|${r.location}`).sort();
+  assert.deepEqual(snap, ["A|BLR7", "B|BLR7"]);
+  assert.deepEqual(carry, ["A|BLR7", "A|CCX2", "B|BLR7"]);
 });

@@ -227,6 +227,69 @@ export interface LedgerSkuBalances {
   areaBalances: Map<string, number>;
 }
 
+export interface LedgerBalanceRow {
+  ledger_date: string;
+  msku: string;
+  location: string;
+  fnsku?: string | null;
+  ending_balance: number;
+}
+
+// Alternative to carryForwardLedgerBalances (not the default): the stock figures describe
+// ONE snapshot — every row dated asOf, nothing carried forward from older dates. A location
+// missing from that snapshot contributes no balance. Several FNSKUs at the same MSKU and location are separate inventory and are summed;
+// an identical (msku, location, fnsku) repeated on the same date is one line and is
+// counted once. Returns one row per msku|location.
+export function snapshotLedgerBalances(
+  rows: Iterable<LedgerBalanceRow>,
+  asOf: string | null,
+): LedgerBalanceRow[] {
+  if (!asOf) return [];
+  const seenLine = new Set<string>();
+  const byLocation = new Map<string, LedgerBalanceRow>();
+  for (const r of rows) {
+    if (r.ledger_date !== asOf || !r.msku) continue;
+    const lineKey = `${r.msku}|${r.location}|${r.fnsku ?? ""}`;
+    if (seenLine.has(lineKey)) continue;
+    seenLine.add(lineKey);
+    const locKey = `${r.msku}|${r.location}`;
+    const cur = byLocation.get(locKey);
+    if (cur) cur.ending_balance += r.ending_balance || 0;
+    else byLocation.set(locKey, { ledger_date: asOf, msku: r.msku, location: r.location, ending_balance: r.ending_balance || 0 });
+  }
+  return [...byLocation.values()];
+}
+
+// The original rule, kept so the two methods can be compared on the same source data:
+// the latest row per msku|location dated on or before asOf, so a location missing from
+// the newest snapshot keeps its last reported balance (often a stale 0). If nothing is
+// dated on or before asOf, only the asOf rows are used. Ties keep the first row seen.
+export function carryForwardLedgerBalances(
+  rows: Iterable<LedgerBalanceRow>,
+  asOf: string | null,
+): LedgerBalanceRow[] {
+  if (!asOf) return [];
+  const all = [...rows];
+  const inScope = all.filter((r) => r.ledger_date && r.ledger_date <= asOf);
+  const effective = inScope.length ? inScope : all.filter((r) => r.ledger_date === asOf);
+  const latest = new Map<string, LedgerBalanceRow>();
+  for (const r of effective) {
+    if (!r.msku) continue;
+    const key = `${r.msku}|${r.location}`;
+    const cur = latest.get(key);
+    if (!cur || r.ledger_date > cur.ledger_date) latest.set(key, r);
+  }
+  return [...latest.values()];
+}
+
+export type LedgerBalanceMode = "snapshot" | "carry_forward";
+
+// An unmapped SB/SD bucket row with no spend in either window carries no figures and
+// is not a SKU; the manual workbook has none. Real mapped rows are never affected.
+export function isEmptyUnmappedRow(isUnmapped: boolean, spendTaxA: number, spendTaxB: number): boolean {
+  return isUnmapped && !(spendTaxA > 0) && !(spendTaxB > 0);
+}
+
 export function ledgerBalancesBySku(
   latestRows: Iterable<{ msku: string; location: string; ending_balance: number }>,
   toState: (fc: string) => string,
