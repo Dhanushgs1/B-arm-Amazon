@@ -2620,11 +2620,17 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       });
     });
     socialMediaProducts.sort((a, b) => b.rangeAgg.spend - a.rangeAgg.spend || b.dayAgg.spend - a.dayAgg.spend);
+    // Summary sheet + email show only the products Meta actually ran on the reporting day: a campaign
+    // paused earlier in the week still has 7-day spend, but listing it with a ₹0 day reads as active
+    // (seller's explicit instruction). Its spend stays on the "Ad spend report" sheet's Social Media
+    // block, which keeps every product. With no daily row for the day at all (daily export not
+    // uploaded), there's no way to tell who ran, so every product is kept as before.
+    const socialSummaryProducts = socialMedia.daySpend > 0 ? socialMediaProducts.filter((p) => p.dayAgg.spend > 0) : socialMediaProducts;
     const dayTotalAgg: WindowAgg = { spend: socialMedia.daySpend, units: 0 };
     socialMediaRow = sumAoa.length;
     // Total Sales, Total Orders, CPC and ACOS all stay blank (both blocks) — spend is the only
     // figure these rows can honestly show (see the orders note above).
-    socialMediaProducts.forEach((p, i) => sumAoa.push([
+    socialSummaryProducts.forEach((p, i) => sumAoa.push([
       i === 0 ? "Social Media" : "",
       i === 0 ? round2(socialMedia.daySpend) : "", i === 0 ? round2(spendTax(dayTotalAgg)) : "",
       p.product, p.price || "",
@@ -2632,14 +2638,14 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       round2(p.rangeAgg.spend), round2(spendTax(p.rangeAgg)), "", "", "", "", null,
       "", "",
     ]));
-    if (socialMediaProducts.length > 1) {
-      [0, 1, 2, 19, 20].forEach((c) => sumMerges.push({ s: { r: socialMediaRow!, c }, e: { r: socialMediaRow! + socialMediaProducts.length - 1, c } }));
+    if (socialSummaryProducts.length > 1) {
+      [0, 1, 2, 19, 20].forEach((c) => sumMerges.push({ s: { r: socialMediaRow!, c }, e: { r: socialMediaRow! + socialSummaryProducts.length - 1, c } }));
     }
     // Same figures as the Summary-sheet rows above, reshaped for the emailed daily digest (see
     // buildAdSpendDailyHtml in supabase/functions/send-ad-spend-email/index.ts), which renders
     // them directly below Meesho's, per the seller's explicit request.
     const block = (agg: WindowAgg): ProductMetricBlock => ({ spend: round2(agg.spend), spendTax: round2(spendTax(agg)), orders: 0, cpc: 0, acos: null });
-    const products = socialMediaProducts.map((p) => ({ product: p.product, campaigns: p.campaigns, price: p.price, day: block(p.dayAgg), range: block(p.rangeAgg) }));
+    const products = socialSummaryProducts.map((p) => ({ product: p.product, campaigns: p.campaigns, price: p.price, day: block(p.dayAgg), range: block(p.rangeAgg) }));
     socialMediaSummary = {
       daySpend: round2(socialMedia.daySpend),
       daySpendTax: round2(spendTax(dayTotalAgg)),
