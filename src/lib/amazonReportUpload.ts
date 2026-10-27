@@ -2,6 +2,7 @@ import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { createClient } from "@supabase/supabase-js";
 import { lazySupabase, SUPABASE_URL, SUPABASE_ANON_KEY } from "@/lib/supabaseLazy";
+import { orderStatusHistoryRows, ORDER_STATUS_HISTORY_KEY } from "@/lib/historicalReportRules";
 
 // The 20 barm_* tables (the ones in REPORT_TABLE below, plus barm_alert_state
 // and barm_amazon_campaign_sku_map) live in the default `public` schema —
@@ -707,6 +708,31 @@ export interface UploadResult {
   // second round-trip to Supabase.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   rows?: any[];
+  /** Orders card only: status rows appended to barm_amazon_order_status_history (after duplicates
+   *  within the file collapse), or why that step was skipped. The upload itself never fails on it. */
+  statusHistory?: { rows: number } | { error: string };
+}
+
+// Orders card uploads also append each line's status to barm_amazon_order_status_history, which —
+// unlike barm_amazon_am_orders — is never pruned to the latest file's date range, so a cancellation
+// Amazon reported stays on record after an upload of another range. Insert-or-ignore on the
+// (order, SKU, last-updated-date, status) key, so re-uploading the same file adds nothing. Best-effort:
+// a failure (e.g. the table not created yet) is reported back but never fails the orders upload.
+async function appendOrderStatusHistory(rows: Parameters<typeof orderStatusHistoryRows>[0], sourceFile: string): Promise<{ rows: number } | { error: string }> {
+  const history = orderStatusHistoryRows(rows, sourceFile);
+  try {
+    for (let i = 0; i < history.length; i += 300) {
+      const { error } = await supabasePublic
+        .from("barm_amazon_order_status_history")
+        .upsert(history.slice(i, i + 300), { onConflict: ORDER_STATUS_HISTORY_KEY, ignoreDuplicates: true });
+      if (error) throw new Error(error.message);
+    }
+    return { rows: history.length };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.warn("[orders upload] status history not saved:", message);
+    return { error: message };
+  }
 }
 
 // Amazon's own orders/returns exports occasionally contain a literal
@@ -783,6 +809,7 @@ export async function uploadReportFile(type: UploadReportType, file: File): Prom
     } else {
       await insertInChunks(table, deduped);
     }
+    const statusHistory = type === "am_orders" ? await appendOrderStatusHistory(deduped, file.name) : undefined;
     if (PRUNE_TO_UPLOAD_RANGE[type]) {
       await pruneOutsideRange(table, replaceDateField, minDate, maxDate);
     }
@@ -790,6 +817,7 @@ export async function uploadReportFile(type: UploadReportType, file: File): Prom
       totalRows: rawRows.length,
       validRows: deduped.length,
       skippedRows: rawRows.length - deduped.length,
+      ...(statusHistory ? { statusHistory } : {}),
     };
   }
 

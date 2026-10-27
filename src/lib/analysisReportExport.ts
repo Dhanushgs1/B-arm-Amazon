@@ -127,6 +127,8 @@ const FC_AREA_MAP_MANUAL: Record<string, string> = {
   ATX1: "PUNJAB", LDX1: "PUNJAB",
   BBX1: "ODISHA",
   AMD2: "AHMEDABAD", AMD3: "AHMEDABAD", SAMD: "AHMEDABAD",
+  // Their formula has no PAX1 either, but their FBA status pivot has a PATNA column for it.
+  PAX1: "PATNA",
   VSNC: "VSNC",
 };
 

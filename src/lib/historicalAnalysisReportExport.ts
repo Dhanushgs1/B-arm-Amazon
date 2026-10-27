@@ -1,7 +1,8 @@
 import * as XLSX from "xlsx-js-style";
-import { fcToState } from "@/lib/analysisReportExport";
+import { fcToState, fcToAreaManual } from "@/lib/analysisReportExport";
+import { refreshOrderStatuses, ledgerBalancesBySku, capReturnsAtOrderedQuantity, historyRowAsOrderLine, unresolvedPendingOrderLines, UNRESOLVED_SOURCE_DATA, type ReturnLine, type CappedReturn } from "@/lib/historicalReportRules";
 import { spCampaignDays, isSplitCoveredCampaignRow, dedupeSellerFlexReturns } from "@/lib/amazonSpendRules";
-import { fetchAllRows, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
+import { fetchAllRows, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn, isStandardOrderId, istDayWindowUtc, istDateOnly } from "@/lib/amazonReportShared";
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns, fetchAllMisReportDataInfo } from "@/lib/misAdapters";
 import { staleSourceWarnings } from "@/lib/reportCoverage";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
@@ -55,6 +56,12 @@ function getDateWindow(toDate: string, days: number): { start: string; end: stri
   const start = new Date(end.getTime());
   start.setUTCDate(start.getUTCDate() - (days - 1));
   return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+}
+
+function addDaysIso(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
 }
 
 const UNMAPPED = "__UNMAPPED__";
@@ -179,10 +186,13 @@ interface SkuMeta {
   isFba: boolean;
   fbaTotal: number;
   fbmQty: number;
+  /** Stock by state — Key Insights only (joined against order ship_state). */
   stateBalances: Map<string, number>;
+  /** Stock by the seller's FC area — FBA status sheet and the Analysis report's FBA columns. */
+  areaBalances: Map<string, number>;
 }
 function emptyMeta(sku: string): SkuMeta {
-  return { sku, name: sku, campaignName: "", price: 0, channel: "", isFba: false, fbaTotal: 0, fbmQty: 0, stateBalances: new Map() };
+  return { sku, name: sku, campaignName: "", price: 0, channel: "", isFba: false, fbaTotal: 0, fbmQty: 0, stateBalances: new Map(), areaBalances: new Map() };
 }
 
 interface BuildOpts {
@@ -214,9 +224,9 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   // the 7-day window) — the 7-day block is then derived by filtering these
   // same rows in memory, avoiding a second round-trip to Supabase.
   const [
-    spTableRows, sbTableRows, sdTableRows, orderRows, amReturnRows, fbaReturnRows, mapRows,
+    spTableRows, sbTableRows, sdTableRows, misOrderRows, amReturnRows, fbaReturnRows, mapRows,
     priceListingRows, fbaInventoryRows, ledgerRows, ledgerRawRows, sfReturnRows,
-    productMaster, masterSkuid, masterSkuidCatalog, productMarketing,
+    productMaster, masterSkuid, masterSkuidCatalog, productMarketing, cardOrderRows, statusHistoryRows,
   ] = await Promise.all([
     fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", win30.start).lte("report_date", endDate)),
     fetchAllRows("barm_amazon_sb_campaign", (q) => q.gte("report_date", win30.start).lte("report_date", endDate)),
@@ -250,7 +260,41 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     fetchMasterSkuidMap(),
     fetchMasterSkuidAmazonCatalog(),
     fetchProductMarketingMap(),
+    // Orders upload card — read only to refresh stale MIS statuses (see refreshOrderStatuses). Filtered and
+    // ordered on the indexed purchase_date (UTC day), a day of margin each side: matching is by order + SKU,
+    // so the window edges don't need to be exact. Optional — if it can't be read, the report still builds
+    // from the synced statuses alone and the Notes sheet says so.
+    fetchAllRows("barm_amazon_am_orders", (q) => q
+      .gte("purchase_date", addDaysIso(win30.start, -2))
+      .lte("purchase_date", addDaysIso(endDate, 1)), ["purchase_date", "id"])
+      .catch((e: unknown) => { console.warn("[historical report] Orders card unavailable, using synced order statuses:", e); return null; }),
+    // Status history every Orders card upload appends (never pruned) — keeps a status after a later
+    // upload of a different date range removed its rows from barm_amazon_am_orders. Optional: absent until
+    // the migration has been applied, and the report then uses the Orders card rows alone.
+    fetchAllRows("barm_amazon_order_status_history", (q) => q
+      .gte("purchase_date", addDaysIso(win30.start, -2))
+      .lte("purchase_date", addDaysIso(endDate, 1)), ["purchase_date", "id"])
+      .catch((e: unknown) => { console.warn("[historical report] Order status history unavailable:", e); return null; }),
   ]);
+  // MIS order lines keep the status they had when their batch was loaded; a later Amazon export on the
+  // Orders card, or a status stored from an earlier card upload, overrides it only when Amazon's own
+  // last-updated-date is newer (historicalReportRules.ts).
+  const orderCardAvailable = cardOrderRows !== null;
+  const statusHistoryAvailable = statusHistoryRows !== null;
+  const { rows: orderRows, refreshed: refreshedOrderStatuses } = refreshOrderStatuses(misOrderRows, [
+    ...(cardOrderRows ?? []),
+    ...(statusHistoryRows ?? []).map(historyRowAsOrderLine),
+  ]);
+  // The refreshes that actually move a line into or out of Orders (cancelled lines are excluded).
+  const cancelRefreshes = refreshedOrderStatuses.filter((r) => isCancelledOrder({ order_status: r.from }) !== isCancelledOrder({ order_status: r.to }));
+  // Counted lines still Pending a week or more before the window end: the stored exports can't confirm
+  // them. Listed on the Notes sheet; Orders and every other figure are unchanged.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const unresolvedOrderLines = unresolvedPendingOrderLines(orderRows as any[], endDate,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (r: any) => (r.purchase_datetime ? istDateOnly(r.purchase_datetime) : null),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (r: any) => !!r.sku && !isCancelledOrder(r) && isStandardOrderId(r.amazon_order_id));
   // Upload-card rows only (amazonAdSourceRules.ts): rows the daily combined upload left in these tables
   // — the seller's per-SKU Brand/Display split, SD lines, SKU-less Brand/Display days — are left out,
   // so SB/SD spend comes from the SB/SD cards, spread by the campaign-to-SKU mapping below.
@@ -363,25 +407,12 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     const cur = ledgerLatestByKey.get(key);
     if (!cur || r.ledger_date > cur.ledger_date) ledgerLatestByKey.set(key, r);
   });
-  const ledgerBySku = new Map<string, { fbaTotal: number; stateBalances: Map<string, number> }>();
-  const ledgerStates = new Set<string>();
-  ledgerLatestByKey.forEach((r) => {
-    const bal = r.ending_balance || 0;
-    let s = ledgerBySku.get(r.msku);
-    if (!s) { s = { fbaTotal: 0, stateBalances: new Map() }; ledgerBySku.set(r.msku, s); }
-    if (bal > 0) s.fbaTotal += bal;
-    const state = fcToState(r.location);
-    // Register the state even when its latest balance is 0 (a location the
-    // ledger has a row for but is currently empty) — this is what lets the FBA
-    // status sheet's "Number of FBA Not Available" tell "reported and
-    // currently 0" (a real literal 0, the seller's own not-available signal)
-    // apart from "the ledger never had a row for this SKU+state at all" (which
-    // must stay blank there). Skipping bal<=0 rows here used to collapse both
-    // cases into "never seen", so a state the SKU simply never shipped to
-    // looked identical to one it emptied out of.
-    s.stateBalances.set(state, (s.stateBalances.get(state) || 0) + bal);
-    ledgerStates.add(state);
-  });
+  // Grouped by STATE (Key Insights joins it against order ship_state) and by the seller's FC AREA
+  // (BANGALORE, HYDERABAD, JAIPUR, LUCKNOW, ... — the columns of their own FBA status pivot, used for the
+  // FBA status sheet and the Analysis report's Available columns). A location whose latest balance is 0
+  // is still registered (a real literal 0, the seller's own not-available signal), so "the ledger never
+  // had a row for this SKU there" stays blank — see ledgerBalancesBySku.
+  const { bySku: ledgerBySku, states: ledgerStates, areas: ledgerAreas } = ledgerBalancesBySku(ledgerLatestByKey.values(), fcToState, fcToAreaManual);
   const hasUploadedLedger = ledgerBySku.size > 0;
 
   // No live-API fallback here by design — see this file's header comment. Every
@@ -464,13 +495,16 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   // per-location feed, which pulled TODAY's balances into a historical window —
   // the numbers looked complete while describing the wrong point in time.
   const accountStates = new Set<string>();
+  const accountAreas = new Set<string>();
   ledgerBySku.forEach((info, sku) => {
     const m = ensureMeta(sku);
     m.isFba = true;
     m.fbaTotal += info.fbaTotal;
     info.stateBalances.forEach((v, st) => m.stateBalances.set(st, (m.stateBalances.get(st) || 0) + v));
+    info.areaBalances.forEach((v, a) => m.areaBalances.set(a, (m.areaBalances.get(a) || 0) + v));
   });
   ledgerStates.forEach((st) => accountStates.add(st));
+  ledgerAreas.forEach((a) => accountAreas.add(a));
 
   // ── Per-window numeric aggregation — same function run twice: once over
   // the full 30-day rows, once over the 7-day-filtered subset. ──
@@ -480,7 +514,18 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     skus: Map<string, SkuAgg>;
     /** campaign x SKU pairs seen in the ad data, in insertion order. */
     pairIds: Map<string, { campaign: string; sku: string }>;
+    /** Order lines whose returns were capped at the ordered quantity. */
+    cappedReturns: CappedReturn[];
   }
+  // Ordered quantity per order line, from the 30-day orders (largest quantity seen for the line) —
+  // used only to cap that line's returns; lines outside the window have no entry and are not capped.
+  const orderedQtyByLine = new Map<string, number>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  orderRows.forEach((r: any) => {
+    if (!r.amazon_order_id || !r.sku) return;
+    const k = `${r.amazon_order_id}|${r.sku}`;
+    orderedQtyByLine.set(k, Math.max(orderedQtyByLine.get(k) || 0, r.quantity || 0));
+  });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function aggregateWindow(rowsSp: any[], rowsSb: any[], rowsSd: any[], rowsOrders: any[], rowsAmReturns: any[], rowsFbaReturns: any[], rowsSfReturns: any[]): WindowMaps {
     const pairs = new Map<string, PairAgg>();
@@ -569,20 +614,23 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     // Report subtracts. This replaced "AM returns if the SKU has any, else FBA + SF": the three
     // sources share no orders (AM returns are merchant-fulfilled orders, FBA/SF returns Amazon-
     // fulfilled ones), so that rule never prevented a double count and instead dropped real FBA/SF
-    // returns (~103 units over the 30 days to 17 Sep 2026).
-    const addReturns = (sku: string, qty: number) => { ensureSku(sku).returns += qty; };
+    // returns (~103 units over the 30 days to 17 Sep 2026). An order line never counts more returned
+    // units than were ordered (27 Oct 2026) — see capReturnsAtOrderedQuantity.
+    const returnLines: ReturnLine[] = [];
     rowsAmReturns.forEach((r) => {
       if (!r.merchant_sku) return;
-      addReturns(r.merchant_sku, r.return_quantity || 0);
+      returnLines.push({ orderId: r.order_id || "", sku: r.merchant_sku, qty: r.return_quantity || 0, orderedQty: r.order_quantity || 0 });
     });
     rowsFbaReturns.forEach((r) => {
       if (!r.sku) return;
-      addReturns(r.sku, r.quantity || 0);
+      returnLines.push({ orderId: r.order_id || "", sku: r.sku, qty: r.quantity || 0 });
     });
     // The MIS amazon_seller_flex_return table holds each return several times over (one copy per
     // re-upload), so each (order, shipment, mSKU) counts once — see dedupeSellerFlexReturns.
-    dedupeSellerFlexReturns(rowsSfReturns).forEach((r) => addReturns(r.msku, r.units || 0));
-    return { pairs, skus, pairIds };
+    dedupeSellerFlexReturns(rowsSfReturns).forEach((r) => returnLines.push({ orderId: r.customer_order_id || "", sku: r.msku, qty: r.units || 0 }));
+    const { bySku: returnsBySku, capped: cappedReturns } = capReturnsAtOrderedQuantity(returnLines, orderedQtyByLine);
+    returnsBySku.forEach((qty, sku) => { ensureSku(sku).returns += qty; });
+    return { pairs, skus, pairIds, cappedReturns };
   }
 
   const winAMap = aggregateWindow(spRows, sbRows, sdRows, orderRows, amReturnRows, fbaReturnRows, sfReturnRows);
@@ -805,14 +853,14 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
       const inb = hasUploadedFbaInv ? (inboundShippedBySku.get(m.sku) || 0) : 0;
       return ["0", "", inb > 0 ? inb : "", "", ""];
     }
-    const withStock = [...m.stateBalances.entries()].filter(([, v]) => v > 0).map(([st]) => st).sort();
+    const withStock = [...m.areaBalances.entries()].filter(([, v]) => v > 0).map(([a]) => a).sort();
     const available = withStock.length ? withStock.join(", ") : "0";
     // Same COUNTIF(states,0) semantic as the FBA status sheet's formula below:
     // only states the ledger reported and are currently 0 count as "not
     // available", not every account-wide state this SKU simply never shipped
-    // to — that used to make almost every SKU read "No" here (accountStates
-    // covers the whole account, not just the states this one SKU touched).
-    const notAvailable = [...m.stateBalances.values()].filter((v) => v === 0).length;
+    // to — that used to make almost every SKU read "No" here (accountAreas
+    // covers the whole account, not just the areas this one SKU touched).
+    const notAvailable = [...m.areaBalances.values()].filter((v) => v === 0).length;
     const inbound = hasUploadedFbaInv ? (inboundShippedBySku.get(m.sku) || 0) : "—";
     return [available, m.fbaTotal, inbound, notAvailable, notAvailable > 0 ? "No" : "Yes"];
   };
@@ -1126,8 +1174,8 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   // Per-SKU, not per campaign x SKU: stock on hand belongs to the SKU, so a SKU
   // advertised by two campaigns must still appear once with one stock figure.
   const fbaRows = skuRows.filter((r) => r.sku !== UNMAPPED && (r.meta.isFba || r.meta.fbaTotal > 0));
-  const stateList = [...accountStates].sort();
-  const fbaHeader = ["SKU ID", ...stateList, "Available", "Grand Total", "Inbound-shipped-quantity", "Number of FBA Not Available", "All FBA"];
+  const areaList = [...accountAreas].sort();
+  const fbaHeader = ["SKU ID", ...areaList, "Available", "Grand Total", "Inbound-shipped-quantity", "Number of FBA Not Available", "All FBA"];
   const fbaAoa: (string | number | undefined)[][] = [fbaHeader];
   fbaRows.forEach((row) => {
     // A state this SKU's ledger rows never mention must be a genuinely BLANK
@@ -1139,27 +1187,27 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     // carry a row for, net zero, must still be a literal 0 — that is the
     // seller's own "not available there" signal (see the has() distinction in
     // the ledger-ingest block above).
-    const stateVals = stateList.map((st) => (row.meta.stateBalances.has(st) ? row.meta.stateBalances.get(st) : undefined));
+    const areaVals = areaList.map((st) => (row.meta.areaBalances.has(st) ? row.meta.areaBalances.get(st) : undefined));
     const inbound = hasUploadedFbaInv ? (inboundShippedBySku.get(row.sku) || 0) : "—";
-    fbaAoa.push([row.sku, ...stateVals, "", row.meta.fbaTotal, inbound, "", ""]);
+    fbaAoa.push([row.sku, ...areaVals, "", row.meta.fbaTotal, inbound, "", ""]);
   });
   const wsFba = XLSX.utils.aoa_to_sheet(fbaAoa);
-  if (stateList.length > 0) {
+  if (areaList.length > 0) {
     const stateColStart = colLetter(1);
-    const stateColEnd = colLetter(stateList.length);
-    const availCol = colLetter(1 + stateList.length);
+    const stateColEnd = colLetter(areaList.length);
+    const availCol = colLetter(1 + areaList.length);
     // Layout after the state block: Available(+1), Grand Total(+2),
     // Inbound-shipped-quantity(+3), Number of FBA Not Available(+4), All FBA(+5)
     // — offsets are relative to availCol, i.e. +3/+4 from here. This used to
     // read +2/+3, which landed COUNTIF on Inbound-shipped-quantity (silently
     // overwriting the real uploaded value with a formula) and IF on Number-of-
     // FBA-Not-Available, leaving the true All FBA column blank.
-    const notAvailCol = colLetter(1 + stateList.length + 3);
-    const allFbaCol = colLetter(1 + stateList.length + 4);
+    const notAvailCol = colLetter(1 + areaList.length + 3);
+    const allFbaCol = colLetter(1 + areaList.length + 4);
     for (let i = 0; i < fbaRows.length; i++) {
       const r = i + 2;
       const meta = fbaRows[i].meta;
-      const ifParts = stateList
+      const ifParts = areaList
         .map((_, si) => {
           const letter = colLetter(1 + si);
           return `IF(${letter}${r}>0,$${letter}$1&", ","")`;
@@ -1172,12 +1220,12 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
       // entirely and these three columns arrived blank in every export.
       // Computed from the same state balances the formula ranges over, so the
       // two can't disagree — and Excel still recalculates on edit.
-      const withStock = stateList.filter((st) => (meta.stateBalances.get(st) ?? 0) > 0);
+      const withStock = areaList.filter((st) => (meta.areaBalances.get(st) ?? 0) > 0);
       const availableVal = withStock.length ? withStock.join(", ") : "0";
       // Mirrors COUNTIF(states,0): only a state the ledger actually reported
       // and is currently zero counts as "not available" — a state this SKU
       // simply never shipped to is blank, and COUNTIF ignores blanks.
-      const notAvailVal = stateList.filter((st) => meta.stateBalances.get(st) === 0).length;
+      const notAvailVal = areaList.filter((st) => meta.areaBalances.get(st) === 0).length;
       wsFba[`${availCol}${r}`] = { t: "s", v: availableVal, f: `TRIM(SUBSTITUTE(${ifParts},", "," ",LEN(${ifParts})-LEN(SUBSTITUTE(${ifParts},",",""))))` };
       wsFba[`${notAvailCol}${r}`] = { t: "n", v: notAvailVal, f: `COUNTIF(${stateColStart}${r}:${stateColEnd}${r},0)` };
       wsFba[`${allFbaCol}${r}`] = { t: "s", v: notAvailVal > 0 ? "No" : "Yes", f: `IF(${notAvailCol}${r}>0,"No","Yes")` };
@@ -1192,7 +1240,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
       alignment: { horizontal: "center", vertical: "center", wrapText: true },
     };
   }
-  wsFba["!cols"] = [{ wch: 20 }, ...stateList.map(() => ({ wch: 12 })), { wch: 46 }, { wch: 11 }, { wch: 22 }, { wch: 24 }, { wch: 8 }];
+  wsFba["!cols"] = [{ wch: 20 }, ...areaList.map(() => ({ wch: 12 })), { wch: 46 }, { wch: 11 }, { wch: 22 }, { wch: 24 }, { wch: 8 }];
   XLSX.utils.book_append_sheet(wb, wsFba, "FBA status");
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1635,7 +1683,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     "Other Events", "Ending Warehouse Balance", "Unknown Events", "Location", "Area",
   ];
   XLSX.utils.book_append_sheet(wb, buildRawSheet(ledgerRawEffective, LEDGER_HEADERS, {
-    Area: (r, get) => fcToState(String(get("Location") ?? r.location ?? "")),
+    Area: (r, get) => fcToAreaManual(String(get("Location") ?? r.location ?? "")),
   }), "Inventory ledger");
 
   // ── "FBA inventory" — the FBA inventory snapshot, verbatim.
@@ -1859,11 +1907,33 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     ["Sponsored Brands / Display spend is only ever known per campaign (Amazon's own export has no SKU column). Each such campaign's spend is split across the SKUs assigned to it on the Upload Reports page, in proportion to the WEIGHT given to each. Weights are relative, so {2,1,1} and {50,25,25} split identically. Campaigns with no mapping at all are grouped under the '⚠ Unmapped SB/SD campaigns' row rather than being dropped, so their spend still appears in the totals."],
     ["Spend+Tax = ad spend x 1.18 (a flat 18% GST for every product) — computed from each row's raw 'spend' field, summed per campaign x SKU, then multiplied once. Not a formula in the Analysis report/TACOS sheets (matches the original workbook), but is a live formula (Spend x rate) in the 'Orders, returns, adspend' sheet."],
     ["Orders = the SUM OF ORDER QUANTITY for the SKU (units ordered), NOT the number of order records — matching the seller's own pivot. CANCELLED orders are excluded: they were never sold, so counting them would inflate Orders and depress ACOS/TACOS."],
+    [
+      refreshedOrderStatuses.length
+        ? `Order status refresh: the synced orders table keeps each order line's status from the day it was loaded. ${refreshedOrderStatuses.length} line(s) took a newer status from the later Amazon orders export on the Orders upload card (only where Amazon's own last-updated-date is newer; no line is added or removed, and the 'AM orders' sheet still shows the synced rows as loaded). ${cancelRefreshes.length ? `${cancelRefreshes.length} of them change Orders: ${cancelRefreshes.map((r) => `${r.sku} ${r.amazon_order_id} ${r.from} → ${r.to}`).join("; ")}. The rest only move between not-cancelled statuses (e.g. Pending → Shipped) and change no figure.` : "None of them changes Orders — they only move between not-cancelled statuses (e.g. Pending → Shipped)."}`
+        : orderCardAvailable
+          ? "Order status refresh: no order line had a newer status on the Orders upload card than in the synced orders table."
+          : "⚠ Order status refresh skipped: the Orders upload card could not be read, so Orders use the synced statuses as loaded (a line cancelled after its batch was synced still counts). Regenerate to retry.",
+    ],
+    [
+      statusHistoryAvailable
+        ? "Order status history: statuses from earlier Orders card uploads (barm_amazon_order_status_history) are included, so a status survives a later upload of a different date range."
+        : "Order status history not read (table not set up yet): only the Orders card rows currently stored are used to refresh statuses.",
+    ],
+    [
+      unresolvedOrderLines.length
+        ? `⚠ ${UNRESOLVED_SOURCE_DATA}: ${unresolvedOrderLines.length} order line(s), ${unresolvedOrderLines.reduce((t, l) => t + l.quantity, 0)} unit(s), placed on or before ${dotDate(addDaysIso(endDate, -7))} are still Pending in the newest stored Amazon data. They are counted in Orders as they stand — no cancellation is assumed — but their status is unconfirmed until a newer Amazon All Orders export is uploaded. Every line is on the 'Order status checks' sheet; the first 60: ${unresolvedOrderLines.slice(0, 60).map((l) => `${l.sku} ${l.amazon_order_id} ×${l.quantity} (${l.order_status}, placed ${dotDate(l.purchase_day)})`).join("; ")}${unresolvedOrderLines.length > 60 ? `; … and ${unresolvedOrderLines.length - 60} more` : ""}.`
+        : `${UNRESOLVED_SOURCE_DATA}: none — no counted order line placed on or before ${dotDate(addDaysIso(endDate, -7))} is still Pending in the stored data.`,
+    ],
     ["Total Units (#) = the SKU's ad-attributed units across ALL its campaigns, so it is the same on every campaign row for that SKU, while Advertised SKU Units (#) is just that one campaign's share. For a SKU advertised by a single campaign the two columns are equal."],
     ["Advertised SKU Units is 0 on Sponsored Brands / Display rows. Amazon attributes those units to the campaign, never to a SKU, so apportioning them by the spend weights would invent fractional units (a third of a sale) and then divide spend by them in CPC. Only Sponsored Products units — which are genuinely per-SKU in the export — are counted."],
     ["Final = Orders - Returns. CPC (Analysis report) = Spend+Tax / Advertised SKU Units. ACOS = CPC / Price. TACOS = Spend+Tax / (Price x Final)."],
     ["TACOS sheet is keyed PER SKU (not per campaign x SKU): it measures a SKU's whole ad cost against its whole net order volume, so splitting it by campaign would divide one campaign's spend by the SKU's total orders. Its CPC is also a DIFFERENT metric from the Analysis report's: here CPC = Spend+Tax / Final orders (cost per net order), matching the seller's original workbook. TACOS (= CPC / Price) comes out the same either way."],
-["Returns = AM returns + FBA returns + SellerFlex returns for that SKU, every return reported (courier RTO / undeliverable included) — the same All Returns the Weekly Sales Report subtracts. The three sources share no orders, so adding them never double-counts. Each SellerFlex return is counted once (the MIS table stores repeat uploads). Raw rows are on the 'AM returns', 'FBA returns' and 'SF returns' sheets."],
+["Returns = AM returns + FBA returns + SellerFlex returns for that SKU, every return reported (courier RTO / undeliverable included) — the same All Returns the Weekly Sales Report subtracts. The three sources share no orders, so adding them never double-counts. Each SellerFlex return is counted once (the MIS table stores repeat uploads). An order line never counts more returned units than were ordered (ordered quantity from the AM return row or the 30-day orders; a line whose ordered quantity is not in this data is not capped). Raw rows are on the 'AM returns', 'FBA returns' and 'SF returns' sheets."],
+    [
+      winAMap.cappedReturns.length
+        ? `Returns capped at ordered quantity (30 days): ${winAMap.cappedReturns.map((c) => `${c.sku} ${c.orderId} returned ${c.returned}, ordered ${c.ordered}`).join("; ")}.`
+        : "Returns capped at ordered quantity (30 days): none — no order line had more returned units than ordered.",
+    ],
     ["Sponsored Products spend is a plain sum of every SP-table row's raw Spend, matching the raw export and the Ad Spend Report. That table also carries the seller's own per-SKU split of Brand/Display spend (each campaign-day's first split row is named, the rest have a blank campaign; all have 0 units), and that split is how Brand/Display spend is counted here. An SB/SD campaign-day already split that way is NOT added again from the SB/SD tables; only SB/SD spend with no split lands in the Unmapped row."],
     [
       hasUploadedPrice
@@ -1882,7 +1952,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
         ? "Inbound-shipped-quantity comes from the uploaded FBA Inventory report."
         : "Inbound-shipped-quantity shows '—': no FBA Inventory report has been uploaded.",
     ],
-    ["FBA status sheet: per-state stock pivot for FBA SKUs only (a snapshot, not time-windowed), with the same Available / Number of FBA Not Available / All FBA formulas as the seller's original workbook."],
+    ["FBA status sheet: stock pivot for FBA SKUs only (a snapshot, not time-windowed), one column per fulfilment-centre AREA exactly as in the seller's own workbook (BANGALORE, HYDERABAD, JAIPUR, LUCKNOW, AHMEDABAD, PATNA, ...), with the same Available / Number of FBA Not Available / All FBA formulas. The Analysis report's Available columns use the same areas. Key Insights still groups stock by STATE, because it compares stock with customer ship-to states."],
     ["Price / AM orders / AM returns / FBA returns / SF returns / Adspend / Inventory ledger / FBA inventory sheets: verbatim dumps of the uploaded exports, every original column kept (each uploaded row stores its source CSV row, so nothing is trimmed). A few columns in these sheets are DERIVED, not from Amazon: 'IST with Time' and 'Date ' on AM orders (from the UTC purchase-date), 'return-time' on FBA returns (split out of return-date), 'Area' on Inventory ledger (from Location), and on Adspend the 'Start/End Date' pair plus the 'Campaign Name*Advertised SKU' pivot key."],
     ["Adspend sheet also carries one synthesized row per (Sponsored Brands/Display campaign x mapped SKU) holding that SKU's weighted share of the campaign's spend — those rows have a blank Ad Group Name and Advertised ASIN, because neither exists at campaign grain. This is what makes the sheet reconcile with the Analysis report — except SB/SD campaign-days the seller already split onto SKUs in the SP table: their synthesized rows are left out (that spend is counted from the split rows)."],
     ["SF returns sheet: raw dump of the synced SellerFlex (self-fulfilled) returns for the 30-day window — every stored copy, since the MIS table keeps one copy per re-upload. The Returns / Final / TACOS figures count each return once (per Customer Order ID + Shipment ID + mSKU), added to that SKU's AM and FBA returns (see the Returns rule above)."],
@@ -1895,6 +1965,16 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   wsNote["!cols"] = [{ wch: 110 }];
   wsNote["A1"].s = { font: { bold: true, sz: 13, color: { rgb: "312E81" } } };
   XLSX.utils.book_append_sheet(wb, wsNote, "Notes");
+
+  // ── "Order status checks" — every counted order line flagged UNRESOLVED_SOURCE_DATA (still Pending a
+  // week or more before the window end in the newest stored data). A listing only: Orders and every other
+  // figure count these lines as they stand.
+  const wsStatusChecks = XLSX.utils.aoa_to_sheet([
+    ["Flag", "SKU", "Order ID", "Quantity", "Latest stored status", "Purchase date (IST)", "Amazon last-updated-date"],
+    ...unresolvedOrderLines.map((l) => [l.flag, l.sku, l.amazon_order_id, l.quantity, l.order_status, l.purchase_day, l.last_updated]),
+  ]);
+  wsStatusChecks["!cols"] = [{ wch: 24 }, { wch: 26 }, { wch: 22 }, { wch: 9 }, { wch: 30 }, { wch: 18 }, { wch: 26 }];
+  XLSX.utils.book_append_sheet(wb, wsStatusChecks, "Order status checks");
 
   // Tab order, to match the seller's own workbook. The sheets are built in
   // dependency order above (aggregates before the dumps they reconcile against),
