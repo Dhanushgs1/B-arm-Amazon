@@ -3,6 +3,20 @@ import { fetchAllRows } from "@/lib/amazonReportShared";
 import { FK_REPORT_LABEL } from "@/lib/flipkartReportUpload";
 import { fetchMisFkOrders, fetchMisFkReturns } from "@/lib/misAdapters";
 import { isFkSkeletonOrderRow } from "@/lib/flipkartOrderRules";
+import {
+  EARN_MORE_MISSING_LABEL,
+  PRICE_MISSING_LABEL,
+  earnMoreCoverage,
+  earnMoreDaysWithoutRecords,
+  acosPopulation,
+  earnMoreIsPartial,
+  priceCellValue,
+  ratioFormula,
+  ratioOrNA,
+  tacosPopulation,
+  realisedAspBySku,
+  resolvePrice,
+} from "@/lib/flipkartEarnMoreRules";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, gstMultiplierFromTax } from "@/lib/masterProductSkuid";
 import { fetchProductMarketingMap, buildProductMarketingResolver } from "@/lib/productMarketingUpload";
 
@@ -299,15 +313,7 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
   });
   const hasListings = listingBySku.size > 0;
 
-  const aspAcc = new Map<string, { amount: number; units: number }>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  earnRows.forEach((r: any) => {
-    if (!r.sku_id) return;
-    const a = aspAcc.get(r.sku_id) || { amount: 0, units: 0 };
-    a.amount += num(r.final_sale_amount) || num(r.gmv);
-    a.units += num(r.final_sale_units) || num(r.gross_units);
-    aspAcc.set(r.sku_id, a);
-  });
+  const aspBySku = realisedAspBySku(earnRows);
 
   metaMap.forEach((m, sku) => {
     const listing = listingBySku.get(sku.toLowerCase());
@@ -318,10 +324,9 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
       m.stock = num(listing.stock_count);
       m.listingStatus = listing.listing_status || "";
     }
-    if (m.price <= 0) {
-      const a = aspAcc.get(sku);
-      if (a && a.units > 0) m.price = a.amount / a.units;
-    }
+    // 0 means no listed price and no realised ASP — kept as 0 here and printed as
+    // PRICE_MISSING_LABEL wherever a ratio would otherwise be built on it.
+    m.price = resolvePrice(m.price, aspBySku.get(sku));
   });
 
   // ── per-window aggregation ──
@@ -418,6 +423,9 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
     return { pairs, skus, pairIds };
   }
 
+  // earnRows is the 30-day fetch, so this is the Earn More coverage of the whole window.
+  const earnCoverage = earnMoreCoverage(earnRows, win30.start, endDate);
+  const earnGapDays = earnMoreDaysWithoutRecords(earnRows, win30.start, endDate);
   const winA = aggregateWindow(fsnRows, earnRows, dedupedOrderRows, returnsRows);
   const winB = aggregateWindow(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -568,7 +576,8 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
 
   // Their header carries no dates (just "7 Days " / "30 DAYS "), so the exact
   // windows live on the Notes sheet instead of being baked into the labels.
-  const fkWinCells = (w: WindowAgg, price: number): number[] => {
+  const priceCell = priceCellValue;
+  const fkWinCells = (w: WindowAgg, price: number): (string | number)[] => {
     const spendTax = w.spendTax;
     const orders = w.orderUnits;
     // computeCpc already falls back to the untouched spend when there are no
@@ -582,8 +591,8 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
     const rtCpc = final > 0 ? spendTax / final : spendTax;
     return [
       w.spend, spendTax, w.adUnits, orders, w.returns, final,
-      cpc, computeAcos(w, price),
-      rtCpc, price > 0 ? rtCpc / price : 0,
+      cpc, price > 0 ? computeAcos(w, price) : PRICE_MISSING_LABEL,
+      rtCpc, price > 0 ? rtCpc / price : PRICE_MISSING_LABEL,
     ];
   };
 
@@ -603,7 +612,7 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
     aoa.push([
       `${row.campaign || row.meta.name}*${row.sku}*${campaignId}`,
       row.sku,
-      Math.round(row.meta.price),
+      priceCell(row.meta.price),
       row.meta.hasListing ? row.meta.stock : "—",
       "",
       ...fkWinCells(row.wB, row.meta.price),
@@ -620,15 +629,21 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
   // Ratios are recomputed from aggregated numerators/denominators, never
   // averaged from the per-row ratios.
   const shownSkus = new Set(rows.map((r) => r.sku));
-  const fkTotalCells = (getW: (r: Row) => WindowAgg, getSkuW: (r: SkuRow) => WindowAgg): number[] => {
-    let spendTax = 0, spend = 0, adUnits = 0, acosDenom = 0;
+  const fkTotalCells = (getW: (r: Row) => WindowAgg, getSkuW: (r: SkuRow) => WindowAgg): (string | number)[] => {
+    let spendTax = 0, spend = 0, adUnits = 0;
+    let pricedSpendTax = 0;
     rows.forEach((row) => {
       const w = getW(row);
       spendTax += w.spendTax;
       spend += w.spend;
       adUnits += w.adUnits;
-      acosDenom += row.meta.price * w.adUnits;
+      if (row.meta.price > 0) pricedSpendTax += w.spendTax;
     });
+    // Same eligible population as Average ACOS: priced campaign-SKU pairs only.
+    const acos = acosPopulation(rows.map((row) => {
+      const w = getW(row);
+      return { sku: row.sku, price: row.meta.price, adUnits: w.adUnits, spendTax: w.spendTax };
+    })).value;
     let orders = 0, returns = 0, rtDenom = 0;
     skuRows.filter((r) => shownSkus.has(r.sku)).forEach((row) => {
       const w = getSkuW(row);
@@ -639,9 +654,9 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
     return [
       spend, spendTax, adUnits, orders, returns, orders - returns,
       adUnits > 0 ? spendTax / adUnits : spendTax,
-      acosDenom > 0 ? spendTax / acosDenom : 0,
+      acos,
       orders - returns > 0 ? spendTax / (orders - returns) : spendTax,
-      rtDenom > 0 ? spendTax / rtDenom : 0,
+      ratioOrNA(pricedSpendTax, rtDenom),
     ];
   };
   const grandRowIdx = aoa.length;
@@ -682,9 +697,9 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
       set(spendTaxCol, `${adSpendCol}${n}*${gst}`);
       set(finalCol, `${ordersCol}${n}-${returnsCol}${n}`);
       set(cpcCol, `IF(${byAdCol}${n}=0,${spendTaxCol}${n},${spendTaxCol}${n}/${byAdCol}${n})`);
-      set(acosCol, `IF(${priceCol}${n}=0,0,${cpcCol}${n}/${priceCol}${n})`);
+      set(acosCol, ratioFormula(`${cpcCol}${n}`, `${priceCol}${n}`, PRICE_MISSING_LABEL));
       set(rtCpcCol, `IF(${finalCol}${n}<=0,${spendTaxCol}${n},${spendTaxCol}${n}/${finalCol}${n})`);
-      set(rtAcosCol, `IF(${priceCol}${n}=0,0,${rtCpcCol}${n}/${priceCol}${n})`);
+      set(rtAcosCol, ratioFormula(`${rtCpcCol}${n}`, `${priceCol}${n}`, PRICE_MISSING_LABEL));
     }
   }
 
@@ -793,10 +808,10 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
   const naWin = (w: WindowAgg) => [w.orderUnits, w.returns, Math.max(0, w.orderUnits - w.returns)];
   noAdsRows.forEach((r) => {
     naAoa.push([
-      r.sku, r.meta.name, Math.round(r.meta.price),
+      r.sku, r.meta.name, priceCell(r.meta.price),
       ...naWin(r.wA), ...naWin(r.wB),
       ...(r.meta.hasListing
-        ? [r.meta.stock, Math.round(r.meta.price), r.meta.listingStatus || "—"]
+        ? [r.meta.stock, priceCell(r.meta.price), r.meta.listingStatus || "—"]
         : ["—", "—", hasListings ? "not listed" : "not uploaded"]),
     ]);
   });
@@ -863,11 +878,11 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
   const tacosWin = (w: WindowAgg, price: number) => {
     const final = Math.max(0, w.orderUnits - w.returns);
     const cpc = final > 0 ? w.spendTax / final : w.spendTax;
-    return [w.spendTax, w.orderUnits, w.returns, final, cpc, price > 0 ? cpc / price : 0];
+    return [w.spendTax, w.orderUnits, w.returns, final, cpc, price > 0 ? cpc / price : PRICE_MISSING_LABEL];
   };
   tacosSkuRows.forEach((r) => {
     tacosAoa.push([
-      r.sku, r.meta.name, Math.round(r.meta.price),
+      r.sku, r.meta.name, priceCell(r.meta.price),
       ...tacosWin(r.wA, r.meta.price),
       ...tacosWin(r.wB, r.meta.price),
     ]);
@@ -1032,9 +1047,13 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
   const shownSkuRows = skuRows.filter((r) => shownSkus.has(r.sku));
   const gOrderUnits = shownSkuRows.reduce((s, r) => s + r.wA.orderUnits, 0);
   const gReturns = shownSkuRows.reduce((s, r) => s + r.wA.returns, 0);
-  const gAcosDenom = rows.reduce((s, r) => s + r.meta.price * r.wA.adUnits, 0);
-  const gTacosDenom = skuRows.reduce((s, r) => s + r.meta.price * Math.max(0, r.wA.orderUnits - r.wA.returns), 0);
   const gGrossSales = skuRows.reduce((s, r) => s + (winA.skus.get(r.sku)?.saleAmount || 0), 0);
+  // Average ACOS: priced campaign-SKU pairs only, numerator and denominator alike.
+  const acosPop = acosPopulation(rows.map((r) => ({ sku: r.sku, price: r.meta.price, adUnits: r.wA.adUnits, spendTax: r.wA.spendTax })));
+  // Average TACOS: all spend over all sales; unpriced SKUs with net units are disclosed.
+  const tacosPop = tacosPopulation(gSpendTax, skuRows.map((r) => ({ sku: r.sku, price: r.meta.price, netUnits: Math.max(0, r.wA.orderUnits - r.wA.returns) })));
+  // SKUs with ad or order activity but no price. Their per-row Price/ACOS/TACOS show the label.
+  const unpricedSkuCount = skuRows.filter((r) => r.meta.price <= 0 && (r.wA.spendTax > 0 || r.wA.orderUnits > 0)).length;
 
   // Zero-order spend is the cleanest waste signal Flipkart's export gives:
   // the campaign ran, cost money, and produced no attributed unit at all.
@@ -1096,9 +1115,24 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
     ["Orders on NON-ADVERTISED SKUs (see that sheet)", noAdsRows.reduce((s, r) => s + r.wA.orderUnits, 0), "", ""],
     ["Returns on NON-ADVERTISED SKUs", noAdsRows.reduce((s, r) => s + r.wA.returns, 0), "", ""],
     ["TOTAL Orders, whole account (units)", gOrderUnits + noAdsRows.reduce((s, r) => s + r.wA.orderUnits, 0), "", ""],
-    ["Final sale value (₹)", Math.round(gGrossSales), "", ""],
-    ["Average ACOS", pct(gSpendTax / (gAcosDenom || 1)), "", ""],
-    ["Average TACOS", pct(gSpendTax / (gTacosDenom || 1)), "", ""],
+    // Only a real Earn More record makes this figure a fact. With none in the
+    // window, a ₹0 would read as a verified zero, so it says the data is missing.
+    [
+      earnMoreIsPartial(earnCoverage, win30.start, endDate)
+        ? `Final sale value (₹) — PARTIAL: Earn More records only from ${dotDate(earnCoverage.dataFrom!)} to ${dotDate(earnCoverage.dataThrough!)}`
+        : "Final sale value (₹)",
+      earnCoverage.hasRecords ? Math.round(gGrossSales) : EARN_MORE_MISSING_LABEL, "", "",
+    ],
+    [
+      `Average ACOS (priced SKUs only; excludes ${acosPop.excludedSkuCount} SKU(s) with no price and ₹${Math.round(acosPop.excludedSpend)} of spend incl. GST)`,
+      typeof acosPop.value === "number" ? pct(acosPop.value) : acosPop.value, "", "",
+    ],
+    [
+      tacosPop.unpricedSkuWithSalesCount > 0
+        ? `Average TACOS (all SKUs; ${tacosPop.unpricedSkuWithSalesCount} SKU(s) with net sales but no price — their sales are NOT counted, not estimated)`
+        : "Average TACOS (all SKUs)",
+      typeof tacosPop.value === "number" ? pct(tacosPop.value) : tacosPop.value, "", "",
+    ],
     ["", "", "", ""],
     ["✅ DATA INTEGRITY CHECKS (run before publishing)", "", "", ""],
     [
@@ -1197,6 +1231,18 @@ export async function buildFlipkartHistoricalReportWorkbook(opts: FlipkartReport
     [`Account: ${accountName || "Barm — Flipkart"}`],
     [`Last 30 days: ${dotDate(win30.start)} to ${dotDate(win30.end)}`],
     [`Last 7 days: ${dotDate(win7.start)} to ${dotDate(win7.end)}`],
+    ...(unpricedSkuCount > 0
+      ? [[`⚠️ ${unpricedSkuCount} SKU(s) have no listed price and no realised ASP in this window. Their Price, ACOS and TACOS show "${PRICE_MISSING_LABEL}". Average ACOS leaves their spend out (priced SKUs only); Average TACOS keeps all spend but cannot count their sales. Nothing is estimated.`]]
+      : []),
+    ...(earnGapDays.length > 0
+      ? [[`ℹ️ Earn More has no record for ${earnGapDays.length} day(s) inside its coverage (${earnGapDays.slice(0, 10).map(dotDate).join(", ")}${earnGapDays.length > 10 ? ", …" : ""}). A day with no sales may have no rows, so these are NOT treated as missing and are not estimated — check them against the source file if a sale is expected on those days.`]]
+      : []),
+    ...(earnMoreIsPartial(earnCoverage, win30.start, endDate)
+      ? [[`⚠️ Earn More data is PARTIAL for this window: records exist only from ${dotDate(earnCoverage.dataFrom!)} to ${dotDate(earnCoverage.dataThrough!)}, not ${dotDate(win30.start)} to ${dotDate(endDate)}. Final sale value (₹) is the sum of those ${earnCoverage.rowCount} record(s) only — a partial total, not a complete one. Nothing is estimated for the missing days. Upload the rest of the Earn More file to complete it.`]]
+      : []),
+    ...(!earnCoverage.hasRecords
+      ? [[`⚠️ Earn More data missing: barm_flipkart_earn_more has no records between ${dotDate(win30.start)} and ${dotDate(endDate)}. Final sale value (₹) and the Price fallback for SKUs without a listing are unavailable for this window — they are shown as "${EARN_MORE_MISSING_LABEL}", not as ₹0. Upload the Earn More file covering this window to fill them in.`]]
+      : []),
     ...(staleDays > 0
       ? [[`⚠️ Both windows end on the selected date ${dotDate(endDate)}, but the newest uploaded row is from ${dotDate(dataThrough!)} — the last ${staleDays} day(s) of both windows have no data yet. Upload the newer files, or pick ${dotDate(dataThrough!)} as the end date, to remove that empty tail.`]]
       : []),
