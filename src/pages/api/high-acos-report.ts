@@ -4,7 +4,7 @@
 // Sent only when at least one campaign on any channel is above the limit — no empty mails.
 //
 // Sent only after yesterday's "Last 7 days" combined upload has landed: rows in
-// barm_amazon_sp_advertised_product for yesterday's IST date. Flipkart and Meesho come from the same
+// barm_daily_am_ads (its AM-ads copy) for yesterday's IST date. Flipkart and Meesho come from the same
 // workbook; a channel with no rows for yesterday is shown as "not uploaded" rather than as fine.
 // Three callers, at most one mail per day between them (state in barm_alert_state, alert_type
 // "highAcosDaily", entity_id = that date):
@@ -32,10 +32,17 @@ const ALERT_TYPE = "highAcosDaily";
 
 export const config = { maxDuration: 300 };
 
+// Amazon rows come from the daily upload's own copy, barm_daily_am_ads. The combined upload stopped
+// writing barm_amazon_sp_advertised_product on 27 Oct 2026 (that table is the SP card's alone now), so
+// this keeps the email's existing daily workflow unchanged: same upload, same "AM ads" rows with an
+// Advertised SKU it read before. Flagged for review: it is the one report besides the 7-Day Ad Spend
+// Report still reading the daily upload.
+const AMAZON_DAILY_ADS = "barm_daily_am_ads";
+
 /** Has the daily "Last 7 days" upload brought in yesterday's Amazon SP ad rows? */
 async function uploadLanded(date: string): Promise<boolean> {
   const { data, error } = await supabasePublic
-    .from("barm_amazon_sp_advertised_product").select("report_date").eq("report_date", date).limit(1);
+    .from(AMAZON_DAILY_ADS).select("report_date").eq("report_date", date).neq("sku", "").not("sku", "is", null).limit(1);
   if (error) throw new Error(`upload check failed: ${error.message}`);
   return (data || []).length > 0;
 }
@@ -53,7 +60,8 @@ async function loadChannelRows(start: string, end: string): Promise<Record<strin
   // Meesho prices: the last ~6 weeks of its own orders.
   const priceFrom = new Date(Date.parse(end + "T00:00:00Z") - 42 * 86_400_000).toISOString().slice(0, 10);
   const [am, fk, ms, msOrders] = await Promise.all([
-    fetchAllRows("barm_amazon_sp_advertised_product", range("report_date")),
+    // Lines with an Advertised SKU only — the rows that used to reach the SP table from this upload.
+    fetchAllRows(AMAZON_DAILY_ADS, range("report_date")).then((rows) => rows.filter((r) => String(r.sku ?? "").trim())),
     fetchAllRows("barm_daily_fk_ads", range("report_date")),
     fetchAllRows("barm_daily_ms_barm_ads", range("report_date")),
     fetchAllRows("barm_daily_ms_barm_orders", (q) => q.gte("report_date", priceFrom).lte("report_date", end)),

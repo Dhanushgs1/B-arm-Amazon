@@ -5,6 +5,7 @@ import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } fr
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns, fetchAllMisReportDataInfo } from "@/lib/misAdapters";
 import { staleSourceWarnings } from "@/lib/reportCoverage";
 import { dedupeSellerFlexReturns } from "@/lib/amazonSpendRules";
+import { isSpCardRow } from "@/lib/amazonAdSourceRules";
 import { trailingWindow } from "@/lib/reportWindows";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, gstMultiplierFromTax } from "@/lib/masterProductSkuid";
 import { fetchProductMarketingMap, buildProductMarketingResolver } from "@/lib/productMarketingUpload";
@@ -407,7 +408,8 @@ export async function buildAnalysisReportWorkbook(opts: BuildOpts) {
   const [
     spRows30, orderRows30, amReturnRows30, fbaReturnRows30, sfReturnRows30, inventory, catalog, masterSkuid, productMarketing, fbaReportRows,
   ] = await Promise.all([
-    fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", start30).lte("report_date", end)),
+    // SP-card rows only — the daily combined upload feeds the 7-Day Ad Spend Report alone (amazonAdSourceRules.ts).
+    fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", start30).lte("report_date", end)).then((rows) => rows.filter(isSpCardRow)),
     fetchMisAmazonOrders((q) => q.gte("purchase_datetime", win30Ist.gte).lt("purchase_datetime", win30Ist.lt)),
     fetchMisAmazonReturns((q) => q.gte("return_request_date", start30).lte("return_request_date", end)),
     fetchMisFbaReturns((q) => q.gte("return_date", win30Ist.gte).lt("return_date", win30Ist.lt)),

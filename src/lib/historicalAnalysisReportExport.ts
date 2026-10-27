@@ -7,6 +7,7 @@ import { staleSourceWarnings } from "@/lib/reportCoverage";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog, gstMultiplierFromTax } from "@/lib/masterProductSkuid";
 import { fetchProductMarketingMap, buildProductMarketingResolver } from "@/lib/productMarketingUpload";
+import { isSpCardRow, isCampaignCardRow } from "@/lib/amazonAdSourceRules";
 
 // Re-exported for existing importers (weeklySalesExport.ts) — the actual
 // definitions live in amazonReportShared.ts so analysisReportExport.ts can use
@@ -213,7 +214,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   // the 7-day window) — the 7-day block is then derived by filtering these
   // same rows in memory, avoiding a second round-trip to Supabase.
   const [
-    spRows, sbRows, sdRows, orderRows, amReturnRows, fbaReturnRows, mapRows,
+    spTableRows, sbTableRows, sdTableRows, orderRows, amReturnRows, fbaReturnRows, mapRows,
     priceListingRows, fbaInventoryRows, ledgerRows, ledgerRawRows, sfReturnRows,
     productMaster, masterSkuid, masterSkuidCatalog, productMarketing,
   ] = await Promise.all([
@@ -250,6 +251,12 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     fetchMasterSkuidAmazonCatalog(),
     fetchProductMarketingMap(),
   ]);
+  // Upload-card rows only (amazonAdSourceRules.ts): rows the daily combined upload left in these tables
+  // — the seller's per-SKU Brand/Display split, SD lines, SKU-less Brand/Display days — are left out,
+  // so SB/SD spend comes from the SB/SD cards, spread by the campaign-to-SKU mapping below.
+  const spRows = spTableRows.filter(isSpCardRow);
+  const sbRows = sbTableRows.filter(isCampaignCardRow);
+  const sdRows = sdTableRows.filter(isCampaignCardRow);
 
   // Campaign -> weighted SKU allocation. Sponsored Brands / Display exports have
   // no SKU column, so each such campaign's spend is split across the SKUs the
@@ -516,9 +523,10 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     // used to read and is why CPC/ACOS were previously off by ~4x for that SKU).
     //
     //
-    // Spend is a PLAIN sum of every SP-table row's raw spend, matching the raw export and the Ad
-    // Spend Report. That includes the seller's per-SKU split of Brand/Display spend (named first row
-    // plus blank-campaign rows, 0 units) — the SKU attribution the seller wants counted (24 Sep 2026).
+    // Spend is a PLAIN sum of every SP-card row's raw spend, matching the uploaded Advertised Product
+    // export. The seller's per-SKU split of Brand/Display spend arrives only through the daily combined
+    // upload, which this report no longer reads (27 Oct 2026), so Brand/Display spend comes from the
+    // SB/SD cards below instead.
     rowsSp.forEach((r) => {
       if (!r.advertised_sku) return;
       addAd(r.campaign_name || "", r.advertised_sku, r.spend || 0, r.units_7d || 0);

@@ -7,6 +7,7 @@
 import XLSX from "npm:xlsx-js-style@1.2.0";
 import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } from "./deps/amazonReportShared.ts";
 import { spCampaignDays, isSplitCoveredCampaignRow, unmappedCampaignSpend, campaignsMissingOnDay } from "./deps/amazonSpendRules.ts";
+import { dailyAmAdsReportRows } from "./deps/amazonAdSourceRules.ts";
 import { upsertInChunks, supabasePublic } from "./deps/amazonReportUpload.ts";
 import { mergeGoogleWebsiteOrders, googleAdsRatios, type DroppedCardRow, type ShopifyReportOrder } from "./deps/googleWebsiteOrders.ts";
 import { toDate as parseFlexibleDate } from "./deps/meeshoReportUpload.ts";
@@ -564,8 +565,12 @@ export async function fetchAmazonProducts(
   orderRows: any[];
   revenueRangeBySku: Map<string, number>;
 }> {
-  const [spRowsRaw, sbRows, sdRows, mapRows, orderRowsRaw, priceRows] = await Promise.all([
-    fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
+  // Amazon ads come from the daily combined upload's own copy, barm_daily_am_ads — this report is the
+  // only one allowed to use that upload (27 Oct 2026; every other report reads the Upload-page cards).
+  // The SB/SD card rows are still read: a Brand/Display campaign-day the "AM ads" sheet carries
+  // neither split per SKU nor as a SKU-less row is only known from them (amazonAdSourceRules.ts).
+  const [dailyAdRows, sbCardRows, sdCardRows, mapRows, orderRowsRaw, priceRows] = await Promise.all([
+    fetchAllRows("barm_daily_am_ads", (q) => q.gte("report_date", range.start).lte("report_date", endDate), ["report_date", "id"]),
     fetchAllRows("barm_amazon_sb_campaign", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
     fetchAllRows("barm_amazon_sd_campaign", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
     // No "id" column on this hand-maintained mapping table — order by its
@@ -574,9 +579,10 @@ export async function fetchAmazonProducts(
     fetchDailyAmazonOrders(range, endDate),
     fetchAllRows("barm_amazon_price_listing", (q) => q),
   ]);
-  // Every SP-table row counts (plain raw sum), including the seller's per-SKU split of Brand/Display
-  // spend — the SKU attribution the seller wants (24 Sep 2026). An SB/SD campaign-day already split
-  // that way is dropped from the SB/SD rows below, so it is never counted twice.
+  const { spRows: spRowsRaw, sbRows, sdRows } = dailyAmAdsReportRows(dailyAdRows, sbCardRows, sdCardRows);
+  // Every "AM ads" row with an Advertised SKU counts (plain raw sum), including the seller's per-SKU
+  // split of Brand/Display spend — the SKU attribution the seller wants (24 Sep 2026). An SB/SD
+  // campaign-day already split that way is dropped from the SB/SD rows below, so it is never counted twice.
   const spRows = spRowsRaw;
   const splitDays = spCampaignDays(spRows);
   const sbSdRows = [...sbRows, ...sdRows].filter((r) => !isSplitCoveredCampaignRow(r, splitDays));
@@ -3153,7 +3159,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     ["Meesho ad metrics count ad orders only — Summary, Ad spend report, SKU Wise Report, Action Sheet and the daily email: Orders = \"Orders by ad\" from Meesho's own Ads report (matches the Meesho (B Arm) Spend sheet 1:1 for the same SKU and date), Total Sales = Ad Sales (Ad Orders x Price), CPC = Spend (with tax) / Ad Orders, ACOS = Spend / Ad Sales, or CPC / Price when there are no ad orders. Overall sales QTS/Value and the Meesho (B Arm) orders leaderboard still count every Meesho order. The orders sheet's \"Order source = Ad order\" tag is NOT used — Meesho's two exports don't always agree on it. Amazon/Flipkart are unaffected."],
     ["\"Day\" = the single reporting day above. \"Range\" = that day and the", rangeDays - 1, "days before it, inclusive."],
     [""],
-    ["Amazon: spend is a plain sum of the SP table (barm_amazon_sp_advertised_product), which also carries your AM-ads sheet's per-SKU split of Sponsored Brands/Display spend (each campaign-day's first split row is named, the rest have a blank campaign) — that split is how Brand/Display spend reaches each product here. An SB/SD campaign-day with no such split is spread over the SKUs mapped to it on the Upload page; SB/SD spend with neither a split nor a mapping for the range window: ₹" + round2(amz.unmappedSpend) + (amz.unmappedSpend > 0 ? " — not attributed to any product below (see the ⚠ warning at the top)." : " — every SB/SD campaign row on file is split or mapped.") + " Unsplit SB/SD rows in AM ads (no Advertised SKU) are saved per campaign by the upload and counted here, never dropped." + (amz.campaignsMissingOnEndDate.length ? " Some Brand/Display campaigns have no row on the reporting day — see the ⚠ warning at the top." : "")],
+    ["Amazon: spend is a plain sum of your daily \"Last 7 days\" upload's AM-ads sheet (its copy in barm_daily_am_ads — this is the only report that uses that upload; every other report reads the Upload-page cards), which also carries your per-SKU split of Sponsored Brands/Display spend (each campaign-day's first split row is named, the rest have a blank campaign) — that split is how Brand/Display spend reaches each product here. An SB/SD campaign-day with no such split is spread over the SKUs mapped to it on the Upload page; SB/SD spend with neither a split nor a mapping for the range window: ₹" + round2(amz.unmappedSpend) + (amz.unmappedSpend > 0 ? " — not attributed to any product below (see the ⚠ warning at the top)." : " — every SB/SD campaign row on file is split or mapped.") + " Unsplit SB/SD rows in AM ads (no Advertised SKU) are counted here per campaign, never dropped; where the SB/SD campaign report card also has that campaign-day, the card's figure is used." + (amz.campaignsMissingOnEndDate.length ? " Some Brand/Display campaigns have no row on the reporting day — see the ⚠ warning at the top." : "")],
     ["Flipkart: FSN report spend is per-SKU for every campaign type, so no apportioning is needed. Price comes from the SKU's own FK Orders Invoice Amount for the window (summed Invoice Amount / summed quantity, non-cancelled rows); only a SKU with no real order in the window falls back to the Listings snapshot (then the Earn more report's realised price)."],
     ["Meesho: Ads report spend is per-SKU. Overall sales Value / Total Sales = Quantity x each order row's own Supplier Listed Price (Incl. GST + Commission), from the Orders report only. meesho_price_marketing (the live scraped listing price) is used only for the displayed Price and as the Price in the ACOS CPC / Price fallback. Column names come from the seller's own workbook, not a native Meesho export seen directly — see src/lib/meeshoReportUpload.ts if a real export's headers turn out to differ."],
     ["Social-media (Meta) spend appears as its own Summary-sheet block when uploaded, separate from the three marketplace platforms: one row per promoted product (Meta campaigns are matched to products by campaign name), with each campaign listed in the Ad spend report sheet's Social Media section. Google Ads spend (the Google Ads \"Campaign report\" uploaded on the Upload page's Google card) fills the Google row's Ad spend columns: the day block from that day's own export, the range block from an export covering exactly the range, else the daily exports inside it. ₹0 there means no Google Ads report is on file for that window, not ₹0 spent." +

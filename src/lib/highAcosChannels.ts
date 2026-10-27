@@ -1,7 +1,7 @@
 // High ACOS email across channels (user, 2026-10-12): Amazon, Flipkart and Meesho (B-ARM), read only
 // from the uploaded ads reports — never SellerMate. All three come from the one "Last 7 days" combined
 // workbook (combinedAdSpendUpload.ts):
-//   Amazon   barm_amazon_sp_advertised_product  spend, sales_7d, orders_7d   per campaign
+//   Amazon   barm_daily_am_ads (rows with a SKU)  spend, sales_7d, orders_7d   per campaign
 //   Flipkart barm_daily_fk_ads                  ad_spend, revenue, units_sold per campaign
 //   Meesho   barm_daily_ms_barm_ads             spend, orders_by_ad          per SKU — no revenue column,
 //            so sales ≈ orders × that SKU's average Meesho selling price (barm_daily_ms_barm_orders).

@@ -9,6 +9,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { buildWeeklySalesWorkbookFromHistorical } from "@/lib/weeklySalesExport";
 import { fetchAllRows } from "@/lib/historicalAnalysisReportExport";
 import { spCampaignDays, isSplitCoveredCampaignRow } from "@/lib/amazonSpendRules";
+import { isSpCardRow, isCampaignCardRow } from "@/lib/amazonAdSourceRules";
 import { weekAdKpis, roasOf, acosPctOf, productMapForPeriod } from "@/lib/weeklyEmailKpis";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
 import { checkSessionOrInternal, guard, isInternalRequest } from "@/lib/apiAuth";
@@ -36,14 +37,16 @@ async function fetchWeeklyAdRows(start: string, end: string) {
     fetchAllRows("barm_amazon_sb_campaign", (q: any) => q.gte("report_date", start).lte("report_date", end)),
     fetchAllRows("barm_amazon_sd_campaign", (q: any) => q.gte("report_date", start).lte("report_date", end)),
   ]);
-  return { spRows, sbRows, sdRows };
+  // Upload-card rows only — the daily combined upload feeds the 7-Day Ad Spend Report alone
+  // (amazonAdSourceRules.ts).
+  return { spRows: spRows.filter(isSpCardRow), sbRows: sbRows.filter(isCampaignCardRow), sdRows: sdRows.filter(isCampaignCardRow) };
 }
 
 // Week ad KPIs (weekAdKpis in weeklyEmailKpis.ts) sum spend AND sales over every day of the week.
-// SP spend is a plain sum of every SP-table row (the seller's rule for every report), which includes
-// the seller's per-SKU split of Brand/Display spend; an SB/SD campaign-day already split that way is
-// dropped so its spend isn't counted twice (24 Sep 2026). SB/SD sales are kept for those days — the
-// split rows carry spend only, so Ad Sales would otherwise lose that campaign's attributed sales.
+// SP spend is a plain sum of every SP-card row (the seller's rule for every report). An SB/SD
+// campaign-day already split per SKU in the SP rows is dropped so its spend isn't counted twice
+// (24 Sep 2026); the SP card carries no such split, so in practice every SB/SD card row counts. SB/SD
+// sales are kept for split days — split rows carry spend only.
 function adKpisForWeek(spRows: any[], sbRows: any[], sdRows: any[], start: string, end: string) {
   const splitDays = spCampaignDays(spRows);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

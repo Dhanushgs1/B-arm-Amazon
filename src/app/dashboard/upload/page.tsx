@@ -131,7 +131,7 @@ function DataOnFileCaption({
     );
   }
   if (!info) return null;
-  const stale = staleAfterDays !== undefined ? staleness(info.maxDate, staleAfterDays) : null;
+  const stale = staleAfterDays !== undefined ? staleness(info.maxDate, staleAfterDays, SP_CARD_STALE_WHY) : null;
   if (info.minDate) {
     return (
       <>
@@ -148,10 +148,11 @@ function DataOnFileCaption({
   return <p className="text-[10px] text-muted-foreground mt-1">No data</p>;
 }
 
-// Only sp_advertised_product feeds the Ad Spend Report's Amazon spend total —
-// the other Ad/order cards matter for the Historical Analysis Report instead,
-// so a staleness warning on those would be noise unrelated to what it's for.
+// The SP card is the only source of Sponsored Products data for every Amazon report except the
+// 7-Day Ad Spend Report, which reads the daily "Last 7 days" upload instead (27 Oct 2026) — so a
+// stale SP card means stale Historical Analysis / Weekly Sales ad figures, not a stale Ad Spend Report.
 const AD_SPEND_REPORT_TYPE: UploadReportType = "sp_advertised_product";
+const SP_CARD_STALE_WHY = "Historical Analysis, Weekly Sales and the other reports read Sponsored Products data only from this card";
 
 function UploadCard({
   type,

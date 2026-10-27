@@ -1,6 +1,7 @@
 import { fetchAllRows, isGenuineAmReturn, isGenuineFbaReturn } from "@/lib/historicalAnalysisReportExport";
 import { istDayWindowUtc, istDateOnly, isStandardOrderId } from "@/lib/amazonReportShared";
-import { dedupeSellerFlexReturns } from "@/lib/amazonSpendRules";
+import { dedupeSellerFlexReturns, spCampaignDays, isSplitCoveredCampaignRow } from "@/lib/amazonSpendRules";
+import { isSpCardRow, isCampaignCardRow, allocateCampaignSpend } from "@/lib/amazonAdSourceRules";
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns, fetchAllMisReportDataInfo } from "@/lib/misAdapters";
 import { staleSourceWarnings } from "@/lib/reportCoverage";
 import { dailyAmRowAsMis, dailyFallbackStart, dedupeOrderLines } from "@/lib/dailyOrderFallbackRules";
@@ -93,7 +94,7 @@ export async function loadAmazonSkuPeriodData(opts: {
   const coveragePromise = fetchAllMisReportDataInfo();
   // Fetch every relevant row once across the whole span of the periods, split by date in memory
   // below — same "fetch once, filter per window" approach historicalAnalysisReportExport.ts uses for its 30/7-day windows.
-  const [misOrderRows, amReturnRows, fbaReturnRows, sfReturnRows, priceListingRows, ledgerRows, adRows, productMaster, masterSkuid, masterSkuidCatalog, productMarketing] = await Promise.all([
+  const [misOrderRows, amReturnRows, fbaReturnRows, sfReturnRows, priceListingRows, ledgerRows, adRows, campaignAdRows, productMaster, masterSkuid, masterSkuidCatalog, productMarketing] = await Promise.all([
     fetchMisAmazonOrders((q) => q.gte("purchase_datetime", ordersWindow.gte).lt("purchase_datetime", ordersWindow.lt)),
     fetchMisAmazonReturns((q) => q.gte("return_request_date", rangeStart).lte("return_request_date", rangeEnd)),
     fetchMisFbaReturns((q) =>
@@ -116,8 +117,17 @@ export async function loadAmazonSkuPeriodData(opts: {
     includeAds
       ? fetchAllRows("barm_amazon_sp_advertised_product", (q) =>
           q.gte("report_date", rangeStart).lte("report_date", rangeEnd)
-        ).catch(() => [])
+        ).then((rows) => rows.filter(isSpCardRow)).catch(() => [])
       : Promise.resolve([]),
+    // Sponsored Brands / Display spend from their own cards plus the campaign-to-SKU mapping — the
+    // SKU attribution the SP card can't carry (it has no Brand/Display rows). Optional like the SP rows.
+    includeAds
+      ? Promise.all([
+          fetchAllRows("barm_amazon_sb_campaign", (q) => q.gte("report_date", rangeStart).lte("report_date", rangeEnd)),
+          fetchAllRows("barm_amazon_sd_campaign", (q) => q.gte("report_date", rangeStart).lte("report_date", rangeEnd)),
+          fetchAllRows("barm_amazon_campaign_sku_map", (q) => q, ["campaign_name", "sku"]),
+        ]).then(([sb, sd, map]) => ({ rows: [...sb, ...sd].filter(isCampaignCardRow), map })).catch(() => ({ rows: [], map: [] }))
+      : Promise.resolve({ rows: [], map: [] }),
     fetchProductMasterMap(),
     fetchMasterSkuidMap(),
     fetchMasterSkuidAmazonCatalog(),
@@ -246,8 +256,9 @@ export async function loadAmazonSkuPeriodData(opts: {
 
   // ── Ad spend/clicks per SKU per period (Sponsored Products) ──
   const adsBySkuPeriod = new Map<string, { spend: number; adSales: number; clicks: number; impressions: number }>();
-  // Plain sum of every SP-table row's raw spend (no orphan-campaign divisor), including the seller's
-  // per-SKU split of Brand/Display spend — the SKU attribution the seller wants counted (24 Sep 2026).
+  // Plain sum of every SP-card row's raw spend (no orphan-campaign divisor). Rows the daily combined
+  // upload wrote (incl. its per-SKU Brand/Display split) are left out — that upload feeds the 7-Day
+  // Ad Spend Report alone (amazonAdSourceRules.ts, 27 Oct 2026).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   adRows.forEach((r: any) => {
     const sku = r.advertised_sku;
@@ -262,8 +273,26 @@ export async function loadAmazonSkuPeriodData(opts: {
     cur.impressions += Number(r.impressions) || 0;
     adsBySkuPeriod.set(key, cur);
   });
+  // Brand/Display spend per SKU from the SB/SD cards, spread by the campaign-to-SKU mapping (spend
+  // only — those cards carry no per-SKU sales, clicks or impressions). A campaign-day already split per
+  // SKU in the SP rows is skipped so it never counts twice; unmapped spend reaches no SKU, as in the
+  // other reports. This replaces the per-SKU Brand/Display split the daily combined upload used to
+  // put in the SP table, which this loader no longer reads (27 Oct 2026).
+  const splitDays = spCampaignDays(adRows);
+  const { allocations: campaignAllocations } = allocateCampaignSpend(
+    campaignAdRows.rows.filter((r) => !isSplitCoveredCampaignRow(r, splitDays)),
+    campaignAdRows.map,
+  );
+  campaignAllocations.forEach((a) => {
+    const pd = periodForDate(a.report_date);
+    if (!pd) return;
+    const key = `${a.sku}|${pd.label}`;
+    const cur = adsBySkuPeriod.get(key) || { spend: 0, adSales: 0, clicks: 0, impressions: 0 };
+    cur.spend += a.spend;
+    adsBySkuPeriod.set(key, cur);
+  });
   const adsOf = (sku: string, label: string) => adsBySkuPeriod.get(`${sku}|${label}`);
-  const hasAdData = adRows.length > 0;
+  const hasAdData = adRows.length > 0 || campaignAllocations.length > 0;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   amReturnRows.forEach((r: any) => {
     if (!r.merchant_sku || !r.return_request_date) return;

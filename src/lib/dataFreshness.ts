@@ -5,9 +5,9 @@
 // which in practice means whoever runs the daily upload skipped a day.
 //
 // Exists because the combined "Last 7 days" one-file upload (see
-// combinedAdSpendUpload.ts) does NOT feed the tables the Ad Spend Report
-// reads — only the per-report cards below it do — so it's easy to upload
-// that one file daily and never notice the per-report cards went stale.
+// combinedAdSpendUpload.ts) does NOT feed the card tables the other reports
+// read — only the per-report cards below it do — so it's easy to upload that
+// one file daily and never notice the per-report cards went stale.
 
 export function daysSince(dateStr: string | null): number | null {
   if (!dateStr) return null;
@@ -17,14 +17,13 @@ export function daysSince(dateStr: string | null): number | null {
   return days >= 0 ? days : null;
 }
 
-export function staleness(maxDate: string | null, staleAfterDays: number): { days: number; text: string } | null {
+/** `why` says what the card feeds — the Flipkart page keeps the default (its Ad Spend Report reads the card). */
+export function staleness(
+  maxDate: string | null,
+  staleAfterDays: number,
+  why = "the Ad Spend Report needs this uploaded daily",
+): { days: number; text: string } | null {
   const days = daysSince(maxDate);
   if (days === null || days <= staleAfterDays) return null;
-  return {
-    days,
-    text:
-      days === 1
-        ? "1 day old — the Ad Spend Report needs this uploaded daily"
-        : `${days} days old — the Ad Spend Report needs this uploaded daily`,
-  };
+  return { days, text: `${days === 1 ? "1 day" : `${days} days`} old — ${why}` };
 }
