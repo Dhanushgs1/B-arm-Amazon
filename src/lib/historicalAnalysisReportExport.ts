@@ -1,7 +1,12 @@
 import * as XLSX from "xlsx-js-style";
 import { fcToState, fcToAreaManual } from "@/lib/analysisReportExport";
-import { refreshOrderStatuses, ledgerBalancesBySku, snapshotLedgerBalances, carryForwardLedgerBalances, isEmptyUnmappedRow, medianUnitSalePriceBySku, reportPrice, type PriceBasis, type LedgerBalanceMode, type LedgerBalanceRow, capReturnsAtOrderedQuantity, historyRowAsOrderLine, unresolvedPendingOrderLines, UNRESOLVED_SOURCE_DATA, type ReturnLine, type CappedReturn } from "@/lib/historicalReportRules";
+import { refreshOrderStatuses, ledgerBalancesBySku, snapshotLedgerBalances, carryForwardLedgerBalances, isEmptyUnmappedRow, medianUnitSalePriceBySku, reportPrice, type PriceBasis, type LedgerBalanceMode, type LedgerBalanceRow, historyRowAsOrderLine, unresolvedPendingOrderLines, UNRESOLVED_SOURCE_DATA, type ReturnLine, type CappedReturn } from "@/lib/historicalReportRules";
+import { computeGrandTotals } from "@/lib/historicalTotalsRules";
+import { cpcFormula, cpcPerNetOrder, tacosFormula, tacosSheetRowIncluded, tacosValue } from "@/lib/historicalTacosRules";
+import { sellerReturnsBySku } from "@/lib/historicalReturnsRules";
 import { spCampaignDays, isSplitCoveredCampaignRow, dedupeSellerFlexReturns } from "@/lib/amazonSpendRules";
+import { normalizeShipState, isNonStateLocation } from "@/lib/historicalStateRules";
+import { bestPerforming, worstPerforming } from "@/lib/historicalRankingRules";
 import { fetchAllRows, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn, isStandardOrderId, istDayWindowUtc, istDateOnly } from "@/lib/amazonReportShared";
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns, fetchAllMisReportDataInfo } from "@/lib/misAdapters";
 import { staleSourceWarnings } from "@/lib/reportCoverage";
@@ -619,26 +624,20 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
       if (!r.sku || isCancelledOrder(r) || !isStandardOrderId(r.amazon_order_id)) return;
       ensureSku(r.sku).orderUnits += r.quantity || 0;
     });
-    // Returns = AM returns + FBA returns + SellerFlex returns, every return reported (courier RTO
-    // included), by the seller's decision of 24 Sep 2026 — the same "All Returns" the Weekly Sales
-    // Report subtracts. This replaced "AM returns if the SKU has any, else FBA + SF": the three
-    // sources share no orders (AM returns are merchant-fulfilled orders, FBA/SF returns Amazon-
-    // fulfilled ones), so that rule never prevented a double count and instead dropped real FBA/SF
-    // returns (~103 units over the 30 days to 17 Sep 2026). An order line never counts more returned
-    // units than were ordered (27 Oct 2026) — see capReturnsAtOrderedQuantity.
-    const returnLines: ReturnLine[] = [];
-    rowsAmReturns.forEach((r) => {
-      if (!r.merchant_sku) return;
-      returnLines.push({ orderId: r.order_id || "", sku: r.merchant_sku, qty: r.return_quantity || 0, orderedQty: r.order_quantity || 0 });
-    });
-    rowsFbaReturns.forEach((r) => {
-      if (!r.sku) return;
-      returnLines.push({ orderId: r.order_id || "", sku: r.sku, qty: r.quantity || 0 });
-    });
-    // The MIS amazon_seller_flex_return table holds each return several times over (one copy per
-    // re-upload), so each (order, shipment, mSKU) counts once — see dedupeSellerFlexReturns.
-    dedupeSellerFlexReturns(rowsSfReturns).forEach((r) => returnLines.push({ orderId: r.customer_order_id || "", sku: r.msku, qty: r.units || 0 }));
-    const { bySku: returnsBySku, capped: cappedReturns } = capReturnsAtOrderedQuantity(returnLines, orderedQtyByLine);
+    // Returns follow the Seller Returns Rule (historicalReturnsRules.ts): per SKU, AM returns when the SKU
+    // has any AM return in the window, otherwise FBA + SellerFlex returns. SellerFlex is deduplicated on
+    // (order, shipment, mSKU). Final = Orders − Returns is computed once, by the caller. Each order line is
+    // still capped at its ordered quantity (27 Oct 2026).
+    const amLines: ReturnLine[] = rowsAmReturns
+      .filter((r) => r.merchant_sku)
+      .map((r) => ({ orderId: r.order_id || "", sku: r.merchant_sku, qty: r.return_quantity || 0, orderedQty: r.order_quantity || 0 }));
+    const fbaLines: ReturnLine[] = rowsFbaReturns
+      .filter((r) => r.sku)
+      .map((r) => ({ orderId: r.order_id || "", sku: r.sku, qty: r.quantity || 0 }));
+    // The MIS amazon_seller_flex_return table holds each return several times over (one copy per re-upload).
+    const sfLines: ReturnLine[] = dedupeSellerFlexReturns(rowsSfReturns)
+      .map((r) => ({ orderId: r.customer_order_id || "", sku: r.msku, qty: r.units || 0 }));
+    const { bySku: returnsBySku, capped: cappedReturns } = sellerReturnsBySku({ am: amLines, fba: fbaLines, sf: sfLines, orderedByLine: orderedQtyByLine });
     returnsBySku.forEach((qty, sku) => { ensureSku(sku).returns += qty; });
     return { pairs, skus, pairIds, cappedReturns };
   }
@@ -938,32 +937,18 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   // CPC/ACOS/TACOS are recomputed from aggregated numerators and denominators,
   // never averaged from the per-row ratios.
   const shownSkus = new Set(rows.map((r) => r.sku));
-  const totalRowCells = (getW: (r: Row) => WindowAgg, getSkuW: (r: SkuRow) => WindowAgg) => {
-    let spendTax = 0, advUnits = 0, acosDenom = 0;
-    rows.forEach((row) => {
-      const w = getW(row);
-      spendTax += w.spendTax;
-      advUnits += w.advUnits;
-      acosDenom += row.meta.price * w.advUnits;
-    });
-    // Only the SKUs actually listed above — skuRows also covers SKUs with orders
-    // or stock but no ad activity, which have no row in this sheet, and totalling
-    // them here would make the row larger than anything visible in the column.
-    let totalUnits = 0, orderUnits = 0, returns = 0, tacosDenom = 0;
-    skuRows.filter((r) => shownSkus.has(r.sku)).forEach((row) => {
-      const w = getSkuW(row);
-      totalUnits += w.totalUnits;
-      orderUnits += w.orderUnits;
-      returns += w.returns;
-      tacosDenom += row.meta.price * Math.max(0, w.orderUnits - w.returns);
-    });
-    const final = Math.max(0, orderUnits - returns);
-    return [
-      spendTax, advUnits, totalUnits, orderUnits, returns, final,
-      advUnits > 0 ? spendTax / advUnits : spendTax,
-      acosDenom > 0 ? spendTax / acosDenom : 0,
-      tacosDenom > 0 ? spendTax / tacosDenom : 0,
-    ];
+  const pickPair = (w: WindowAgg) => ({ spendTax: w.spendTax, advUnits: w.advUnits });
+  const pickSku = (w: WindowAgg) => ({ totalUnits: w.totalUnits, orderUnits: w.orderUnits, returns: w.returns });
+  const totalRowCells =(getW: (r: Row) => WindowAgg, getSkuW: (r: SkuRow) => WindowAgg) => {
+    const t = computeGrandTotals(
+      rows.map((row) => ({ sku: row.sku, price: row.meta.price, ...pickPair(getW(row)) })),
+      // Only the SKUs actually listed above — skuRows also covers SKUs with orders
+      // or stock but no ad activity, which have no row in this sheet, and totalling
+      // them here would make the row larger than anything visible in the column.
+      skuRows.filter((r) => shownSkus.has(r.sku)).map((row) => ({ sku: row.sku, price: row.meta.price, ...pickSku(getSkuW(row)) })),
+    );
+    // Final stays unclamped, matching every row above it and the negativeFinalNote rule.
+    return [t.spendTax, t.advUnits, t.totalUnits, t.orderUnits, t.returns, t.final, t.cpc, t.acos, t.tacos];
   };
   const gFbaTotal = skuRows.reduce((sum, r) => sum + r.meta.fbaTotal, 0);
   const grandRowIdx = aoa.length;
@@ -1094,10 +1079,11 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   // Keyed per SKU, not per campaign x SKU — TACOS measures a SKU's total ad cost
   // against its total net orders, so splitting it by campaign would be
   // meaningless (each row would divide one campaign's spend by the SKU's whole
-  // order volume). Sorted by SKU in Excel's collation, and covering every SKU
-  // with activity or stock, not just the advertised ones.
+  // order volume). Sorted by SKU in Excel's collation. A SKU appears when it has spend, orders or
+  // returns in the 30-day window; zero-spend catalogue-only SKUs are left out. Spend with no net
+  // orders stays listed, with CPC and TACOS shown as N/A (see tacosValue).
   const tacosRows = skuRows
-    .filter((r) => r.sku !== UNMAPPED)
+    .filter((r) => tacosSheetRowIncluded(r.wA, r.sku === UNMAPPED))
     .slice()
     .sort((a, b) => {
       const ka = excelSortKey(a.sku), kb = excelSortKey(b.sku);
@@ -1109,11 +1095,10 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   const tHeader0: (string)[] = ["SKU ID", "Price", label30, "", "", "", "", "", label7, "", "", "", "", ""];
   const tHeader1: (string)[] = ["", "", ...TACOS_WIN_COLS, ...TACOS_WIN_COLS];
   const tacosAoa: (string | number)[][] = [tHeader0, tHeader1];
+  // Spend is always shown. CPC and TACOS are N/A when there are no net orders (or no price), never zero.
   const tacosWinCells = (w: WindowAgg, price: number) => {
     const final = w.orderUnits - w.returns;
-    const cpc = final === 0 ? w.spendTax : w.spendTax / final;
-    const tacos = price > 0 ? cpc / price : 0;
-    return [w.spendTax, w.orderUnits, w.returns, final, cpc, tacos];
+    return [w.spendTax, w.orderUnits, w.returns, final, cpcPerNetOrder(w.spendTax, final), tacosValue(w.spendTax, final, price)];
   };
   tacosRows.forEach((row) => {
     tacosAoa.push([
@@ -1134,8 +1119,8 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     for (let i = 0; i < tacosRows.length; i++) {
       const r = i + 3; // 2 header rows
       wsTacos[`${finalCol}${r}`].f = `${ordersCol}${r}-${returnsCol}${r}`;
-      wsTacos[`${cpcCol}${r}`].f = `IF(${finalCol}${r}=0,${spendCol}${r},${spendCol}${r}/${finalCol}${r})`;
-      wsTacos[`${tacosCol}${r}`].f = `${cpcCol}${r}/B${r}`;
+      wsTacos[`${cpcCol}${r}`].f = cpcFormula(`${spendCol}${r}`, `${finalCol}${r}`);
+      wsTacos[`${tacosCol}${r}`].f = tacosFormula(`${cpcCol}${r}`, `B${r}`);
     }
   }
   wsTacos["!merges"] = [
@@ -1737,20 +1722,8 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   // unnormalised, each variant got its own StateAgg row — splitting one
   // state's real demand into slivers that then read as separate stockouts
   // instead of being netted against that state's actual FBA stock.
-  const STATE_ALIASES: Record<string, string> = {
-    TN: "TAMIL NADU", TAMILNADU: "TAMIL NADU",
-    WB: "WEST BENGAL", WESTBENGAL: "WEST BENGAL",
-    DL: "DELHI",
-    UP: "UTTAR PRADESH", "U.P.": "UTTAR PRADESH",
-    MP: "MADHYA PRADESH",
-    BR: "BIHAR",
-    AR: "ARUNACHAL PRADESH",
-    TG: "TELANGANA", TELENGANA: "TELANGANA",
-    HARAYANA: "HARYANA",
-    CHATTISGARH: "CHHATTISGARH",
-  };
-  const normalizeShipState = (raw: string): string => STATE_ALIASES[raw] || raw;
-
+  // Alias table and rules live in historicalStateRules.ts (tested). Non-state FC codes
+  // (VSNC) are kept out of the state rows and their stock is reported on its own line.
   interface StateAgg { stockUnits: number; stockValue: number; skuCount: number; orderUnits: number; orderCount: number; }
   const stateAgg = new Map<string, StateAgg>();
   const ensureState = (st: string): StateAgg => {
@@ -1758,12 +1731,19 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     if (!a) { a = { stockUnits: 0, stockValue: 0, skuCount: 0, orderUnits: 0, orderCount: 0 }; stateAgg.set(st, a); }
     return a;
   };
+  let nonStateStockUnits = 0;
+  let nonStateStockValue = 0;
   // Per-SKU, not per campaign x SKU — otherwise a SKU advertised by two
   // campaigns would have its stock counted twice into its states.
   skuRows.forEach((row) => {
     if (row.sku === UNMAPPED) return;
     row.meta.stateBalances.forEach((units, st) => {
       if (units <= 0) return;
+      if (isNonStateLocation(st)) {
+        nonStateStockUnits += units;
+        nonStateStockValue += units * row.meta.price;
+        return;
+      }
       const a = ensureState(st);
       a.stockUnits += units;
       a.stockValue += units * row.meta.price;
@@ -1772,7 +1752,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   orderRows.forEach((r: any) => {
-    const raw = String(r.ship_state || "").trim().toUpperCase();
+    const raw = String(r.ship_state || "").trim();
     if (!raw) return;
     const st = normalizeShipState(raw);
     const a = ensureState(st);
@@ -1827,18 +1807,14 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     ["Average TACOS", `${((gSpendTax / (gTacosDenomKey || 1)) * 100).toFixed(2)}%`, "", "", "", "", "", ""],
     ["", "", "", "", "", "", "", ""],
     ["🎯 BEST PERFORMING CAMPAIGNS", "", "", "", "", "", "", ""],
-    ...rows
-      .filter((r) => r.sku !== UNMAPPED && r.wA.spendTax > 0)
-      .sort((a, b) => computeAcos(a.wA, a.meta.price) - computeAcos(b.wA, b.meta.price))
-      .slice(0, 5)
-      .map((r) => [displayName(r.meta), `ACOS: ${(computeAcos(r.wA, r.meta.price) * 100).toFixed(2)}%`, "", "", "", "", "", ""]),
+    // Ranking rules (historicalRankingRules.ts): only campaigns with spend, attributed units and a
+    // price are ranked, so a missing price can no longer read as a 0% ACOS.
+    ...bestPerforming(rows.filter((r) => r.sku !== UNMAPPED).map((r) => ({ row: r, spendTax: r.wA.spendTax, advUnits: r.wA.advUnits, price: r.meta.price })), 5)
+      .map(({ row: r }) => [displayName(r.meta), `ACOS: ${(computeAcos(r.wA, r.meta.price) * 100).toFixed(2)}%`, "", "", "", "", "", ""]),
     ["", "", "", "", "", "", "", ""],
     ["⚠️ CAMPAIGNS TO OPTIMIZE", "", "", "", "", "", "", ""],
-    ...rows
-      .filter((r) => r.sku !== UNMAPPED && r.wA.spendTax > 0)
-      .sort((a, b) => computeAcos(b.wA, b.meta.price) - computeAcos(a.wA, a.meta.price))
-      .slice(0, 5)
-      .map((r) => [displayName(r.meta), `ACOS: ${(computeAcos(r.wA, r.meta.price) * 100).toFixed(2)}%`, "", "", "", "", "", ""]),
+    ...worstPerforming(rows.filter((r) => r.sku !== UNMAPPED).map((r) => ({ row: r, spendTax: r.wA.spendTax, advUnits: r.wA.advUnits, price: r.meta.price })), 5)
+      .map(({ row: r }) => [displayName(r.meta), `ACOS: ${(computeAcos(r.wA, r.meta.price) * 100).toFixed(2)}%`, "", "", "", "", "", ""]),
     ["", "", "", "", "", "", "", ""],
     ["📍 STATE-WISE INVENTORY vs. DEMAND ANALYSIS", "", "", "", "", "", "", ""],
     ["State", "Stock (units)", "Stock Value (₹)", "% of Total Value", "Orders (units)", "Order Count", "SKUs in Stock", "Verdict"],
@@ -1851,6 +1827,7 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     ["Stockout risk states", stockoutStates.length ? `🔴 ${stockoutStates.join(", ")} — orders exist but zero FBA stock. Highest-priority replenishment.` : "✅ None — every state with orders has some stock.", "", "", "", "", "", ""],
     ["Understocked states", understockedStates.length ? `🔴 ${understockedStates.join(", ")} — demand is outpacing stock on hand. Replenish soon.` : "✅ None — stock keeps pace with demand everywhere.", "", "", "", "", "", ""],
     ["Overstocked states", overstockedStates.length ? `🟡 ${overstockedStates.join(", ")} — stock far exceeds recent demand. Consider inter-warehouse transfer or a regional promo.` : "✅ None — no state is meaningfully overstocked.", "", "", "", "", "", ""],
+    ["Unassigned FC stock (VSNC)", nonStateStockUnits > 0 ? `${nonStateStockUnits} units (₹${Math.round(nonStateStockValue).toLocaleString("en-IN")}) sit at fulfilment centre VSNC, which has no state. Not counted in any state verdict.` : "✅ None — no stock at non-state fulfilment centres.", "", "", "", "", "", ""],
     ["", "", "", "", "", "", "", ""],
     ["🚀 RECOMMENDATIONS", "", "", "", "", "", "", ""],
     ["1. BOOST", "Campaigns with ACOS < 25% - These are your profit drivers. Increase budget.", "", "", "", "", "", ""],
