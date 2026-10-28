@@ -4,7 +4,7 @@
 // the real tables have, so a duplicate-key write fails the way Postgres does.
 
 type Row = Record<string, unknown>;
-type Filter = { col: string; op: "gte" | "lte" | "gt" | "lt"; val: unknown };
+type Filter = { col: string; op: "gte" | "lte" | "gt" | "lt" | "eq"; val: unknown };
 export interface FakeCall { op: "insert" | "upsert" | "delete"; table: string; filters: Filter[] }
 
 /** Unique keys per table, mirroring the real indexes. Upserts use the onConflict key given by the caller. */
@@ -37,6 +37,7 @@ function matches(row: Row, filters: Filter[]): boolean {
     if (op === "gte") return v >= t;
     if (op === "lte") return v <= t;
     if (op === "gt") return v > t;
+    if (op === "eq") return v === t;
     return v < t;
   });
 }
@@ -86,15 +87,34 @@ function execute(table: string, op: FakeCall["op"], payload: Row[] | undefined, 
   return { error: null };
 }
 
+/** SELECT: filter, order (ascending, by the given columns), then slice by range (inclusive from..to). */
+function selectRows(table: string, filters: Filter[], orderCols: string[], from: number | null, to: number | null): Row[] {
+  calls.push({ op: "select" as FakeCall["op"], table, filters: [...filters] });
+  let rows = rowsOf(table).filter((r) => matches(r, filters));
+  if (orderCols.length) {
+    rows = [...rows].sort((a, b) => {
+      for (const c of orderCols) {
+        const av = String(a[c] ?? ""), bv = String(b[c] ?? "");
+        if (av !== bv) return av < bv ? -1 : 1;
+      }
+      return 0;
+    });
+  }
+  return from === null || to === null ? rows : rows.slice(from, to + 1);
+}
+
 function builder(table: string) {
   let op: FakeCall["op"] | "select" = "select";
   let payload: Row[] | undefined;
   let onConflict: string | undefined;
   const filters: Filter[] = [];
+  const orderCols: string[] = [];
+  let rangeFrom: number | null = null;
+  let rangeTo: number | null = null;
   const b = {
     select: () => b,
-    order: () => b,
-    range: () => b,
+    order: (col: string) => (orderCols.push(col), b),
+    range: (from: number, to: number) => ((rangeFrom = from), (rangeTo = to), b),
     delete: () => {
       op = "delete";
       return b;
@@ -114,9 +134,11 @@ function builder(table: string) {
     lte: (col: string, val: unknown) => (filters.push({ col, op: "lte", val }), b),
     gt: (col: string, val: unknown) => (filters.push({ col, op: "gt", val }), b),
     lt: (col: string, val: unknown) => (filters.push({ col, op: "lt", val }), b),
+    eq: (col: string, val: unknown) => (filters.push({ col, op: "eq", val }), b),
     then<R>(resolve: (v: unknown) => R, reject?: (e: unknown) => R) {
       try {
-        return resolve(op === "select" ? { data: rowsOf(table), error: null } : execute(table, op, payload, filters, onConflict));
+        if (op === "select") return resolve({ data: selectRows(table, filters, orderCols, rangeFrom, rangeTo), error: null });
+        return resolve(execute(table, op, payload, filters, onConflict));
       } catch (e) {
         return reject ? reject(e) : Promise.reject(e);
       }

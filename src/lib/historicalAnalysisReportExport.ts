@@ -7,7 +7,7 @@ import { sellerReturnsBySku } from "@/lib/historicalReturnsRules";
 import { spCampaignDays, isSplitCoveredCampaignRow, dedupeSellerFlexReturns } from "@/lib/amazonSpendRules";
 import { normalizeShipState, isNonStateLocation } from "@/lib/historicalStateRules";
 import { bestPerforming, worstPerforming } from "@/lib/historicalRankingRules";
-import { fetchAllRows, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn, isStandardOrderId, istDayWindowUtc, istDateOnly } from "@/lib/amazonReportShared";
+import { fetchAllRows, fetchAllRowsByDateChunks, isCancelledOrder, isGenuineAmReturn, isGenuineFbaReturn, isStandardOrderId, istDayWindowUtc, istDateOnly } from "@/lib/amazonReportShared";
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns, fetchAllMisReportDataInfo } from "@/lib/misAdapters";
 import { staleSourceWarnings } from "@/lib/reportCoverage";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
@@ -236,7 +236,8 @@ export async function buildHistoricalAnalysisReportWorkbook(opts: BuildOpts) {
     priceListingRows, fbaInventoryRows, ledgerRows, ledgerRawRows, sfReturnRows,
     productMaster, masterSkuid, masterSkuidCatalog, productMarketing, cardOrderRows, statusHistoryRows,
   ] = await Promise.all([
-    fetchAllRows("barm_amazon_sp_advertised_product", (q) => q.gte("report_date", win30.start).lte("report_date", endDate)),
+    // Chunked by week: one unchunked read over 30 days exceeds the anon role's 3-second statement timeout.
+    fetchAllRowsByDateChunks("barm_amazon_sp_advertised_product", "report_date", win30.start, endDate),
     fetchAllRows("barm_amazon_sb_campaign", (q) => q.gte("report_date", win30.start).lte("report_date", endDate)),
     fetchAllRows("barm_amazon_sd_campaign", (q) => q.gte("report_date", win30.start).lte("report_date", endDate)),
     fetchMisAmazonOrders((q) => q.gte("purchase_datetime", win30Ist.gte).lt("purchase_datetime", win30Ist.lt)),

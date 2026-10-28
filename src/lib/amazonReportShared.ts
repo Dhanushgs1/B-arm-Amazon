@@ -60,6 +60,54 @@ export async function fetchAllRows(table: string, apply: (q: any) => any, orderB
   return all;
 }
 
+/**
+ * Inclusive [start, end] date windows of at most `chunkDays` days each, covering the range exactly once.
+ * Dates are 'YYYY-MM-DD'. An empty array when end is before start.
+ */
+export function dateChunks(start: string, end: string, chunkDays: number): { start: string; end: string }[] {
+  const out: { start: string; end: string }[] = [];
+  if (!start || !end || start > end || chunkDays < 1) return out;
+  const addDays = (iso: string, n: number) => {
+    const d = new Date(`${iso}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+  let cur = start;
+  while (cur <= end) {
+    const last = addDays(cur, chunkDays - 1);
+    const chunkEnd = last < end ? last : end;
+    out.push({ start: cur, end: chunkEnd });
+    cur = addDays(chunkEnd, 1);
+  }
+  return out;
+}
+
+/**
+ * fetchAllRows, split into date windows on `dateCol`. Each request filters on one window, so Postgres can use the
+ * date index and only read that window's rows. Same rows as one unchunked fetch over [start, end]; windows are disjoint
+ * and cover the range once, so no row is repeated or skipped.
+ */
+export async function fetchAllRowsByDateChunks(
+  table: string,
+  dateCol: string,
+  start: string,
+  end: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  extra: (q: any) => any = (q) => q,
+  chunkDays = 7,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<any[]> {
+  const out: unknown[] = [];
+  for (const c of dateChunks(start, end, chunkDays)) {
+    // Order by the date column first, then id. Ordering by id alone lets Postgres walk the primary key and filter by
+    // date, which is slow for every page; (date, id) lets it use the date index and sort within the window. Both
+    // columns together are unique, so paging stays stable.
+    const rows = await fetchAllRows(table, (q) => extra(q).gte(dateCol, c.start).lte(dateCol, c.end), [dateCol, "id"]);
+    out.push(...rows);
+  }
+  return out;
+}
+
 // A cancelled order was never sold, so it must not count towards Orders — the
 // Orders export keeps those rows, and including them inflates Orders (and so
 // depresses ACOS/TACOS, whose denominators are built from it).
