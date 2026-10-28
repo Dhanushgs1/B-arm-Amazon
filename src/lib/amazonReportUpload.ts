@@ -57,7 +57,7 @@ export const REPORT_TABLE: Record<UploadReportType, string> = {
 
 // Ad-report tables (SP/SB/SD) have a clean natural key (date+campaign+[sku]) —
 // re-uploading an overlapping period is a plain per-row upsert.
-const ON_CONFLICT: Partial<Record<UploadReportType, string>> = {
+export const ON_CONFLICT: Partial<Record<UploadReportType, string>> = {
   sp_advertised_product: "report_date,campaign_name,ad_group_name,advertised_sku",
   sb_campaign: "report_date,campaign_name",
   sd_campaign: "report_date,campaign_name",
@@ -99,15 +99,12 @@ const FULL_REPLACE_TYPES: Partial<Record<UploadReportType, true>> = {
   fba_inventory: true,
 };
 
-// These two report tables (plus Flipkart's fsn_report/order_report — see
-// PRUNE_TO_UPLOAD_RANGE in flipkartReportUpload.ts) are meant to hold only
-// the date range the seller's own export covers, not full history: the
-// seller's "Last N days" downloads are themselves the retention window, so
-// once a fresh file lands, any row outside that file's min/max date is from
-// an earlier upload's window and should be dropped rather than accumulate
-// forever.
-const PRUNE_TO_UPLOAD_RANGE: Partial<Record<UploadReportType, true>> = {
-  sp_advertised_product: true,
+// A type listed here deletes every stored row OUTSIDE the min/max date of the file just uploaded. That
+// destroys history whenever a file covers a shorter span than the data on file. Sponsored Products is
+// no longer listed: its 28 Oct 2026 upload (12–22 Oct) removed 10,910 rows of 23 Sep–11 Oct history
+// this way, and its upsert key already prevents duplicates. Amazon Orders stays listed unchanged
+// pending a separate decision; see the note in amazonReportUpload.test.ts.
+export const PRUNE_TO_UPLOAD_RANGE: Partial<Record<UploadReportType, true>> = {
   am_orders: true,
 };
 
@@ -147,7 +144,7 @@ const REQUIRED_FIELDS: Record<UploadReportType, string[]> = {
 
 // ── generic row/value parsing helpers ───────────────────────────────────────
 
-type RawRow = Record<string, string>;
+export type RawRow = Record<string, string>;
 
 // Amazon's own CSV headers are inconsistent about trailing spaces and the
 // currency symbol in parentheses often arrives mangled by export encoding
@@ -765,6 +762,11 @@ export function dedupeExactRows(rows: any[]): any[] {
 // overlaps previous data converges to the new data rather than duplicating it.
 export async function uploadReportFile(type: UploadReportType, file: File): Promise<UploadResult> {
   const rawRows = await parseReportFile(file);
+  return uploadParsedRows(type, rawRows, file.name);
+}
+
+/** The write half of uploadReportFile, on already-parsed rows. Exported so the tests can drive the real write path. */
+export async function uploadParsedRows(type: UploadReportType, rawRows: RawRow[], fileName: string): Promise<UploadResult> {
   const mapper = REPORT_MAPPER[type];
   const required = REQUIRED_FIELDS[type];
   const mapped = rawRows.map(mapper);
@@ -809,7 +811,7 @@ export async function uploadReportFile(type: UploadReportType, file: File): Prom
     } else {
       await insertInChunks(table, deduped);
     }
-    const statusHistory = type === "am_orders" ? await appendOrderStatusHistory(deduped, file.name) : undefined;
+    const statusHistory = type === "am_orders" ? await appendOrderStatusHistory(deduped, fileName) : undefined;
     if (PRUNE_TO_UPLOAD_RANGE[type]) {
       await pruneOutsideRange(table, replaceDateField, minDate, maxDate);
     }
