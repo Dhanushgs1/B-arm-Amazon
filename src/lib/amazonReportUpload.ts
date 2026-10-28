@@ -1,4 +1,5 @@
 import Papa from "papaparse";
+import { validateSkuWeightDraft } from "@/lib/campaignSkuWeights";
 import * as XLSX from "xlsx";
 import { createClient } from "@supabase/supabase-js";
 import { lazySupabase, SUPABASE_URL, SUPABASE_ANON_KEY } from "@/lib/supabaseLazy";
@@ -890,9 +891,11 @@ export interface CampaignSkuWeight {
  * the map, which is what makes this safe to call straight from the editor UI.
  */
 export async function setCampaignSkus(campaignName: string, entries: CampaignSkuWeight[]): Promise<void> {
-  const clean = entries
-    .map((e) => ({ sku: e.sku.trim(), weight: Number(e.weight) }))
-    .filter((e) => e.sku && Number.isFinite(e.weight) && e.weight > 0);
+  // Refuse bad input before the delete below: dropping an invalid weight here would
+  // remove the campaign's existing mapping and save nothing in its place.
+  const check = validateSkuWeightDraft(entries.map((e) => ({ sku: e.sku, weight: String(e.weight) })));
+  if (!check.ok) throw new Error(check.error);
+  const clean = check.entries;
 
   const { error: delErr } = await supabasePublic
     .from("barm_amazon_campaign_sku_map")

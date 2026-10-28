@@ -18,6 +18,7 @@ import { uploadCombinedWorkbook, fetchDailyTablesDataInfo, type SheetUploadOutco
 import { staleness } from "@/lib/dataFreshness";
 import { fetchAllMisReportDataInfo, type MisReportDataInfo } from "@/lib/misAdapters";
 import { fetchProductMasterNameMap } from "@/lib/productMasterUpload";
+import { draftRowsFromStored, validateSkuWeightDraft, DEFAULT_NEW_WEIGHT, type SkuWeightDraftRow } from "@/lib/campaignSkuWeights";
 import { uploadProductMarketing, fetchProductMarketingDataInfo, type ProductMarketingDataInfo } from "@/lib/productMarketingUpload";
 import {
   uploadSocialMediaReportFile,
@@ -738,13 +739,14 @@ function suggestSkuForCampaign(
 // export, so their spend has to be routed to SKUs by hand — this is the only
 // place in the app that can actually do it (setCampaignSkus/fetchCampaignAllocations
 // in amazonReportUpload.ts existed already, just with no UI calling them).
-// Typing N SKUs with no custom weight splits that campaign's spend equally
-// across all N (see the division-by-total-weight logic in adSpendReportExport.ts).
+// Each SKU carries a weight; spend splits by weight / total weight (see campaignShares in
+// campaignSkuWeights.ts and the matching logic in adSpendReportExport.ts). New rows default to 1.
 function CampaignSkuMappingSection() {
   const [allocations, setAllocations] = useState<CampaignAllocation[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [drafts, setDrafts] = useState<Record<string, SkuWeightDraftRow[]>>({});
   const [saving, setSaving] = useState<Record<string, "saving" | "done" | "error">>({});
+  const [draftErrors, setDraftErrors] = useState<Record<string, string>>({});
   const [suggestions, setSuggestions] = useState<Record<string, { sku: string; name: string }>>({});
 
   const refresh = useCallback(() => {
@@ -752,10 +754,12 @@ function CampaignSkuMappingSection() {
       .then((rows) => {
         setAllocations(rows);
         setError(null);
+        // Only campaigns with no draft yet are reset from storage, so a Save-triggered
+        // refresh never overwrites a row the user is still editing.
         setDrafts((prev) => {
           const next = { ...prev };
           rows.forEach((r) => {
-            if (next[r.campaignName] === undefined) next[r.campaignName] = r.skus.map((s) => s.sku).join(", ");
+            if (next[r.campaignName] === undefined) next[r.campaignName] = draftRowsFromStored(r.skus);
           });
           return next;
         });
@@ -787,14 +791,25 @@ function CampaignSkuMappingSection() {
       .catch(() => setSuggestions({}));
   }, [allocations]);
 
+  const updateRows = (campaignName: string, rows: SkuWeightDraftRow[]) => {
+    setDrafts((p) => ({ ...p, [campaignName]: rows }));
+    setDraftErrors((p) => ({ ...p, [campaignName]: "" }));
+  };
+
   const handleSave = async (campaignName: string) => {
+    const check = validateSkuWeightDraft(drafts[campaignName] || []);
+    if (!check.ok) {
+      setDraftErrors((p) => ({ ...p, [campaignName]: check.error }));
+      setSaving((p) => ({ ...p, [campaignName]: "error" }));
+      return;
+    }
     setSaving((p) => ({ ...p, [campaignName]: "saving" }));
     try {
-      const skus = (drafts[campaignName] || "").split(",").map((s) => s.trim()).filter(Boolean);
-      await setCampaignSkus(campaignName, skus.map((sku) => ({ sku, weight: 1 })));
+      await setCampaignSkus(campaignName, check.entries);
       setSaving((p) => ({ ...p, [campaignName]: "done" }));
       refresh();
-    } catch {
+    } catch (err) {
+      setDraftErrors((p) => ({ ...p, [campaignName]: err instanceof Error ? err.message : "Save failed" }));
       setSaving((p) => ({ ...p, [campaignName]: "error" }));
     }
   };
@@ -809,8 +824,8 @@ function CampaignSkuMappingSection() {
       </h2>
       <p className="text-xs text-muted-foreground mb-3 -mt-2">
         These campaigns carry no SKU column in Amazon&apos;s own export, so their spend has to be routed to SKUs by
-        hand — list the SKU(s) that campaign advertises, comma-separated. Spend splits equally across however many
-        SKUs you list (5 SKUs on ₹100 spend → ₹20 each). Until mapped, a campaign&apos;s spend is excluded from every
+        hand — list the SKU(s) that campaign advertises, each with a weight. Spend splits in proportion to the weights
+        (weights 1 and 1 → equal halves; 1.5, 1.5, 1, 1 → the first two get 1.5 shares each). Until mapped, a campaign&apos;s spend is excluded from every
         product total and shown as &quot;unmapped&quot; in the Ad Spend Report&apos;s Notes sheet instead.
       </p>
       {error && <p className="text-xs text-red-600 dark:text-red-400 mb-3">Couldn&apos;t load campaigns — {error}</p>}
@@ -833,7 +848,7 @@ function CampaignSkuMappingSection() {
                     <th className="p-3 font-bold">Campaign</th>
                     <th className="p-3 font-bold">Source</th>
                     <th className="p-3 font-bold text-right">Spend</th>
-                    <th className="p-3 font-bold">SKUs (comma-separated)</th>
+                    <th className="p-3 font-bold">SKUs and weights</th>
                     <th className="p-3 font-bold"></th>
                   </tr>
                 </thead>
@@ -844,17 +859,49 @@ function CampaignSkuMappingSection() {
                       <td className="p-3">{a.source}</td>
                       <td className="p-3 text-right tabular-nums whitespace-nowrap">{money(a.spend)}</td>
                       <td className="p-3">
-                        <input
-                          type="text"
-                          value={drafts[a.campaignName] ?? ""}
-                          onChange={(e) => setDrafts((p) => ({ ...p, [a.campaignName]: e.target.value }))}
-                          placeholder="e.g. A015, B-CT-G-1, A006-2"
-                          className="w-full min-w-[220px] bg-transparent border border-border rounded-lg px-2 py-1 text-xs"
-                        />
-                        {a.skus.length === 0 && suggestions[a.campaignName] && !drafts[a.campaignName] && (
+                        {(drafts[a.campaignName] ?? []).map((row, i) => (
+                          <div key={i} className="flex items-center gap-1 mb-1">
+                            <input
+                              type="text"
+                              aria-label={`SKU ${i + 1} for ${a.campaignName}`}
+                              value={row.sku}
+                              onChange={(e) => updateRows(a.campaignName, (drafts[a.campaignName] ?? []).map((r, j) => (j === i ? { ...r, sku: e.target.value } : r)))}
+                              placeholder="e.g. B-CT-G-8"
+                              className="w-full min-w-[160px] bg-transparent border border-border rounded-lg px-2 py-1 text-xs"
+                            />
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              aria-label={`Weight for ${row.sku || `SKU ${i + 1}`} in ${a.campaignName}`}
+                              value={row.weight}
+                              onChange={(e) => updateRows(a.campaignName, (drafts[a.campaignName] ?? []).map((r, j) => (j === i ? { ...r, weight: e.target.value } : r)))}
+                              placeholder="weight"
+                              className="w-16 bg-transparent border border-border rounded-lg px-2 py-1 text-xs tabular-nums"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => updateRows(a.campaignName, (drafts[a.campaignName] ?? []).filter((_, j) => j !== i))}
+                              className="text-[10px] text-muted-foreground hover:text-red-600 px-1"
+                              aria-label={`Remove row ${i + 1} for ${a.campaignName}`}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={() => updateRows(a.campaignName, [...(drafts[a.campaignName] ?? []), { sku: "", weight: DEFAULT_NEW_WEIGHT }])}
+                          className="text-[10px] font-bold text-primary hover:underline"
+                        >
+                          + Add SKU
+                        </button>
+                        {draftErrors[a.campaignName] && (
+                          <p className="text-[10px] text-red-600 dark:text-red-400 mt-1">{draftErrors[a.campaignName]}</p>
+                        )}
+                        {a.skus.length === 0 && suggestions[a.campaignName] && !(drafts[a.campaignName] ?? []).some((r) => r.sku.trim()) && (
                           <button
                             type="button"
-                            onClick={() => setDrafts((p) => ({ ...p, [a.campaignName]: suggestions[a.campaignName].sku }))}
+                            onClick={() => updateRows(a.campaignName, [{ sku: suggestions[a.campaignName].sku, weight: DEFAULT_NEW_WEIGHT }])}
                             className="mt-1 text-[10px] text-amber-700 dark:text-amber-400 hover:underline text-left block truncate max-w-[220px]"
                             title={`Matched from product name: ${suggestions[a.campaignName].name}`}
                           >
