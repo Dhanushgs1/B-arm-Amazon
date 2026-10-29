@@ -132,14 +132,6 @@ async function latestUpload(table: string, asOf: string): Promise<{ date: string
   return data?.[0] ? { date: data[0].snapshot_date as string, uploadedAt: data[0].uploaded_at as string } : null;
 }
 
-/** The last upload of `table`, whatever its date (the Stock Purchase Sheet, user 2026-10-22). */
-async function lastUpload(table: string): Promise<{ date: string; uploadedAt: string } | null> {
-  const { data, error } = await supabasePublic.from(table).select("snapshot_date,uploaded_at")
-    .order("uploaded_at", { ascending: false }).limit(1);
-  if (error) throw new Error(`${table}: ${error.message}`);
-  return data?.[0] ? { date: data[0].snapshot_date as string, uploadedAt: data[0].uploaded_at as string } : null;
-}
-
 export interface ConsolidatedData {
   snapshotDate: string | null;
   uploadedAt: string | null;
@@ -191,23 +183,20 @@ async function fetchWeeklyInputs(weekStart: string) {
  *                                Monday snapshot (user, 2026-10-22)
  *    combo                       that week's Monday snapshot only */
 async function fetchRestockInputs(asOf: string) {
-  const [{ rfq, components, snap }, upCurrent, upPurchase] = await Promise.all([
+  const [{ rfq, components, snap }, upCurrent] = await Promise.all([
     fetchWeeklyInputs(mondayOf(asOf)),
     latestUpload(RESTOCK_TABLE.current, asOf),
-    lastUpload(RESTOCK_TABLE.purchase),
   ]);
+  // Purchase qty comes from the Monday snapshot (user, 2026-10-29), not the last uploaded Stock Purchase Sheet,
+  // so no purchase upload is read here.
+  const upPurchase: { date: string; uploadedAt: string } | null = null;
   const sources = restockSources(upCurrent, snap.status === "ok", upPurchase);
   // spellings from the 13.10.2026 godown file point at the kept name (src/lib/godownProductAliases.ts)
-  const [current, purchase] = await Promise.all([
-    upCurrent
-      ? readAll(RESTOCK_TABLE.current, "product,stock_intransit,order_placed", ["product"], (q) => q.eq("snapshot_date", upCurrent.date))
-        .then((rows) => rows.map((r) => ({ product: keptGodownName(String(r.product)), shownAs: String(r.product), stock_intransit: r.stock_intransit, order_placed: r.order_placed, suggested_rfq: null })))
-      : null,
-    upPurchase
-      ? readAll(RESTOCK_TABLE.purchase, "product,purchase_qty", ["product"], (q) => q.eq("snapshot_date", upPurchase.date))
-        .then((rows) => rows.map((r) => ({ product: keptGodownName(String(r.product)), stock_intransit: null, order_placed: null, suggested_rfq: r.purchase_qty })))
-      : null,
-  ]);
+  const current = upCurrent
+    ? await readAll(RESTOCK_TABLE.current, "product,stock_intransit,order_placed", ["product"], (q) => q.eq("snapshot_date", upCurrent.date))
+      .then((rows) => rows.map((r) => ({ product: keptGodownName(String(r.product)), shownAs: String(r.product), stock_intransit: r.stock_intransit, order_placed: r.order_placed, suggested_rfq: null })))
+    : null;
+  const purchase = null;
   const merged = matchRestockRows(current?.map(({ shownAs: _, ...r }) => r) ?? null, rfq); // eslint-disable-line @typescript-eslint/no-unused-vars
   const withRfq = matchUploadedRfq(merged.rows, purchase);
   const { inputs, combos } = weeklyInputs(withRfq.rows, components);
