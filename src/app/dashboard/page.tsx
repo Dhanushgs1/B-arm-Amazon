@@ -8,6 +8,7 @@ import { useDashboard } from "@/lib/DashboardContext";
 import { mcp, mcpAllPages, mcpAllInventory, fetchUnifiedDailyTrend, aggregateTrend } from "@/lib/api";
 import { fetchMissingCampaignHistory, injectMissingCampaignsAsPaused } from "@/lib/campaignPersistence";
 import { fetchLknOrdersSummary, fetchLknOrderUnitsIst } from "@/lib/lknOrders";
+import { fetchUploadedAmazonTotals } from "@/lib/uploadedAmazonTotals";
 import { KPICard } from "@/components/KPICard";
 import { QueryErrorState } from "@/components/QueryErrorState";
 import { TrendChart, UnifiedTrendChart } from "@/components/TrendChart";
@@ -54,6 +55,14 @@ const pctChange = (current: number, previous: number): number | undefined => {
   if (!Number.isFinite(current) || !Number.isFinite(previous)) return undefined;
   if (previous === 0) return undefined;
   return ((current - previous) / Math.abs(previous)) * 100;
+};
+
+// "2026-10-25" -> "25 Oct 2026"; a missing date reads as "no data".
+const formatDayLabel = (iso: string | null | undefined): string => {
+  if (!iso) return "no data";
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 };
 
 export default function DashboardOverview() {
@@ -220,6 +229,15 @@ export default function DashboardOverview() {
     enabled: !!account,
   });
 
+  // BARM (slot "B") Overview reads the uploaded Amazon tables instead of SellerMate, so the cards
+  // match the uploads and the "data up to" label is the real last day on file. LKN keeps the old path.
+  const { data: uploadedTotals } = useQuery({
+    queryKey: ["uploaded_amazon_totals", account?.id, startDate, endDate],
+    queryFn: () => fetchUploadedAmazonTotals(startDate, endDate),
+    enabled: !!account && !isLkn && !!startDate && !!endDate,
+  });
+  const useUploaded = !!uploadedTotals && !isLkn;
+
   const s = cpData?.summary || {};
   const rs = useMemo(() => {
     let totalSales = 0, totalAdSales = 0, totalAdSpend = 0, totalUnitsOrdered = 0;
@@ -241,10 +259,13 @@ export default function DashboardOverview() {
   // current — get_orders_report is already fetched below for the state breakdown, so
   // fall back to its totalValue (real order revenue) rather than showing ₹0 when the
   // retail feed hasn't synced yet.
-  const totalSales = rs.totalSales || ordersReportData?.summary?.totalValue || 0;
-  const adSales = rs.totalAdSales || s.totalSales || 0;
-  const organicSales = Math.max(0, totalSales - adSales);
-  const tacos = rs.overallTacos || 0;
+  const totalSales = useUploaded ? uploadedTotals.totalSales : rs.totalSales || ordersReportData?.summary?.totalValue || 0;
+  const adSales = useUploaded ? uploadedTotals.totalAdSales : rs.totalAdSales || s.totalSales || 0;
+  const organicSales = useUploaded ? uploadedTotals.organicSales : Math.max(0, totalSales - adSales);
+  const adSpendValue = useUploaded ? uploadedTotals.totalAdSpend : s.totalSpend || 0;
+  const tacos = useUploaded
+    ? (totalSales > 0 ? (adSpendValue / totalSales) * 100 : 0)
+    : rs.overallTacos || 0;
 
   // Same staleness problem as Total Sales, but retail's totalUnitsOrdered has no
   // ready-made substitute in the summary — get_orders_report's aggregate is order
@@ -276,7 +297,7 @@ export default function DashboardOverview() {
     },
     enabled: !!account && retailUnitsMissing,
   });
-  const totalUnits = rs.totalUnitsOrdered || ordersUnitsFallback || 0;
+  const totalUnits = useUploaded ? uploadedTotals.totalUnits : rs.totalUnitsOrdered || ordersUnitsFallback || 0;
 
   // LKN only: the previous-window baseline goes through the same corrected orders
   // logic, so a trend badge never compares a fixed current value against a stale or
@@ -637,7 +658,9 @@ Write 6 tagged insight lines now:`;
 
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-[10px] font-extrabold bg-indigo-500/10 text-indigo-500 px-3 py-1.5 rounded-full">
-            Synced just now
+            {useUploaded
+              ? `Orders to ${formatDayLabel(uploadedTotals.ordersThrough)} · Ads to ${formatDayLabel(uploadedTotals.adsThrough)}`
+              : "Synced just now"}
           </span>
           <button onClick={() => window.location.reload()} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-full text-xs font-bold transition-all shadow-md shadow-indigo-600/20">
             <RefreshCw className="w-3.5 h-3.5" /> Refresh
@@ -647,11 +670,12 @@ Write 6 tagged insight lines now:`;
 
       {/*  Top Row: 5 Large KPI Cards  */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-        <KPICard title="Total Sales" value={cur(totalSales, currency)} subtitle="Retail + Ads combined" trend={pctChange(totalSales, prevTotalSales)} trendBasis={trendBasisLabel} delay={0.02} accent="green" />
-        <KPICard title="Ad Spend" value={cur(s.totalSpend || 0, currency)} subtitle="Advertising Spend" trend={pctChange(s.totalSpend || 0, ps.totalSpend || 0)} trendBasis={trendBasisLabel} delay={0.03} accent="pink" />
-        <KPICard title="Ad Sales" value={cur(adSales, currency)} subtitle="Ads-Attributed" trend={pctChange(adSales, prevAdSales)} trendBasis={trendBasisLabel} delay={0.04} accent="blue" />
-        <KPICard title="Organic Sales" value={cur(organicSales, currency)} subtitle="Non-Ads Revenue" trend={pctChange(organicSales, prevOrganicSales)} trendBasis={trendBasisLabel} delay={0.06} accent="orange" />
-        <KPICard title="Units Ordered" value={num(totalUnits)} subtitle="Total Units Sold" trend={pctChange(totalUnits, prevTotalUnits)} trendBasis={trendBasisLabel} delay={0.08} accent="purple" />
+        {/* Trend badges compare against the SellerMate previous window, which is a different source, so they are hidden while the uploaded totals are shown. */}
+        <KPICard title="Total Sales" value={cur(totalSales, currency)} subtitle="Retail + Ads combined" trend={useUploaded ? undefined : pctChange(totalSales, prevTotalSales)} trendBasis={useUploaded ? undefined : trendBasisLabel} delay={0.02} accent="green" />
+        <KPICard title="Ad Spend" value={cur(adSpendValue, currency)} subtitle="Advertising Spend" trend={useUploaded ? undefined : pctChange(s.totalSpend || 0, ps.totalSpend || 0)} trendBasis={useUploaded ? undefined : trendBasisLabel} delay={0.03} accent="pink" />
+        <KPICard title="Ad Sales" value={cur(adSales, currency)} subtitle="Ads-Attributed" trend={useUploaded ? undefined : pctChange(adSales, prevAdSales)} trendBasis={useUploaded ? undefined : trendBasisLabel} delay={0.04} accent="blue" />
+        <KPICard title="Organic Sales" value={cur(organicSales, currency)} subtitle="Non-Ads Revenue" trend={useUploaded ? undefined : pctChange(organicSales, prevOrganicSales)} trendBasis={useUploaded ? undefined : trendBasisLabel} delay={0.06} accent="orange" />
+        <KPICard title="Units Ordered" value={num(totalUnits)} subtitle="Total Units Sold" trend={useUploaded ? undefined : pctChange(totalUnits, prevTotalUnits)} trendBasis={useUploaded ? undefined : trendBasisLabel} delay={0.08} accent="purple" />
       </div>
 
       {/* AI Quick-Action Bar */}
