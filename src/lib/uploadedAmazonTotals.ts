@@ -44,6 +44,8 @@ async function latestDate(table: string, column: string): Promise<string | null>
 export interface UploadedAmazonTotals {
   totalSales: number;
   totalUnits: number;
+  /** Non-cancelled order lines (Seller Central's "Total order items"). */
+  totalOrderItems: number;
   totalAdSpend: number;
   totalAdSales: number;
   organicSales: number;
@@ -73,11 +75,13 @@ export async function fetchUploadedAmazonTotals(start: string, end: string): Pro
 
   let totalSales = 0;
   let totalUnits = 0;
+  let totalOrderItems = 0;
   for (const r of orderRows) {
     if (/^cancel/i.test(r.order_status ?? "")) continue;
     if (!STANDARD_ORDER_ID.test(r.amazon_order_id ?? "")) continue;
     totalSales += Number(r.item_price) || 0;
     totalUnits += Number(r.quantity) || 0;
+    totalOrderItems += 1;
   }
 
   const totalAdSpend = adRows.reduce((sum, r) => sum + (Number(r.spend) || 0), 0);
@@ -89,6 +93,7 @@ export async function fetchUploadedAmazonTotals(start: string, end: string): Pro
   return {
     totalSales,
     totalUnits,
+    totalOrderItems,
     totalAdSpend,
     totalAdSales,
     organicSales: Math.max(0, totalSales - totalAdSales),

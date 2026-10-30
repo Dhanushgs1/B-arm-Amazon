@@ -675,7 +675,7 @@ Write 6 tagged insight lines now:`;
         <KPICard title="Ad Spend" value={cur(adSpendValue, currency)} subtitle="Advertising Spend" trend={useUploaded ? undefined : pctChange(s.totalSpend || 0, ps.totalSpend || 0)} trendBasis={useUploaded ? undefined : trendBasisLabel} delay={0.03} accent="pink" />
         <KPICard title="Ad Sales" value={cur(adSales, currency)} subtitle="Ads-Attributed" trend={useUploaded ? undefined : pctChange(adSales, prevAdSales)} trendBasis={useUploaded ? undefined : trendBasisLabel} delay={0.04} accent="blue" />
         <KPICard title="Organic Sales" value={cur(organicSales, currency)} subtitle="Non-Ads Revenue" trend={useUploaded ? undefined : pctChange(organicSales, prevOrganicSales)} trendBasis={useUploaded ? undefined : trendBasisLabel} delay={0.06} accent="orange" />
-        <KPICard title="Units Ordered" value={num(totalUnits)} subtitle="Total Units Sold" trend={useUploaded ? undefined : pctChange(totalUnits, prevTotalUnits)} trendBasis={useUploaded ? undefined : trendBasisLabel} delay={0.08} accent="purple" />
+        <KPICard title="Units Ordered" value={num(totalUnits)} subtitle={useUploaded ? `Total Units Sold · ${num(uploadedTotals.totalOrderItems)} order items` : "Total Units Sold"}trend={useUploaded ? undefined : pctChange(totalUnits, prevTotalUnits)} trendBasis={useUploaded ? undefined : trendBasisLabel} delay={0.08} accent="purple" />
       </div>
 
       {/* AI Quick-Action Bar */}
