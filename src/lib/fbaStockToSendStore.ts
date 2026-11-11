@@ -2,7 +2,7 @@
 // send), one value per SKU in barm_fba_sku_stock_to_send, listed in the
 // manual sheet's own SKU order from barm_fba_manual_plan. See
 // scripts/fba_sku_stock_to_send.sql and fbaStockToSend.ts for the rules.
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { fetchAllRows } from "@/lib/amazonReportShared";
 import { fetchProductMarketingMap, buildProductMarketingResolver } from "@/lib/productMarketingUpload";
 

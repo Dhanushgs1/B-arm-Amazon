@@ -16,7 +16,7 @@
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import * as XLSX from "xlsx-js-style";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { resolveSellerMateKey } from "@/lib/adAlerts";
 import { readEmailSettings } from "@/lib/emailSettingsStore";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";

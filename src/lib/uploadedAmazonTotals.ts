@@ -1,4 +1,4 @@
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import {
   summarizeUploadedAmazon,
   type UploadedAdRow,

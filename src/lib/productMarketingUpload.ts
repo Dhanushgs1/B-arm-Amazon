@@ -1,6 +1,6 @@
 import { atomicReplace } from "@/lib/atomicUpload";
 import * as XLSX from "xlsx";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { fetchAllRows } from "@/lib/amazonReportShared";
 import { skuBase } from "@/lib/productMasterUpload";
 import { normalizeCategory } from "@/lib/masterProductSkuid";

@@ -14,7 +14,7 @@
 // campaigns absent from the latest pull and re-inject them into the dashboard as
 // Paused instead of letting them silently vanish from Active/Paused counts.
 
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 
 const SELLERMATE_BASE_URL = "https://api.sellermate.ai/public/v1/tools";
 const STATE_TABLE = "barm_campaign_state";

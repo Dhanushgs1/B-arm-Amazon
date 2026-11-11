@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx-js-style";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { AD_SPEND_REPORT_TYPE } from "@/lib/adSpendJobs";
 import { buildAdSpendReportWorkbook, type AdSpendReportOpts, type AdSpendReportResult } from "@/lib/adSpendReportExport";
 

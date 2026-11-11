@@ -7,7 +7,7 @@
 // POST body: { trigger?: "restock" | "godown" | "manual", force?: boolean }
 
 import type { NextApiRequest, NextApiResponse } from "next";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { fetchAllRows } from "@/lib/amazonReportShared";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
 import { checkSessionOrInternal, guard } from "@/lib/apiAuth";

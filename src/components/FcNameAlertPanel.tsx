@@ -7,7 +7,7 @@
 
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { FC_ALERT_TO, FC_ALERT_CC, type FcAlertRow, type FcAlertStatus } from "@/lib/fcNameCheck";
 import { LISTING_ALERT_TO, LISTING_ALERT_CC, stateLabel, type ListingProblem } from "@/lib/listingCheck";
 import { Loader2, Mail, RefreshCw } from "lucide-react";

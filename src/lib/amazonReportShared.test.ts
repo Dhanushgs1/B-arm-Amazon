@@ -165,3 +165,20 @@ test("the chunked path never issues an unbounded read of the table", async () =>
   await shared.fetchAllRowsByDateChunks(TABLE, "report_date", "2026-09-23", "2026-10-22");
   assert.ok(fake.calls.filter((c) => c.table === TABLE).every((c) => c.filters.some((f) => f.col === "report_date")));
 });
+
+test("id-ordered read pages by 'after the last id': every row once, in order, one request per page", async () => {
+  fake.resetFakeDb();
+  // ids deliberately not contiguous, and stored out of order
+  const rows = Array.from({ length: 2500 }, (_, i) => ({ id: (i + 1) * 3, report_date: "2026-10-0" + ((i % 9) + 1), spend: 1 }));
+  fake.tables.set(TABLE, [...rows].reverse());
+  const before = fake.calls.length;
+  const got = await shared.fetchAllRows(TABLE, (q) => q);
+  assert.equal(got.length, 2500);
+  assert.deepEqual(got.map((r) => r.id), rows.map((r) => r.id)); // ascending, none skipped or repeated
+  const selects = fake.calls.slice(before).filter((c) => (c.op as string) === "select");
+  assert.equal(selects.length, 3); // 1000 + 1000 + 500
+  assert.deepEqual(selects.map((c) => c.filters.filter((f) => f.col === "id").map((f) => f.val)), [[], [3000], [6000]]);
+  // a filter still applies on every page
+  const filtered = await shared.fetchAllRows(TABLE, (q) => (q as { gte: (c: string, v: string) => unknown }).gte("report_date", "2026-10-05"));
+  assert.equal(filtered.length, rows.filter((r) => r.report_date >= "2026-10-05").length);
+});

@@ -5,10 +5,14 @@ import { useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { Sidebar } from "@/components/Sidebar";
 import { TopNav } from "@/components/TopNav";
-import { CampaignDetailDrawer } from "@/components/CampaignDetailDrawer";
-import { ProductDetailDrawer } from "@/components/ProductDetailDrawer";
+import dynamic from "next/dynamic";
 import { ConnectionBanner } from "@/components/ConnectionBanner";
-import { BidsPrefetcher } from "@/components/BidsPrefetcher";
+
+// Loaded on demand: these three are SellerMate-only and bring the Excel export code with them, so
+// importing them statically put that code in every dashboard page's bundle.
+const CampaignDetailDrawer = dynamic(() => import("@/components/CampaignDetailDrawer").then((m) => m.CampaignDetailDrawer), { ssr: false });
+const ProductDetailDrawer = dynamic(() => import("@/components/ProductDetailDrawer").then((m) => m.ProductDetailDrawer), { ssr: false });
+const BidsPrefetcher = dynamic(() => import("@/components/BidsPrefetcher").then((m) => m.BidsPrefetcher), { ssr: false });
 import { getMarketplaceTab } from "@/lib/marketplace";
 import { UploadStatusTray } from "@/components/UploadStatusTray";
 import { DataSourceNotice } from "@/components/DataSourceNotice";

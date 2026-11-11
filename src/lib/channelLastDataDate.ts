@@ -1,4 +1,4 @@
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import type { MarketplaceTab } from "@/lib/marketplace";
 import { fetchMeeshoOrdersDataInfo } from "@/lib/meeshoBarmOrd";
 import { fetchBarmOnlineOrdersDataInfo } from "@/lib/barmOnlineOrders";

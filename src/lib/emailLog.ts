@@ -1,7 +1,7 @@
 // Every outgoing email is logged in Supabase's email_log (supabase/migrations/20261016170000_email_log.sql).
 // Logging never throws and never blocks a send: a failed write is only console-logged.
 
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 
 export interface EmailLogEntry {
   source: "send-email" | "ad-spend-edge";

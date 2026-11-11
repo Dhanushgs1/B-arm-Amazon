@@ -10,7 +10,7 @@
 // rejected-row reasons — before anything is written to Supabase.
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import {
   classifyStatus,
   detectMonthSheets,

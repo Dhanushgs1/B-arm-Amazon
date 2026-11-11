@@ -21,7 +21,7 @@
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import { resolveSellerMateKey } from "@/lib/adAlerts";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { findSpendSpikes, findStockoutForecasts, findBuyBoxLosses, findConversionDrops, type LiveAlert, type AlertType } from "@/lib/liveAlerts";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
 import { checkInternal, guard } from "@/lib/apiAuth";

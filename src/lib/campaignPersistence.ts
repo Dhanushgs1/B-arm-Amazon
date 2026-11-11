@@ -7,7 +7,7 @@
 // injectMissingCampaignsAsPaused adds those back into the visible list as Paused so nothing
 // is ever dropped, without touching the real-time state of campaigns the live pull did return.
 
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 
 export interface MissingCampaignHistory {
   campaign_id: string;

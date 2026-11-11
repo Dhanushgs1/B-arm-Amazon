@@ -4,7 +4,7 @@
 //   * barm_godown_daily, the godown's daily movement the sheet is built from, up to the sheet's
 //     latest godown day.
 
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { fetchConsolidated, type ConsolidatedData } from "@/lib/consolidatedStockUpload";
 import type { GodownDailyRow } from "@/lib/godownAnalytics";
 

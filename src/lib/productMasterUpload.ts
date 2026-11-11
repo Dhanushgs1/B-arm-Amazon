@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 
 // The seller's own hand-curated product master workbook — a full snapshot of
 // every SKU -> canonical product name, re-uploaded whenever the workbook is

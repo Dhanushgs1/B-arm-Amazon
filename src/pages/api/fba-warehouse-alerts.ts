@@ -22,7 +22,7 @@
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import { resolveSellerMateKey } from "@/lib/adAlerts";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { fetchLiveInventory, sellerMateCaller } from "@/lib/sellerMateLiveInventory";
 import {
   skuCoverage, findNewFailures, findNewDataGaps, isDataGap, ledgerSnapshot, snapshotAgeDays,

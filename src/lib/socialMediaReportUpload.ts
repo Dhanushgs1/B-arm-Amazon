@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { toDate } from "@/lib/meeshoReportUpload";
 import { mergeMetaRows } from "@/lib/socialMediaRules";
 

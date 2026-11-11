@@ -20,7 +20,7 @@
 //   - "Deleted", "Old", "SKU Changed", "No SKU", "Unknown" are status buckets, not channels.
 
 import * as XLSX from "xlsx";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { reviewCountOf } from "@/lib/ratingCount";
 
 const HISTORY = "product_rating_review_history";

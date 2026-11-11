@@ -1,8 +1,7 @@
 import { atomicReplace } from "@/lib/atomicUpload";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
-import { createClient } from "@supabase/supabase-js";
-import { lazySupabase, SUPABASE_URL, SUPABASE_ANON_KEY } from "@/lib/supabaseLazy";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { orderStatusHistoryRows, ORDER_STATUS_HISTORY_KEY } from "@/lib/historicalReportRules";
 
 // The 20 barm_* tables (the ones in REPORT_TABLE below, plus barm_alert_state
@@ -14,9 +13,7 @@ import { orderStatusHistoryRows, ORDER_STATUS_HISTORY_KEY } from "@/lib/historic
 // Built on first use, not at import — see src/lib/supabaseLazy.ts. This module is pulled into the
 // client bundle by the Upload and Reports pages, so constructing eagerly meant a missing
 // NEXT_PUBLIC_SUPABASE_* variable crashed those pages outright instead of just this feature.
-export const supabasePublic = lazySupabase(() =>
-  createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
-);
+export { supabasePublic };
 
 export type UploadReportType =
   | "sp_advertised_product"

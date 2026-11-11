@@ -1,4 +1,5 @@
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
+import { withDbSlot } from "@/lib/dbConcurrency";
 import { isCourierRtoReturnType } from "@/lib/amazonSpendRules";
 
 // Small helpers shared by every report that reads the manually-uploaded Amazon
@@ -21,41 +22,75 @@ import { isCourierRtoReturnType } from "@/lib/amazonSpendRules";
  * assume blindly.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function fetchAllRows(table: string, apply: (q: any) => any, orderBy: string | string[] = "id"): Promise<any[]> {
-  const all: unknown[] = [];
+export async function fetchAllRows(table: string, apply: (q: any) => any, orderBy: string | string[] = "id", columns = "*"): Promise<any[]> {
   const PAGE = 1000;
   const orderCols = Array.isArray(orderBy) ? orderBy : [orderBy];
-  let from = 0;
-  for (let i = 0; i < 200; i++) {
-    // .range() pagination is only stable when paired with .order() on a
-    // unique column — without it, Postgres/PostgREST doesn't guarantee the
-    // same row order across separate paginated requests, so pages taken more
-    // than ~1000 rows into a table can silently skip and re-return rows. That
-    // surfaced as corrupted week-over-week totals on tables that cross the
-    // 1000-row page boundary.
-    let q = apply(supabasePublic.from(table).select("*"));
-    for (const col of orderCols) q = q.order(col, { ascending: true });
-    // Same "brief statement timeout blips against this project's DB" this
-    // codebase already retries in emailSettingsStore.ts's readEmailSettings —
-    // without a retry here, one transient blip on any single page throws and
-    // (since every report fetches its tables inside a Promise.all) takes the
-    // ENTIRE report down, exactly as seen in production on amazon_orders for
-    // both the Weekly Sales Report and the Historical Analysis Report.
+
+  // One request, with the retry this codebase already uses for the project's brief
+  // "statement timeout" blips: without it, one blip on any single page throws and (since every
+  // report fetches its tables inside a Promise.all) takes the ENTIRE report down. Every request
+  // also waits for a slot (dbConcurrency.ts) so a page that loads several marketplaces at once
+  // cannot pile dozens of reads onto the database together.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const run = async (build: () => any): Promise<{ rows: any[]; count: number | null }> => {
     let error: { message: string } | null = null;
-    let rows: unknown[] = [];
     for (let attempt = 0; attempt < 3; attempt++) {
-      const res = await q.range(from, from + PAGE - 1);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the query builder is untyped here (apply: any)
+      const res: any = await withDbSlot(() => build());
       error = res.error;
-      if (!error) {
-        rows = res.data || [];
-        break;
-      }
+      if (!error) return { rows: res.data || [], count: typeof res.count === "number" ? res.count : null };
       if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
     }
-    if (error) throw new Error(`Fetch ${table} failed: ${error.message}`);
-    all.push(...rows);
-    if (rows.length < PAGE) break;
-    from += PAGE;
+    throw new Error(`Fetch ${table} failed: ${error?.message}`);
+  };
+  // Paging is only stable with a sort on a unique column: without it Postgres does not guarantee
+  // the same row order across separate requests, so later pages can silently skip and repeat rows
+  // (that surfaced as corrupted week-over-week totals on tables that cross the 1000-row boundary).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ordered = (q: any) => orderCols.reduce((qq, col) => qq.order(col, { ascending: true }), q);
+
+  // ── Sorted by id (the default): "continue after the last id" ──────────────────────────────────
+  // Each page starts where the previous one stopped. The older "skip N rows" form made the database
+  // walk and discard every earlier row again on every page, so page 7 cost seven pages of work and
+  // was the one that ran past the 3-second limit. Same rows, same order.
+  if (orderCols.length === 1 && orderCols[0] === "id") {
+    const all: unknown[] = [];
+    let lastId: unknown = null;
+    for (let i = 0; i < 400; i++) {
+      const { rows } = await run(() => {
+        const q = ordered(apply(supabasePublic.from(table).select(columns)));
+        return (lastId === null ? q : q.gt("id", lastId)).limit(PAGE);
+      });
+      all.push(...rows);
+      if (rows.length < PAGE) return all;
+      const next = rows[rows.length - 1]?.id;
+      if (next === undefined || next === null) break; // "id" not in the selected columns: page by offset below
+      lastId = next;
+    }
+    if (lastId !== null) return all;
+  }
+
+  // ── Any other sort: by offset. The first request also returns how many rows match, so the
+  // remaining pages are requested together (WAVE at a time) and none past the end. Pages are
+  // appended in offset order, so the result is in the same order as before.
+  const WAVE = 4;
+  const page = (from: number, withCount = false) =>
+    run(() => ordered(apply(supabasePublic.from(table).select(columns, withCount ? { count: "exact" } : undefined))).range(from, from + PAGE - 1));
+  const all: unknown[] = [];
+  const first = await page(0, true);
+  all.push(...first.rows);
+  if (first.rows.length < PAGE) return all;
+  const lastPage = first.count === null ? 199 : Math.max(0, Math.ceil(first.count / PAGE) - 1);
+  for (let next = 1; next <= lastPage; next += WAVE) {
+    const width = Math.min(WAVE, lastPage - next + 1);
+    const pages = await Promise.all(Array.from({ length: width }, (_, k) => page((next + k) * PAGE)));
+    let ended = false;
+    for (const { rows } of pages) {
+      if (ended) break; // pages after a short one are past the end of the data
+      all.push(...rows);
+      if (rows.length < PAGE) ended = true;
+    }
+    if (ended) break;
   }
   return all;
 }

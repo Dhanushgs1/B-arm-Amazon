@@ -1,6 +1,6 @@
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { toDate as parseFlexibleDate } from "@/lib/meeshoReportUpload";
 import { detectBarmOrdersLayout, fillDownBarmDates, findBarmOrdersHeader, mapBarmOfflineRows, mapBarmShopifyRows, mergeDuplicateBarmInvoices, orderDateFromFileName, type BarmOrdersLayout } from "@/lib/barmOfflineOrderRules";
 import { isGoogleAdSpendSheet, parseGoogleAdSpendSheet } from "@/lib/googleAdSpendRules";

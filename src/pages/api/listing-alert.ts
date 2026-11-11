@@ -6,7 +6,7 @@
 // POST body: { trigger?: "restock" | "manual", force?: boolean }
 
 import type { NextApiRequest, NextApiResponse } from "next";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { fetchAllRows } from "@/lib/amazonReportShared";
 import { resolveSellerMateKey } from "@/lib/adAlerts";
 import { readEmailSettings } from "@/lib/emailSettingsStore";

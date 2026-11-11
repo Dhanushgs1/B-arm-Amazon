@@ -6,8 +6,11 @@ import { loadBarmSkuPeriodData } from "@/lib/barmSkuPeriodData";
 import { fetchMisFkOrders, fetchMisFkReturns } from "@/lib/misAdapters";
 import { isFkSkeletonOrderRow } from "@/lib/flipkartOrderRules";
 import { DEFAULT_GST_MULTIPLIER } from "@/lib/masterProductSkuid";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { adSpendCoversBoth } from "@/lib/adSpendCoverage";
+import { adTablesWithin, loadAmazonAdTables, type AdTableRows } from "@/lib/amazonAdTables";
+import { sharedFetch } from "@/lib/sharedFetch";
+import { previousRange } from "@/lib/dateRanges";
 import { amazonCardSpendRows } from "@/lib/amazonAdSourceRules";
 import { dailyFallbackStart, dailyFkRowAsMis, dedupeOrderLines, misMaxForFill } from "@/lib/dailyOrderFallbackRules";
 
@@ -47,17 +50,7 @@ export interface ChannelSummary {
   adSpendComparable?: boolean;
 }
 
-const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-
-/** The window of the same length immediately before [start, end]. */
-export function previousRange(start: string, end: string): { start: string; end: string } {
-  const s = new Date(`${start}T00:00:00`);
-  const e = new Date(`${end}T00:00:00`);
-  const days = Math.round((e.getTime() - s.getTime()) / 86_400_000) + 1;
-  const pe = new Date(s); pe.setDate(s.getDate() - 1);
-  const ps = new Date(s); ps.setDate(s.getDate() - days);
-  return { start: iso(ps), end: iso(pe) };
-}
+export { previousRange };
 
 function periodsFor(start: string, end: string): PeriodWindow[] {
   const prev = previousRange(start, end);
@@ -92,7 +85,11 @@ function summarize(data: WeeklySkuPeriodData & { cancelledOrdersByPeriod?: Map<s
   };
 }
 
-export async function fetchMeeshoSummary(start: string, end: string): Promise<ChannelSummary> {
+export function fetchMeeshoSummary(start: string, end: string): Promise<ChannelSummary> {
+  return sharedFetch(`channel-summary:fetchMeeshoSummary:${start}:${end}`, () => fetchMeeshoSummaryUncached(start, end), 120_000);
+}
+
+async function fetchMeeshoSummaryUncached(start: string, end: string): Promise<ChannelSummary> {
   const periods = periodsFor(start, end);
   const [data, adRows] = await Promise.all([
     loadMeeshoSkuPeriodData({ periods }),
@@ -114,7 +111,11 @@ export async function fetchMeeshoSummary(start: string, end: string): Promise<Ch
   };
 }
 
-export async function fetchBarmSummary(start: string, end: string): Promise<ChannelSummary> {
+export function fetchBarmSummary(start: string, end: string): Promise<ChannelSummary> {
+  return sharedFetch(`channel-summary:fetchBarmSummary:${start}:${end}`, () => fetchBarmSummaryUncached(start, end), 120_000);
+}
+
+async function fetchBarmSummaryUncached(start: string, end: string): Promise<ChannelSummary> {
   const periods = periodsFor(start, end);
   const data = await loadBarmSkuPeriodData({ periods });
   return {
@@ -131,7 +132,11 @@ export async function fetchBarmSummary(start: string, end: string): Promise<Chan
 // Flipkart: same rules as the Flipkart Weekly Sales Report — units, cancelled and skeleton lines
 // excluded, returns from the Returns report by Return Requested Date, and Sales = the listing
 // price (barm_flipkart_listings) × units, a COMPUTED figure (the order report carries no prices).
-export async function fetchFlipkartOrderSummary(start: string, end: string): Promise<ChannelSummary> {
+export function fetchFlipkartOrderSummary(start: string, end: string): Promise<ChannelSummary> {
+  return sharedFetch(`channel-summary:fetchFlipkartOrderSummary:${start}:${end}`, () => fetchFlipkartOrderSummaryUncached(start, end), 120_000);
+}
+
+async function fetchFlipkartOrderSummaryUncached(start: string, end: string): Promise<ChannelSummary> {
   const periods = periodsFor(start, end);
   const [misOrderRows, returnRows, listingRows, misMax] = await Promise.all([
     fetchMisFkOrders((q) => q.gte("order_date", periods[0].start).lte("order_date", end)),
@@ -219,12 +224,8 @@ async function spendTaxIn(table: string, col: string, start: string, end: string
 /** Amazon ad spend (with GST) the same way the Ad Spend Report counts it: every Sponsored Products
  *  row (which already carries the seller's per-SKU split of Brand/Display spend) plus each Sponsored
  *  Brands / Display campaign-day that has no such split, so nothing is counted twice. */
-async function amazonSpendTaxIn(start: string, end: string): Promise<{ spend: number; first: string | null; last: string | null }> {
-  const [sp, sb, sd] = await Promise.all(
-    ["barm_amazon_sp_advertised_product", "barm_amazon_sb_campaign", "barm_amazon_sd_campaign"].map((t) =>
-      fetchAllRows(t, (q) => q.gte("report_date", start).lte("report_date", end))
-    )
-  );
+function amazonSpendTaxIn(tables: AdTableRows, start: string, end: string): { spend: number; first: string | null; last: string | null } {
+  const { sp, sb, sd } = adTablesWithin(tables, start, end);
   const { spRows, campaignRows } = amazonCardSpendRows(sp, sb, sd);
   const sum = (rows: { spend?: unknown }[]) => rows.reduce((t, r) => t + (Number(r.spend) || 0), 0);
   const days = [...spRows, ...campaignRows].map((r) => String((r as { report_date?: unknown }).report_date ?? "").slice(0, 10)).filter(Boolean).sort();
@@ -233,14 +234,21 @@ async function amazonSpendTaxIn(start: string, end: string): Promise<{ spend: nu
 
 /** Amazon, from the same MIS tables and rules as the Amazon Weekly Sales Report — plus the daily
  *  upload for days the MIS orders table doesn't reach yet. */
-export async function fetchAmazonSummary(start: string, end: string): Promise<ChannelSummary> {
+export function fetchAmazonSummary(start: string, end: string): Promise<ChannelSummary> {
+  return sharedFetch(`channel-summary:fetchAmazonSummary:${start}:${end}`, () => fetchAmazonSummaryUncached(start, end), 120_000);
+}
+
+async function fetchAmazonSummaryUncached(start: string, end: string): Promise<ChannelSummary> {
   const periods = periodsFor(start, end);
   const { loadAmazonSkuPeriodData } = await import("@/lib/amazonSkuPeriodData");
-  const [data, spendCur, spendPrev] = await Promise.all([
+  // One read of the ads tables across both periods (the same range, and so the same shared read,
+  // as the page's advertising section), split by period in memory.
+  const [data, adTables] = await Promise.all([
     loadAmazonSkuPeriodData({ periods, includeAds: false, includeStock: false, fillFromDailyUpload: true }),
-    amazonSpendTaxIn(start, end),
-    amazonSpendTaxIn(periods[0].start, periods[0].end),
+    loadAmazonAdTables(periods[0].start, end),
   ]);
+  const spendCur = amazonSpendTaxIn(adTables, start, end);
+  const spendPrev = amazonSpendTaxIn(adTables, periods[0].start, periods[0].end);
   const gross = (label: string) => data.visibleRows.reduce((t, p) => { const s = p.periods[label]; return t + (s ? s.price * s.orders : 0); }, 0);
   return {
     current: { ...summarize(data, "current"), sales: gross("current"), adSpendTax: spendCur.spend },
@@ -261,7 +269,11 @@ export interface MarketplaceSummaryRow {
 }
 
 /** Flipkart for the All tab: the Overview's order summary plus FSN-report ad spend. */
-export async function fetchFlipkartAllSummary(start: string, end: string): Promise<ChannelSummary> {
+export function fetchFlipkartAllSummary(start: string, end: string): Promise<ChannelSummary> {
+  return sharedFetch(`channel-summary:fetchFlipkartAllSummary:${start}:${end}`, () => fetchFlipkartAllSummaryUncached(start, end), 120_000);
+}
+
+async function fetchFlipkartAllSummaryUncached(start: string, end: string): Promise<ChannelSummary> {
   const prev = previousRange(start, end);
   const [s, cur, before] = await Promise.all([
     fetchFlipkartOrderSummary(start, end),

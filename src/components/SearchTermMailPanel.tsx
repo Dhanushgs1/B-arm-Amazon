@@ -6,7 +6,7 @@
 
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { SHEETS, istToday, periodContaining, latestDuePeriod, dmy } from "@/lib/searchTermMonthly";
 import { CalendarClock, Download, Loader2, Mail, Send } from "lucide-react";
 

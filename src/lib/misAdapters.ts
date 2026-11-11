@@ -1,5 +1,12 @@
 import { fetchAllRows } from "@/lib/amazonReportShared";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { sharedFetch } from "@/lib/sharedFetch";
+
+// These MIS tables are loaded by an outside feed a few times a day, and several summaries on one
+// page (and the date picker) each read them in full. One shared read per two minutes replaces them.
+const MIS_TTL_MS = 120_000;
+const wholeTable = (table: string) => sharedFetch(`mis-table:${table}`, () => fetchAllRows(table, (q) => q), MIS_TTL_MS);
+const quoted = (col: string) => `"${col}"`;
+import { supabasePublic } from "@/lib/supabasePublic";
 import type { UploadReportType } from "@/lib/amazonReportUpload";
 
 // Adapters for the 6 report tables the client moved from this app's own
@@ -455,7 +462,7 @@ export async function fetchMisAmazonOrders(apply: ApplyFn): Promise<ReturnType<t
 }
 
 export async function fetchMisAmazonReturns(apply: ApplyFn): Promise<ReturnType<typeof mapMisAmReturnRow>[]> {
-  const rows = await fetchAllRows("amazon_returns", (q) => q);
+  const rows = await wholeTable("amazon_returns");
   return applyMemoryFilter(rows.map(mapMisAmReturnRow), apply);
 }
 
@@ -466,7 +473,7 @@ export async function fetchMisFbaReturns(apply: ApplyFn): Promise<ReturnType<typ
 }
 
 export async function fetchMisSellerFlexReturns(apply: ApplyFn): Promise<ReturnType<typeof mapMisSfReturnRow>[]> {
-  const rows = await fetchAllRows("amazon_seller_flex_return", (q) => q);
+  const rows = await wholeTable("amazon_seller_flex_return");
   return applyMemoryFilter(rows.map(mapMisSfReturnRow), apply);
 }
 
@@ -478,7 +485,7 @@ export async function fetchMisFkOrders(apply: ApplyFn): Promise<ReturnType<typeo
 }
 
 export async function fetchMisFkReturns(apply: ApplyFn): Promise<ReturnType<typeof mapMisFkReturnRow>[]> {
-  const rows = await fetchAllRows("fk_returns", (q) => q);
+  const rows = await wholeTable("fk_returns");
   return applyMemoryFilter(rows.map(mapMisFkReturnRow), apply);
 }
 
@@ -522,14 +529,14 @@ function summarizeDates<T extends Record<string, unknown>>(rows: T[], dateField:
 async function fetchTableSummary(table: string, rawCol: string): Promise<MisReportDataInfo> {
   const [{ count, error: countErr }, minRes, maxRes] = await Promise.all([
     supabasePublic.from(table).select("*", { count: "exact", head: true }),
-    supabasePublic.from(table).select("*").not(rawCol, "is", null).order(rawCol, { ascending: true }).limit(1),
-    supabasePublic.from(table).select("*").not(rawCol, "is", null).order(rawCol, { ascending: false }).limit(1),
+    supabasePublic.from(table).select(quoted(rawCol)).not(rawCol, "is", null).order(rawCol, { ascending: true }).limit(1),
+    supabasePublic.from(table).select(quoted(rawCol)).not(rawCol, "is", null).order(rawCol, { ascending: false }).limit(1),
   ]);
   if (countErr) throw new Error(`Fetch ${table} summary failed: ${countErr.message}`);
   if (minRes.error) throw new Error(`Fetch ${table} min date failed: ${minRes.error.message}`);
   if (maxRes.error) throw new Error(`Fetch ${table} max date failed: ${maxRes.error.message}`);
-  const minVal = (minRes.data?.[0] as Record<string, unknown> | undefined)?.[rawCol];
-  const maxVal = (maxRes.data?.[0] as Record<string, unknown> | undefined)?.[rawCol];
+  const minVal = (minRes.data?.[0] as unknown as Record<string, unknown> | undefined)?.[rawCol];
+  const maxVal = (maxRes.data?.[0] as unknown as Record<string, unknown> | undefined)?.[rawCol];
   const toDateOnly = (v: unknown) => (typeof v === "string" && v ? v.slice(0, 10) : null);
   return { rowCount: count || 0, minDate: toDateOnly(minVal), maxDate: toDateOnly(maxVal) };
 }
@@ -557,7 +564,8 @@ export async function fetchMisAmazonOrdersInfo(): Promise<MisReportDataInfo> {
 async function fetchTextDateTableSummary(table: string, rawCol: string): Promise<MisReportDataInfo> {
   const [{ count, error: countErr }, rows] = await Promise.all([
     supabasePublic.from(table).select("*", { count: "exact", head: true }),
-    fetchAllRows(table, (q) => q),
+    // Only the date column (plus id for stable paging): this lookup needs nothing else.
+    fetchAllRows(table, (q) => q, "id", `id,${quoted(rawCol)}`),
   ]);
   if (countErr) throw new Error(`Fetch ${table} summary failed: ${countErr.message}`);
   const dates = (rows as Record<string, unknown>[])
@@ -590,7 +598,12 @@ function toSettledInfo(result: PromiseSettledResult<MisReportDataInfo>): MisRepo
   return { rowCount: 0, minDate: null, maxDate: null, error: result.reason instanceof Error ? result.reason.message : String(result.reason) };
 }
 
-export async function fetchAllMisReportDataInfo(): Promise<Partial<Record<UploadReportType, MisReportDataInfo>>> {
+// Shared for two minutes: the date picker, the Amazon summary and the Upload page all ask for it.
+export function fetchAllMisReportDataInfo(): Promise<Partial<Record<UploadReportType, MisReportDataInfo>>> {
+  return sharedFetch("mis-report-data-info", loadAllMisReportDataInfo, MIS_TTL_MS);
+}
+
+async function loadAllMisReportDataInfo(): Promise<Partial<Record<UploadReportType, MisReportDataInfo>>> {
   const [am_orders, am_returns, fba_returns, sf_return] = (
     await Promise.allSettled([
       fetchMisAmazonOrdersInfo(),
@@ -605,8 +618,11 @@ export async function fetchAllMisReportDataInfo(): Promise<Partial<Record<Upload
 // Same idea, for the 2 Flipkart Upload cards backed by the MIS feed:
 //   barm_flipkart_order_report -> fk_orders
 //   barm_flipkart_returns      -> fk_returns
-export async function fetchMisFkOrdersInfo(): Promise<MisReportDataInfo> {
-  return summarizeDates(await fetchMisFkOrders((q) => q), "order_date");
+export function fetchMisFkOrdersInfo(): Promise<MisReportDataInfo> {
+  // Just the order_date column: fk_orders has no index on it (so a "newest first, limit 1" query
+  // times out), but reading the one column is a small fraction of reading every 40-column row.
+  return sharedFetch("mis-info:fk_orders", async () =>
+    summarizeDates((await fetchAllRows("fk_orders", (q) => q, "id", "id,order_date")) as { order_date: string | null }[], "order_date"), MIS_TTL_MS);
 }
 
 export async function fetchMisFkReturnsInfo(): Promise<MisReportDataInfo> {

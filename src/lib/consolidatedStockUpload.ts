@@ -13,7 +13,7 @@
 //   barm_weekly_component_snapshot   components_sheet rows: required qty, component stock
 
 import * as XLSX from "xlsx";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { fetchAllRows } from "@/lib/amazonReportShared";
 import { checkStockMapping, keptGodownName, mergeGodownDaily, mergeGodownProducts, type StockMappingIssue } from "@/lib/godownProductAliases";
 import { chunk } from "@/lib/amazonOrderUploadRules";

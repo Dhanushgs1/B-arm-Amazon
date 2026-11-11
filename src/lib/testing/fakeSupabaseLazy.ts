@@ -32,8 +32,10 @@ function keyOf(row: Row, fields: string[]): string {
 
 function matches(row: Row, filters: Filter[]): boolean {
   return filters.every(({ col, op, val }) => {
-    const v = String(row[col] ?? "");
-    const t = String(val);
+    // numbers compare as numbers (an id of 10 is after 9), everything else as text
+    const numeric = typeof row[col] === "number" && typeof val === "number";
+    const v = numeric ? (row[col] as number) : String(row[col] ?? "");
+    const t = numeric ? (val as number) : String(val);
     if (op === "gte") return v >= t;
     if (op === "lte") return v <= t;
     if (op === "gt") return v > t;
@@ -94,7 +96,9 @@ function selectRows(table: string, filters: Filter[], orderCols: string[], from:
   if (orderCols.length) {
     rows = [...rows].sort((a, b) => {
       for (const c of orderCols) {
-        const av = String(a[c] ?? ""), bv = String(b[c] ?? "");
+        // numbers sort as numbers, like a bigint id column does in Postgres
+        const num = typeof a[c] === "number" && typeof b[c] === "number";
+        const av = num ? (a[c] as number) : String(a[c] ?? ""), bv = num ? (b[c] as number) : String(b[c] ?? "");
         if (av !== bv) return av < bv ? -1 : 1;
       }
       return 0;
@@ -115,6 +119,7 @@ function builder(table: string) {
     select: () => b,
     order: (col: string) => (orderCols.push(col), b),
     range: (from: number, to: number) => ((rangeFrom = from), (rangeTo = to), b),
+    limit: (n: number) => ((rangeFrom = 0), (rangeTo = n - 1), b),
     delete: () => {
       op = "delete";
       return b;

@@ -19,7 +19,7 @@
 //   preview: render the email and return its HTML (send-email preview), send nothing
 
 import type { NextApiRequest, NextApiResponse } from "next";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { fetchAllRows } from "@/lib/amazonReportShared";
 import { readEmailSettings } from "@/lib/emailSettingsStore";
 import { buildAcosTrend, lastIstDates, acosTrendCsv, HIGH_ACOS_DEFAULT_THRESHOLD, HIGH_ACOS_DAYS } from "@/lib/highAcosTrend";

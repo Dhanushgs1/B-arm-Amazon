@@ -17,7 +17,7 @@
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import { resolveSellerMateKey } from "@/lib/adAlerts";
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { readEmailSettings } from "@/lib/emailSettingsStore";
 import { fetchRatingMetrics, groupListings } from "@/lib/productRatingMetrics";
 import { findRatingDrops, toRatingDrop, bareSku, platformsToMail, platformSnapshotKey, RATING_DROP_LIMIT, RATING_DROP_MIN_REVIEWS } from "@/lib/ratingDropAlert";

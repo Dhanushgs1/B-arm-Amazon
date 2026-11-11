@@ -10,6 +10,7 @@ import { fetchAllRows } from "@/lib/amazonReportShared";
 import { amazonRows, flipkartRows, meeshoRows, meeshoAvgPrice, type ChannelAdRow } from "@/lib/highAcosChannels";
 import type { AdSpendRow } from "@/lib/adSpendDailyRules";
 import { amazonCardSpendRows } from "@/lib/amazonAdSourceRules";
+import { loadAmazonAdTables } from "@/lib/amazonAdTables";
 
 const addDays = (iso: string, k: number) => {
   const d = new Date(`${iso}T00:00:00Z`);
@@ -26,11 +27,7 @@ export async function loadMarketplaceAds(key: MarketplaceAdKey, start: string, e
   if (key === "amazon") {
     // Sponsored Products card rows, plus each Sponsored Brands / Display card campaign-day the SP card
     // doesn't split per SKU (amazonCardSpendRows — the same Amazon spend the Weekly and Live reports count).
-    const [sp, sb, sd] = await Promise.all([
-      fetchAllRows("barm_amazon_sp_advertised_product", between(start, end)),
-      fetchAllRows("barm_amazon_sb_campaign", between(start, end)),
-      fetchAllRows("barm_amazon_sd_campaign", between(start, end)),
-    ]);
+    const { sp, sb, sd } = await loadAmazonAdTables(start, end);
     const { spRows, campaignRows } = amazonCardSpendRows(sp, sb, sd);
     // A card row with no campaign name still counts; it is shown under its SKU.
     const spChannel = spRows.map((r) => ({ ...r, campaign_name: r.campaign_name || `SKU ${r.advertised_sku}` }));

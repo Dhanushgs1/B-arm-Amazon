@@ -1,6 +1,7 @@
-import { supabasePublic } from "@/lib/amazonReportUpload";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { sharedFetch } from "@/lib/sharedFetch";
-import { previousRange, type ChannelSummary, type PeriodSummary } from "@/lib/channelSummary";
+import { previousRange } from "@/lib/dateRanges";
+import type { ChannelSummary, PeriodSummary } from "@/lib/channelSummary";
 import { mapShopifyRpcRows, shopifyTotals, type ShopifyOrder, type ShopifyPeriodTotals } from "@/lib/shopifyOrderRules";
 
 // Shopify (b-arm-gynecology) website orders for the Shopify tab. Orders arrive by signed Shopify
