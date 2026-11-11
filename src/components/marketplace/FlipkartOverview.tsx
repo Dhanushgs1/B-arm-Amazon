@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { Package, Megaphone, RotateCcw, ArrowRight, RefreshCw, TrendingUp } from "lucide-react";
 import { useDashboard } from "@/lib/DashboardContext";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { KPICard } from "@/components/KPICard";
 import { TrendChart } from "@/components/TrendChart";
 import { fetchFlipkartOverview } from "@/lib/flipkartData";
@@ -21,7 +22,7 @@ export function FlipkartOverview() {
   const router = useRouter();
   const { loggedInUser, startDate, endDate } = useDashboard();
 
-  const { data: overview, isFetching } = useQuery({
+  const { data: overview, isFetching, isError: overviewError, refetch: refetchOverview } = useQuery({
     queryKey: ["flipkart-overview", loggedInUser, startDate, endDate],
     queryFn: () => fetchFlipkartOverview(loggedInUser, startDate, endDate),
     enabled: !!startDate && !!endDate,
@@ -51,7 +52,7 @@ export function FlipkartOverview() {
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-[10px] font-extrabold bg-indigo-500/10 text-indigo-500 px-3 py-1.5 rounded-full">
-            {isFetching ? "Refreshing…" : "Synced"}
+            {isFetching ? "Refreshing…" : overviewError ? "Couldn't load" : "Synced"}
           </span>
           <button
             onClick={() => router.refresh()}
@@ -61,6 +62,10 @@ export function FlipkartOverview() {
           </button>
         </div>
       </div>
+
+      {overviewError && (
+        <QueryErrorState compact message="The Flipkart ads and sales figures below could not be loaded. They are missing, not zero." onRetry={() => refetchOverview()} />
+      )}
 
       {missingRetailSalesOnly && (
         <div className="rounded-2xl border border-amber-300/40 bg-amber-50 dark:bg-amber-950/20 px-4 py-3 text-xs font-semibold text-amber-700 dark:text-amber-300 flex items-center justify-between gap-3 flex-wrap">

@@ -4,7 +4,7 @@ import { dedupeSellerFlexReturns, spCampaignDays, isSplitCoveredCampaignRow } fr
 import { isSpCardRow, isCampaignCardRow, allocateCampaignSpend } from "@/lib/amazonAdSourceRules";
 import { fetchMisAmazonOrders, fetchMisAmazonReturns, fetchMisFbaReturns, fetchMisSellerFlexReturns, fetchAllMisReportDataInfo } from "@/lib/misAdapters";
 import { staleSourceWarnings } from "@/lib/reportCoverage";
-import { dailyAmRowAsMis, dailyFallbackStart, dedupeOrderLines } from "@/lib/dailyOrderFallbackRules";
+import { dailyAmRowAsMis, dailyFallbackStart, dedupeOrderLines, misMaxForFill } from "@/lib/dailyOrderFallbackRules";
 import { categorizeTitle, resolveProductName } from "@/lib/categoryMap";
 import { fetchProductMasterMap, buildProductMasterResolver } from "@/lib/productMasterUpload";
 import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog } from "@/lib/masterProductSkuid";
@@ -150,7 +150,10 @@ export async function loadAmazonSkuPeriodData(opts: {
   // the identical check in flipkartWeeklySalesExport.ts, which this mirrors.
   let orderRows = misOrderRows;
   if (fillFromDailyUpload) {
-    const fillFrom = dailyFallbackStart((await coveragePromise).am_orders?.maxDate ?? null, rangeStart, rangeEnd);
+    // misMaxForFill: a failed coverage lookup must never read as "MIS is empty" (that double-counted
+    // every MIS day from the daily upload).
+    const misMax = misMaxForFill((await coveragePromise).am_orders, misOrderRows.map((r) => r.purchase_date));
+    const fillFrom = dailyFallbackStart(misMax, rangeStart, rangeEnd);
     if (fillFrom) {
       const daily = await fetchAllRows("barm_daily_am_orders", (q) => q.gte("report_date", fillFrom).lte("report_date", rangeEnd), ["report_date", "id"]);
       const mapped = dedupeOrderLines(daily.map(dailyAmRowAsMis), (r) => r.item_status);

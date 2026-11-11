@@ -3,12 +3,14 @@
 // Same-origin only and behind the dashboard session: without that it was an open relay anyone on
 // the internet could drive through this deployment's IP and quota.
 import { checkSession, guard } from "@/lib/apiAuth";
+import { sellerMateEnabledOnServer } from "@/lib/sellerMate";
 
 const BASE = "https://api.sellermate.ai/public/v1";
 
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "POST") return res.status(405).json({ message: "Method not allowed" });
   if (!guard(req, res, checkSession)) return;
+  if (!sellerMateEnabledOnServer()) return res.status(503).json({ message: "SellerMate is switched off for the dashboard." });
 
   const key = req.headers["x-api-key"];
   if (!key) return res.status(401).json({ message: "Missing X-API-Key" });

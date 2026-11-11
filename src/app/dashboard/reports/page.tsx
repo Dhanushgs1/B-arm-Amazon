@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useDashboard } from "@/lib/DashboardContext";
 import { BarChart3, FileSpreadsheet, Download, FileText, CheckCircle2, Loader2, RotateCcw, Send } from "lucide-react";
 import { mcp, mcpAllPages, mcpAllInventory } from "@/lib/api";
+import { SELLERMATE_ENABLED } from "@/lib/sellerMate";
 import { exportAmazonSalesReport, SalesReportGranularity } from "@/lib/amazonSalesExport";
 import { exportAnalysisReport } from "@/lib/analysisReportExport";
 import { exportHistoricalAnalysisReport } from "@/lib/historicalAnalysisReportExport";
@@ -71,14 +72,15 @@ export default function ReportsPage() {
   };
 
   const handleSendWeeklyEmail = async () => {
-    if (!account?.id || !account?.workspace_id) { alert("Account not loaded yet — try again in a moment."); return; }
+    if (SELLERMATE_ENABLED && (!account?.id || !account?.workspace_id)) { alert("Account not loaded yet — try again in a moment."); return; }
     setWeeklySending(true); setWeeklySendMsg(null);
     try {
       const r = await fetch("/api/weekly-report", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          slot: keySlot, amazon_account_id: account.id, workspace_id: account.workspace_id,
+          // With SellerMate off for the dashboard the server uses the account ids saved in Settings.
+          slot: keySlot, amazon_account_id: account?.id || undefined, workspace_id: account?.workspace_id || undefined,
           endDate: endDate || undefined, accountName: account?.name, currency: account?.currency || "INR",
         }),
       });
@@ -227,7 +229,7 @@ export default function ReportsPage() {
       let content = "";
       let filename = "";
 
-      if (!account?.id || !account?.workspace_id) {
+      if (SELLERMATE_ENABLED && (!account?.id || !account?.workspace_id)) {
         alert("Account is still loading — please wait a moment and try again.");
         setGenerating(null);
         return;
@@ -246,8 +248,8 @@ export default function ReportsPage() {
       }
 
       const baseArgs = {
-        amazon_account_id: account.id,
-        workspace_id: account.workspace_id,
+        amazon_account_id: account?.id,
+        workspace_id: account?.workspace_id,
         start_date: effStart,
         end_date: effEnd,
       };
@@ -301,7 +303,7 @@ export default function ReportsPage() {
 
       } else if (type.includes("Product")) {
         const rows = await mcpAllPages("get_advertised_product_performance", baseArgs, keySlot);
-        const invData = await mcpAllInventory({ amazon_account_id: account.id, workspace_id: account.workspace_id }, keySlot).catch(() => []);
+        const invData = await mcpAllInventory({ amazon_account_id: account?.id, workspace_id: account?.workspace_id }, keySlot).catch(() => []);
         const skuMap = new Map();
         invData.forEach((item: any) => {
           if (item.asin && item.sku) skuMap.set(item.asin, item.sku);
@@ -324,7 +326,7 @@ export default function ReportsPage() {
         filename = `Targeting_Search_Term_Harvest_${dateSuffix}.csv`;
 
       } else if (type.includes("Inventory")) {
-        const rows = await mcpAllInventory({ amazon_account_id: account.id, workspace_id: account.workspace_id }, keySlot);
+        const rows = await mcpAllInventory({ amazon_account_id: account?.id, workspace_id: account?.workspace_id }, keySlot);
         content = "ASIN,SKU,Item_Name,FBA_Quantity,FBM_Quantity,Price,Total_Value\n";
         content += rows.map((r: any) => {
           const fba = r.fba?.endingWarehouseBalance || 0;
@@ -487,7 +489,10 @@ export default function ReportsPage() {
     }
   };
 
-  const reports = [
+  // Reports built from the uploaded data stored in Supabase. Everything else in the list pulls
+  // from SellerMate and is left out while that integration is off.
+  const STORED_DATA_REPORTS = new Set(["historical-analysis", "amazon-daily", "amazon-weekly", "amazon-monthly"]);
+  const allReports = [
     { id: "historical-analysis", title: "Historical Analysis Report (30/7-Day)", desc: "Per-campaign ad-performance analysis across two time windows side by side: the exact Start Date/End Date you've selected above (Window A — any length: 7, 30, 60, 90 days, or custom), plus its trailing 7 days (Window B) — Campaign Name, SKU, Spend+Tax, Advertised & Total Units, Orders, Returns, Final, CPC, ACOS, and TACOS. Includes campaign mapping, FBA availability, and detailed order/returns/adspend breakdowns.", format: "Excel (.xlsx)", size: "Live" },
     { id: "analysis", title: "Analysis Report (Ad Performance)", desc: "Per-product ad-performance analysis with Last 30 days and Last 7 days side by side — Spend+Tax, Advertised & Total Units, Orders, Returns, Final, CPC, ACOS, and TACOS per product, plus current FBA availability. Windows are fixed (trailing 30/7 days ending today) and ignore the date picker.", format: "Excel (.xlsx)", size: "Live" },
     { id: "amazon-daily", title: "Amazon Daily Sales Report", desc: "Day-by-day Orders, Returns, Price, Total Sales, and Growth % per product, plus a Top Losers/Gainers summary — Amazon only, no Flipkart. The most recent 1-2 days may show provisional figures (Amazon's own reporting sync lag).", format: "Excel (.xlsx)", size: "Live" },
@@ -502,6 +507,7 @@ export default function ReportsPage() {
     { id: "returns", title: "Returns & Cancellations", desc: "Detailed log of all FBA customer returns, ASINs, and reasons for return.", format: "CSV", size: "Live" },
     { id: "automations", title: "Advertising Automation Rules", desc: "Export active automations, schedules, and thresholds applied to your campaigns.", format: "CSV", size: "Live" },
   ];
+  const reports = SELLERMATE_ENABLED ? allReports : allReports.filter((r) => STORED_DATA_REPORTS.has(r.id));
 
   return (
     <div className="space-y-8 pb-10">
@@ -689,9 +695,9 @@ export default function ReportsPage() {
         {jobMsg && <p className="text-xs mt-1 font-semibold">{jobMsg}</p>}
       </div>
 
-      {/* Live API reports */}
+      {/* Report list */}
       <div>
-        <h2 className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-3">Live Reports</h2>
+        <h2 className="text-xs font-black uppercase tracking-widest text-muted-foreground mb-3">{SELLERMATE_ENABLED ? "Live Reports" : "Reports from uploaded data"}</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           {reports.map((report) => (
           <div key={report.id} className="glass rounded-2xl border border-border p-6 shadow-sm flex flex-col justify-between hover:border-primary/50 transition-colors">

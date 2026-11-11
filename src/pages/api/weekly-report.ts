@@ -88,7 +88,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   // Browser-facing (Reports and Settings buttons) and called by cron: session or signed call.
   if (!guard(req, res, checkSessionOrInternal)) return;
 
-  const { slot = "B", amazon_account_id, workspace_id, to: bodyTo, cc: bodyCc, recipients, currency = "INR", endDate, send = true, accountName = "B-ARM" } = req.body || {};
+  const { slot = "B", to: bodyTo, cc: bodyCc, recipients, currency = "INR", endDate, send = true, accountName = "B-ARM" } = req.body || {};
+  // The dashboard no longer holds the SellerMate account ids once that integration is switched off
+  // for the screens, so a request without them uses the ids saved in this slot's settings (the same
+  // ones the scheduled run passes). A request that does send them behaves exactly as before.
+  let amazon_account_id: string | undefined = req.body?.amazon_account_id;
+  let workspace_id: string | undefined = req.body?.workspace_id;
+  if (!amazon_account_id || !workspace_id) {
+    const savedIds = await readEmailSettings(slot === "A" ? "A" : "B");
+    amazon_account_id = amazon_account_id || savedIds.amazonAccountId;
+    workspace_id = workspace_id || savedIds.workspaceId;
+  }
   if (!amazon_account_id || !workspace_id) return res.status(400).json({ error: "amazon_account_id and workspace_id are required" });
   // Recipients are never taken from a browser request. A signed server call (the cron) passes the
   // saved notifEmail/ccEmail as to/cc; the Settings button asks for recipients:"saved" and gets

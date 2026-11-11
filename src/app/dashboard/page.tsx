@@ -9,6 +9,8 @@ import { mcp, mcpAllPages, mcpAllInventory, fetchUnifiedDailyTrend, aggregateTre
 import { fetchMissingCampaignHistory, injectMissingCampaignsAsPaused } from "@/lib/campaignPersistence";
 import { fetchLknOrdersSummary, fetchLknOrderUnitsIst } from "@/lib/lknOrders";
 import { fetchUploadedAmazonTotals } from "@/lib/uploadedAmazonTotals";
+import { SELLERMATE_ENABLED } from "@/lib/sellerMate";
+import { AmazonUploadedOverview } from "@/components/marketplace/AmazonUploadedOverview";
 import { KPICard } from "@/components/KPICard";
 import { QueryErrorState } from "@/components/QueryErrorState";
 import { TrendChart, UnifiedTrendChart } from "@/components/TrendChart";
@@ -65,7 +67,13 @@ const formatDayLabel = (iso: string | null | undefined): string => {
   return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 };
 
-export default function DashboardOverview() {
+// SellerMate off: the Overview is the upload-based one. The SellerMate version below is untouched
+// and comes back when NEXT_PUBLIC_SELLERMATE_ENABLED=true.
+export default function DashboardOverviewPage() {
+  return SELLERMATE_ENABLED ? <DashboardOverview /> : <AmazonUploadedOverview />;
+}
+
+function DashboardOverview() {
   const router = useRouter();
   const { keySlot, startDate, endDate, account, contextLoading, setSelectedCampaignName, setSelectedAsin } = useDashboard();
   const [trendGranularity, setTrendGranularity] = useState<'daily' | 'weekly' | 'monthly'>('daily');

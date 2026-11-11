@@ -42,6 +42,9 @@ const { createSessionToken, INTERNAL_AUTH_HEADER, SESSION_COOKIE } = await impor
 const { resetRateLimits } = (await jiti.import(abs("lib/rateLimit.ts"))) as { resetRateLimits: () => void };
 
 beforeEach(() => {
+  // The SellerMate proxy tests below exercise the integration switched ON; the "switched off"
+  // tests turn it off themselves.
+  process.env.NEXT_PUBLIC_SELLERMATE_ENABLED = "true";
   delete process.env.CRON_SECRET;
   process.env.INTERNAL_API_SECRET = INTERNAL;
   process.env.DASHBOARD_PASSWORD = PASSWORD;
@@ -441,4 +444,40 @@ test("logout clears the session cookie", async () => {
   assert.equal(r.statusCode, 200);
   assert.match(r.headers["set-cookie"], /m360_session=;.*Max-Age=0/);
   assert.match(r.headers["set-cookie"], /HttpOnly/);
+});
+
+// ── Phase 2: SellerMate switched off for the dashboard ─────────────────────────────────────────────
+test("SellerMate off: the browser-facing proxies refuse to relay, even for a signed-in session", async () => {
+  delete process.env.NEXT_PUBLIC_SELLERMATE_ENABLED;
+  const tool = await call("pages/api/tool.js", { headers: session(), body: { tool: "get_user_context", args: {}, slot: "B" } });
+  assert.equal(tool.statusCode, 503);
+  assert.match(tool.body.error, /switched off/);
+  const sm = await call("pages/api/sm.js", { headers: { ...session(), "x-api-key": "k" }, query: { path: "tools" } });
+  assert.equal(sm.statusCode, 503);
+  // still behind the login: no session is a 401, not a hint that the route exists but is off
+  assert.equal((await call("pages/api/tool.js", { body: {} })).statusCode, 401);
+  assert.deepEqual(fetchCalls, []);
+});
+
+test("SellerMate off: mcp() throws before any request is made; path and menu rules", async () => {
+  delete process.env.NEXT_PUBLIC_SELLERMATE_ENABLED;
+  const fresh = createJiti(import.meta.url, { alias: { "@/": `${SRC_POSIX}/` }, moduleCache: false });
+  const sm = (await fresh.import(abs("lib/sellerMate.ts"))) as any;
+  assert.equal(sm.SELLERMATE_ENABLED, false);
+  const api = (await fresh.import(abs("lib/api.ts"))) as any;
+  await assert.rejects(api.mcp("get_user_context", {}, "B"), /switched off/);
+  await assert.rejects(api.mcpAllPages("get_campaign_performance", {}, "B"), /switched off/);
+  assert.deepEqual(fetchCalls, []);
+  for (const p of ["/dashboard/campaigns", "/dashboard/keywords", "/dashboard/ai", "/dashboard/inventory/live", "/dashboard/products/"]) assert.equal(sm.isSellerMateOnlyPath(p), true, p);
+  for (const p of ["/dashboard", "/dashboard/inventory", "/dashboard/inventory/consolidated", "/dashboard/reports", "/dashboard/upload", "/dashboard/daily-ad-spend", "/dashboard/flipkart/campaigns", "/dashboard/flipkart/ai", "/dashboard/compare", "/dashboard/settings"]) assert.equal(sm.isSellerMateOnlyPath(p), false, p);
+  assert.equal(sm.staticAccountFor("Barm").name, "B-ARM");
+  assert.equal(sm.staticAccountFor("Barm"), sm.staticAccountFor("Barm")); // stable identity across renders
+  assert.equal(sm.staticAccountFor("Barm").id, "");
+});
+
+test("weekly-report: a request without account ids uses the saved ones; none saved -> 400 as before", async () => {
+  const r = await call("pages/api/weekly-report.ts", { headers: session(), body: { slot: "B", recipients: "saved" } });
+  assert.equal(r.statusCode, 400); // Supabase unconfigured offline -> no saved ids
+  assert.match(r.body.error, /amazon_account_id and workspace_id are required/);
+  assert.deepEqual(fetchCalls, []);
 });

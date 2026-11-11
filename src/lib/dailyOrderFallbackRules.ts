@@ -20,6 +20,32 @@ export function dailyFallbackStart(misMaxDate: string | null, rangeStart: string
   return next > rangeStart ? next : rangeStart;
 }
 
+/**
+ * The newest MIS order date to hand to dailyFallbackStart.
+ *
+ * `checked` is the table-wide "how far does MIS reach" lookup. When that lookup FAILED (a timeout,
+ * say) its maxDate is a null placeholder, not "the table is empty" — and treating it as empty made
+ * the fill start at rangeStart, so every MIS day was counted again from the daily upload and sales
+ * and units came out doubled (seen 11 Nov 2026: 21,270 units shown against 10,593 on file).
+ *
+ * So a failed lookup falls back to the newest date among the MIS rows already loaded for this
+ * range. Those rows are loaded by a read that throws on failure, so they are complete: any day MIS
+ * has inside the range is in them, and only the days after the last of them are filled.
+ */
+export function misMaxForFill(
+  checked: { maxDate?: string | null; error?: unknown } | null | undefined,
+  loadedMisDates: (string | null | undefined)[],
+): string | null {
+  if (checked && !checked.error) return checked.maxDate ?? null;
+  let max: string | null = null;
+  for (const d of loadedMisDates) {
+    if (!d) continue;
+    const day = String(d).slice(0, 10);
+    if (max === null || day > max) max = day;
+  }
+  return max;
+}
+
 /** A barm_daily_am_orders row in the shape amazonSkuPeriodData.ts reads off an MIS amazon_orders row. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function dailyAmRowAsMis(r: any) {

@@ -28,8 +28,8 @@ export async function loadMarketplaceAds(key: MarketplaceAdKey, start: string, e
     // doesn't split per SKU (amazonCardSpendRows — the same Amazon spend the Weekly and Live reports count).
     const [sp, sb, sd] = await Promise.all([
       fetchAllRows("barm_amazon_sp_advertised_product", between(start, end)),
-      fetchAllRows("barm_amazon_sb_campaign", between(start, end)).catch(() => []),
-      fetchAllRows("barm_amazon_sd_campaign", between(start, end)).catch(() => []),
+      fetchAllRows("barm_amazon_sb_campaign", between(start, end)),
+      fetchAllRows("barm_amazon_sd_campaign", between(start, end)),
     ]);
     const { spRows, campaignRows } = amazonCardSpendRows(sp, sb, sd);
     // A card row with no campaign name still counts; it is shown under its SKU.

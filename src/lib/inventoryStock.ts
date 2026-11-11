@@ -38,6 +38,8 @@ export interface FbaReportRow {
   afn_inbound_shipped_quantity: number | null;
   afn_inbound_receiving_quantity: number | null;
   mfn_fulfillable_quantity?: number | null;
+  product_name?: string | null;
+  your_price?: number | string | null;
   snapshot_date: string | null;
   created_at?: string | null;
 }
@@ -74,6 +76,23 @@ export interface InventoryResult {
   ledgerAsOf: string | null; // latest SellerMate ledger date seen
   reportOlderThanLedger: boolean;
   notes: string[];
+}
+
+/** The item list for an account with no SellerMate connection: one entry per ASIN in the uploaded
+ *  Amazon FBA Inventory report, using the report's own product name, price and merchant-fulfilled
+ *  quantity. Every figure on the Inventory page then comes from that one uploaded report. */
+export function itemsFromFbaReport(report: FbaReportRow[]): SellerMateInventoryItem[] {
+  const byAsin = new Map<string, SellerMateInventoryItem>();
+  for (const r of report) {
+    if (!r.asin) continue;
+    const item = byAsin.get(r.asin) ?? { asin: r.asin, itemName: "", price: 0, fbm: { quantity: 0 } };
+    if (!item.itemName && r.product_name) item.itemName = r.product_name;
+    const price = Number(r.your_price);
+    if (!item.price && Number.isFinite(price) && price > 0) item.price = price;
+    item.fbm = { quantity: (item.fbm?.quantity ?? 0) + (typeof r.mfn_fulfillable_quantity === "number" ? r.mfn_fulfillable_quantity : 0) };
+    byAsin.set(r.asin, item);
+  }
+  return [...byAsin.values()];
 }
 
 export const LOW_STOCK_UNITS = 20;

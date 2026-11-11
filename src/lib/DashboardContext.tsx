@@ -6,6 +6,7 @@ import { mcp } from "@/lib/api";
 import { getMarketplaceTab, type MarketplaceTab } from "@/lib/marketplace";
 import { fetchChannelLastDataDate } from "@/lib/channelLastDataDate";
 import { supabase } from "@/lib/supabaseClient";
+import { SELLERMATE_ENABLED, staticAccountFor } from "@/lib/sellerMate";
 
 type Account = {
   id: string;
@@ -65,7 +66,9 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
   // prefetcher on the marketplace; this gates the request that feeds them, and
   // additionally requires being on a dashboard route at all.
   const onDashboard = (pathname || "").startsWith("/dashboard");
-  const needsAmazonContext = onDashboard && getMarketplaceTab(pathname) !== "flipkart";
+  // With the SellerMate integration off there is no context to fetch at all: the account is a
+  // fixed record (see staticAccountFor) and nothing is ever "loading" or "failed".
+  const needsAmazonContext = SELLERMATE_ENABLED && onDashboard && getMarketplaceTab(pathname) !== "flipkart";
 
   // Derived, not effect-assigned: on a Flipkart route the Amazon context is not
   // "loading" and not "failed", it is simply not applicable. Storing that as
@@ -280,7 +283,7 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
         endDate,
         dateLabel,
         setDateRange,
-        account,
+        account: SELLERMATE_ENABLED ? account : (onDashboard ? staticAccountFor(loggedInUser) : null),
         contextLoading,
         contextError,
         retryContext,

@@ -6,6 +6,7 @@ import { Brain, ArrowRight, GitCompare } from "lucide-react";
 import { useDashboard } from "@/lib/DashboardContext";
 import { AllMarketplacesSummary } from "@/components/marketplace/AllMarketplacesSummary";
 import { OverallDashboard } from "@/components/marketplace/OverallDashboard";
+import { SELLERMATE_ENABLED } from "@/lib/sellerMate";
 
 // The "All" tab. Everything on it comes from AllMarketplacesSummary, i.e. the same Supabase data
 // and rules as each marketplace's own reports. The earlier Amazon + Flipkart sections were built on
@@ -33,12 +34,12 @@ export default function ComparePage() {
               {dot(startDate)} – {dot(endDate)} · Amazon, Flipkart, Meesho, Shopify, Google Ads &amp; Meta
             </p>
           </div>
-          <Link
+          {SELLERMATE_ENABLED && <Link
             href="/dashboard/ai"
             className="flex items-center gap-2 bg-white/10 hover:bg-white/20 text-white border border-white/20 px-4 py-2 rounded-xl text-xs font-black transition-all backdrop-blur-sm"
           >
             <Brain className="w-3.5 h-3.5" /> Ask AI Assistant <ArrowRight className="w-3 h-3" />
-          </Link>
+          </Link>}
         </div>
       </div>
 

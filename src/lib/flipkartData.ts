@@ -27,6 +27,37 @@ export function getFlipkartTableName(baseName: string, loggedInUser: string): st
   return LKN_TABLE_MAP[baseName] || baseName;
 }
 
+// Reads every page of a PostgREST query, or throws. It never returns part of a table:
+//   - pages are sorted by id, because without a unique sort Postgres may hand back rows in a
+//     different order on each request, so later pages repeat some rows and skip others;
+//   - a failed page is retried twice (this project sees brief statement-timeout blips) and then the
+//     whole read throws, so the page shows "couldn't load" instead of totals built from some pages;
+//   - a table that does not exist (404) is "no data for this account" and returns [], as before.
+export async function fetchPagedRows(baseUrl: string, headers: Record<string, string>): Promise<any[]> {
+  const limit = 1000;
+  const results: unknown[] = [];
+  for (let offset = 0; ; offset += limit) {
+    let page: unknown[] | null = null;
+    let lastError = "";
+    for (let attempt = 0; attempt < 3 && page === null; attempt++) {
+      try {
+        const res = await fetch(`${baseUrl}&order=id.asc&limit=${limit}&offset=${offset}`, { headers });
+        if (res.status === 404) return [];
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!Array.isArray(data)) throw new Error("unexpected response");
+        page = data;
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+      }
+    }
+    if (page === null) throw new Error(`Could not read Flipkart data (${lastError})`);
+    results.push(...page);
+    if (page.length < limit) return results as any[];
+  }
+}
+
 async function fetchTableForRange(
   tableName: string,
   dateColumn: string,
@@ -35,23 +66,7 @@ async function fetchTableForRange(
 ): Promise<any[]> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return [];
   const headers = { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` };
-  let results: any[] = [];
-  let offset = 0;
-  const limit = 1000;
-  while (true) {
-    const url = `${SUPABASE_URL}/rest/v1/${tableName}?select=*&${dateColumn}=gte.${from}&${dateColumn}=lte.${to}&limit=${limit}&offset=${offset}`;
-    try {
-      const res = await fetch(url, { headers });
-      if (!res.ok) break;
-      const data = await res.json();
-      results = results.concat(data);
-      if (data.length < limit) break;
-      offset += limit;
-    } catch {
-      break;
-    }
-  }
-  return results;
+  return fetchPagedRows(`${SUPABASE_URL}/rest/v1/${tableName}?select=*&${dateColumn}=gte.${from}&${dateColumn}=lte.${to}`, headers);
 }
 
 // Fetch an entire table (no date filter) — used for snapshot tables like
@@ -59,23 +74,9 @@ async function fetchTableForRange(
 async function fetchTableAll(tableName: string, select = "*"): Promise<any[]> {
   if (!SUPABASE_URL || !SUPABASE_KEY) return [];
   const headers = { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` };
-  let results: any[] = [];
-  let offset = 0;
-  const limit = 1000;
-  while (true) {
-    const url = `${SUPABASE_URL}/rest/v1/${tableName}?select=${select}&limit=${limit}&offset=${offset}`;
-    try {
-      const res = await fetch(url, { headers });
-      if (!res.ok) break;
-      const data = await res.json();
-      results = results.concat(data);
-      if (data.length < limit) break;
-      offset += limit;
-    } catch {
-      break;
-    }
-  }
-  return results;
+  // "id" must be in the selection for the id sort to be allowed on a column-limited select.
+  const cols = select === "*" || select.split(",").includes("id") ? select : `id,${select}`;
+  return fetchPagedRows(`${SUPABASE_URL}/rest/v1/${tableName}?select=${cols}`, headers);
 }
 
 // Min/max of a date column, so a page can tell the user which window actually

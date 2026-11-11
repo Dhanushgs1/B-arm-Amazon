@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { FileSpreadsheet, Radio, Layers } from "lucide-react";
+import { SELLERMATE_ENABLED } from "@/lib/sellerMate";
 
 // Switch between the inventory views. They never share data:
 //   Inventory          = uploaded Amazon FBA Inventory report (barm_amazon_fba_inventory)
@@ -18,7 +19,7 @@ export function InventoryTabs() {
   return (
     <div className="inline-flex rounded-xl border border-border bg-background p-1 shadow-sm">
       <Link href="/dashboard/inventory" className={tab(!live && !consolidated)}><FileSpreadsheet className="w-3.5 h-3.5" /> Inventory</Link>
-      <Link href="/dashboard/inventory/live" className={tab(!!live)}><Radio className="w-3.5 h-3.5" /> Live Inventory</Link>
+      {SELLERMATE_ENABLED && <Link href="/dashboard/inventory/live" className={tab(!!live)}><Radio className="w-3.5 h-3.5" /> Live Inventory</Link>}
       <Link href="/dashboard/inventory/consolidated" className={tab(!!consolidated)}><Layers className="w-3.5 h-3.5" /> Consolidated Stock</Link>
     </div>
   );

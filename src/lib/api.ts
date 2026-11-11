@@ -1,3 +1,5 @@
+import { SELLERMATE_ENABLED, SellerMateDisabledError } from "@/lib/sellerMate";
+
 // The proxy's upstream fetch to SellerMate occasionally has its connection reset mid-flight
 // under load (surfaces as "Internal Proxy Error: terminated") — a transient network blip, not a
 // real failure. Reports that fan out dozens of concurrent calls (see amazonSalesExport.ts) hit
@@ -11,6 +13,9 @@ function sleep(ms: number) {
 }
 
 export async function mcp(tool: string, args: any = {}, slot: string = "A") {
+  // Single choke point for every SellerMate call the dashboard makes: with the integration off,
+  // nothing reaches the network.
+  if (!SELLERMATE_ENABLED) throw new SellerMateDisabledError();
   let lastError: Error | null = null;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const res = await fetch("/api/tool", {

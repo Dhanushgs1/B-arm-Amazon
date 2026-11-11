@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { checkSession } from "@/lib/apiAuth";
 import { rejectUnlessAllowed } from "@/lib/appRouteAuth";
 import { fetchLiveInventory, sellerMateCaller } from "@/lib/sellerMateLiveInventory";
+import { sellerMateEnabledOnServer } from "@/lib/sellerMate";
 
 // Live Inventory: everything SellerMate has for an account, fetched fresh on every request (no
 // cache — "Last fetched" on the page is this request's time). SellerMate's own data is still its
@@ -23,6 +24,7 @@ function apiKey(slot: string | null): string | undefined {
 export async function GET(req: Request) {
   const rejected = rejectUnlessAllowed(req, checkSession, { bucket: "live-inventory", limit: 30, windowMs: 60_000 });
   if (rejected) return rejected;
+  if (!sellerMateEnabledOnServer()) return NextResponse.json({ error: "SellerMate is switched off for the dashboard." }, { status: 503 });
   const url = new URL(req.url);
   const slot = url.searchParams.get("slot");
   const workspace_id = url.searchParams.get("workspace_id");

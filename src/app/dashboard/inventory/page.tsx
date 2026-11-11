@@ -8,7 +8,8 @@ import { DataTable } from "@/components/DataTable";
 import { KPICard } from "@/components/KPICard";
 import { QueryErrorState } from "@/components/QueryErrorState";
 import { fetchAllRows } from "@/lib/amazonReportShared";
-import { buildInventory, type FbaReportRow, type InventoryRow } from "@/lib/inventoryStock";
+import { buildInventory, itemsFromFbaReport, type FbaReportRow, type InventoryRow } from "@/lib/inventoryStock";
+import { SELLERMATE_ENABLED } from "@/lib/sellerMate";
 import { InventoryTabs } from "@/components/InventoryTabs";
 import { Loader2, PackageOpen, AlertTriangle, CheckCircle, XCircle, CalendarClock, Info } from "lucide-react";
 
@@ -33,6 +34,19 @@ export default function InventoryPage() {
       // and join SKUs from the product catalog since inventory rows return sku as "".
       // FBA stock comes from Amazon's FBA Inventory report (see src/lib/inventoryStock.ts for why
       // not SellerMate's ledger balance); the fba_by_location view only supplies the ledger date.
+      // SellerMate off: the uploaded FBA Inventory report is the only source. A failed read throws
+      // (shown as an error with Retry) instead of quietly rendering an empty inventory.
+      if (!SELLERMATE_ENABLED) {
+        const reportOnly = (await fetchAllRows("barm_amazon_fba_inventory", (q) => q)) as FbaReportRow[];
+        // SKUs per ASIN, also from the report (SellerMate's catalogue used to supply these).
+        const skusByAsin: Record<string, string[]> = {};
+        for (const r of reportOnly) {
+          if (!r.asin || !r.sku) continue;
+          const list = (skusByAsin[r.asin] ??= []);
+          if (!list.includes(r.sku)) list.push(r.sku);
+        }
+        return buildInventory(itemsFromFbaReport(reportOnly), skusByAsin, reportOnly, [], resolveProductName);
+      }
       const [items, skuMap, report, ledgerItems] = await Promise.all([
         mcpAllInventory(baseArgs, keySlot),
         fetchSkuMap(baseArgs, keySlot),
@@ -166,7 +180,7 @@ export default function InventoryPage() {
         <span className="font-bold text-green-600 dark:text-green-400">{cur(val, currency)}</span>
       ),
     },
-    ...(usesReport ? [{
+    ...(usesReport && SELLERMATE_ENABLED ? [{
       key: "ledgerBalance",
       label: "Ledger (SellerMate)",
       sortable: true,
@@ -198,7 +212,7 @@ export default function InventoryPage() {
             <span className="font-semibold text-foreground">Source: {usesReport ? "Amazon FBA Inventory Report" : "SellerMate (no Amazon report on file)"}</span>
             <span>Daily snapshot, not real-time</span>
             {dataUpdatedAt > 0 && <span>Last fetched: {new Date(dataUpdatedAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</span>}
-            <span>FBM: SellerMate listing sync</span>
+            <span>{SELLERMATE_ENABLED ? "FBM: SellerMate listing sync" : "FBM: merchant-fulfilled quantity from the same report"}</span>
             {usesReport && data.ledgerAsOf && <span>Ledger column: SellerMate, as of {data.ledgerAsOf}</span>}
           </p>
         )}

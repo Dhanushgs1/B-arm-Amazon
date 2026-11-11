@@ -4,6 +4,7 @@ import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { useDashboard } from "@/lib/DashboardContext";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { KPICard } from "@/components/KPICard";
 import { DataTable } from "@/components/DataTable";
 import { fetchFlipkartCampaigns } from "@/lib/flipkartData";
@@ -16,7 +17,7 @@ export function FlipkartCampaigns() {
   const { loggedInUser, startDate, endDate } = useDashboard();
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "idle">("all");
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["flipkart-campaigns", loggedInUser, startDate, endDate],
     queryFn: () => fetchFlipkartCampaigns(loggedInUser, startDate, endDate),
     enabled: !!startDate && !!endDate,
@@ -29,6 +30,7 @@ export function FlipkartCampaigns() {
     return data.rows;
   }, [data, statusFilter]);
 
+  if (isError) return <QueryErrorState onRetry={() => refetch()} />;
   if (isLoading || !data) {
     return (
       <div className="flex h-[60vh] items-center justify-center flex-col gap-4 text-muted-foreground">

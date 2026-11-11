@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Loader2, Info } from "lucide-react";
 import { useDashboard } from "@/lib/DashboardContext";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { DataTable } from "@/components/DataTable";
 import { fetchFlipkartOrders } from "@/lib/flipkartData";
 import { cn } from "@/lib/utils";
@@ -22,12 +23,13 @@ const statusStyle = (s: string) => {
 export function FlipkartOrders() {
   const { loggedInUser, startDate, endDate } = useDashboard();
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["flipkart-orders", loggedInUser, startDate, endDate],
     queryFn: () => fetchFlipkartOrders(loggedInUser, startDate, endDate),
     enabled: !!startDate && !!endDate,
   });
 
+  if (isError) return <QueryErrorState onRetry={() => refetch()} />;
   if (isLoading || !data) {
     return (
       <div className="flex h-[60vh] items-center justify-center flex-col gap-4 text-muted-foreground">

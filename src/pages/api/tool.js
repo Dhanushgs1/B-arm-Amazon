@@ -1,4 +1,5 @@
 import { checkSession, guard } from "@/lib/apiAuth";
+import { sellerMateEnabledOnServer } from "@/lib/sellerMate";
 
 // Server-side proxy for the SellerMate.AI Public API.
 //
@@ -62,6 +63,10 @@ function resolveApiKey(slot) {
 // (orders, inventory, retail performance): requires the signed-in dashboard session.
 export default async function handler(req, res) {
   if (!guard(req, res, checkSession)) return;
+  if (!sellerMateEnabledOnServer()) {
+    res.status(503).json({ error: "SellerMate is switched off for the dashboard." });
+    return;
+  }
 
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed. Use POST.' });

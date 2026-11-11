@@ -8,7 +8,7 @@ import { isFkSkeletonOrderRow } from "@/lib/flipkartOrderRules";
 import { DEFAULT_GST_MULTIPLIER } from "@/lib/masterProductSkuid";
 import { supabasePublic } from "@/lib/amazonReportUpload";
 import { amazonCardSpendRows } from "@/lib/amazonAdSourceRules";
-import { dailyFallbackStart, dailyFkRowAsMis, dedupeOrderLines } from "@/lib/dailyOrderFallbackRules";
+import { dailyFallbackStart, dailyFkRowAsMis, dedupeOrderLines, misMaxForFill } from "@/lib/dailyOrderFallbackRules";
 
 // Short "this period vs the previous period" summary for the Meesho, BARM and Flipkart Overview
 // pages, for the date range selected at the top of the dashboard. Meesho and BARM reuse the same
@@ -88,7 +88,7 @@ export async function fetchMeeshoSummary(start: string, end: string): Promise<Ch
   const periods = periodsFor(start, end);
   const [data, adRows] = await Promise.all([
     loadMeeshoSkuPeriodData({ periods }),
-    fetchAllRows("barm_daily_ms_barm_ads", (q) => q.gte("report_date", periods[0].start).lte("report_date", end)).catch(() => []),
+    fetchAllRows("barm_daily_ms_barm_ads", (q) => q.gte("report_date", periods[0].start).lte("report_date", end)),
   ]);
   const spendIn = (p: PeriodWindow) =>
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -127,16 +127,22 @@ export async function fetchFlipkartOrderSummary(start: string, end: string): Pro
   const periods = periodsFor(start, end);
   const [misOrderRows, returnRows, listingRows, misMax] = await Promise.all([
     fetchMisFkOrders((q) => q.gte("order_date", periods[0].start).lte("order_date", end)),
-    fetchMisFkReturns((q) => q.gte("return_requested_date", periods[0].start).lte("return_requested_date", end)).catch(() => []),
-    fetchAllRows("barm_flipkart_listings", (q) => q).catch(() => []),
+    fetchMisFkReturns((q) => q.gte("return_requested_date", periods[0].start).lte("return_requested_date", end)),
+    fetchAllRows("barm_flipkart_listings", (q) => q),
     supabasePublic.from("fk_orders").select("order_date").not("order_date", "is", null).order("order_date", { ascending: false }).limit(1),
   ]);
   // Days after the last fk_orders day come from the daily "Last 7 days" upload (see
   // dailyOrderFallbackRules.ts). If the MIS max can't be read, MIS alone is used, as before.
   let orderRows = misOrderRows;
-  const fillFrom = misMax.error ? null : dailyFallbackStart((misMax.data?.[0] as { order_date?: string } | undefined)?.order_date ?? null, periods[0].start, end);
+  // If the MIS max can't be read, the newest MIS row already loaded for this range is used instead
+  // (misMaxForFill), so the days after it are still filled and no MIS day is counted twice.
+  const fkMisMax = misMaxForFill(
+    { maxDate: (misMax.data?.[0] as { order_date?: string } | undefined)?.order_date ?? null, error: misMax.error },
+    misOrderRows.map((r) => r.order_date),
+  );
+  const fillFrom = dailyFallbackStart(fkMisMax, periods[0].start, end);
   if (fillFrom) {
-    const daily = await fetchAllRows("barm_daily_fk_orders", (q) => q.gte("report_date", fillFrom).lte("report_date", end), ["report_date", "id"]).catch(() => []);
+    const daily = await fetchAllRows("barm_daily_fk_orders", (q) => q.gte("report_date", fillFrom).lte("report_date", end), ["report_date", "id"]);
     const mapped = dedupeOrderLines(daily.map(dailyFkRowAsMis), (r) => r.order_item_status);
     orderRows = [...misOrderRows, ...(mapped as unknown as typeof misOrderRows)];
   }
@@ -192,7 +198,7 @@ export async function fetchFlipkartOrderSummary(start: string, end: string): Pro
 // Listed Price; BARM: Order Total Amount once per order). Ad spend includes 18% GST.
 
 async function spendTaxIn(table: string, col: string, start: string, end: string): Promise<number> {
-  const rows = await fetchAllRows(table, (q) => q.gte("report_date", start).lte("report_date", end)).catch(() => []);
+  const rows = await fetchAllRows(table, (q) => q.gte("report_date", start).lte("report_date", end));
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (rows as any[]).reduce((t, r) => t + (Number(r[col]) || 0), 0) * DEFAULT_GST_MULTIPLIER;
 }
@@ -203,7 +209,7 @@ async function spendTaxIn(table: string, col: string, start: string, end: string
 async function amazonSpendTaxIn(start: string, end: string): Promise<number> {
   const [sp, sb, sd] = await Promise.all(
     ["barm_amazon_sp_advertised_product", "barm_amazon_sb_campaign", "barm_amazon_sd_campaign"].map((t) =>
-      fetchAllRows(t, (q) => q.gte("report_date", start).lte("report_date", end)).catch(() => [])
+      fetchAllRows(t, (q) => q.gte("report_date", start).lte("report_date", end))
     )
   );
   const { spRows, campaignRows } = amazonCardSpendRows(sp, sb, sd);

@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { useDashboard } from "@/lib/DashboardContext";
+import { QueryErrorState } from "@/components/QueryErrorState";
 import { KPICard } from "@/components/KPICard";
 import { DataTable } from "@/components/DataTable";
 import { fetchFlipkartProducts } from "@/lib/flipkartData";
@@ -14,12 +15,13 @@ const num = (val: number) => new Intl.NumberFormat("en-IN").format(Math.round(va
 export function FlipkartProducts() {
   const { loggedInUser, startDate, endDate } = useDashboard();
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["flipkart-products", loggedInUser, startDate, endDate],
     queryFn: () => fetchFlipkartProducts(loggedInUser, startDate, endDate),
     enabled: !!startDate && !!endDate,
   });
 
+  if (isError) return <QueryErrorState onRetry={() => refetch()} />;
   if (isLoading || !data) {
     return (
       <div className="flex h-[60vh] items-center justify-center flex-col gap-4 text-muted-foreground">

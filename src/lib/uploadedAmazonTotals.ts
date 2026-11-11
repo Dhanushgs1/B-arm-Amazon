@@ -1,12 +1,19 @@
 import { supabasePublic } from "@/lib/amazonReportUpload";
+import {
+  summarizeUploadedAmazon,
+  type UploadedAdRow,
+  type UploadedAmazonTotals,
+  type UploadedOrderRow,
+  type UploadedSbRow,
+  type UploadedSdRow,
+} from "@/lib/uploadedAmazonRules";
 
-// Amazon Overview totals read straight from the uploaded Supabase tables (not from SellerMate's
-// live API), so the cards match what was uploaded and can say how far the data goes.
-//   - Sales and units: barm_amazon_am_orders, non-cancelled lines. Non-standard "S02-" order ids
-//     are excluded: they carry zero price and quantities in the hundreds (confirmed 1–25 Oct).
-//   - Ad spend: barm_daily_am_ads.
-//   - Ad sales: barm_daily_am_ads sales_7d + barm_amazon_sb_campaign sales + barm_amazon_sd_campaign
-//     sales_14d (matches the Seller Central-side figure within about 0.3% for 1–29 Oct).
+export type { UploadedAmazonTotals } from "@/lib/uploadedAmazonRules";
+
+// Amazon Overview figures read straight from the uploaded Supabase tables (not from SellerMate's
+// live API), so the cards match what was uploaded and can say how far the data goes. The rules
+// themselves (what counts as a sale, where ad spend and ad sales come from) are in
+// uploadedAmazonRules.ts.
 // PostgREST returns at most 1000 rows per request, so every table is read in pages.
 
 const PAGE = 1000;
@@ -20,14 +27,29 @@ async function fetchAllRows<T>(
 ): Promise<T[]> {
   const out: T[] = [];
   for (let from = 0; ; from += PAGE) {
-    const { data, error } = await supabasePublic
-      .from(table)
-      .select(columns)
-      .gte(dateColumn, start)
-      .lte(dateColumn, end)
-      .range(from, from + PAGE - 1);
-    if (error) throw new Error(`${table}: ${error.message}`);
-    const rows = (data ?? []) as unknown as T[];
+    let rows: T[] | null = null;
+    let lastError = "";
+    // A transient failure (this project sees brief statement-timeout blips) gets two more tries.
+    // If it still fails the whole read throws: a total built from some of the pages would be wrong
+    // without looking wrong.
+    for (let attempt = 0; attempt < 3 && rows === null; attempt++) {
+      const { data, error } = await supabasePublic
+        .from(table)
+        .select(columns)
+        .gte(dateColumn, start)
+        .lte(dateColumn, end)
+        // Paging is only stable with a unique sort. Without it Postgres may return rows in a
+        // different order on each request, so pages past the first can repeat some rows and skip
+        // others, and the totals come out wrong.
+        .order("id", { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (!error) rows = (data ?? []) as unknown as T[];
+      else {
+        lastError = error.message;
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+      }
+    }
+    if (rows === null) throw new Error(`${table}: ${lastError}`);
     out.push(...rows);
     if (rows.length < PAGE) break;
   }
@@ -41,63 +63,21 @@ async function latestDate(table: string, column: string): Promise<string | null>
   return row?.[column] ?? null;
 }
 
-export interface UploadedAmazonTotals {
-  totalSales: number;
-  totalUnits: number;
-  /** Non-cancelled order lines (Seller Central's "Total order items"). */
-  totalOrderItems: number;
-  totalAdSpend: number;
-  totalAdSales: number;
-  organicSales: number;
-  /** Last day with uploaded order lines. */
-  ordersThrough: string | null;
-  /** Last day with uploaded ad rows (daily ads). */
-  adsThrough: string | null;
+async function fetchUploadedRows(start: string, end: string) {
+  const [orderRows, adRows, sbRows, sdRows] = await Promise.all([
+    fetchAllRows<UploadedOrderRow>("barm_amazon_am_orders", "amazon_order_id,order_status,quantity,item_price", "purchase_date", start, end),
+    fetchAllRows<UploadedAdRow>("barm_daily_am_ads", "spend,sales_7d", "report_date", start, end),
+    fetchAllRows<UploadedSbRow>("barm_amazon_sb_campaign", "sales", "report_date", start, end),
+    fetchAllRows<UploadedSdRow>("barm_amazon_sd_campaign", "sales_14d", "report_date", start, end),
+  ]);
+  return { orderRows, adRows, sbRows, sdRows };
 }
 
-const STANDARD_ORDER_ID = /^\d{3}-/;
-
 export async function fetchUploadedAmazonTotals(start: string, end: string): Promise<UploadedAmazonTotals> {
-  const [orderRows, adRows, sbRows, sdRows, ordersThrough, adsThrough] = await Promise.all([
-    fetchAllRows<{ amazon_order_id: string; order_status: string; quantity: number; item_price: number | string }>(
-      "barm_amazon_am_orders",
-      "amazon_order_id,order_status,quantity,item_price",
-      "purchase_date",
-      start,
-      end,
-    ),
-    fetchAllRows<{ spend: number | string; sales_7d: number | string }>("barm_daily_am_ads", "spend,sales_7d", "report_date", start, end),
-    fetchAllRows<{ sales: number | string }>("barm_amazon_sb_campaign", "sales", "report_date", start, end),
-    fetchAllRows<{ sales_14d: number | string }>("barm_amazon_sd_campaign", "sales_14d", "report_date", start, end),
+  const [{ orderRows, adRows, sbRows, sdRows }, ordersThrough, adsThrough] = await Promise.all([
+    fetchUploadedRows(start, end),
     latestDate("barm_amazon_am_orders", "purchase_date"),
     latestDate("barm_daily_am_ads", "report_date"),
   ]);
-
-  let totalSales = 0;
-  let totalUnits = 0;
-  let totalOrderItems = 0;
-  for (const r of orderRows) {
-    if (/^cancel/i.test(r.order_status ?? "")) continue;
-    if (!STANDARD_ORDER_ID.test(r.amazon_order_id ?? "")) continue;
-    totalSales += Number(r.item_price) || 0;
-    totalUnits += Number(r.quantity) || 0;
-    totalOrderItems += 1;
-  }
-
-  const totalAdSpend = adRows.reduce((sum, r) => sum + (Number(r.spend) || 0), 0);
-  const totalAdSales =
-    adRows.reduce((sum, r) => sum + (Number(r.sales_7d) || 0), 0) +
-    sbRows.reduce((sum, r) => sum + (Number(r.sales) || 0), 0) +
-    sdRows.reduce((sum, r) => sum + (Number(r.sales_14d) || 0), 0);
-
-  return {
-    totalSales,
-    totalUnits,
-    totalOrderItems,
-    totalAdSpend,
-    totalAdSales,
-    organicSales: Math.max(0, totalSales - totalAdSales),
-    ordersThrough,
-    adsThrough,
-  };
+  return { ...summarizeUploadedAmazon(orderRows, adRows, sbRows, sdRows), ordersThrough, adsThrough };
 }

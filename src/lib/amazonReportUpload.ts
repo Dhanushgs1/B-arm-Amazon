@@ -891,16 +891,29 @@ export async function fetchAllReportDataInfo(): Promise<Record<UploadReportType,
   return Object.fromEntries(types.map((t, i) => [t, results[i]])) as Record<UploadReportType, ReportDataInfo>;
 }
 
+// Every campaign_name in a table, read in id-ordered pages. A single un-paged select stops at
+// PostgREST's 1000-row cap, and these tables gain rows every day: past the cap, campaigns in the
+// rows that were cut off would never be reported as unmapped. A failed page throws.
+async function allCampaignNames(table: string): Promise<string[]> {
+  const PAGE = 1000;
+  const names: string[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabasePublic.from(table).select("campaign_name").order("id", { ascending: true }).range(from, from + PAGE - 1);
+    if (error) throw new Error(`${table}: ${error.message}`);
+    const rows = (data || []) as { campaign_name: string }[];
+    rows.forEach((r) => names.push(r.campaign_name));
+    if (rows.length < PAGE) return names;
+  }
+}
+
 export async function fetchUnmappedCampaigns(): Promise<string[]> {
-  const [{ data: sb }, { data: sd }, { data: mapped }] = await Promise.all([
-    supabasePublic.from("barm_amazon_sb_campaign").select("campaign_name"),
-    supabasePublic.from("barm_amazon_sd_campaign").select("campaign_name"),
-    supabasePublic.from("barm_amazon_campaign_sku_map").select("campaign_name"),
+  const [sb, sd, mapped] = await Promise.all([
+    allCampaignNames("barm_amazon_sb_campaign"),
+    allCampaignNames("barm_amazon_sd_campaign"),
+    allCampaignNames("barm_amazon_campaign_sku_map"),
   ]);
-  const mappedSet = new Set((mapped || []).map((r: { campaign_name: string }) => r.campaign_name));
-  const all = new Set<string>();
-  (sb || []).forEach((r: { campaign_name: string }) => all.add(r.campaign_name));
-  (sd || []).forEach((r: { campaign_name: string }) => all.add(r.campaign_name));
+  const mappedSet = new Set(mapped);
+  const all = new Set<string>([...sb, ...sd]);
   return [...all].filter((c) => !mappedSet.has(c)).sort();
 }
 

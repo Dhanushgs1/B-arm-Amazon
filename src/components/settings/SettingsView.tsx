@@ -6,6 +6,7 @@ import {
   Building2, Bot, Zap, Palette, Sun, Moon, Globe, Database, Activity, Sparkles, Plug, Store, BookOpen
 } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
+import { SELLERMATE_ENABLED } from "@/lib/sellerMate";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { MARKETPLACE_META } from "@/lib/marketplace";
@@ -280,7 +281,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           notifEmail, ccEmail, emailAlerts,
-          keySlot, amazonAccountId: account?.id, workspaceId: account?.workspace_id, currency: account?.currency,
+          keySlot, amazonAccountId: account?.id || undefined, workspaceId: account?.workspace_id || undefined, currency: account?.currency,
         }),
       }).catch(() => {});
     }
@@ -312,7 +313,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
       roasTarget, compactMode, theme,
       flipkartApiKey, flipkartSellerId,
       // account context for the automated crons (which account to query)
-      keySlot, amazonAccountId: account?.id, workspaceId: account?.workspace_id, currency: account?.currency,
+      keySlot, amazonAccountId: account?.id || undefined, workspaceId: account?.workspace_id || undefined, currency: account?.currency,
     };
 
     localStorage.setItem("ppcUserSettings", JSON.stringify(config));
@@ -441,8 +442,12 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
   };
 
   const overviewCards = [
-    { label: "SellerMate", value: account ? "Connected" : "Offline", icon: Plug, good: !!account },
-    { label: "API Status", value: account ? "Healthy" : "Error", icon: Activity, good: !!account },
+    ...(SELLERMATE_ENABLED ? [
+      { label: "SellerMate", value: account ? "Connected" : "Offline", icon: Plug, good: !!account },
+      { label: "API Status", value: account ? "Healthy" : "Error", icon: Activity, good: !!account },
+    ] : [
+      { label: "Data Source", value: "Uploaded reports", icon: Plug, good: true },
+    ]),
     { label: "Workspace", value: account?.name?.split(" ").slice(0, 2).join(" ") || "—", icon: Building2, good: true },
     { label: "Currency", value: account?.currency || "—", icon: Globe, good: true },
     { label: "AI Engine", value: aiEnabled ? "Active" : "Disabled", icon: Sparkles, good: aiEnabled },
@@ -495,7 +500,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
             >
               {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />} Save Changes
             </button>
-            {all && <button
+            {all && SELLERMATE_ENABLED && <button
               onClick={handleTriggerSync}
               disabled={syncing}
               className="flex items-center gap-2 bg-white/10 hover:bg-white/20 border border-white/20 px-5 py-2.5 rounded-xl text-sm font-bold transition-all backdrop-blur-sm disabled:opacity-60"
@@ -532,7 +537,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
           {["Workspace", "Preferences", "Account"].filter((section) => all || NAV.some((n) => n.section === section && FLIPKART_TABS.includes(n.id))).map((section) => (
             <div key={section} className="space-y-1">
               <p className="px-3 text-[10px] font-extrabold uppercase tracking-widest text-muted-foreground">{section}</p>
-              {NAV.filter((n) => n.section === section && (all || FLIPKART_TABS.includes(n.id))).map((n) => (
+              {NAV.filter((n) => n.section === section && (all || FLIPKART_TABS.includes(n.id)) && (SELLERMATE_ENABLED || n.id !== "sellermate")).map((n) => (
                 <button
                   key={n.id}
                   onClick={() => setActiveTab(n.id)}
@@ -561,7 +566,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
 
           {activeTab === "general" && (
             <Card title="General" icon={Settings} iconColor="bg-indigo-500/10 border-indigo-500/15 text-indigo-500">
-              <SettingRow title="Workspace Name" desc="Synced from your SellerMate workspace.">
+              <SettingRow title="Workspace Name" desc={SELLERMATE_ENABLED ? "Synced from your SellerMate workspace." : "The account this sign-in belongs to."}>
                 <span className="text-sm font-bold bg-muted px-3 py-1.5 rounded-xl max-w-[220px] truncate">{account?.name || "—"}</span>
               </SettingRow>
               <SettingRow title="Active Account" desc="Key slot used for all API requests.">
@@ -643,9 +648,9 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
           {activeTab === "marketplaces" && (
             <>
               <Card title="Amazon" icon={Plug} iconColor="bg-emerald-500/10 border-emerald-500/15 text-emerald-500">
-                <SettingRow title="Connection" desc="Live via SellerMate Public API — see the SellerMate Connection tab.">
+                <SettingRow title="Connection" desc={SELLERMATE_ENABLED ? "Live via SellerMate Public API — see the SellerMate Connection tab." : "From the reports uploaded on the Upload page. No live connection."}>
                   <span className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full">
-                    <CheckCircle size={12} /> Connected
+                    <CheckCircle size={12} /> {SELLERMATE_ENABLED ? "Connected" : "Uploaded reports"}
                   </span>
                 </SettingRow>
                 <SettingRow title="Data" desc="Campaigns, catalog, inventory and orders — all real-time." border={false}>
@@ -856,9 +861,9 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
                     <div className="flex items-center gap-3">
                       <button
                         type="button"
-                        disabled={!notifEmail || !account?.id || !account?.workspace_id || weeklyReportStatus === "sending"}
+                        disabled={!notifEmail || (SELLERMATE_ENABLED && (!account?.id || !account?.workspace_id)) || weeklyReportStatus === "sending"}
                         onClick={async () => {
-                          if (!notifEmail || !account?.id || !account?.workspace_id) return;
+                          if (!notifEmail || !account || (SELLERMATE_ENABLED && (!account.id || !account.workspace_id))) return;
                           setWeeklyReportStatus("sending");
                           setWhatsappText(null);
                           try {
@@ -866,7 +871,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
                               method: "POST",
                               headers: { "Content-Type": "application/json" },
                               body: JSON.stringify({
-                                slot: keySlot, amazon_account_id: account.id, workspace_id: account.workspace_id,
+                                slot: keySlot, amazon_account_id: account.id || undefined, workspace_id: account.workspace_id || undefined,
                                 // Server sends to this slot's saved notifEmail/ccEmail.
                                 recipients: "saved", currency: account?.currency || "INR",
                               }),
@@ -1134,7 +1139,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
 
       {/* ── Footer ── */}
       <div className="flex items-center justify-between flex-wrap gap-3 text-[11px] font-bold text-muted-foreground border-t border-border pt-5">
-        <span>Marketplace360 v2.0 · SellerMate Public API v1 · Next.js 16</span>
+        <span>Marketplace360 v2.0{SELLERMATE_ENABLED ? " · SellerMate Public API v1" : ""} · Next.js 16</span>
         <span className="flex items-center gap-1.5">
           <span className={cn("w-1.5 h-1.5 rounded-full", account ? "bg-emerald-500 animate-pulse" : "bg-red-500")} />
           {account ? "All systems operational" : "Connection issue"}

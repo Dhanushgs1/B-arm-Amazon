@@ -37,6 +37,7 @@ import {
   ShoppingBag,
   type LucideIcon
 } from "lucide-react";
+import { SELLERMATE_ENABLED, SELLERMATE_ONLY_NAV_IDS } from "@/lib/sellerMate";
 import { MARKETPLACE_META, UPLOAD_ONLY_TAB_META, getMarketplaceTab, isUploadOnlyTab, type UploadOnlyTab } from "@/lib/marketplace";
 
 interface SidebarNavItem {
@@ -250,7 +251,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
   const avatarGradient = isLkn ? "from-[#6D5EF8] to-[#8B5CF6]" : "from-emerald-500 to-teal-600";
   const initials = isLkn ? "LK" : "BA";
 
-  const sections =
+  const baseSections =
     marketplace === "flipkart"
       ? marketplaceNavSections(marketplace, loggedInUser === "Barm")
       : marketplace === "compare"
@@ -258,6 +259,14 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
       : isUploadOnlyTab(marketplace)
       ? UPLOAD_ONLY_NAV_SECTIONS[marketplace]
       : NAV_SECTIONS;
+  // SellerMate off: drop the Amazon / Overall menu entries whose screens have no other data source.
+  // (Flipkart reuses some of the same ids for its own upload-based pages, so it is left alone.)
+  const hideSellerMateItems = !SELLERMATE_ENABLED && (marketplace === "amazon" || marketplace === "compare");
+  const sections = hideSellerMateItems
+    ? baseSections
+        .map((sec) => ({ ...sec, items: sec.items.filter((i) => !SELLERMATE_ONLY_NAV_IDS.has(i.id)) }))
+        .filter((sec) => sec.items.length > 0)
+    : baseSections;
   const matchActiveByPath = isUploadOnlyTab(marketplace);
 
   const marketplaceRoot = marketplace === "flipkart" ? `/dashboard/${marketplace}` : null;
@@ -369,8 +378,8 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
         ))}
       </nav>
 
-      {/* Pinned AI CTA */}
-      <div className={cn("px-2 pb-3 pt-2 border-t border-slate-800", collapsed && "flex justify-center")}>
+      {/* Pinned AI CTA (the Amazon AI Assistant reads SellerMate, so it goes when that is off) */}
+      {SELLERMATE_ENABLED && <div className={cn("px-2 pb-3 pt-2 border-t border-slate-800", collapsed && "flex justify-center")}>
         <Link
           href="/dashboard/ai"
           className={cn(
@@ -385,7 +394,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
           </span>
           {!collapsed && <span>✨ AI Assistant</span>}
         </Link>
-      </div>
+      </div>}
     </>
   );
 
