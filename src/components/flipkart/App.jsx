@@ -617,19 +617,17 @@ export default function App({ initialTab } = {}) {
   const [dateFrom, setDateFrom] = useState("2026-06-01");
   const [dateTo, setDateTo] = useState("2026-06-28");
 
-  React.useEffect(() => {
-    if (isAmazonMode) {
-      setDateFrom("2026-06-01");
-      setDateTo("2026-06-28");
-      setPnlDateFrom("2026-06-01");
-      setPnlDateTo("2026-06-28");
-    } else {
+  // Switching between Flipkart and Amazon mode resets both date ranges to the defaults. Done in the
+  // switch handler (only when the mode actually changes) rather than in an effect on isAmazonMode.
+  const switchAmazonMode = (next) => {
+    if (next !== isAmazonMode) {
       setDateFrom("2026-06-01");
       setDateTo("2026-06-28");
       setPnlDateFrom("2026-06-01");
       setPnlDateTo("2026-06-28");
     }
-  }, [isAmazonMode]);
+    setIsAmazonMode(next);
+  };
 
   React.useEffect(() => {
     let cancelled = false;
@@ -9622,7 +9620,7 @@ Campaigns: ${JSON.stringify(top20)}`;
               sidebarCollapsed ? 'flex flex-col gap-1' : 'grid grid-cols-2 gap-1'
             } bg-black/30 p-1 rounded-xl border border-white/5`}>
               <button
-                onClick={() => { setIsAmazonMode(false); setActiveTab('overview'); }}
+                onClick={() => { switchAmazonMode(false); setActiveTab('overview'); }}
                 className={`py-2 rounded-lg text-[10px] font-black transition-all ${
                   !isAmazonMode
                     ? 'bg-emerald-500 text-white shadow-md'
@@ -9633,7 +9631,7 @@ Campaigns: ${JSON.stringify(top20)}`;
                 {sidebarCollapsed ? 'FK' : 'FLIPKART'}
               </button>
               <button
-                onClick={() => { setIsAmazonMode(true); setActiveTab('amazon-overview'); }}
+                onClick={() => { switchAmazonMode(true); setActiveTab('amazon-overview'); }}
                 className={`py-2 rounded-lg text-[10px] font-black transition-all ${
                   isAmazonMode
                     ? 'bg-red-500 text-white shadow-md'
@@ -10008,7 +10006,7 @@ Campaigns: ${JSON.stringify(top20)}`;
                 <div className="grid grid-cols-2 bg-slate-950/50 p-1 rounded-xl border border-slate-800/60">
                   <button
                     onClick={() => {
-                      setIsAmazonMode(false);
+                      switchAmazonMode(false);
                       setActiveTab('overview');
                       setIsMobileMenuOpen(false);
                     }}
@@ -10022,7 +10020,7 @@ Campaigns: ${JSON.stringify(top20)}`;
                   </button>
                   <button
                     onClick={() => {
-                      setIsAmazonMode(true);
+                      switchAmazonMode(true);
                       setActiveTab('amazon-overview');
                       setIsMobileMenuOpen(false);
                     }}
