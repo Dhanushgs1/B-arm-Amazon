@@ -82,7 +82,9 @@ export function writeZip(parts: Array<{ name: string; data: Uint8Array }>): Uint
   let offset = 0;
   for (const { name, data } of parts) {
     const nameBytes = enc.encode(name);
-    const deflated = new Uint8Array(zlib.deflateRawSync(data, { level: 6 }));
+    // Level 1: same file contents, ~6x less CPU than level 6 (~9 MB of sheet XML on the Daily Ad
+    // Spend Report). Level 6 pushed that job over the Edge Function CPU cap ("CPU Time exceeded").
+    const deflated = new Uint8Array(zlib.deflateRawSync(data, { level: 1 }));
     const stored = deflated.length >= data.length;
     const body = stored ? data : deflated;
     const method = stored ? 0 : 8;
