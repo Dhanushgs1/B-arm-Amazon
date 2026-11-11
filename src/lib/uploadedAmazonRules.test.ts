@@ -109,3 +109,12 @@ test("inventory without SellerMate: items come from the uploaded FBA report and 
   assert.equal(inv.rows.length, 2);
   assert.deepEqual(inv.notes, []);
 });
+
+test("ad spend change is only comparable when ad data covers both periods in full", async () => {
+  const { adSpendCoversBoth } = await import("./adSpendCoverage.ts");
+  // the 11 Nov 2026 case: uploads start 30 Sep, previous period starts 7 Sep -> not comparable (was +202%)
+  assert.equal(adSpendCoversBoth({ first: "2026-09-30" }, { last: "2026-10-29" }, "2026-09-07", "2026-11-05"), false);
+  assert.equal(adSpendCoversBoth({ first: "2026-10-01" }, { last: "2026-10-25" }, "2026-10-01", "2026-10-29"), false); // current period stops early
+  assert.equal(adSpendCoversBoth({ first: "2026-10-01" }, { last: "2026-10-28" }, "2026-10-01", "2026-10-28"), true);
+  assert.equal(adSpendCoversBoth({ first: null }, { last: "2026-10-28" }, "2026-10-01", "2026-10-28"), false);
+});

@@ -1,3 +1,4 @@
+import { atomicReplace } from "@/lib/atomicUpload";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { supabasePublic, pruneOutsideRange } from "@/lib/amazonReportUpload";
@@ -689,6 +690,7 @@ async function truncateAndInsert(table: string, rows: Record<string, unknown>[])
   // A file with zero usable rows (wrong report, renamed columns) must never wipe the
   // existing snapshot — the delete below would otherwise leave the table empty.
   if (rows.length === 0) throw new Error("No valid rows found in this file — check it is the right report. Existing data was left unchanged.");
+  if (await atomicReplace(supabasePublic, table, rows, { kind: "all" })) return;
   const { error } = await supabasePublic.from(table).delete().gte("id", 0);
   if (error) throw new Error(`Truncate ${table} failed: ${error.message}`);
   await insertInChunks(table, rows);
@@ -881,8 +883,10 @@ export async function uploadFlipkartReportFile(
   } else if (FULL_REPLACE_TYPES[type]) {
     await truncateAndInsert(table, rows);
   } else {
-    await deleteDateRange(table, dateCol!, parsed.minDate!, parsed.maxDate!);
-    await insertInChunks(table, rows);
+    if (!(await atomicReplace(supabasePublic, table, rows, { kind: "range", column: dateCol!, gte: parsed.minDate!, lte: parsed.maxDate! }))) {
+      await deleteDateRange(table, dateCol!, parsed.minDate!, parsed.maxDate!);
+      await insertInChunks(table, rows);
+    }
     if (type === "earn_more") {
       mirrored = await mirrorEarnMoreToOverallSales(rows, parsed.minDate!, parsed.maxDate!);
     }

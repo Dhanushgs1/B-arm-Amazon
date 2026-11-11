@@ -1,3 +1,4 @@
+import { atomicReplace } from "@/lib/atomicUpload";
 import * as XLSX from "xlsx";
 import { supabasePublic } from "@/lib/amazonReportUpload";
 import { fetchAllRows } from "@/lib/amazonReportShared";
@@ -78,6 +79,7 @@ async function truncateAndInsert(rows: Record<string, unknown>[]): Promise<void>
   if (rows.length === 0) throw new Error("No valid rows found in this file — check it is the right report. Existing data was left unchanged.");
   // No natural "this run's rows" filter to delete by (unlike the date-scoped
   // tables) — a snapshot upload always fully replaces the prior one.
+  if (await atomicReplace(supabasePublic, TABLE, rows, { kind: "all" })) return;
   const { error: delErr } = await supabasePublic.from(TABLE).delete().not("id", "is", null);
   if (delErr) throw new Error(`Clearing ${TABLE} failed: ${delErr.message}`);
 

@@ -1,3 +1,4 @@
+import { atomicReplace } from "@/lib/atomicUpload";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { createClient } from "@supabase/supabase-js";
@@ -691,6 +692,8 @@ async function truncateAndInsert(
   // A file with zero usable rows (wrong report, renamed columns) must never wipe the
   // existing snapshot — the delete below would otherwise leave the table empty.
   if (rows.length === 0) throw new Error("No valid rows found in this file — check it is the right report. Existing data was left unchanged.");
+  // All-or-nothing when the database side is installed; otherwise the previous path below.
+  if (await atomicReplace(supabasePublic, table, rows, { kind: "all" })) return;
   const { error } = await supabasePublic.from(table).delete().gte("id", 0);
   if (error) throw new Error(`Truncate ${table} failed: ${error.message}`);
   await insertInChunks(table, rows);
@@ -802,17 +805,29 @@ export async function uploadParsedRows(type: UploadReportType, rawRows: RawRow[]
     const dates = deduped.map((r) => r[replaceDateField]).filter(Boolean).sort();
     const minDate = dates[0].slice(0, 10);
     const maxDate = dates[dates.length - 1].slice(0, 10);
-    await replaceDateRange(table, replaceDateField, !!REPLACE_IS_TIMESTAMP[type], minDate, maxDate);
     const naturalKey = REPLACE_UPSERT_KEY[type];
-    if (naturalKey) {
-      // last row wins per key (one upsert chunk may not touch the same key twice)
-      const byKey = new Map(deduped.map((r) => [naturalKey.split(",").map((f) => String(r[f] ?? "")).join("|"), r]));
-      await upsertInChunks(table, [...byKey.values()], naturalKey);
-    } else {
-      await insertInChunks(table, deduped);
+    // last row wins per key (one upsert may not touch the same key twice)
+    const toWrite = naturalKey
+      ? [...new Map(deduped.map((r) => [naturalKey.split(",").map((f) => String(r[f] ?? "")).join("|"), r])).values()]
+      : deduped;
+    // One transaction when the database side is installed. "Replace the file's range and prune
+    // everything outside it" is the same as replacing the whole table.
+    const atomic = await atomicReplace(
+      supabasePublic, table, toWrite,
+      PRUNE_TO_UPLOAD_RANGE[type]
+        ? { kind: "all" }
+        : REPLACE_IS_TIMESTAMP[type]
+        ? { kind: "range", column: replaceDateField, gte: `${minDate}T00:00:00Z`, lt: `${nextDayIso(maxDate)}T00:00:00Z` }
+        : { kind: "range", column: replaceDateField, gte: minDate, lte: maxDate },
+      naturalKey || null,
+    );
+    if (!atomic) {
+      await replaceDateRange(table, replaceDateField, !!REPLACE_IS_TIMESTAMP[type], minDate, maxDate);
+      if (naturalKey) await upsertInChunks(table, toWrite, naturalKey);
+      else await insertInChunks(table, deduped);
     }
     const statusHistory = type === "am_orders" ? await appendOrderStatusHistory(deduped, fileName) : undefined;
-    if (PRUNE_TO_UPLOAD_RANGE[type]) {
+    if (!atomic && PRUNE_TO_UPLOAD_RANGE[type]) {
       await pruneOutsideRange(table, replaceDateField, minDate, maxDate);
     }
     return {

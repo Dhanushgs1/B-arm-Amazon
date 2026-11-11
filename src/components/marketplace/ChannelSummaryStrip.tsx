@@ -94,8 +94,8 @@ export function ChannelSummaryStrip({
               <KPICard
                 title="Ad Spend"
                 value={cur(data.current.adSpendTax)}
-                subtitle={`Last period ${cur(data.previous.adSpendTax || 0)}`}
-                trend={growth(data.current.adSpendTax, data.previous.adSpendTax || 0)}
+                subtitle={data.adSpendComparable === false ? "Ad data does not cover both periods in full" : `Last period ${cur(data.previous.adSpendTax || 0)}`}
+                trend={data.adSpendComparable === false ? undefined : growth(data.current.adSpendTax, data.previous.adSpendTax || 0)}
                 inverseTrend
                 accent="pink"
               />
@@ -115,6 +115,12 @@ export function ChannelSummaryStrip({
               />
             )}
           </div>
+          {!!data.current.unpricedUnits && (
+            <p role="status" className="rounded-xl border border-amber-500/40 bg-amber-500/5 px-4 py-2.5 text-xs font-semibold text-amber-700 dark:text-amber-400">
+              {num(data.current.unpricedUnits)} units across {num(data.current.unpricedSkus || 0)} product{data.current.unpricedSkus === 1 ? "" : "s"} have no listing price on file.
+              They are counted in Orders but add ₹0 to {data.salesLabel ?? "Sales"}, so {data.salesLabel ?? "Sales"} is understated. Upload the current listings file to price them.
+            </p>
+          )}
           <p className="text-[11px] text-muted-foreground">
             {data.note}
             {data.dataThrough && data.dataThrough < data.currentRange.end

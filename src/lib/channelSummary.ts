@@ -7,6 +7,7 @@ import { fetchMisFkOrders, fetchMisFkReturns } from "@/lib/misAdapters";
 import { isFkSkeletonOrderRow } from "@/lib/flipkartOrderRules";
 import { DEFAULT_GST_MULTIPLIER } from "@/lib/masterProductSkuid";
 import { supabasePublic } from "@/lib/amazonReportUpload";
+import { adSpendCoversBoth } from "@/lib/adSpendCoverage";
 import { amazonCardSpendRows } from "@/lib/amazonAdSourceRules";
 import { dailyFallbackStart, dailyFkRowAsMis, dedupeOrderLines, misMaxForFill } from "@/lib/dailyOrderFallbackRules";
 
@@ -24,6 +25,10 @@ export interface PeriodSummary {
   adSpendTax: number | null;
   /** Orders cancelled before shipping (every line cancelled); undefined = not tracked for this channel. */
   cancelledOrders?: number;
+  /** Units sold of products that have no listing price on file. They are in Orders but add ₹0 to Sales. */
+  unpricedUnits?: number;
+  /** How many different products those units belong to. */
+  unpricedSkus?: number;
 }
 
 export interface ChannelSummary {
@@ -37,6 +42,9 @@ export interface ChannelSummary {
   salesLabel?: string;
   /** False when the channel's data has no returns at all — the Returns card then says "Not tracked" instead of 0. */
   returnsTracked?: boolean;
+  /** False when ad data does not cover both periods in full, so a % change in Ad Spend would compare
+   *  different numbers of days. The card then shows no change badge. Undefined = not checked. */
+  adSpendComparable?: boolean;
 }
 
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -159,6 +167,8 @@ export async function fetchFlipkartOrderSummary(start: string, end: string): Pro
     const cancelledIds = new Set<string>();
     let units = 0;
     let sales = 0;
+    let unpricedUnits = 0;
+    const unpricedSkus = new Set<string>();
     orderRows.forEach((r) => {
       if (!inP(r.order_date) || isFkSkeletonOrderRow(r)) return;
       if (String(r.order_item_status || "").toUpperCase().startsWith("CANCEL")) {
@@ -167,7 +177,10 @@ export async function fetchFlipkartOrderSummary(start: string, end: string): Pro
       }
       const qty = Number(r.quantity) || 0;
       units += qty;
-      sales += qty * (priceBySku.get(String(r.sku || "").trim()) || 0);
+      const sku = String(r.sku || "").trim();
+      const price = priceBySku.get(sku);
+      if (price === undefined) { unpricedUnits += qty; unpricedSkus.add(sku || "(no SKU)"); }
+      sales += qty * (price || 0);
       if (r.order_id) ids.add(r.order_id);
     });
     let allReturns = 0;
@@ -179,7 +192,7 @@ export async function fetchFlipkartOrderSummary(start: string, end: string): Pro
       if (String(r.return_type || "").toLowerCase() === "customer_return") customerReturns += q;
     });
     const cancelledOrders = [...cancelledIds].filter((id) => !ids.has(id)).length;
-    return { sales: priceBySku.size ? sales : null, units, orders: ids.size, allReturns, customerReturns, netOrders: units - allReturns, adSpendTax: null, cancelledOrders };
+    return { sales: priceBySku.size ? sales : null, units, orders: ids.size, allReturns, customerReturns, netOrders: units - allReturns, adSpendTax: null, cancelledOrders, unpricedUnits, unpricedSkus: unpricedSkus.size };
   };
   const dates = orderRows.map((r) => r.order_date).filter((d): d is string => !!d).sort();
   return {
@@ -206,7 +219,7 @@ async function spendTaxIn(table: string, col: string, start: string, end: string
 /** Amazon ad spend (with GST) the same way the Ad Spend Report counts it: every Sponsored Products
  *  row (which already carries the seller's per-SKU split of Brand/Display spend) plus each Sponsored
  *  Brands / Display campaign-day that has no such split, so nothing is counted twice. */
-async function amazonSpendTaxIn(start: string, end: string): Promise<number> {
+async function amazonSpendTaxIn(start: string, end: string): Promise<{ spend: number; first: string | null; last: string | null }> {
   const [sp, sb, sd] = await Promise.all(
     ["barm_amazon_sp_advertised_product", "barm_amazon_sb_campaign", "barm_amazon_sd_campaign"].map((t) =>
       fetchAllRows(t, (q) => q.gte("report_date", start).lte("report_date", end))
@@ -214,7 +227,8 @@ async function amazonSpendTaxIn(start: string, end: string): Promise<number> {
   );
   const { spRows, campaignRows } = amazonCardSpendRows(sp, sb, sd);
   const sum = (rows: { spend?: unknown }[]) => rows.reduce((t, r) => t + (Number(r.spend) || 0), 0);
-  return (sum(spRows) + sum(campaignRows)) * DEFAULT_GST_MULTIPLIER;
+  const days = [...spRows, ...campaignRows].map((r) => String((r as { report_date?: unknown }).report_date ?? "").slice(0, 10)).filter(Boolean).sort();
+  return { spend: (sum(spRows) + sum(campaignRows)) * DEFAULT_GST_MULTIPLIER, first: days[0] ?? null, last: days[days.length - 1] ?? null };
 }
 
 /** Amazon, from the same MIS tables and rules as the Amazon Weekly Sales Report — plus the daily
@@ -229,8 +243,9 @@ export async function fetchAmazonSummary(start: string, end: string): Promise<Ch
   ]);
   const gross = (label: string) => data.visibleRows.reduce((t, p) => { const s = p.periods[label]; return t + (s ? s.price * s.orders : 0); }, 0);
   return {
-    current: { ...summarize(data, "current"), sales: gross("current"), adSpendTax: spendCur },
-    previous: { ...summarize(data, "previous"), sales: gross("previous"), adSpendTax: spendPrev },
+    current: { ...summarize(data, "current"), sales: gross("current"), adSpendTax: spendCur.spend },
+    previous: { ...summarize(data, "previous"), sales: gross("previous"), adSpendTax: spendPrev.spend },
+    adSpendComparable: adSpendCoversBoth(spendPrev, spendCur, periods[0].start, end),
     currentRange: { start, end },
     previousRange: periods[0],
     dataThrough: data.dataThrough,

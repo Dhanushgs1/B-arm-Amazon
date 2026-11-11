@@ -1,3 +1,4 @@
+import { atomicReplace } from "@/lib/atomicUpload";
 import * as XLSX from "xlsx";
 import { supabasePublic, dedupeExactRows, type ReportDataInfo } from "@/lib/amazonReportUpload";
 import { toDate as parseFlexibleDate } from "@/lib/meeshoReportUpload";
@@ -129,6 +130,15 @@ async function mirrorSheetToDailyTable(ws: XLSX.WorkSheet, spec: DailyMirrorSpec
     }
   }
   const dates = spec.replaceBy ? [] : mapped.map((r) => r.report_date as string | null).filter((d): d is string => !!d).sort();
+  if (dates.length) {
+    try {
+      if (await atomicReplace(supabasePublic, spec.table, mapped, { kind: "range", column: "report_date", gte: dates[0], lte: dates[dates.length - 1] })) {
+        return { table: spec.table, status: "ok", detail: `${mapped.length} rows mirrored to ${spec.table}.` };
+      }
+    } catch (err) {
+      return { table: spec.table, status: "error", detail: err instanceof Error ? err.message : String(err) };
+    }
+  }
   if (dates.length) {
     const { error: delErr } = await supabasePublic
       .from(spec.table)
@@ -528,14 +538,17 @@ async function replaceRangeRows(table: string, dateCol: string, rows: Record<str
   // reference report: Spend within a few %, Orders 40-57% too high.
   const deduped = dedupeExactRows(rows);
   const dates = deduped.map((r) => r[dateCol] as string | null).filter((d): d is string => !!d).sort();
-  if (dates.length) {
-    const { error: delErr } = await supabasePublic.from(table).delete().gte(dateCol, dates[0]).lte(dateCol, dates[dates.length - 1]);
-    if (delErr) throw new Error(`Clearing ${table} failed: ${delErr.message}`);
-  }
-  const chunkSize = 300;
-  for (let i = 0; i < deduped.length; i += chunkSize) {
-    const { error } = await supabasePublic.from(table).insert(deduped.slice(i, i + chunkSize));
-    if (error) throw new Error(`Insert into ${table} failed: ${error.message}`);
+  const atomic = dates.length > 0 && (await atomicReplace(supabasePublic, table, deduped, { kind: "range", column: dateCol, gte: dates[0], lte: dates[dates.length - 1] }));
+  if (!atomic) {
+    if (dates.length) {
+      const { error: delErr } = await supabasePublic.from(table).delete().gte(dateCol, dates[0]).lte(dateCol, dates[dates.length - 1]);
+      if (delErr) throw new Error(`Clearing ${table} failed: ${delErr.message}`);
+    }
+    const chunkSize = 300;
+    for (let i = 0; i < deduped.length; i += chunkSize) {
+      const { error } = await supabasePublic.from(table).insert(deduped.slice(i, i + chunkSize));
+      if (error) throw new Error(`Insert into ${table} failed: ${error.message}`);
+    }
   }
   return `${deduped.length} rows -> ${table}`;
 }
