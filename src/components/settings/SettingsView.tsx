@@ -5,7 +5,7 @@ import {
   Settings, Shield, RefreshCw, Key, HelpCircle, CheckCircle, Bell, Loader2, Send,
   Building2, Bot, Zap, Palette, Sun, Moon, Globe, Database, Activity, Sparkles, Plug, Store, BookOpen
 } from "lucide-react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { MARKETPLACE_META } from "@/lib/marketplace";
@@ -176,6 +176,18 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
         const savedTheme: "light" | "dark" = p.theme === "dark" ? "dark" : "light";
         setTheme(savedTheme);
         document.documentElement.classList.toggle("dark", savedTheme === "dark");
+        applySettings(p);
+      } catch (e) {
+        console.error("Failed to parse settings", e);
+      }
+    } else {
+      setTheme(document.documentElement.classList.contains("dark") ? "dark" : "light");
+    }
+  }, []);
+
+  // Fills the form from a settings object (this browser's copy, or the server's saved row).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- free-form saved settings JSON
+  function applySettings(p: any) {
         setEmailAlerts(p.emailAlerts ?? true);
         setNotifEmail(p.notifEmail ?? "");
         setCcEmail(p.ccEmail ?? "");
@@ -215,16 +227,46 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
         setCompactMode(p.compactMode ?? false);
         setFlipkartApiKey(p.flipkartApiKey ?? "");
         setFlipkartSellerId(p.flipkartSellerId ?? "");
-      } catch (e) {
-        console.error("Failed to parse settings", e);
-      }
-    } else {
-      setTheme(document.documentElement.classList.contains("dark") ? "dark" : "light");
-    }
-  }, []);
+  }
+
+  // The server row is what the scheduled mails actually read, so it is the source of truth for the
+  // form. Until it has loaded ("ok"), nothing on this page writes to the server: a browser with no
+  // saved copy (or a stale one) would otherwise post defaults or old recipients over the live row.
+  // Tracked per account slot: a load for another slot does not count as loaded for this one.
+  const [serverLoadState, setServerLoadState] = useState<{ slot: string; status: "ok" | "failed" } | null>(null);
+  const serverLoad: "loading" | "ok" | "failed" = serverLoadState?.slot === keySlot ? serverLoadState.status : "loading";
+  const serverSnapshot = useRef<{ notifEmail: string; ccEmail: string; emailAlerts: boolean } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/email-settings?keySlot=${encodeURIComponent(keySlot)}`)
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`settings load failed: ${r.status}`);
+        return r.json();
+      })
+      .then((s) => {
+        if (cancelled) return;
+        if (s && typeof s === "object" && Object.keys(s).length > 0) {
+          applySettings(s);
+          serverSnapshot.current = { notifEmail: s.notifEmail ?? "", ccEmail: s.ccEmail ?? "", emailAlerts: s.emailAlerts ?? true };
+        } else {
+          serverSnapshot.current = null;
+        }
+        setServerLoadState({ slot: keySlot, status: "ok" });
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        console.error(e);
+        setServerLoadState({ slot: keySlot, status: "failed" });
+      });
+    return () => { cancelled = true; };
+  }, [keySlot]);
 
   // ── Auto-save email + schedule settings to server on change ──
   useEffect(() => {
+    if (serverLoad !== "ok") return;
+    const snap = serverSnapshot.current;
+    // Unchanged from what the server already holds: nothing to save.
+    if (snap && snap.notifEmail === notifEmail && snap.ccEmail === ccEmail && snap.emailAlerts === emailAlerts) return;
     if (notifEmail !== "") {
       const saved = localStorage.getItem("ppcUserSettings");
       const current = saved ? JSON.parse(saved) : {};
@@ -242,7 +284,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
         }),
       }).catch(() => {});
     }
-  }, [notifEmail, ccEmail, emailAlerts]);
+  }, [notifEmail, ccEmail, emailAlerts, serverLoad]);
 
   const toggleTheme = (next: "light" | "dark") => {
     setTheme(next);
@@ -275,14 +317,34 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
 
     localStorage.setItem("ppcUserSettings", JSON.stringify(config));
 
+    // The saved server settings never loaded, so this form may not reflect them. Keep the change
+    // on this device and leave the server row (recipients, alert switches) exactly as it is.
+    if (serverLoad !== "ok") {
+      setSaving(false);
+      setSaveEmailNote("Saved on this device only. The saved email settings could not be loaded, so they were left unchanged. Reload the page and try again.");
+      setSuccess(true);
+      setTimeout(() => { setSuccess(false); setSaveEmailNote(null); }, 8000);
+      return;
+    }
+
     // Persist to server so the cron scheduler + confirmation email read the live values
+    let savedToServer = false;
     try {
-      await fetch("/api/email-settings", {
+      const r = await fetch("/api/email-settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(config),
       });
+      savedToServer = r.ok;
     } catch {}
+    if (!savedToServer) {
+      setSaving(false);
+      setSaveEmailNote("Could not save to the server. Email settings are unchanged. Try again.");
+      setSuccess(true);
+      setTimeout(() => { setSuccess(false); setSaveEmailNote(null); }, 8000);
+      return;
+    }
+    serverSnapshot.current = { notifEmail, ccEmail, emailAlerts };
 
     // Saving is what actually "activates" the alert channels — confirm it landed
     // by emailing a summary of which alert types are now on, instead of making

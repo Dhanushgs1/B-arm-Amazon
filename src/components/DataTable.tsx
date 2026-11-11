@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Search, Columns3, FileSpreadsheet, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Search, SearchX, Columns3, FileSpreadsheet, Loader2 } from "lucide-react";
+import { EmptyState } from "@/components/EmptyState";
 import { cn } from "@/lib/utils";
 import { exportToExcel } from "@/lib/excelExport";
 
@@ -184,10 +185,12 @@ export function DataTable<T>({
           <tbody className="divide-y divide-border">
             {view.length === 0 ? (
               <tr>
-                <td colSpan={visibleColumns.length} className="px-4 py-16 text-center">
-                  <p className="text-3xl mb-2">🔍</p>
-                  <p className="font-bold text-muted-foreground">No data found</p>
-                  <p className="text-xs text-muted-foreground mt-1">Try adjusting your search or filters.</p>
+                <td colSpan={visibleColumns.length}>
+                  {search.trim() && data.length > 0 ? (
+                    <EmptyState icon={SearchX} title="No rows match your search" description={`Nothing matches "${search.trim()}". Clear the search to see all ${data.length} rows.`} />
+                  ) : (
+                    <EmptyState title="No data for this view" description="There are no rows for the selected period and filters." />
+                  )}
                 </td>
               </tr>
             ) : (

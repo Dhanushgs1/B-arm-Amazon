@@ -87,7 +87,11 @@ function MessageBubble({ message, index }: { message: Message; index: number }) 
   const isAssistant = message.role === "assistant";
 
   // Simple markdown renderer for bold, bullets, and code
-  const renderContent = (content: string) => {
+  const renderContent = (rawContent: string) => {
+    // Model output can echo product or campaign names; escape it so it only ever renders as text.
+    const content = rawContent
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
     const lines = content.split("\n");
     return lines.map((line, i) => {
       if (line.startsWith("- ")) {

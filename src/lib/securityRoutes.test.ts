@@ -330,3 +330,115 @@ test("internalOrigin ignores Host; internalFetch refuses other origins and signs
   delete process.env.VERCEL_URL;
   delete process.env.APP_INTERNAL_ORIGIN;
 });
+
+// ── Phase 1 hardening ──────────────────────────────────────────────────────────────────────
+test("sm.js (legacy SellerMate proxy): no session -> 401 and nothing is relayed, even with a key", async () => {
+  const SM = "pages/api/sm.js";
+  const anon = await call(SM, { headers: { "x-api-key": "any-key" }, query: { path: "tools" } });
+  assert.equal(anon.statusCode, 401);
+  assert.equal(anon.headers["access-control-allow-origin"], undefined); // no wildcard CORS any more
+  assert.equal((await call(SM, { method: "OPTIONS" })).statusCode, 405);
+  assert.deepEqual(fetchCalls, []);
+  // Signed in: path allow-list still applies, and a valid call reaches SellerMate (blocked here).
+  assert.equal((await call(SM, { headers: { ...session(), "x-api-key": "k" }, query: { path: "../admin" } })).statusCode, 400);
+  const ok = await call(SM, { headers: { ...session(), "x-api-key": "k" }, query: { path: "tools" } });
+  assert.equal(ok.statusCode, 502);
+  assert.equal(fetchCalls.length, 1);
+  assert.match(fetchCalls[0], /^https:\/\/api\.sellermate\.ai\/public\/v1\/tools$/);
+});
+
+test("hub-llm: needs a session; reports configured providers; never proxies without a server key", async () => {
+  const HL = "pages/api/hub-llm.ts";
+  delete process.env.GROQ_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  assert.equal((await call(HL, { method: "GET" })).statusCode, 401);
+  assert.equal((await call(HL, { body: { provider: "groq", payload: {} } })).statusCode, 401);
+  const flags = await call(HL, { method: "GET", headers: session() });
+  assert.deepEqual(flags.body, { groq: false, anthropic: false });
+  const body = { provider: "groq", payload: { model: "m", messages: [{ role: "user", content: "hi" }] } };
+  assert.equal((await call(HL, { headers: session(), body })).statusCode, 503);
+  assert.equal((await call(HL, { headers: session(), body: { ...body, provider: "openai" } })).statusCode, 400);
+  assert.deepEqual(fetchCalls, []);
+
+  process.env.GROQ_API_KEY = "server-side-test-key";
+  try {
+    assert.deepEqual((await call(HL, { method: "GET", headers: session() })).body, { groq: true, anthropic: false });
+    assert.equal((await call(HL, { headers: session(), body: { provider: "groq", payload: { model: "m" } } })).statusCode, 400);
+    const sent = await call(HL, { headers: session(), body });
+    assert.equal(sent.statusCode, 502); // reached the provider call (network is blocked in tests)
+    assert.deepEqual(fetchCalls, ["https://api.groq.com/openai/v1/chat/completions"]);
+    assert.ok(!JSON.stringify(sent.body).includes("server-side-test-key"));
+  } finally {
+    delete process.env.GROQ_API_KEY;
+  }
+});
+
+test("hub-llm: forwards only allow-listed fields and caps max_tokens", async () => {
+  const { sanitizePayload } = (await jiti.import(abs("pages/api/hub-llm.ts"))) as any;
+  const out = sanitizePayload("groq", {
+    model: "m", messages: [{ role: "user", content: "x" }], max_tokens: 999999, stream: true, tools: [{}], temperature: 0.2,
+  });
+  assert.deepEqual(Object.keys(out).sort(), ["max_tokens", "messages", "model", "temperature"]);
+  assert.equal(out.max_tokens, 4096);
+  assert.equal(sanitizePayload("anthropic", { model: "m", messages: [] }), null);
+  assert.equal(sanitizePayload("anthropic", "nope"), null);
+});
+
+test("client code holds no provider keys, legacy passwords or direct AI-provider calls", () => {
+  const hub = readFileSync(path.join(SRC, "components/flipkart/App.jsx"), "utf8");
+  assert.doesNotMatch(hub, /gsk_[A-Za-z0-9]{20,}/);
+  assert.doesNotMatch(hub, /sk-ant-[A-Za-z0-9]{10,}/);
+  assert.doesNotMatch(hub, /password === ['"]/);
+  assert.doesNotMatch(hub, /auth_token: ["'][0-9a-f]{16,}/);
+  assert.doesNotMatch(hub, /fetch\(["']https:\/\/api\.(groq|anthropic)\.com/);
+  assert.doesNotMatch(hub, /sb_publishable_[A-Za-z0-9_-]{10,}/);
+});
+
+test("email settings: a blank recipient never replaces a saved one; other fields merge normally", async () => {
+  const { mergeEmailSettings } = (await jiti.import(abs("lib/emailSettingsStore.ts"))) as any;
+  const saved = { notifEmail: "ops@example.com", ccEmail: "cc@example.com", dailySummary: true, ratingDropAlerts: false };
+  // The "Save pressed before the form loaded" shape: blank recipient, default toggles.
+  const merged = mergeEmailSettings(saved, { notifEmail: "", ccEmail: "", dailySummary: false, keySlot: "B" });
+  assert.equal(merged.notifEmail, "ops@example.com");
+  assert.equal(merged.ccEmail, "");           // cc may be cleared
+  assert.equal(merged.dailySummary, false);   // explicit toggles still apply
+  assert.equal(merged.ratingDropAlerts, false);
+  assert.equal(mergeEmailSettings(saved, { notifEmail: "  " }).notifEmail, "ops@example.com");
+  assert.equal(mergeEmailSettings(saved, { notifEmail: "new@example.com" }).notifEmail, "new@example.com");
+  const cleared = mergeEmailSettings(saved, { notifEmail: "", clearRecipient: true });
+  assert.equal(cleared.notifEmail, "");
+  assert.equal("clearRecipient" in cleared, false);
+  assert.deepEqual(mergeEmailSettings({}, { notifEmail: "" }), { notifEmail: "" });
+});
+
+test("email settings: a failed read blocks the write (no overwrite) and GET reports 503, not {}", async () => {
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://example.invalid";
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "anon-test";
+  const fresh = createJiti(import.meta.url, { alias: { "@/": `${SRC_POSIX}/` }, moduleCache: false });
+  try {
+    const store = (await fresh.import(abs("lib/emailSettingsStore.ts"))) as any;
+    const methods: string[] = [];
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      methods.push(init?.method || "GET");
+      throw new Error("statement timeout");
+    }) as typeof fetch;
+    await assert.rejects(store.writeEmailSettings("B", { notifEmail: "x@example.com" }), /statement timeout/);
+    assert.ok(methods.length >= 1 && methods.every((m) => m === "GET"), "must never POST after a failed read");
+    assert.deepEqual(await store.readEmailSettings("B"), {}); // lenient read keeps its old contract
+    const handler = ((await fresh.import(abs("pages/api/email-settings.ts"))) as any).default;
+    const res = mockRes();
+    await handler({ method: "GET", headers: session(), body: {}, query: { keySlot: "B" } }, res);
+    assert.equal(res.statusCode, 503);
+  } finally {
+    delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+    delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    blockNetwork();
+  }
+});
+
+test("logout clears the session cookie", async () => {
+  const r = await call("pages/api/auth/logout.ts", {});
+  assert.equal(r.statusCode, 200);
+  assert.match(r.headers["set-cookie"], /m360_session=;.*Max-Age=0/);
+  assert.match(r.headers["set-cookie"], /HttpOnly/);
+});

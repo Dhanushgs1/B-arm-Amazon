@@ -109,8 +109,10 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
   useEffect(() => {
     const loadNotifs = () => {
       const saved = localStorage.getItem("ppcNotifications");
-      if (saved) {
-        setNotifications(JSON.parse(saved));
+      let parsed: Notification[] | null = null;
+      try { parsed = saved ? JSON.parse(saved) : null; } catch { parsed = null; }
+      if (Array.isArray(parsed)) {
+        setNotifications(parsed);
       } else {
         const defaultNotifs: Notification[] = [
           { id: 1, title: "Low Stock Warning", body: "ASIN B07X8Y54... is down to 8 units. Replenish soon.", time: "10m ago", read: false, type: "warning" },
@@ -137,7 +139,16 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    // End the server session first (clears the HttpOnly cookie); only then drop local state.
+    // If the request fails the cookie is still valid, so say so rather than pretend to sign out.
+    try {
+      const r = await fetch("/api/auth/logout", { method: "POST" });
+      if (!r.ok) throw new Error(String(r.status));
+    } catch {
+      window.alert("Could not sign out. Check your connection and try again.");
+      return;
+    }
     localStorage.removeItem("ppcUser");
     localStorage.removeItem("ppcKeySlot");
     window.location.href = "/";

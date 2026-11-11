@@ -62,3 +62,6 @@ supabase/.temp/
 /retail_date_window_probe.json
 /retail_raw_*.json
 /tmp_uploads/
+
+# per-machine email settings snapshot (recipient + account ids); the live copy is the email_settings table
+.email-settings.json

@@ -19,6 +19,9 @@
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the settings row is free-form JSON
+type Settings = Record<string, any>;
+
 function headers() {
   return {
     apikey: SUPABASE_ANON_KEY || "",
@@ -43,6 +46,20 @@ export function isConfigured() {
 // second" for "never configured".
 export async function readEmailSettings(keySlot: string): Promise<Record<string, any>> {
   if (!isConfigured()) return {};
+  try {
+    return await readEmailSettingsStrict(keySlot);
+  } catch (err) {
+    console.error(`[emailSettingsStore] readEmailSettings(${keySlot}) failed after 3 attempts:`, err);
+    return {};
+  }
+}
+
+// Same read, but a failure THROWS instead of collapsing into {}. Anything that is about to write
+// must use this: merging a patch onto a {} that really means "the read failed" would replace the
+// whole saved row (recipients, every alert toggle) with just the patch.
+export async function readEmailSettingsStrict(keySlot: string): Promise<Settings> {
+  if (!isConfigured()) throw new Error("Supabase env vars (SUPABASE_URL, SUPABASE_ANON_KEY) are not configured");
+  let lastErr: unknown;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const r = await fetch(
@@ -51,22 +68,34 @@ export async function readEmailSettings(keySlot: string): Promise<Record<string,
       );
       if (!r.ok) throw new Error(`Supabase read failed: ${r.status} ${await r.text().catch(() => "")}`);
       const rows = await r.json();
-      return rows?.[0]?.settings || {};
+      if (!Array.isArray(rows)) throw new Error("Supabase read returned an unexpected shape");
+      return rows[0]?.settings || {};
     } catch (err) {
-      if (attempt < 2) {
-        await new Promise((res) => setTimeout(res, 500 * (attempt + 1)));
-        continue;
-      }
-      console.error(`[emailSettingsStore] readEmailSettings(${keySlot}) failed after 3 attempts:`, err);
+      lastErr = err;
+      if (attempt < 2) await new Promise((res) => setTimeout(res, 500 * (attempt + 1)));
     }
   }
-  return {};
+  throw lastErr instanceof Error ? lastErr : new Error("Supabase read failed");
+}
+
+// Pure merge rule, exported for tests. The patch wins field by field, with one exception: an empty
+// notifEmail never replaces a saved one. A blank arrives when the Settings form is saved before it
+// has loaded (new browser, cleared storage), and blanking it makes the cron treat the account as
+// "not configured" and silently stop every scheduled mail. Clearing the recipient on purpose needs
+// clearRecipient: true; switching mails off is what the emailAlerts toggle is for.
+export function mergeEmailSettings(current: Settings, patch: Settings): Settings {
+  const { clearRecipient, ...fields } = patch || {};
+  const merged = { ...current, ...fields };
+  const blank = typeof fields.notifEmail === "string" && fields.notifEmail.trim() === "";
+  if (blank && current?.notifEmail && clearRecipient !== true) merged.notifEmail = current.notifEmail;
+  return merged;
 }
 
 export async function writeEmailSettings(keySlot: string, patch: Record<string, any>): Promise<Record<string, any>> {
   if (!isConfigured()) throw new Error("Supabase env vars (SUPABASE_URL, SUPABASE_ANON_KEY) are not configured");
-  const current = await readEmailSettings(keySlot);
-  const merged = { ...current, ...patch };
+  // Strict: if the current row cannot be read, refuse to write rather than overwrite it.
+  const current = await readEmailSettingsStrict(keySlot);
+  const merged = mergeEmailSettings(current, patch);
   const r = await fetch(`${SUPABASE_URL}/rest/v1/email_settings`, {
     method: "POST",
     headers: { ...headers(), Prefer: "resolution=merge-duplicates" },

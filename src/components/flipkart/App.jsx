@@ -19,6 +19,16 @@ import {
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, ComposedChart, Bar, Line, PieChart, Pie, Cell, Legend } from 'recharts';
 import * as XLSX from 'xlsx';
 
+// AI calls go through the session-guarded server route, which holds the provider keys.
+// Same call shape as fetch(url, init): only init.body (the provider request JSON) is forwarded;
+// any key-bearing headers passed by older call sites are ignored and never leave the browser.
+const hubLlmFetch = (provider, init = {}) =>
+  fetch("/api/hub-llm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider, payload: JSON.parse(init.body || "{}") }),
+  });
+
 // ==========================================
 // STATIC AUDIT DATA TO HARDCODE
 // ==========================================
@@ -302,8 +312,9 @@ export default function App({ initialTab } = {}) {
       setSyncState('loading');
       setSyncMessage('Generating auth token...');
       
-      const authTokenRaw = "LKR@$$$@2025" + "devadmin@lkn.com";
-      const authToken = SparkMD5.hash(authTokenRaw);
+      // Legacy shop-sync secret removed from client code; the billing endpoints below are not
+      // part of this deployment, so the sync reports "not found" exactly as before.
+      const authToken = "";
       
       const payload = {
         auth_token: authToken,
@@ -371,119 +382,43 @@ export default function App({ initialTab } = {}) {
     }
   };
 
+  // The only sign-in is the server-side dashboard login (/api/auth/login). This legacy in-app
+  // form is never rendered (isAuthenticated starts true) and accepts no credentials.
   const handleLogin = async (e) => {
     e.preventDefault();
-    if (username === 'lkn' && password === 'lkn@123') {
-      setIsAuthenticated(true);
-      setLoginError("");
-      try {
-        const savedLive = localStorage.getItem(`fk_live_keywords_rows_lkn`) || localStorage.getItem(`fk_live_keywords_rows`);
-        if (savedLive) setLiveKeywordsRows(JSON.parse(savedLive));
-        const savedYest = localStorage.getItem(`fk_yesterday_live_keywords_lkn`) || localStorage.getItem(`fk_yesterday_live_keywords`);
-        if (savedYest) setYesterdayLiveKeywords(JSON.parse(savedYest));
-        const savedTime = localStorage.getItem(`fk_keyword_upload_time_lkn`) || localStorage.getItem(`fk_keyword_upload_time`);
-        if (savedTime) setKeywordUploadTimestamp(savedTime);
-      } catch(e) {}
-      try {
-        const saved = localStorage.getItem('fk_keyword_planner_rows_lkn') || localStorage.getItem('fk_keyword_planner_rows');
-        if (saved) setKeywordPlannerRows(JSON.parse(saved));
-      } catch(e) {}
-      setSupabaseUrl(localStorage.getItem('LKN_SUPABASE_URL_V3') || process.env.NEXT_PUBLIC_SUPABASE_URL || "");
-      setSupabaseKey(localStorage.getItem('LKN_SUPABASE_KEY_V3') || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "");
-    } else if (username === 'barm' && password === 'barm@123') {
-      setIsAuthenticated(true);
-      setLoginError("");
-      // Reset ALL data states to prevent LKN data leaking
-      setDateFrom('');
-      setDateTo('');
-      setPnlDateFrom('');
-      setPnlDateTo('');
-      setPerformanceRows([]);
-      setOverallSalesRows([]);
-      setListingsRows([]);
-      setPnlOrdersRows([]);
-      setPriceHistoryRows([]);
-      setPeriodComparisonData({ products: [], campaigns: [], summary: {} });
-      try {
-        const savedLive = localStorage.getItem(`fk_live_keywords_rows_barm`);
-        if (savedLive) setLiveKeywordsRows(JSON.parse(savedLive)); else setLiveKeywordsRows([]);
-        const savedYest = localStorage.getItem(`fk_yesterday_live_keywords_barm`);
-        if (savedYest) setYesterdayLiveKeywords(JSON.parse(savedYest)); else setYesterdayLiveKeywords(null);
-        const savedTime = localStorage.getItem(`fk_keyword_upload_time_barm`);
-        if (savedTime) setKeywordUploadTimestamp(savedTime); else setKeywordUploadTimestamp(null);
-      } catch(e) { setLiveKeywordsRows([]); setYesterdayLiveKeywords(null); setKeywordUploadTimestamp(null); }
-      try {
-        const saved = localStorage.getItem('fk_keyword_planner_rows_barm');
-        if (saved) setKeywordPlannerRows(JSON.parse(saved));
-        else setKeywordPlannerRows([]);
-      } catch(e) { setKeywordPlannerRows([]); }
-      // Use same Supabase instance as LKN but with barm_ prefixed tables
-      setSupabaseUrl(localStorage.getItem('BARM_SUPABASE_URL_V3') || process.env.NEXT_PUBLIC_SUPABASE_URL || "");
-      setSupabaseKey(localStorage.getItem('BARM_SUPABASE_KEY_V3') || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "");
-    } else {
-      setLoginError("");
-      try {
-        const response = await fetch("/api/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            auth_token: "5a60451586960317cbfa04a5ff172e00",
-            email: username,
-            password: password
-          })
-        });
-        const data = await response.json();
-        if (data.success) {
-          setIsAuthenticated(true);
-          setLoginError("");
-          localStorage.setItem("api_token", data.token);
-          if (data.user_detail) {
-            localStorage.setItem("user_detail", JSON.stringify(data.user_detail));
-            setIsShopMode(true);
-          }
-          // Default LKN config for API authenticated users
-          try {
-            const savedLive = localStorage.getItem(`fk_live_keywords_rows_lkn`) || localStorage.getItem(`fk_live_keywords_rows`);
-            if (savedLive) setLiveKeywordsRows(JSON.parse(savedLive));
-            const savedYest = localStorage.getItem(`fk_yesterday_live_keywords_lkn`) || localStorage.getItem(`fk_yesterday_live_keywords`);
-            if (savedYest) setYesterdayLiveKeywords(JSON.parse(savedYest));
-            const savedTime = localStorage.getItem(`fk_keyword_upload_time_lkn`) || localStorage.getItem(`fk_keyword_upload_time`);
-            if (savedTime) setKeywordUploadTimestamp(savedTime);
-          } catch(e) {}
-          try {
-            const saved = localStorage.getItem('fk_keyword_planner_rows_lkn') || localStorage.getItem('fk_keyword_planner_rows');
-            if (saved) setKeywordPlannerRows(JSON.parse(saved));
-          } catch(e) {}
-          setSupabaseUrl(localStorage.getItem('LKN_SUPABASE_URL_V3') || process.env.NEXT_PUBLIC_SUPABASE_URL || "");
-          setSupabaseKey(localStorage.getItem('LKN_SUPABASE_KEY_V3') || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "");
-        } else {
-          setLoginError(data.message || "Invalid credentials");
-        }
-      } catch (err) {
-        console.error("Login API error:", err);
-        setLoginError("Failed to connect to login API");
-      }
-    }
+    setLoginError("Sign in from the main dashboard login page.");
   };
 
 
   // Supabase Credentials
   const [supabaseUrl, setSupabaseUrl] = useState(
-    localStorage.getItem('LKN_SUPABASE_URL_V3') || process.env.NEXT_PUBLIC_SUPABASE_URL || "https://glvnqvjnglvnrgfyaypk.supabase.co"
+    localStorage.getItem('LKN_SUPABASE_URL_V3') || process.env.NEXT_PUBLIC_SUPABASE_URL || ""
   );
   const [supabaseKey, setSupabaseKey] = useState(
-    localStorage.getItem('LKN_SUPABASE_KEY_V3') || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_skwipohj0AMXATtbaNe9pw_tPvxOpSv"
+    localStorage.getItem('LKN_SUPABASE_KEY_V3') || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
   );
   
-  // Groq API Key (Settings)
-  const [groqKey, setGroqKey] = useState(
-    localStorage.getItem('LKN_GROQ_KEY') || "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"
-  );
-
-  // Claude API Key (Settings)
-  const [claudeKey, setClaudeKey] = useState(
-    localStorage.getItem('LKN_CLAUDE_KEY') || ""
-  );
+  // AI provider keys live only on the server (GROQ_API_KEY / ANTHROPIC_API_KEY) and are used
+  // through the session-guarded /api/hub-llm route. These two values are availability flags
+  // ("server" when that provider is configured, "" when not) and never hold a key.
+  const [groqKey, setGroqKey] = useState("");
+  const [claudeKey, setClaudeKey] = useState("");
+  useEffect(() => {
+    // Clear keys that earlier versions stored in the browser.
+    try {
+      ['LKN_GROQ_KEY', 'BARM_GROQ_KEY', 'LKN_CLAUDE_KEY', 'BARM_CLAUDE_KEY'].forEach((k) => localStorage.removeItem(k));
+    } catch (e) { /* storage unavailable */ }
+    let cancelled = false;
+    fetch("/api/hub-llm")
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((j) => {
+        if (cancelled) return;
+        setGroqKey(j.groq ? "server" : "");
+        setClaudeKey(j.anthropic ? "server" : "");
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   // Campaign Manager CSV state
   const [campaignCSVData, setCampaignCSVData] = useState([]);
@@ -1376,13 +1311,9 @@ export default function App({ initialTab } = {}) {
     if (username === 'barm') {
       localStorage.setItem('BARM_SUPABASE_URL_V3', cleanUrl);
       localStorage.setItem('BARM_SUPABASE_KEY_V3', supabaseKey);
-      localStorage.setItem('BARM_GROQ_KEY', groqKey);
-      localStorage.setItem('BARM_CLAUDE_KEY', claudeKey);
     } else {
       localStorage.setItem('LKN_SUPABASE_URL_V3', cleanUrl);
       localStorage.setItem('LKN_SUPABASE_KEY_V3', supabaseKey);
-      localStorage.setItem('LKN_GROQ_KEY', groqKey);
-      localStorage.setItem('LKN_CLAUDE_KEY', claudeKey);
     }
     setSupabaseUrl(cleanUrl);
     setShowConfig(false);
@@ -2046,7 +1977,7 @@ Return ONLY valid JSON array, no markdown, no explanation:
     try {
       if (claudeKey) {
         // Claude AI
-        const response = await fetch("https://api.anthropic.com/v1/messages", {
+        const response = await hubLlmFetch("anthropic", {
           method: "POST",
           headers: {
             "x-api-key": claudeKey,
@@ -2068,7 +1999,7 @@ Return ONLY valid JSON array, no markdown, no explanation:
         }
       } else {
         // Groq (free)
-        const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        const response = await hubLlmFetch("groq", {
           method: "POST",
           headers: {
             "Authorization": `Bearer ${groqKey}`,
@@ -8267,7 +8198,7 @@ Return ONLY a valid JSON array, do not wrap in markdown or add explanations. The
 
     try {
       const prompt = buildAiKeywordPrompt();
-      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      const response = await hubLlmFetch("groq", {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${groqKey}`,
@@ -8463,7 +8394,7 @@ CRITICAL INSTRUCTIONS:
 - If the user asks about "11 day", "11th", "12 date", "11 day oda" in Tanglish, they are asking for the SPECIFIC single day's data (e.g., May 11), NOT a duration! Use the Daily Breakdown.
 - Keep your answers concise and directly address their metric queries. Format numbers nicely. Answer in English or Tamil depending on the user's language.`;
 
-      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      const response = await hubLlmFetch("groq", {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${groqKey}`,
@@ -8568,7 +8499,7 @@ CRITICAL INSTRUCTIONS:
       let contentText = '';
 
       if (claudeKey) {
-        const response = await fetch("https://api.anthropic.com/v1/messages", {
+        const response = await hubLlmFetch("anthropic", {
           method: "POST",
           headers: {
             "x-api-key": claudeKey,
@@ -8587,7 +8518,7 @@ CRITICAL INSTRUCTIONS:
         contentText = resJson.content[0].text.trim();
         setAiGeneratedAt("✦ Claude AI  •  " + new Date().toLocaleTimeString());
       } else {
-        const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        const response = await hubLlmFetch("groq", {
           method: "POST",
           headers: {
             "Authorization": `Bearer ${groqKey}`,
@@ -8759,7 +8690,7 @@ Campaigns: ${JSON.stringify(top20)}`;
 
       let result = null;
       if (claudeKey) {
-        const res = await fetch('https://api.anthropic.com/v1/messages', {
+        const res = await hubLlmFetch("anthropic", {
           method: 'POST',
           headers: { 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json', 'anthropic-dangerous-direct-browser-access': 'true' },
           body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1500, messages: [{ role: 'user', content: prompt }] })
@@ -8767,7 +8698,7 @@ Campaigns: ${JSON.stringify(top20)}`;
         const d = await res.json();
         result = d.content?.[0]?.text || '';
       } else if (groqKey) {
-        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        const res = await hubLlmFetch("groq", {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${groqKey}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: 'llama-3.3-70b-versatile', max_tokens: 1500, messages: [{ role: 'user', content: prompt }] })
@@ -10374,32 +10305,18 @@ Campaigns: ${JSON.stringify(top20)}`;
                 />
               </div>
               <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Groq API Key (Optional)</label>
-                <input
-                  type="password"
-                  value={groqKey}
-                  onChange={(e) => setGroqKey(e.target.value)}
-                  className="w-full bg-slate-800 text-white border border-slate-700 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:border-brand-green"
-                  placeholder="gsk_..."
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-emerald-400 uppercase tracking-wider mb-1">✦ Claude AI Key (PDF + Audit Insights)</label>
-                <input
-                  type="password"
-                  value={claudeKey}
-                  onChange={(e) => setClaudeKey(e.target.value)}
-                  className="w-full bg-slate-800 text-white border border-emerald-700 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:border-emerald-400"
-                  placeholder="sk-ant-..."
-                />
-                <p className="text-[10px] text-slate-500 mt-1">Used to generate real AI insights in Master PDF based on selected date range</p>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">AI providers</label>
+                <p className="text-xs text-slate-400">
+                  Groq: {groqKey ? 'configured on server' : 'not configured'} · Claude: {claudeKey ? 'configured on server' : 'not configured'}
+                </p>
+                <p className="text-[10px] text-slate-500 mt-1">AI keys are set as server environment variables and are never stored in the browser.</p>
               </div>
               <div className="md:col-span-3 flex justify-end gap-3 mt-2 border-t border-slate-800 pt-3">
                 <button
                   type="button"
                   onClick={() => {
-                    setSupabaseUrl("https://glvnqvjnglvnrgfyaypk.supabase.co");
-                    setSupabaseKey("sb_publishable_skwipohj0AMXATtbaNe9pw_tPvxOpSv");
+                    setSupabaseUrl(process.env.NEXT_PUBLIC_SUPABASE_URL || "");
+                    setSupabaseKey(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "");
                   }}
                   className="bg-slate-800 hover:bg-slate-750 border border-slate-700 text-xs px-3 py-1.5 rounded transition"
                 >

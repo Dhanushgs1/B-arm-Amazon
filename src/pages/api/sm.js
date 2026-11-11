@@ -1,13 +1,14 @@
-// Vercel serverless proxy → SellerMate Public API
-// Avoids browser CORS issues. The API key is passed per-request from the
-// client's x-api-key header and never stored server-side.
+// Legacy serverless proxy → SellerMate Public API, for callers that bring their own key in the
+// x-api-key header (never stored server-side). The dashboard itself uses /api/tool.
+// Same-origin only and behind the dashboard session: without that it was an open relay anyone on
+// the internet could drive through this deployment's IP and quota.
+import { checkSession, guard } from "@/lib/apiAuth";
+
 const BASE = "https://api.sellermate.ai/public/v1";
 
 export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-API-Key");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "GET" && req.method !== "POST") return res.status(405).json({ message: "Method not allowed" });
+  if (!guard(req, res, checkSession)) return;
 
   const key = req.headers["x-api-key"];
   if (!key) return res.status(401).json({ message: "Missing X-API-Key" });
