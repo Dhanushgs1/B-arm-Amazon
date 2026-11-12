@@ -117,7 +117,7 @@ function salesAnswer(ds: BiDataset, q: string): ChatAnswer {
   const lines = [`${who} ${when}: **${inrShort(revenue)}** from **${num(units)}** units.`];
   if (rows.length > 1) {
     const sorted = [...rows].sort((a, b) => (b.revenue ?? 0) - (a.revenue ?? 0));
-    lines.push(...sorted.map((p) => (!p.revenue && !p.units ? `• ${p.label}: no orders` : `• ${p.label}: **${inrShort(p.revenue ?? 0)}**, ${num(p.units ?? 0)} units${revenue > 0 ? ` (${(((p.revenue ?? 0) / revenue) * 100).toFixed(0)}%)` : ""}`)));
+    lines.push(...sorted.map((p) => (!p.revenue && !p.units ? `• ${p.label}: no orders${w.days === 1 ? ` on ${dot(w.start)}` : ""}` : `• ${p.label}: **${inrShort(p.revenue ?? 0)}**, ${num(p.units ?? 0)} units${revenue > 0 ? ` (${(((p.revenue ?? 0) / revenue) * 100).toFixed(0)}%)` : ""}`)));
   }
   if (partial.length) lines.push(`Data covers only part of the period for ${partial.map((p) => `${p.label} (${p.covered} of ${w.days} days)`).join(", ")}.`);
   return { text: lines.join("\n"), href: "/dashboard/compare", hrefLabel: "Open Overall" };
@@ -242,8 +242,8 @@ export const isTodayQuestion = (q: string) => /\btoday'?s?\b/i.test(q);
 /** Shopify's live orders for one day (its orders arrive by webhook, so today is already there). */
 export function shopifyLiveLine(orders: { order_date: string; is_cancelled: boolean; total: number; item_quantity: number }[], day: string): string {
   const today = orders.filter((o) => o.order_date === day && !o.is_cancelled);
-  if (!today.length) return `Shopify today (${dot(day)}, live): no orders yet.`;
+  if (!today.length) return `Shopify today so far (${dot(day)}, live): no orders yet.`;
   const total = today.reduce((t, o) => t + (Number(o.total) || 0), 0);
   const units = today.reduce((t, o) => t + (Number(o.item_quantity) || 0), 0);
-  return `Shopify today (${dot(day)}, live): **${today.length}** order${today.length === 1 ? "" : "s"}, **${inrShort(total)}**, ${num(units)} units.`;
+  return `Shopify today so far (${dot(day)}, live): **${today.length}** order${today.length === 1 ? "" : "s"}, **${inrShort(total)}**, ${num(units)} units.`;
 }

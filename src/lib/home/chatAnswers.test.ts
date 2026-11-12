@@ -148,6 +148,6 @@ test("old website / offline channel is left out; 'website' means Shopify; Shopif
   assert.match(answerFromData(ds, "sales last month")!.text, /Shopify: no orders/);
   assert.match(answerFromData(ds, "website sales yesterday")!.text, /^Shopify sales on/);
   const orders = [{ order_date: "2026-11-12", is_cancelled: false, total: 1500, item_quantity: 2 }, { order_date: "2026-11-12", is_cancelled: true, total: 900, item_quantity: 1 }, { order_date: "2026-11-11", is_cancelled: false, total: 700, item_quantity: 1 }];
-  assert.equal(shopifyLiveLine(orders, "2026-11-12"), "Shopify today (12.11.2026, live): **1** order, **₹1,500**, 2 units.");
+  assert.equal(shopifyLiveLine(orders, "2026-11-12"), "Shopify today so far (12.11.2026, live): **1** order, **₹1,500**, 2 units.");
   assert.match(shopifyLiveLine(orders, "2026-11-13"), /no orders yet/);
 });
