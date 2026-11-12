@@ -110,7 +110,7 @@ export function AmazonUploadedOverview() {
                 </div>
               )}
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                <KPICard title="Ad Spend" value={cur(now.spend)} subtitle={`Before GST · ${cur(now.spend * DEFAULT_GST_MULTIPLIER)} incl. 18% GST`} trend={trendOf(now.spend, before.spend)} trendBasis={trendBasis} inverseTrend accent="orange" />
+                <KPICard title="Ad Spend (incl. 18% GST)" value={cur(now.spend * DEFAULT_GST_MULTIPLIER)} subtitle={`${cur(now.spend)} before GST · ROAS and ACOS use this`} trend={trendOf(now.spend, before.spend)} trendBasis={trendBasis} inverseTrend accent="orange" />
                 <KPICard title="Ad Sales" value={cur(now.sales)} subtitle={`${num(now.orders)} ad orders`} trend={trendOf(now.sales, before.sales)} trendBasis={trendBasis} accent="green" />
                 <KPICard title="ROAS" value={roas === null ? "—" : `${one(roas)}x`} subtitle={roas === null ? "No ad spend in this period" : "Ad sales ÷ ad spend"} trend={trendOf(roas, pRoas)} trendBasis={trendBasis} accent="purple" />
                 <KPICard title="ACOS" value={acos === null ? "—" : `${one(acos)}%`} subtitle={acos === null ? "No ad sales in this period" : "Ad spend ÷ ad sales"} trend={trendOf(acos, pAcos)} trendBasis={trendBasis} inverseTrend accent="pink" />

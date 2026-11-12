@@ -159,167 +159,103 @@ interface UnifiedTrendChartProps {
   height?: number;
 }
 
-export function UnifiedTrendChart({ data, currency = "INR", height = 320 }: UnifiedTrendChartProps) {
+// Daily ads trend: one rupee chart (ad sales, ad spend and, where the page has it, total sales) and
+// one ACOS % chart under it, each with its own single scale. ROAS is in the tooltip. (Replaces a
+// chart that put ₹ and ratios on two y-axes, which flattened ROAS to a line at zero.)
+const SERIES = {
+  overallSales: { label: "Total sales", color: "var(--series-forecast)" },
+  sales: { label: "Ad sales", color: "var(--series-shopify)" },
+  spend: { label: "Ad spend", color: "var(--series-amazon)" },
+  acos: { label: "ACOS", color: "var(--series-flipkart)" },
+} as const;
+
+const tooltipStyle = {
+  backgroundColor: "var(--card)",
+  borderRadius: "12px",
+  border: "1px solid var(--border)",
+  boxShadow: "0 10px 25px -5px rgb(0 0 0 / 0.1)",
+  fontSize: "12px",
+  fontWeight: 600,
+  color: "var(--foreground)",
+};
+
+export function UnifiedTrendChart({ data, currency = "INR" }: UnifiedTrendChartProps) {
   const curPrefix = currency === "INR" ? "₹" : "$";
+  const money = (v: number) => `${curPrefix}${new Intl.NumberFormat("en-IN").format(Math.round(v))}`;
+  const hasTotal = data.some((d) => typeof d?.overallSales === "number");
+  const moneyKeys = (hasTotal ? ["overallSales", "sales", "spend"] : ["sales", "spend"]) as ("overallSales" | "sales" | "spend")[];
+  const xAxis = (
+    <XAxis
+      dataKey="date"
+      axisLine={false}
+      tickLine={false}
+      tick={{ fontSize: 10, fill: "var(--muted-foreground)" }}
+      dy={6}
+      interval="preserveStartEnd"
+      minTickGap={18}
+    />
+  );
+  const legendItem = (k: keyof typeof SERIES, dashed = false) => (
+    <span key={k} className="flex items-center gap-1.5">
+      <span className="inline-block w-4 h-0.5 rounded" style={{ background: dashed ? "transparent" : SERIES[k].color, borderTop: dashed ? `2px dashed ${SERIES[k].color}` : undefined }} />
+      {SERIES[k].label}
+    </span>
+  );
 
   return (
     <ChartCard>
-      <div className="flex items-center justify-between mb-6 flex-wrap gap-2">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
         <h3 className="text-[15px] font-bold flex items-center gap-2 tracking-tight text-slate-800 dark:text-slate-100">
           <span className="w-2 h-2 rounded-full bg-indigo-500 shadow-[0_0_0_4px_rgba(99,102,241,0.12)]" />
-          Unified Performance Trends
+          Daily ad sales, spend and ACOS
         </h3>
-        <div className="flex items-center gap-4 text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
-          <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#06B6D4]" /> Overall Sales</span>
-          <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#10B981]" /> Sales</span>
-          <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#3B82F6]" /> Spend</span>
-          <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#8B5CF6]" /> ROAS</span>
-          <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#F59E0B]" /> ACOS</span>
+        <div className="flex items-center gap-4 text-[11px] font-semibold text-muted-foreground flex-wrap">
+          {moneyKeys.map((k) => legendItem(k))}
+          {legendItem("acos")}
         </div>
       </div>
 
-      {/* min-h-0 lets this flex child shrink to the card's remaining height so the
-          chart fills the space instead of forcing a fixed pixel height that would
-          overflow the card and collide with the section below it. */}
-      <div className="flex-1 w-full min-h-0">
-        <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={data} margin={{ top: 10, right: -5, left: -20, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" opacity={0.4} />
-            <XAxis
-              dataKey="date"
-              axisLine={false}
-              tickLine={false}
-              tick={{ fontSize: 9, fill: "var(--muted-foreground)" }}
-              dy={10}
-              interval={data.length > 15 ? 1 : 0}
-            />
-            {/* Left Y-Axis for currency values (Sales, Spend) */}
-            <YAxis
-              yAxisId="currency"
-              axisLine={false}
-              tickLine={false}
-              tick={{ fontSize: 10, fill: "var(--muted-foreground)" }}
-              tickFormatter={(val) => {
-                if (val >= 100000) return `${curPrefix}${(val / 1000).toFixed(0)}k`;
-                return `${curPrefix}${val}`;
-              }}
-            />
-            {/* Right Y-Axis for ratios/percentages (ROAS, ACOS) */}
-            <YAxis
-              yAxisId="ratio"
-              orientation="right"
-              axisLine={false}
-              tickLine={false}
-              tick={{ fontSize: 10, fill: "var(--muted-foreground)" }}
-              tickFormatter={(val) => `${val}`}
-            />
-            <Tooltip
-              cursor={{ stroke: "rgba(108, 99, 255, 0.2)", strokeWidth: 1, strokeDasharray: "4 4" }}
-              contentStyle={{
-                backgroundColor: "var(--card)",
-                borderRadius: "16px",
-                border: "1px solid var(--border)",
-                boxShadow: "0 10px 25px -5px rgb(0 0 0 / 0.1)",
-                fontSize: "12px",
-                fontWeight: "bold",
-                backdropFilter: "blur(10px)"
-              }}
-              formatter={(value: any, name: any) => {
-                if (name === "Overall Sales" || name === "Sales" || name === "Spend") {
-                  return [`${curPrefix}${new Intl.NumberFormat("en-IN").format(Math.round(value))}`, name];
-                }
-                if (name === "ROAS") {
-                  return [`${value.toFixed(2)}x`, name];
-                }
-                if (name === "ACOS") {
-                  return [`${value.toFixed(1)}%`, name];
-                }
-                return [value, name];
-              }}
-            />
-            
-            {/* Area for Sales (Left Axis) */}
-            <defs>
-              <linearGradient id="colorOverallSales" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#06B6D4" stopOpacity={0.2} />
-                <stop offset="95%" stopColor="#06B6D4" stopOpacity={0.01} />
-              </linearGradient>
-              <linearGradient id="colorSales" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#10B981" stopOpacity={0.15} />
-                <stop offset="95%" stopColor="#10B981" stopOpacity={0.01} />
-              </linearGradient>
-              <linearGradient id="colorSpend" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#3B82F6" stopOpacity={0.15} />
-                <stop offset="95%" stopColor="#3B82F6" stopOpacity={0.01} />
-              </linearGradient>
-            </defs>
-
-            {/* Area for Overall Sales (Left Axis) — rendered first so it sits behind */}
-            <Area
-              yAxisId="currency"
-              type="monotone"
-              dataKey="overallSales"
-              name="Overall Sales"
-              stroke="#06B6D4"
-              strokeWidth={2.5}
-              fill="url(#colorOverallSales)"
-              dot={data.length < 15 ? { r: 3, strokeWidth: 0, fill: "#06B6D4" } : false}
-              activeDot={{ r: 6, strokeWidth: 0, fill: "#06B6D4" }}
-            />
-
-            {/* Area for Ad Sales (Left Axis) */}
-            <Area
-              yAxisId="currency"
-              type="monotone"
-              dataKey="sales"
-              name="Sales"
-              stroke="#10B981"
-              strokeWidth={3}
-              fill="url(#colorSales)"
-              dot={data.length < 15 ? { r: 3, strokeWidth: 0, fill: "#10B981" } : false}
-              activeDot={{ r: 6, strokeWidth: 0, fill: "#10B981" }}
-            />
-            
-            {/* Area for Spend (Left Axis) */}
-            <Area
-              yAxisId="currency"
-              type="monotone"
-              dataKey="spend"
-              name="Spend"
-              stroke="#3B82F6"
-              strokeWidth={2}
-              fill="url(#colorSpend)"
-              dot={data.length < 15 ? { r: 3, strokeWidth: 0, fill: "#3B82F6" } : false}
-              activeDot={{ r: 5, strokeWidth: 0, fill: "#3B82F6" }}
-            />
-            
-            {/* Line for ROAS (Right Axis) */}
-            <Line
-              yAxisId="ratio"
-              type="monotone"
-              dataKey="roas"
-              name="ROAS"
-              stroke="#8B5CF6"
-              strokeWidth={2.5}
-              dot={data.length < 15}
-              activeDot={{ r: 5, strokeWidth: 0, fill: "#8B5CF6" }}
-            />
-            
-            {/* Line for ACOS (Right Axis) */}
-            <Line
-              yAxisId="ratio"
-              type="monotone"
-              dataKey="acos"
-              name="ACOS"
-              stroke="#F59E0B"
-              strokeWidth={2}
-              strokeDasharray="4 4"
-              dot={data.length < 15}
-              activeDot={{ r: 5, strokeWidth: 0, fill: "#F59E0B" }}
-            />
-          </ComposedChart>
-        </ResponsiveContainer>
+      {/* min-h-0 lets the charts share the card's remaining height instead of overflowing it */}
+      <div className="flex-1 w-full min-h-0 flex flex-col gap-2">
+        <div className="flex-[2] min-h-0">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={data} syncId="ads-trend" margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" opacity={0.5} />
+              {xAxis}
+              <YAxis axisLine={false} tickLine={false} width={52} tick={{ fontSize: 10, fill: "var(--muted-foreground)" }} tickFormatter={(v) => axisTick(v, curPrefix)} />
+              <Tooltip
+                cursor={{ stroke: "var(--muted-foreground)", strokeWidth: 1, strokeDasharray: "4 4" }}
+                contentStyle={tooltipStyle}
+                formatter={(value: any, name: any) => [typeof value === "number" ? money(value) : "—", name]}
+                labelFormatter={(label: any, payload: any) => {
+                  const p = payload?.[0]?.payload;
+                  const roas = p && typeof p.roas === "number" ? ` · ROAS ${p.roas.toFixed(2)}x` : "";
+                  return `${label}${roas}`;
+                }}
+              />
+              {moneyKeys.map((k) => (
+                <Line key={k} type="monotone" dataKey={k} name={SERIES[k].label} stroke={SERIES[k].color} strokeWidth={2} dot={data.length < 15 ? { r: 4, strokeWidth: 0, fill: SERIES[k].color } : false} activeDot={{ r: 5, strokeWidth: 2, stroke: "var(--card)" }} connectNulls={false} isAnimationActive={false} />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="flex-1 min-h-0">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={data} syncId="ads-trend" margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" opacity={0.5} />
+              {xAxis}
+              <YAxis axisLine={false} tickLine={false} width={52} tick={{ fontSize: 10, fill: "var(--muted-foreground)" }} tickFormatter={(v) => `${v}%`} />
+              <Tooltip
+                cursor={{ stroke: "var(--muted-foreground)", strokeWidth: 1, strokeDasharray: "4 4" }}
+                contentStyle={tooltipStyle}
+                formatter={(value: any, name: any) => [typeof value === "number" ? `${value.toFixed(1)}%` : "—", name]}
+              />
+              <Line type="monotone" dataKey="acos" name="ACOS" stroke={SERIES.acos.color} strokeWidth={2} dot={data.length < 15 ? { r: 4, strokeWidth: 0, fill: SERIES.acos.color } : false} activeDot={{ r: 5, strokeWidth: 2, stroke: "var(--card)" }} connectNulls={false} isAnimationActive={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
       </div>
+      <p className="text-[10px] text-muted-foreground mt-2">ACOS = ad spend ÷ ad sales for the day. Days without an ads upload are left blank, not zero.</p>
     </ChartCard>
   );
 }
