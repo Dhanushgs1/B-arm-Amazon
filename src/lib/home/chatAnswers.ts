@@ -102,7 +102,9 @@ function salesAnswer(ds: BiDataset, q: string): ChatAnswer {
   const revenue = rows.reduce((s, p) => s + (p.revenue ?? 0), 0);
   const units = rows.reduce((s, p) => s + (p.units ?? 0), 0);
   const partial = rows.filter((p) => !p.complete);
-  const lines = [`Sales in ${label} (${dot(w.start)} – ${dot(w.end)}): **${inrShort(revenue)}** from **${num(units)}** units.`];
+  const who = only ? `${rows[0]?.label ?? only} sales` : "Sales";
+  const when = w.days === 1 ? `on ${label}` : `in ${label} (${dot(w.start)} – ${dot(w.end)})`;
+  const lines = [`${who} ${when}: **${inrShort(revenue)}** from **${num(units)}** units.`];
   if (rows.length > 1) {
     const sorted = [...rows].sort((a, b) => (b.revenue ?? 0) - (a.revenue ?? 0));
     lines.push(...sorted.map((p) => `• ${p.label}: **${inrShort(p.revenue ?? 0)}**, ${num(p.units ?? 0)} units${revenue > 0 ? ` (${(((p.revenue ?? 0) / revenue) * 100).toFixed(0)}%)` : ""}`));
