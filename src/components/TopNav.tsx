@@ -1,13 +1,18 @@
 "use client";
 
 import { useDashboard } from "@/lib/DashboardContext";
-import { Bell, Moon, Sun, Search, RefreshCw, Loader2, LayoutGrid, Menu, type LucideIcon } from "lucide-react";
+import { Bell, Moon, Sun, RefreshCw, Loader2, LayoutGrid, Menu, type LucideIcon } from "lucide-react";
 import { BrandLogo, type BrandId } from "@/components/BrandLogo";
 import { useState, useEffect } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { DateRangePicker } from "@/components/DateRangePicker";
+import { PageFinder } from "@/components/PageFinder";
+
+// Example entries an older version seeded into every browser. They were never real alerts, so they
+// are removed wherever they are still stored.
+const DEMO_TITLES = new Set(["Low Stock Warning", "High ACOS Alert", "Manual Ingestion Success", "Gemini Analysis Ready"]);
 import { cn } from "@/lib/utils";
 import { MARKETPLACE_META, UPLOAD_ONLY_TAB_META, getMarketplaceTab, isUploadOnlyTab, marketplaceHome, type MarketplaceTab } from "@/lib/marketplace";
 
@@ -112,16 +117,11 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
       let parsed: Notification[] | null = null;
       try { parsed = saved ? JSON.parse(saved) : null; } catch { parsed = null; }
       if (Array.isArray(parsed)) {
-        setNotifications(parsed);
+        const real = parsed.filter((n) => !DEMO_TITLES.has(n?.title));
+        if (real.length !== parsed.length) localStorage.setItem("ppcNotifications", JSON.stringify(real));
+        setNotifications(real);
       } else {
-        const defaultNotifs: Notification[] = [
-          { id: 1, title: "Low Stock Warning", body: "ASIN B07X8Y54... is down to 8 units. Replenish soon.", time: "10m ago", read: false, type: "warning" },
-          { id: 2, title: "High ACOS Alert", body: "Campaign 'SP-Socks-Exact' exceeded 45% ACOS today.", time: "1h ago", read: false, type: "danger" },
-          { id: 3, title: "Manual Ingestion Success", body: "Successfully imported 142 campaigns and 439 keywords.", time: "3h ago", read: false, type: "success" },
-          { id: 4, title: "Gemini Analysis Ready", body: "New AI recommendations generated for this week.", time: "5h ago", read: true, type: "info" }
-        ];
-        localStorage.setItem("ppcNotifications", JSON.stringify(defaultNotifs));
-        setNotifications(defaultNotifs);
+        setNotifications([]);
       }
     };
     loadNotifs();
@@ -130,12 +130,15 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
   }, []);
 
   const toggleTheme = () => {
-    if (theme === "light") {
-      document.documentElement.classList.add("dark");
-      setTheme("dark");
-    } else {
-      document.documentElement.classList.remove("dark");
-      setTheme("light");
+    const next = theme === "light" ? "dark" : "light";
+    document.documentElement.classList.toggle("dark", next === "dark");
+    setTheme(next);
+    // Saved where the page's start-up script and Settings read it, so the choice survives a reload.
+    try {
+      const saved = JSON.parse(localStorage.getItem("ppcUserSettings") || "{}");
+      localStorage.setItem("ppcUserSettings", JSON.stringify({ ...saved, theme: next }));
+    } catch {
+      localStorage.setItem("ppcUserSettings", JSON.stringify({ theme: next }));
     }
   };
 
@@ -169,12 +172,13 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
         onClick={onOpenMobileNav}
         className="w-10 h-10 flex-shrink-0 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 flex items-center justify-center hover:border-indigo-500/50 hover:text-indigo-500 transition-colors shadow-sm focus:outline-none md:hidden"
         title="Open menu"
+        aria-label="Open menu"
       >
         <Menu className="w-4 h-4" />
       </button>
 
       {/* Workspace Switcher */}
-      <div className="flex items-center gap-2 bg-white dark:bg-slate-900 ring-1 ring-slate-200/80 dark:ring-slate-800 px-3.5 py-2.5 rounded-xl text-xs font-black shadow-sm">
+      <div className="hidden sm:flex items-center gap-2 bg-white dark:bg-slate-900 ring-1 ring-slate-200/80 dark:ring-slate-800 px-3.5 py-2.5 rounded-xl text-xs font-black shadow-sm">
         {contextLoading ? (
           <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-500" />
         ) : (
@@ -186,14 +190,8 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
       {/* Marketplace Switcher — Overall / Amazon / Flipkart / Meesho / Shopify */}
       <MarketplaceSwitcher />
 
-      {/* Global Search */}
-      <div className="hidden sm:block relative flex-1 min-w-0 max-w-[360px]">
-        <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500" />
-        <input
-          placeholder="Search workspace..."
-          className="w-full bg-slate-100/80 dark:bg-slate-900 ring-1 ring-slate-200/70 dark:ring-slate-800 text-foreground pl-10 pr-4 py-2.5 rounded-xl text-xs font-semibold placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:bg-white dark:focus:bg-slate-950 transition-all duration-300"
-        />
-      </div>
+      {/* Page search */}
+      <PageFinder className="hidden lg:block flex-1 min-w-[200px] max-w-[340px]" />
 
       <div className="flex-grow hidden xl:block" />
 
@@ -205,6 +203,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
         onClick={() => window.location.reload()}
         className="w-10 h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 flex items-center justify-center hover:border-indigo-500/50 hover:text-indigo-500 transition-colors shadow-sm focus:outline-none"
         title="Refresh data"
+        aria-label="Refresh data"
       >
         <RefreshCw className="w-4 h-4" />
       </button>
@@ -220,6 +219,8 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
           }}
           className="relative w-10 h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 flex items-center justify-center hover:border-indigo-500/50 hover:text-indigo-500 transition-colors shadow-sm focus:outline-none"
           title="Notifications"
+          aria-label={notifications.some(n => !n.read) ? "Notifications (unread)" : "Notifications"}
+          aria-expanded={showNotifications}
         >
           <Bell className="w-4 h-4" />
           {notifications.some(n => !n.read) && (
@@ -230,7 +231,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
         {showNotifications && (
           <div className="absolute right-0 mt-2 w-80 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xl p-4 z-50 text-xs font-semibold backdrop-blur-xl animate-in fade-in slide-in-from-top-2 duration-200">
             <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-850 mb-3">
-              <span className="font-extrabold text-slate-800 dark:text-white uppercase tracking-wider text-[10px]">System Alerts</span>
+              <span className="font-extrabold text-slate-800 dark:text-white uppercase tracking-wider text-[10px]">Notifications</span>
               <button
                 onClick={() => {
                   localStorage.setItem("ppcNotifications", JSON.stringify([]));
@@ -243,7 +244,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
             </div>
             <div className="space-y-3.5 max-h-60 overflow-y-auto">
               {notifications.length === 0 ? (
-                <p className="text-center text-slate-400 py-4 font-bold text-[10px]">NO ALERTS DETECTED</p>
+                <p className="text-center text-slate-500 dark:text-slate-400 py-4 font-semibold text-[11px]">No notifications yet. Confirmations from Settings and uploads appear here.</p>
               ) : (
                 notifications.map(n => (
                   <div key={n.id} className={cn("p-3 rounded-xl border flex flex-col gap-1 transition-all", n.read ? "bg-slate-50/50 dark:bg-slate-900/10 border-slate-200/50 dark:border-slate-800/50" : "bg-indigo-500/5 border-indigo-500/20")}>
@@ -271,6 +272,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
         onClick={toggleTheme}
         className="w-10 h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 flex items-center justify-center hover:border-indigo-500/50 hover:text-indigo-500 transition-colors shadow-sm focus:outline-none"
         title="Toggle theme"
+        aria-label={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
       >
         {theme === "light" ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
       </button>

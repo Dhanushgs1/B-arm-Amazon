@@ -16,6 +16,7 @@ import {
   Search,
   Box,
   BarChart3,
+  Download,
   Bot,
   Settings,
   ChevronLeft,
@@ -58,7 +59,7 @@ const NAV_SECTIONS: SidebarNavSection[] = [
     items: [
       { id: "overview", label: "Overview", icon: LayoutDashboard },
       { id: "upload", label: "Upload", icon: UploadCloud },
-      { id: "reports", label: "Download", icon: BarChart3 },
+      { id: "reports", label: "Download", icon: Download },
     ],
   },
   {
@@ -114,7 +115,7 @@ function flipkartSections(marketplace: "flipkart"): SidebarNavSection[] {
       items: [
         { id: "overview", label: "Overview", icon: LayoutDashboard, path: `/dashboard/${marketplace}` },
         { id: "upload", label: "Upload", icon: UploadCloud, path: `/dashboard/${marketplace}/upload` },
-        { id: "reports", label: "Download", icon: BarChart3, path: `/dashboard/${marketplace}/reports` },
+        { id: "reports", label: "Download", icon: Download, path: `/dashboard/${marketplace}/reports` },
       ],
     },
     {
@@ -163,7 +164,7 @@ const UPLOAD_ONLY_NAV_SECTIONS: Record<UploadOnlyTab, SidebarNavSection[]> = {
       label: "Meesho",
       items: [
         { id: "ms-overview", label: "Overview", icon: LayoutDashboard, path: "/dashboard/meesho" },
-        { id: "ms-reports", label: "Download", icon: BarChart3, path: "/dashboard/meesho/reports" },
+        { id: "ms-reports", label: "Download", icon: Download, path: "/dashboard/meesho/reports" },
       ],
     },
   ],
@@ -172,7 +173,7 @@ const UPLOAD_ONLY_NAV_SECTIONS: Record<UploadOnlyTab, SidebarNavSection[]> = {
       label: "B-ARM Website (WooCommerce)",
       items: [
         { id: "barm-overview", label: "Overview", icon: LayoutDashboard, path: "/dashboard/barm" },
-        { id: "barm-reports", label: "Download", icon: BarChart3, path: "/dashboard/barm/reports" },
+        { id: "barm-reports", label: "Download", icon: Download, path: "/dashboard/barm/reports" },
       ],
     },
   ],
@@ -182,7 +183,7 @@ const UPLOAD_ONLY_NAV_SECTIONS: Record<UploadOnlyTab, SidebarNavSection[]> = {
       items: [
         { id: "shopify-overview", label: "Overview", icon: LayoutDashboard, path: "/dashboard/shopify" },
         { id: "shopify-sources", label: "Google & Meta", icon: Megaphone, path: "/dashboard/shopify/sources" },
-        { id: "shopify-reports", label: "Download", icon: BarChart3, path: "/dashboard/shopify/reports" },
+        { id: "shopify-reports", label: "Download", icon: Download, path: "/dashboard/shopify/reports" },
       ],
     },
   ],
@@ -305,26 +306,28 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
         {closeOnNavigate ? (
           <button
             onClick={onCloseMobile}
+            aria-label="Close menu"
             className="w-5.5 h-5.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 flex items-center justify-center text-slate-400 hover:text-slate-300 transition-colors focus:outline-none cursor-pointer"
           >
-            <ChevronLeft size={10} />
+            <ChevronLeft size={10} aria-hidden="true" />
           </button>
         ) : (
           <button
             onClick={toggleCollapse}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
             className="w-5.5 h-5.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 flex items-center justify-center text-slate-400 hover:text-slate-300 transition-colors focus:outline-none cursor-pointer"
           >
-            {collapsed ? <ChevronRight size={10} /> : <ChevronLeft size={10} />}
+            {collapsed ? <ChevronRight size={10} aria-hidden="true" /> : <ChevronLeft size={10} aria-hidden="true" />}
           </button>
         )}
       </div>
 
       {/* Nav Link List */}
-      <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-2.5 scrollbar-none">
+      <nav aria-label="Pages" className="flex-1 overflow-y-auto px-2 py-3 space-y-2.5 scrollbar-none">
         {sections.map((section) => (
           <div key={section.label} className="space-y-0.5">
             {!collapsed && (
-              <p className="px-2 pb-0.5 text-[9px] font-extrabold uppercase tracking-widest text-slate-500">
+              <p className="px-2 pb-0.5 text-[10px] font-extrabold uppercase tracking-widest text-slate-400">
                 {section.label}
               </p>
             )}

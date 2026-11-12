@@ -224,3 +224,40 @@
   from { opacity: 0; transform: translateY(16px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+
+/* ── Utilities the components already use but that were never defined (they silently did nothing) ── */
+.scrollbar-none { scrollbar-width: none; -ms-overflow-style: none; }
+.scrollbar-none::-webkit-scrollbar { display: none; }
+.border-slate-850 { border-color: #172033; }
+
+@keyframes m360-slide-in-right { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes m360-slide-in-top { from { transform: translateY(-6px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes m360-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes m360-zoom-in { from { transform: scale(0.97); opacity: 0; } to { transform: none; opacity: 1; } }
+.animate-in { animation-duration: 180ms; animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1); animation-fill-mode: both; }
+.animate-in.fade-in { animation-name: m360-fade-in; }
+.animate-in.zoom-in-95 { animation-name: m360-zoom-in; }
+.animate-in.slide-in-from-right { animation-name: m360-slide-in-right; }
+.animate-in.slide-in-from-top-2 { animation-name: m360-slide-in-top; }
+
+/* ── Keyboard focus: a clear ring on anything focused from the keyboard (mouse clicks unaffected).
+   Many controls set focus:outline-none without a replacement, which left keyboard users with no
+   visible focus at all. ── */
+:where(a, button, input, select, textarea, summary, [role="button"], [role="tab"], [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* Figures that update in place line up instead of jittering. */
+.tabular-nums { font-variant-numeric: tabular-nums; }
+
+/* Respect the system "reduce motion" setting everywhere, including the decorative pulses. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

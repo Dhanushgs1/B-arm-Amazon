@@ -89,10 +89,11 @@ export function DataTable<T>({
     <div className="glass gradient-border rounded-[22px] flex flex-col overflow-hidden">
       {/* Toolbar */}
       <div className="p-4 border-b border-border flex items-center justify-between gap-3 flex-wrap bg-card/50">
-        <div className="relative w-64">
+        <div className="relative w-full sm:w-64">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
           <input
             placeholder="Quick search..."
+            aria-label="Search this table"
             value={displaySearch}
             onChange={(e) => {
               const val = e.target.value;
@@ -165,19 +166,27 @@ export function DataTable<T>({
               {visibleColumns.map((c) => (
                 <th
                   key={c.key}
-                  onClick={() => {
-                    if (!c.sortable) return;
-                    if (sortKey === c.key) setSortDir(sortDir === "asc" ? "desc" : "asc");
-                    else { setSortKey(c.key); setSortDir("desc"); }
-                  }}
-                  className={cn("px-4 py-3.5 font-extrabold select-none", c.sortable && "cursor-pointer hover:text-foreground")}
+                  scope="col"
+                  aria-sort={sortKey === c.key ? (sortDir === "asc" ? "ascending" : "descending") : undefined}
+                  className="px-4 py-3.5 font-extrabold select-none"
                 >
-                  <div className="flex items-center gap-1">
-                    {c.label}
-                    {sortKey === c.key && (
-                      sortDir === "asc" ? <ChevronUp className="w-3 h-3 text-primary" /> : <ChevronDown className="w-3 h-3 text-primary" />
-                    )}
-                  </div>
+                  {c.sortable ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (sortKey === c.key) setSortDir(sortDir === "asc" ? "desc" : "asc");
+                        else { setSortKey(c.key); setSortDir("desc"); }
+                      }}
+                      className="flex items-center gap-1 uppercase tracking-wider font-extrabold cursor-pointer hover:text-foreground"
+                    >
+                      {c.label}
+                      {sortKey === c.key && (
+                        sortDir === "asc" ? <ChevronUp className="w-3 h-3 text-primary" aria-hidden="true" /> : <ChevronDown className="w-3 h-3 text-primary" aria-hidden="true" />
+                      )}
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-1">{c.label}</div>
+                  )}
                 </th>
               ))}
             </tr>
