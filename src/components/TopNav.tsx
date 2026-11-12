@@ -1,7 +1,7 @@
 "use client";
 
 import { useDashboard } from "@/lib/DashboardContext";
-import { Bell, Moon, Sun, RefreshCw, Loader2, LayoutGrid, Menu, type LucideIcon } from "lucide-react";
+import { Bell, Moon, Sun, RefreshCw, Loader2, LayoutGrid, Megaphone, Menu, type LucideIcon } from "lucide-react";
 import { BrandLogo, type BrandId } from "@/components/BrandLogo";
 import { useState, useEffect } from "react";
 import { motion, useReducedMotion } from "framer-motion";
@@ -19,14 +19,19 @@ import { MARKETPLACE_META, UPLOAD_ONLY_TAB_META, getMarketplaceTab, isUploadOnly
 // Overall first, then one tab per platform with its own brand mark. The old B-ARM website's
 // WooCommerce history (/dashboard/barm) is off the navigation by the seller's choice (24 Oct 2026) —
 // its page and data are kept and it is still linked from its row on the Overall tab.
-type SwitcherTab = { id: MarketplaceTab; label: string; brand?: BrandId; icon?: LucideIcon };
+// Google & Meta Ads is a page of the Shopify workspace (/dashboard/shopify/sources) with its own tab
+// here (user, 12 Nov 2026), so Shopify is highlighted everywhere under /dashboard/shopify except there.
+type SwitcherTab = { id: MarketplaceTab; key: string; label: string; brand?: BrandId; icon?: LucideIcon; href?: string; color?: string; tagline?: string };
+const ADS_PATH = "/dashboard/shopify/sources";
 const MARKETPLACE_TABS: SwitcherTab[] = [
-  { id: "compare", label: "Overall", icon: LayoutGrid },
-  { id: "amazon", label: "Amazon", brand: "amazon" },
-  { id: "flipkart", label: "Flipkart", brand: "flipkart" },
-  { id: "meesho", label: "Meesho", brand: "meesho" },
-  { id: "shopify", label: "Shopify", brand: "shopify" },
+  { id: "compare", key: "compare", label: "Overall", icon: LayoutGrid },
+  { id: "amazon", key: "amazon", label: "Amazon", brand: "amazon" },
+  { id: "flipkart", key: "flipkart", label: "Flipkart", brand: "flipkart" },
+  { id: "meesho", key: "meesho", label: "Meesho", brand: "meesho" },
+  { id: "shopify", key: "shopify", label: "Shopify", brand: "shopify" },
+  { id: "shopify", key: "ads", label: "Google & Meta", icon: Megaphone, href: ADS_PATH, color: "#2563EB", tagline: "Google & Meta Ads · spend against Shopify orders" },
 ];
+const onAdsPage = (pathname: string | null) => !!pathname && (pathname === ADS_PATH || pathname.startsWith(`${ADS_PATH}/`));
 
 function MarketplaceSwitcher() {
   const pathname = usePathname();
@@ -36,22 +41,24 @@ function MarketplaceSwitcher() {
   return (
     <nav
       aria-label="Marketplaces"
-      className="flex items-center gap-1 bg-slate-100/80 dark:bg-slate-900 p-1 rounded-xl ring-1 ring-slate-200/70 dark:ring-slate-800 min-w-0 max-w-full overflow-x-auto scrollbar-none"
+      className="flex items-center gap-1 bg-slate-100/80 dark:bg-slate-900 p-1 rounded-xl ring-1 ring-slate-200/70 dark:ring-slate-800 shrink-0 max-w-full overflow-x-auto scrollbar-none"
     >
       {MARKETPLACE_TABS.map((tab) => {
-        const isActive = activeTab === tab.id;
+        const isActive = tab.key === "ads" ? onAdsPage(pathname) : activeTab === tab.id && !(tab.key === "shopify" && onAdsPage(pathname));
         const meta =
-          tab.id === "compare" ? null
+          tab.color ? { color: tab.color, tagline: tab.tagline ?? tab.label }
+          : tab.id === "compare" ? null
           : isUploadOnlyTab(tab.id) ? UPLOAD_ONLY_TAB_META[tab.id]
           : MARKETPLACE_META[tab.id];
         const Icon = tab.icon;
         const targetHref =
-          tab.id === "compare" ? "/dashboard/compare"
+          tab.href ? tab.href
+          : tab.id === "compare" ? "/dashboard/compare"
           : isUploadOnlyTab(tab.id) ? UPLOAD_ONLY_TAB_META[tab.id].home
           : marketplaceHome(tab.id);
 
         return (
-          <div key={tab.id} className="flex items-center flex-shrink-0">
+          <div key={tab.key} className="flex items-center flex-shrink-0">
             <Link
               href={targetHref}
               aria-current={isActive ? "page" : undefined}
@@ -171,7 +178,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
     : "from-emerald-500 to-teal-600";
 
   return (
-    <header className="flex items-center gap-3 px-3 sm:px-6 py-3 bg-white/75 dark:bg-slate-950/70 backdrop-blur-xl backdrop-saturate-150 border-b border-slate-200/70 dark:border-slate-800/70 shadow-[0_1px_0_rgba(15,23,42,0.02)] sticky top-0 z-30 flex-wrap xl:flex-nowrap">
+    <header className="flex items-center gap-3 px-3 sm:px-6 py-3 bg-white/75 dark:bg-slate-950/70 backdrop-blur-xl backdrop-saturate-150 border-b border-slate-200/70 dark:border-slate-800/70 shadow-[0_1px_0_rgba(15,23,42,0.02)] sticky top-0 z-30 flex-wrap">
       {/* Mobile Sidebar Toggle */}
       <button
         onClick={onOpenMobileNav}
@@ -196,7 +203,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
       <MarketplaceSwitcher />
 
       {/* Page search */}
-      <PageFinder className="hidden lg:block flex-1 min-w-[200px] max-w-[340px]" />
+      <PageFinder className="hidden lg:block flex-1 min-w-[150px] max-w-[340px]" />
 
       <div className="flex-grow hidden xl:block" />
 
