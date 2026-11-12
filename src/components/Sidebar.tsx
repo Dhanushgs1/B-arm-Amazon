@@ -8,6 +8,7 @@ import { useState, useEffect } from "react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import {
   LayoutDashboard,
+  Home,
   Megaphone,
   LayoutGrid,
   Target,
@@ -193,6 +194,7 @@ const COMPARE_NAV_SECTIONS: SidebarNavSection[] = [
   {
     label: "Combined Workspace",
     items: [
+      { id: "home", label: "Home", icon: Home, path: "/dashboard/home" },
       { id: "executive", label: "Business overview", icon: LayoutDashboard, path: "/dashboard/executive" },
       { id: "compare", label: "Overall", icon: GitCompare, path: "/dashboard/compare" },
     ],
@@ -288,15 +290,15 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
   const renderNavBody = (collapsed: boolean, closeOnNavigate: boolean) => (
     <>
       {/* Sidebar Header / Logo */}
-      <div className="flex items-center justify-between px-3.5 py-3 border-b border-slate-900 h-[60px]">
+      <div className="flex items-center justify-between px-3.5 py-3 border-b border-slate-200 dark:border-slate-900 h-[60px]">
         <div className="flex items-center gap-2.5 overflow-hidden">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#6D5EF8] to-[#8B5CF6] flex items-center justify-center text-white shadow-md shadow-indigo-500/25 flex-shrink-0">
+          <div className="w-8 h-8 rounded-xl bg-blue-600 flex items-center justify-center text-white shadow-sm flex-shrink-0">
             <BarChart3 className="w-4 h-4 text-white" />
           </div>
           {!collapsed && (
             <div className="min-w-0 transition-opacity duration-300">
-              <span className="font-extrabold text-[13.5px] text-white block tracking-tight">{isLkn ? "LKN AI" : "Marketplace360"}</span>
-              <small className="block font-bold text-indigo-400/90 text-[8px] uppercase tracking-widest -mt-1 truncate">
+              <span className="font-extrabold text-[13.5px] text-slate-900 dark:text-white block tracking-tight">{isLkn ? "LKN AI" : "Marketplace360"}</span>
+              <small className="block font-bold text-blue-600 dark:text-indigo-400/90 text-[8px] uppercase tracking-widest -mt-1 truncate">
                 {sidebarTagline}
               </small>
             </div>
@@ -308,7 +310,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
           <button
             onClick={onCloseMobile}
             aria-label="Close menu"
-            className="w-5.5 h-5.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 flex items-center justify-center text-slate-400 hover:text-slate-300 transition-colors focus:outline-none cursor-pointer"
+            className="w-5.5 h-5.5 rounded-lg bg-white hover:bg-slate-50 border border-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 dark:border-slate-800 flex items-center justify-center text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300 transition-colors focus:outline-none cursor-pointer"
           >
             <ChevronLeft size={10} aria-hidden="true" />
           </button>
@@ -316,7 +318,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
           <button
             onClick={toggleCollapse}
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            className="w-5.5 h-5.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 flex items-center justify-center text-slate-400 hover:text-slate-300 transition-colors focus:outline-none cursor-pointer"
+            className="w-5.5 h-5.5 rounded-lg bg-white hover:bg-slate-50 border border-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 dark:border-slate-800 flex items-center justify-center text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300 transition-colors focus:outline-none cursor-pointer"
           >
             {collapsed ? <ChevronRight size={10} aria-hidden="true" /> : <ChevronLeft size={10} aria-hidden="true" />}
           </button>
@@ -348,7 +350,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
                     className={cn(
                       "relative w-full flex items-center rounded-xl text-[12px] font-bold transition-colors duration-200 cursor-pointer",
                       collapsed ? "justify-center p-2" : "gap-2.5 px-2 py-1.5",
-                      isActive ? "text-white" : "text-slate-400 hover:bg-white/5 hover:text-white"
+                      isActive ? "text-blue-700 dark:text-white" : "text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-white/5 dark:hover:text-white"
                     )}
                   >
                     {/* The active highlight is one shared element that slides to whichever item is
@@ -357,14 +359,14 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
                       <motion.span
                         layoutId={`sidebar-active-${closeOnNavigate ? "mobile" : "desktop"}`}
                         transition={reduceMotion ? { duration: 0 } : { type: "spring", stiffness: 420, damping: 36 }}
-                        className="absolute inset-0 rounded-xl bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] shadow-md shadow-indigo-500/25"
+                        className="absolute inset-0 rounded-xl bg-blue-50 dark:bg-blue-500/20"
                       />
                     )}
                     <span className={cn(
                       "relative w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors",
-                      isActive ? "bg-white/15" : "bg-slate-900 group-hover:bg-white/10"
+                      isActive ? "bg-white dark:bg-white/15 shadow-sm" : "bg-transparent"
                     )}>
-                      <Icon className={cn("w-3.5 h-3.5", isActive ? "text-white" : "text-slate-400")} />
+                      <Icon className={cn("w-3.5 h-3.5", isActive ? "text-blue-600 dark:text-white" : "text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300")} />
                     </span>
                     {!collapsed && <span className="relative truncate">{item.label}</span>}
                   </Link>
@@ -383,7 +385,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
       </nav>
 
       {/* Pinned AI CTA (the Amazon AI Assistant reads SellerMate, so it goes when that is off) */}
-      {SELLERMATE_ENABLED && <div className={cn("px-2 pb-3 pt-2 border-t border-slate-800", collapsed && "flex justify-center")}>
+      {SELLERMATE_ENABLED && <div className={cn("px-2 pb-3 pt-2 border-t border-slate-200 dark:border-slate-800", collapsed && "flex justify-center")}>
         <Link
           href="/dashboard/ai"
           className={cn(
@@ -407,7 +409,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
       {/* Desktop sidebar — always in the layout flow from md breakpoint up */}
       <aside
         className={cn(
-          "hidden md:flex bg-slate-950 border-r border-slate-900 flex-col sticky top-0 h-screen z-40 transition-all duration-300 shadow-sm",
+          "hidden md:flex bg-white dark:bg-slate-950 border-r border-slate-200 dark:border-slate-900 flex-col sticky top-0 h-screen z-40 transition-all duration-300 shadow-sm",
           isCollapsed ? "w-[64px]" : "w-[220px]"
         )}
       >
@@ -432,7 +434,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
               animate={{ x: 0 }}
               exit={{ x: "-100%" }}
               transition={{ duration: 0.25, ease: "easeOut" }}
-              className="fixed inset-y-0 left-0 w-[240px] bg-slate-950 border-r border-slate-900 flex flex-col h-screen z-50 shadow-2xl md:hidden"
+              className="fixed inset-y-0 left-0 w-[240px] bg-white dark:bg-slate-950 border-r border-slate-200 dark:border-slate-900 flex flex-col h-screen z-50 shadow-2xl md:hidden"
             >
               {renderNavBody(false, true)}
             </motion.aside>

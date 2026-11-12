@@ -61,7 +61,7 @@ export default function LoginForm() {
       }
       localStorage.setItem("ppcUser", uTrim);
       localStorage.setItem("ppcKeySlot", uTrim === "Barm" ? "B" : "A");
-      window.location.href = "/dashboard/executive";
+      window.location.href = "/dashboard/home";
     } else {
       setError(serverError || "Incorrect credentials. Please check your username and password and try again.");
       setLoading(false);
