@@ -17,7 +17,16 @@ const cache = (store.__m360Bi ??= { at: 0, data: null, building: null });
 function rebuild(): Promise<BiDataset> {
   if (!cache.building) {
     cache.building = buildBiDataset()
-      .then((d) => { cache.data = d; cache.at = Date.now(); return d; })
+      .then((d) => {
+        // A rebuild where a source failed must not replace a complete dataset: keep serving the
+        // complete one and try again in two minutes instead of twenty.
+        if (d.errors.length && cache.data && cache.data.errors.length === 0) {
+          console.error("[bi] rebuild had failed sources, keeping the previous dataset:", d.errors);
+          cache.at = Date.now() - TTL_MS + 2 * 60_000;
+          return cache.data;
+        }
+        cache.data = d; cache.at = Date.now(); return d;
+      })
       .finally(() => { cache.building = null; });
   }
   return cache.building;

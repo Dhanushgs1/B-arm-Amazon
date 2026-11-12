@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { forecastSeries, backtest, addDaysIso, weekday } from "./forecast.ts";
+import { forecastSeries, forecastAuto, rollingError, backtest, addDaysIso, weekday, VARIANTS } from "./forecast.ts";
 
 const datesFrom = (start: string, n: number) => Array.from({ length: n }, (_, i) => addDaysIso(start, i));
 
@@ -62,4 +62,25 @@ test("forecasts never go negative", () => {
   const f = forecastSeries(values, dates);
   assert.ok(f.ok);
   if (f.ok) assert.ok(f.daily.every((v) => v >= 0) && f.horizons[90].low >= 0);
+});
+
+test("auto method: picks the variant with the lowest rolling error and reports it", () => {
+  const dates = datesFrom("2026-07-01", 120);
+  // steady 1000/day with a sale spike about 12 weeks before the end, like a festive event
+  const values = dates.map((_, i) => (i >= 30 && i < 40 ? 3000 : 1000));
+  const f = forecastAuto(values, dates);
+  assert.ok(f.ok);
+  if (!f.ok) return;
+  const errs = VARIANTS.map((v) => rollingError(values, dates, v)).filter((e): e is number => e !== null);
+  assert.equal(f.avgAbsErrorPct, Math.min(...errs));
+  assert.ok(VARIANTS.some((v) => v.label === f.method));
+  // after the spike the level is back to 1000: the 30-day forecast should be near 30,000
+  assert.ok(Math.abs(f.horizons[30].total - 30000) / 30000 < 0.15, `30d ${f.horizons[30].total}`);
+});
+
+test("auto method: too little history for a check still forecasts, without an accuracy figure", () => {
+  const dates = datesFrom("2026-10-12", 30);
+  const f = forecastAuto(dates.map(() => 500), dates);
+  assert.ok(f.ok);
+  if (f.ok) assert.equal(f.avgAbsErrorPct, null);
 });

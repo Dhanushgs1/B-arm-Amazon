@@ -2,7 +2,7 @@
 // Pure functions over a BiDataset — no I/O. Every figure says which days it covers; a channel or day
 // without data is reported as missing and left out, never counted as zero.
 
-import { addDaysIso, forecastSeries, type Forecast } from "./forecast.ts";
+import { addDaysIso, forecastAuto, type Forecast } from "./forecast.ts";
 import type { BiDataset, BiChannel, BiProduct, SalesChannelId, Series } from "./types.ts";
 
 // ── Windows ─────────────────────────────────────────────────────────────────────────────────
@@ -100,6 +100,25 @@ export function likeForLike(ds: BiDataset, cur: Window, prev: Window, only?: Sal
   return { current: ca, previous: cb, channels: both, revenuePct: pctChange(ca.revenue, cb.revenue), unitsPct: pctChange(ca.units, cb.units) };
 }
 
+// ── Coverage ──
+
+/** Order numbers missing in a row before the history counts as incomplete (a few go to deleted or
+ *  test orders; a long run means orders were never captured). */
+const SHOPIFY_MAX_GAP = 3;
+
+/** First day from which the Shopify order history is continuous: walking back from the newest order,
+ *  the first place more than SHOPIFY_MAX_GAP order numbers in a row are missing ends the complete part.
+ *  (Orders before the webhooks went live on 23 Oct 2026 were back-filled only in part.) */
+export function shopifyCompleteFrom(orders: { order_number: number; order_date: string }[]): string | null {
+  const byNumber = orders.filter((o) => Number.isFinite(o.order_number) && o.order_number > 0)
+    .sort((a, b) => a.order_number - b.order_number || a.order_date.localeCompare(b.order_date));
+  if (!byNumber.length) return null;
+  // the newest order by date anchors the walk, so an odd high number (a manual entry) cannot
+  let i = byNumber.reduce((best, o, k) => (o.order_date >= byNumber[best].order_date ? k : best), 0);
+  while (i > 0 && byNumber[i].order_number - byNumber[i - 1].order_number - 1 <= SHOPIFY_MAX_GAP) i--;
+  return byNumber[i].order_date;
+}
+
 // ── Forecasts ─────────────────────────────────────────────────────────────────────────────────
 
 export interface ChannelForecast { id: SalesChannelId; label: string; revenue: Forecast; units: Forecast; lastActual: string | null }
@@ -111,8 +130,8 @@ export function channelForecasts(ds: BiDataset, only?: SalesChannelId[]): Channe
     const dates = last >= 0 ? ds.dates.slice(0, last + 1) : [];
     return {
       id: c.id, label: c.label, lastActual: c.dataThrough,
-      revenue: dates.length ? forecastSeries(c.revenue.slice(0, last + 1), dates) : { ok: false, reason: "no data" },
-      units: dates.length ? forecastSeries(c.units.slice(0, last + 1), dates) : { ok: false, reason: "no data" },
+      revenue: dates.length ? forecastAuto(c.revenue.slice(0, last + 1), dates) : { ok: false, reason: "no data" },
+      units: dates.length ? forecastAuto(c.units.slice(0, last + 1), dates) : { ok: false, reason: "no data" },
     };
   });
 }
@@ -155,10 +174,13 @@ export function monthEndEstimate(ds: BiDataset, fs: ChannelForecast[]) {
     const ch = ds.channels.find((c) => c.id === f.id)!;
     if (!f.revenue.ok || !ch.dataThrough) continue;
     const covered = sumWindow(ch.revenue, ds.dates, { ...mtd, end: ch.dataThrough < asOf ? ch.dataThrough : asOf });
-    // days from the channel's last actual to month end are forecast
-    const gap = Math.max(0, Number(asOf.slice(8, 10)) - Number((ch.dataThrough < mtd.start ? mtd.start : ch.dataThrough).slice(8, 10)));
-    const n = Math.min(f.revenue.daily.length, remaining + gap);
-    const fc = f.revenue.daily.slice(0, n).reduce((s, v) => s + v, 0);
+    // forecast day i is dataThrough + i + 1; count only the days that fall inside this month
+    const monthEnd = `${asOf.slice(0, 8)}${String(daysInMonth(asOf)).padStart(2, "0")}`;
+    const dayNo = (iso: string) => Date.parse(`${iso}T00:00:00Z`) / 86_400_000;
+    const skip = Math.max(0, dayNo(mtd.start) - dayNo(ch.dataThrough) - 1);
+    const lastIdx = Math.min(f.revenue.daily.length, dayNo(monthEnd) - dayNo(ch.dataThrough));
+    const n = Math.max(0, lastIdx - skip);
+    const fc = f.revenue.daily.slice(skip, skip + n).reduce((s, v) => s + v, 0);
     const spread = n > 0 ? (f.revenue.horizons[30].high - f.revenue.horizons[30].total) * Math.sqrt(n / 30) : 0;
     actual += covered.value ?? 0; total += (covered.value ?? 0) + fc; variance += (spread / 1.2816) ** 2;
     channels.push(f.id);
@@ -259,7 +281,7 @@ export function rankProducts(rows: ProductRow[], limit = 10): Rankings {
       (r) => `${r.returns} returns on ${r.units} units (${r.returnRatePct!.toFixed(0)}%)`),
     stockRisk: [...rows.filter((r) => r.daysOfCover !== null && r.avgDailyUnits >= 1 && r.daysOfCover < 14)]
       .sort((a, b) => a.daysOfCover! - b.daysOfCover!).slice(0, limit)
-      .map((r) => ({ ...r, reason: `${r.stock} units available in FBA${r.stockAsOf ? ` on ${r.stockAsOf.split("-").reverse().join(".")}` : ""}, selling ${r.avgDailyUnits.toFixed(1)}/day → about ${Math.floor(r.daysOfCover!)} days of cover at that date${r.stock === 0 ? " (sales may be shipped by the seller instead — check before restocking)" : ""}` })),
+      .map((r) => ({ ...r, reason: `${r.stock} units available in FBA${r.stockAsOf ? ` on ${r.stockAsOf.split("-").reverse().join(".")}` : ""}, selling ${r.avgDailyUnits.toFixed(1)}/day → about ${Math.floor(r.daysOfCover!)} days of cover at that date${r.stock === 0 ? " — yet it kept selling, so orders are probably shipped by the seller; check before restocking" : ""}` })),
   };
 }
 
@@ -279,14 +301,16 @@ export function adChannels(ds: BiDataset, w: Window): AdChannelRow[] {
   return ds.ads.map((a) => {
     const s = sumWindow(a.spend, ds.dates, w), sa = sumWindow(a.sales, ds.dates, w);
     const ps = sumWindow(a.spend, ds.dates, prev), psa = sumWindow(a.sales, ds.dates, prev);
-    const complete = s.covered === w.days, prevComplete = ps.covered === prev.days;
+    const complete = s.covered === w.days && sa.covered === w.days, prevComplete = ps.covered === prev.days && psa.covered === prev.days;
+    // ratios only when spend and sales cover the same days (sales can be unknown where spend is not)
+    const paired = sa.covered === s.covered, prevPaired = psa.covered === ps.covered;
     return {
       id: a.id, label: a.label, salesBasis: a.salesBasis,
-      spend: s.value, sales: sa.value, prevSpend: ps.value, prevSales: psa.value,
+      spend: s.value, sales: paired ? sa.value : null, prevSpend: ps.value, prevSales: prevPaired ? psa.value : null,
       spendGst: s.value === null ? null : s.value * ds.gstMultiplier,
-      roas: s.value && sa.value !== null ? sa.value / s.value : null,
-      acos: sa.value && s.value !== null ? (s.value / sa.value) * 100 : null,
-      spendPct: complete && prevComplete ? pctChange(s.value, ps.value) : null,
+      roas: paired && s.value && sa.value !== null ? sa.value / s.value : null,
+      acos: paired && sa.value && s.value !== null ? (s.value / sa.value) * 100 : null,
+      spendPct: s.covered === w.days && ps.covered === prev.days ? pctChange(s.value, ps.value) : null,
       roasPrev: ps.value && psa.value !== null && prevComplete ? psa.value / ps.value : null,
       covered: s.covered, complete,
     };
@@ -360,6 +384,8 @@ export interface Insight { kind: InsightKind; severity: "good" | "bad" | "neutra
 
 const inr = (v: number) => `₹${Math.round(v).toLocaleString("en-IN")}`;
 const dot = (iso: string) => iso.split("-").reverse().join(".");
+/** Product names are often 150+ characters of keywords; keep the first 6 words for titles. */
+export const shortName = (n: string) => { const w = n.trim().split(/\s+/); return w.length > 6 ? `${w.slice(0, 6).join(" ")}…` : n.trim(); };
 
 export function buildInsights(ds: BiDataset, w: Window): Insight[] {
   const out: Insight[] = [];
@@ -388,12 +414,16 @@ export function buildInsights(ds: BiDataset, w: Window): Insight[] {
   const r = rankProducts(productRows(ds, 30), 3);
   for (const p of r.gainingMomentum.slice(0, 2)) {
     const low = p.daysOfCover !== null && p.daysOfCover < 21;
-    out.push({ kind: low ? "recommendation" : "fact", severity: "good", title: `${p.name} is gaining demand`, detail: `${p.reason} (${p.channel})`,
+    out.push({ kind: low ? "recommendation" : "fact", severity: "good", title: `${shortName(p.name)} is gaining demand`, detail: `${p.reason} (${p.channel})`,
       period: "last 4 weeks", action: low ? `About ${Math.floor(p.daysOfCover!)} days of FBA stock left at the current rate — plan a replenishment` : undefined });
   }
-  for (const p of r.declining.slice(0, 2)) out.push({ kind: "fact", severity: "bad", title: `${p.name} sales are declining`, detail: `${p.reason} (${p.channel})`, period: "last 4 weeks", action: "Check price, rating, stock and ads for this product" });
-  for (const p of r.stockRisk.slice(0, 2)) out.push({ kind: "recommendation", severity: "bad", title: `${p.name} may run out of stock`, detail: p.reason, period: "stock as of the last FBA upload", action: "Send stock to FBA or reduce ad spend on it until it arrives", href: "/dashboard/inventory" });
-  for (const p of r.highReturns.slice(0, 1)) out.push({ kind: "fact", severity: "bad", title: `High returns on ${p.name}`, detail: `${p.reason} (${p.channel})`, period: "last 30 days", action: "Read the return reasons for this product" });
+  for (const p of r.declining.slice(0, 2)) out.push({ kind: "fact", severity: "bad", title: `${shortName(p.name)} sales are declining`, detail: `${p.reason} (${p.channel})`, period: "last 4 weeks", action: "Check price, rating, stock and ads for this product" });
+  for (const p of r.stockRisk.slice(0, 2)) {
+    // 0 in FBA while still selling is usually seller-shipped stock, not a run-out: state the fact, ask for a check
+    if (p.stock === 0) out.push({ kind: "fact", severity: "neutral", title: `${shortName(p.name)}: 0 FBA stock but still selling`, detail: p.reason, period: "stock as of the last FBA upload", action: "Check whether these orders ship from your own warehouse", href: "/dashboard/inventory" });
+    else out.push({ kind: "recommendation", severity: "bad", title: `${shortName(p.name)} may run out of FBA stock`, detail: p.reason, period: "stock as of the last FBA upload", action: "Send stock to FBA or reduce ad spend on it until it arrives", href: "/dashboard/inventory" });
+  }
+  for (const p of r.highReturns.slice(0, 1)) out.push({ kind: "fact", severity: "bad", title: `High returns on ${shortName(p.name)}`, detail: `${p.reason} (${p.channel})`, period: "last 30 days", action: "Read the return reasons for this product" });
 
   // advertising
   const f = campaignFindings(ds);

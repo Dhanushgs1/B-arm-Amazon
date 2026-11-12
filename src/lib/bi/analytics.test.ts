@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { addDaysIso } from "./forecast.ts";
 import {
   windowEnding, previousWindow, monthToDate, daysInMonth, totals, likeForLike, productRows, rankProducts,
-  healthScore, buildInsights, channelForecasts, combineForecasts, monthEndEstimate, campaignFindings, adChannels,
+  healthScore, buildInsights, channelForecasts, shopifyCompleteFrom, shortName, combineForecasts, monthEndEstimate, campaignFindings, adChannels,
 } from "./analytics.ts";
 import type { BiDataset, Series } from "./types.ts";
 
@@ -103,4 +103,33 @@ test("advertising, health score and insights are built from the data and labelle
   assert.ok(ins.some((i) => i.kind === "recommendation" && /Waste/.test(i.title)));
   assert.ok(ins.some((i) => i.kind === "estimate"));
   assert.ok(ins.every((i) => i.period.length > 0));
+});
+
+test("Shopify history counts from where order numbers become continuous", () => {
+  const o = (n: number, d: string) => ({ order_number: n, order_date: d });
+  // #1023–#1043 never captured; #1049 and #1051–1052 small gaps (deleted/test orders) are tolerated
+  const orders = [o(1011, "2026-09-17"), o(1022, "2026-09-28"), o(1044, "2026-10-12"), o(1048, "2026-10-14"), o(1050, "2026-10-15"), o(1053, "2026-10-16"), o(1054, "2026-10-17")];
+  assert.equal(shopifyCompleteFrom(orders), "2026-10-12");
+  assert.equal(shopifyCompleteFrom([]), null);
+  // an odd high number entered by hand does not hide the real newest order
+  assert.equal(shopifyCompleteFrom([...orders, o(9999, "2026-10-10")]), "2026-10-12");
+});
+
+test("product names in insight titles are shortened", () => {
+  assert.equal(shortName("B-Arm Digital Infrared Thermometer | 1 Sec Quick Read"), "B-Arm Digital Infrared Thermometer | 1…");
+  assert.equal(shortName("Flange Finder Kit"), "Flange Finder Kit");
+});
+
+test("month-end estimate: a channel last uploaded in the previous month only forecasts this month's days", () => {
+  const ds2 = dataset();
+  const dd: string[] = [];
+  for (let d = "2026-08-01"; d <= "2026-11-09"; d = addDaysIso(d, 1)) dd.push(d);
+  const through = "2026-10-29";
+  const flat: Series = dd.map((d) => (d <= through ? 1000 : null));
+  ds2.asOf = "2026-11-09"; ds2.dates = dd;
+  ds2.channels = [{ ...ds2.channels[0], dataThrough: through, firstDate: dd[0], revenue: flat, units: flat, returns: flat }];
+  const me = monthEndEstimate(ds2, channelForecasts(ds2));
+  // 30 November days at about 1,000 a day; the 2 October days after the last upload are not counted
+  assert.ok(Math.abs(me.estimate - 30000) < 300, `estimate ${me.estimate}`);
+  assert.equal(me.actualSoFar, 0);
 });

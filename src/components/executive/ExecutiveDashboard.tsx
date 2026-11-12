@@ -420,7 +420,8 @@ function Insights({ items }: { items: Insight[] }) {
 }
 
 function ForecastTable({ horizons, fcs }: { horizons: ReturnType<typeof combineForecasts>[]; fcs: ReturnType<typeof channelForecasts> }) {
-  const acc = fcs.filter((f) => f.revenue.ok && f.revenue.backtestErrorPct !== null).map((f) => ({ label: f.label, err: (f.revenue as { backtestErrorPct: number }).backtestErrorPct }));
+  const acc = fcs.flatMap((f) => (f.revenue.ok && f.revenue.avgAbsErrorPct !== null ? [{ label: f.label, err: f.revenue.avgAbsErrorPct, method: f.revenue.method }] : []));
+  const noCheck = fcs.filter((f) => f.revenue.ok && f.revenue.avgAbsErrorPct === null).map((f) => f.label);
   const skipped = horizons[0]?.skipped ?? [];
   return (
     <Section title="Sales forecast" subtitle="Estimates from each channel's own history — not results. 80% of outcomes are expected inside the range.">
@@ -440,10 +441,11 @@ function ForecastTable({ horizons, fcs }: { horizons: ReturnType<typeof combineF
         </table>
       </div>
       <div className="mt-4 space-y-1.5 text-xs text-muted-foreground">
-        {acc.length > 0 && <p><span className="font-semibold text-foreground">Accuracy check:</span> run 28 days ago, the method would have been off by {acc.map((x) => `${x.label} ${x.err >= 0 ? "+" : ""}${x.err.toFixed(0)}%`).join(", ")} over those 28 days.</p>}
-        {acc.some((x) => Math.abs(x.err) > 25) && <p className="text-amber-700 dark:text-amber-400 font-medium">Treat the {acc.filter((x) => Math.abs(x.err) > 25).map((x) => x.label).join(" and ")} forecast with caution: its recent accuracy was outside ±25%, so the range above is likely too narrow for it.</p>}
+        {acc.length > 0 && <p><span className="font-semibold text-foreground">Accuracy check:</span> forecasts made 4–7 weeks ago for the following 28 days were off on average by {acc.map((x) => `${x.label} ±${x.err.toFixed(0)}% (${x.method})`).join(", ")}.</p>}
+        {noCheck.length > 0 && <p>{noCheck.join(" and ")}: too little history to check accuracy yet — treat as a rough guide.</p>}
+        {acc.some((x) => x.err > 25) && <p className="text-amber-700 dark:text-amber-400 font-medium">Treat the {acc.filter((x) => x.err > 25).map((x) => x.label).join(" and ")} {acc.filter((x) => x.err > 25).length > 1 ? "forecasts" : "forecast"} with caution: past forecasts missed by more than 25% on average (sale events such as Big Billion Days and festive peaks are not predictable from history yet), so the range above is likely too narrow.</p>}
         {skipped.length > 0 && <p>Not forecast (too little history): {skipped.map((s) => s.id).join(", ")}.</p>}
-        <p><span className="font-semibold text-foreground">Method:</span> each channel&apos;s weekday pattern and a damped trend from its last 8 weeks. It does not know about festivals, promotions, stock-outs or price changes, and cannot learn yearly seasonality until there is a full year of history (from April 2027).</p>
+        <p><span className="font-semibold text-foreground">Method:</span> each channel&apos;s weekday pattern plus its recent level or a damped trend, using 4 or 8 weeks of history — whichever would have forecast that channel best over the last four 28-day checks (shown in brackets above). It does not know about festivals, promotions, stock-outs or price changes, and cannot learn yearly seasonality until there is a full year of history (from April 2027).</p>
       </div>
     </Section>
   );

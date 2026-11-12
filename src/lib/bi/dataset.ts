@@ -11,6 +11,7 @@ import { loadAmazonSkuPeriodData, type PeriodWindow } from "@/lib/amazonSkuPerio
 import { loadMeeshoSkuPeriodData } from "@/lib/meeshoSkuPeriodData";
 import { loadFlipkartOrderData, isCountedFlipkartLine } from "@/lib/channelSummary";
 import { fetchShopifyOrders } from "@/lib/shopifyOrders";
+import { shopifyCompleteFrom } from "./analytics";
 import { loadMarketplaceAds, loadSpendWindows } from "@/lib/overallData";
 import { resolveDailySpend } from "@/lib/adSpendDailyRules";
 import { fetchAllRows } from "@/lib/amazonReportShared";
@@ -123,7 +124,9 @@ async function flipkart(start: string, end: string, productFrom: string) {
 }
 
 async function shopify(start: string, end: string, productFrom: string) {
-  const orders = await fetchShopifyOrders();
+  const all = await fetchShopifyOrders();
+  const completeFrom = shopifyCompleteFrom(all);
+  const orders = completeFrom ? all.filter((o) => o.order_date >= completeFrom) : all;
   const daily: DayAgg = new Map();
   const skus: SkuDayAgg = new Map();
   for (const o of orders) {
@@ -134,7 +137,7 @@ async function shopify(start: string, end: string, productFrom: string) {
       if (sku) addSku(skus, sku, it.title || sku, null, o.order_date, Number(it.quantity) || 0, Number(it.line_total) || 0, 0);
     }
   }
-  return { daily, skus, orders };
+  return { daily, skus, orders, completeFrom, skippedOrders: all.length - orders.length };
 }
 
 function adSeries(dates: string[], rows: { date: string; spend: number; sales: number }[]) {
@@ -149,8 +152,9 @@ function adSeries(dates: string[], rows: { date: string; spend: number; sales: n
   const first = days[0], last = days[days.length - 1];
   const inside = (d: string) => !!first && d >= first && d <= last;
   return {
-    spend: dates.map((d) => (inside(d) ? by.get(d)?.spend ?? 0 : null)),
-    sales: dates.map((d) => (inside(d) ? by.get(d)?.sales ?? 0 : null)),
+    // a day inside the range with no report row is missing, not zero spend
+    spend: dates.map((d) => (inside(d) ? by.get(d)?.spend ?? null : null)),
+    sales: dates.map((d) => (inside(d) ? by.get(d)?.sales ?? null : null)),
     adsThrough: last ?? null,
   };
 }
@@ -163,14 +167,26 @@ export async function buildBiDataset(): Promise<BiDataset> {
   const periods: PeriodWindow[] = dates.map((d) => ({ label: d, start: d, end: d }));
   const errors: BiDataset["errors"] = [];
   const notes: string[] = [];
+  // One retry per source: this database has short bursts of statement timeouts under load, and a
+  // second attempt a few seconds later usually succeeds. A source that fails twice is reported.
   const attempt = async <T,>(source: string, run: () => Promise<T>): Promise<T | null> => {
-    try { return await run(); } catch (e) { errors.push({ source, message: e instanceof Error ? e.message : String(e) }); return null; }
+    try { return await run(); } catch {
+      await new Promise((r) => setTimeout(r, 3000));
+      try { return await run(); } catch (e) { errors.push({ source, message: e instanceof Error ? e.message : String(e) }); return null; }
+    }
   };
 
-  const [am, fk, ms, sh, adAm, adFk, adMs, gWin, mWin, stockRows] = await Promise.all([
-    attempt("Amazon orders", () => fromPeriodLoader("amazon", periods, productFrom)),
-    attempt("Flipkart orders", () => flipkart(HISTORY_START, asOf, productFrom)),
-    attempt("Meesho orders", () => fromPeriodLoader("meesho", periods, productFrom)),
+  // The three large order reads run one after another, not together: run in parallel they compete
+  // for this busy database and push each other past its 3-second statement limit. The light reads
+  // (Shopify, ads, stock) run alongside them.
+  const heavy = (async () => {
+    const amazon = await attempt("Amazon orders", () => fromPeriodLoader("amazon", periods, productFrom));
+    const flip = await attempt("Flipkart orders", () => flipkart(HISTORY_START, asOf, productFrom));
+    const meesho = await attempt("Meesho orders", () => fromPeriodLoader("meesho", periods, productFrom));
+    return [amazon, flip, meesho] as const;
+  })();
+  const [[am, fk, ms], sh, adAm, adFk, adMs, gWin, mWin, stockRows] = await Promise.all([
+    heavy,
     attempt("Shopify orders", () => shopify(HISTORY_START, asOf, productFrom)),
     attempt("Amazon ads", () => loadMarketplaceAds("amazon", HISTORY_START, asOf)),
     attempt("Flipkart ads", () => loadMarketplaceAds("flipkart", HISTORY_START, asOf)),
@@ -190,6 +206,7 @@ export async function buildBiDataset(): Promise<BiDataset> {
   for (const [label, src] of [["Amazon", am], ["Meesho", ms]] as const) {
     if (src && src.excludedUnits > 0) notes.push(`${label}: ${Math.round(src.excludedUnits).toLocaleString("en-IN")} units sold in the last 30 days are in products with no category ("Other") or marked Discontinued, and are left out — the same rule as the ${label} Overview and weekly report. Map these SKUs in Master to include them.`);
   }
+  if (sh && sh.skippedOrders > 0) notes.push(`Shopify: order history before ${sh.completeFrom!.split("-").reverse().join(".")} has gaps in the order numbers (orders before the webhooks went live were only partly back-filled), so Shopify is counted from that date. ${sh.skippedOrders} earlier orders are left out.`);
   if (fk && fk.unpriced > 0) notes.push(`Flipkart: ${fk.unpriced} SKUs have no listing price, so their units add ₹0 to Flipkart revenue.`);
 
   const products: BiProduct[] = [
@@ -221,7 +238,8 @@ export async function buildBiDataset(): Promise<BiDataset> {
     ads.push({
       id, label, adsThrough: days[days.length - 1] ?? null,
       spend: dates.map((d) => (spendByDay.has(d) ? spendByDay.get(d)! : null)),
-      sales: dates.map((d) => (spendByDay.has(d) ? salesByDay.get(d) ?? 0 : null)),
+      // sales unknown before the Shopify history is complete
+      sales: dates.map((d) => (spendByDay.has(d) && sh && (!sh.completeFrom || d >= sh.completeFrom) ? salesByDay.get(d) ?? 0 : null)),
       salesBasis: sh ? `Shopify orders whose visit came from ${label}` : "Shopify orders unavailable",
     });
   }
