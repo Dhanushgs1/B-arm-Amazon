@@ -54,7 +54,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       lookbackDays,
       lowStockThreshold,
       // Status metadata only — the item list itself goes out in the email, never in the response.
-      emailed: !!(send && to && items.length > 0),
+      emailed: !!(send && to && items.length > 0 && emailResult && !emailResult.error),
       emailResult,
     });
   } catch (err: any) {

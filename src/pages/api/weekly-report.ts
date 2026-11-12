@@ -242,7 +242,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     // Only what the UIs read (Settings shows whatsappText); the report body itself goes out by email.
-    return res.status(200).json({ thisWeek: T, lastWeek: L, whatsappText, emailed: !!(send && to), emailResult });
+    return res.status(200).json({ thisWeek: T, lastWeek: L, whatsappText, emailed: !!(send && to && emailResult && !emailResult.error), emailResult });
   } catch (err: any) {
     return res.status(500).json({ error: err.message || "weekly-report failed" });
   }

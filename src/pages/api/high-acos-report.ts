@@ -26,6 +26,7 @@ import { buildAcosTrend, lastIstDates, acosTrendCsv, HIGH_ACOS_DEFAULT_THRESHOLD
 import { ACOS_CHANNELS, toPerDay, amazonRows, flipkartRows, meeshoRows, meeshoAvgPrice, type ChannelAdRow } from "@/lib/highAcosChannels";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
 import { checkSessionOrInternal, guard, isInternalRequest } from "@/lib/apiAuth";
+import { alertStateClaimStore, claimOnce } from "@/lib/onceClaim";
 
 const STATE_TABLE = "barm_alert_state";
 const ALERT_TYPE = "highAcosDaily";
@@ -108,6 +109,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (await alreadySent(slot, lastDate)) {
         return res.status(200).json({ emailed: false, skipped: `already sent for ${lastDate}` });
       }
+      // Upload page, 09:00 cron and 30-minute monitor can all arrive together: only the caller that
+      // claims the day sends. Older "done" rows have no status and read as already sent.
+      const claim = await claimOnce(alertStateClaimStore(supabasePublic), slot, ALERT_TYPE, lastDate);
+      if (!claim.claimed) return res.status(200).json({ emailed: false, skipped: `${claim.reason} for ${lastDate}` });
     }
 
     const byChannel = await loadChannelRows(dates[0], lastDate);
@@ -159,6 +164,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         { onConflict: "key_slot,alert_type,entity_id" },
       );
       if (upErr) console.error("[Marketplace360] high-acos state write failed:", upErr.message);
+    } else if (sending) {
+      // Not sent: free the day so the next caller retries.
+      await alertStateClaimStore(supabasePublic).release(slot, ALERT_TYPE, lastDate).catch((e) =>
+        console.error("[Marketplace360] high-acos claim release failed:", e));
     }
     // Browser callers get counts only, never the campaign rows or the rendered email.
     return res.status(200).json({ ...summary, emailed, emailError: emailResult?.error, ...(isInternalRequest(req.headers) ? { emailResult } : {}) });

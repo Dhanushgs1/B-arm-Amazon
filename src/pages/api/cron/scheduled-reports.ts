@@ -16,6 +16,24 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { readEmailSettings } from "@/lib/emailSettingsStore";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
 import { checkCron, guard } from "@/lib/apiAuth";
+import { supabasePublic } from "@/lib/supabasePublic";
+import { alertStateClaimStore, istDate, sendOnce } from "@/lib/onceClaim";
+
+// Up to two slots × several sub-reports, each allowed to take a while: give the run the full five
+// minutes instead of the platform default, so a slow day does not cut off the later mails.
+export const config = { maxDuration: 300 };
+
+// A second delivery of this cron (a retry, or a manual re-hit) on the same IST day must not send
+// the same mail again: each mail is claimed in barm_alert_state first (see onceClaim.ts) and only
+// the run that holds the claim calls the route. A failed send releases the claim for a retry.
+async function once(slot: string, kind: string, run: () => Promise<{ ok: boolean; [k: string]: unknown }>) {
+  const r = await sendOnce(alertStateClaimStore(supabasePublic), { slot, type: `cron:${kind}`, entity: istDate() }, async () => {
+    const value = await run();
+    return { ok: !!value.ok, value };
+  });
+  if (!r.ran) return { ok: true, skipped: `${r.reason} today` };
+  return r.degraded ? { ...r.value, claimWarning: r.degraded } : r.value;
+}
 
 const KEY_SLOTS = ["A", "B"] as const;
 
@@ -111,27 +129,27 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
   if (s.dailySummary) {
     // Always sends, including on a quiet day — a digest that goes missing is indistinguishable
     // from a cron that stopped.
-    results.dailyDigest = await callReportEndpoint(
+    results.dailyDigest = await once(slot, "dailyDigest", () => callReportEndpoint(
       req,
       "/api/daily-digest",
       { ...acct, acosThreshold: s.acosThreshold || 40, minSpend: 500, lookbackDays: 7, lowStockThreshold: s.lowStockThreshold || 5 },
       `[${slot}] Daily digest`
-    );
+    ));
   }
   // The four emails below are the client's daily list (sheet "Mail to be triggered", 2026-10-11):
   // each goes out on any day it has something to report — never as an empty mail (user, 2026-10-11).
   if (s.liveAlerts) {
     // "Things need attention": everything firing today (conversion drops and products running out
     // within stockoutWarnDays first), new items marked NEW.
-    results.liveAlerts = await callReportEndpoint(
+    results.liveAlerts = await once(slot, "liveAlerts", () => callReportEndpoint(
       req, "/api/live-alerts", { ...acct, daily: true, warnDays: Number(s.stockoutWarnDays) || 10 }, `[${slot}] Things need attention`
-    );
+    ));
   }
   // FBA stock — every SKU failing the 24-FC rule (under 8 FCs stocked, or a stocked FC at 20 units or
   // less), newly failing ones marked NEW, plus every SKU's stock per FC as a CSV. On by default for
   // B-ARM only (the account the FC list was made for); Settings can switch it either way.
   if (s.fbaWarehouseAlerts ?? slot === "B") {
-    results.fbaWarehouseLow = await callReportEndpoint(req, "/api/fba-warehouse-alerts", { ...acct, daily: true }, `[${slot}] FBA stock`);
+    results.fbaWarehouseLow = await once(slot, "fbaWarehouseLow", () => callReportEndpoint(req, "/api/fba-warehouse-alerts", { ...acct, daily: true }, `[${slot}] FBA stock`));
   }
   // High ACOS — campaigns above highAcosThreshold (default 14%) over the last 7 days, ACOS per day.
   // Sends only if yesterday's Last 7 days upload is already in, at most once per date; otherwise the
@@ -155,13 +173,15 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
     results.searchTermMonthly = await callReportEndpoint(req, "/api/search-term-monthly-mail", acct, `[${slot}] Search terms monthly`);
   }
   if (isMonday && s.weeklySummary) {
-    results.weekly = await callReportEndpoint(req, "/api/weekly-report", acct, `[${slot}] Weekly report`);
+    results.weekly = await once(slot, "weekly", () => callReportEndpoint(req, "/api/weekly-report", acct, `[${slot}] Weekly report`));
   }
   // The Historical 7/30 Day Analysis Report and Daily Ad Spend Report stay manual-only — see handler() below.
   if (isFirstOfMonth && s.monthlySummary) {
     try {
-      await sendMonthlyPlaceholder(req, s.notifEmail, s.ccEmail);
-      results.monthly = { ok: true };
+      results.monthly = await once(slot, "monthly", async () => {
+        await sendMonthlyPlaceholder(req, s.notifEmail, s.ccEmail);
+        return { ok: true };
+      });
       console.log(`[Marketplace360 Cron] ✅ [${slot}] Monthly report sent → ${s.notifEmail}`);
     } catch (err: any) {
       results.monthly = { ok: false, error: err?.message || String(err) };
