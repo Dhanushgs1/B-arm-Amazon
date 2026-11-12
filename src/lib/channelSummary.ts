@@ -14,6 +14,7 @@ import { sharedFetch } from "@/lib/sharedFetch";
 import { previousRange } from "@/lib/dateRanges";
 import { amazonCardSpendRows } from "@/lib/amazonAdSourceRules";
 import { dailyFallbackStart, dailyFkRowAsMis, dedupeOrderLines, misMaxForFill } from "@/lib/dailyOrderFallbackRules";
+import { dayLabel, monthEnd, monthStartOf, splitPeriod, summarizeMisLines, type MisLine, type MisMarketplace } from "@/lib/misInvoiceRules";
 
 // Short "this period vs the previous period" summary for the Meesho, BARM and Flipkart Overview
 // pages, for the date range selected at the top of the dashboard. Meesho and BARM reuse the same
@@ -86,9 +87,96 @@ function summarize(data: WeeklySkuPeriodData & { cancelledOrdersByPeriod?: Map<s
   };
 }
 
+// ── B-ARM ERP invoice figures (misInvoiceRules.ts) ─────────────────────────────
+// For every day the ERP's monthly invoice reports cover, Amazon / Flipkart / Meesho Sales, Units,
+// Orders and Returns are the ERP's (public.mis_datas_mv, as its "MIS Data's" page shows them); the
+// days after come from the order reports below, as before. Ad spend is unchanged.
+
+/** Last day the ERP's invoice reports cover for a marketplace: the end of its newest report month.
+ *  Kept for 30 minutes (it moves once a month) and retried, since this database has bursts of
+ *  statement timeouts. */
+const misEndCache = new Map<MisMarketplace, { at: number; value: Promise<string | null> }>();
+function misCoverageEnd(m: MisMarketplace): Promise<string | null> {
+  const hit = misEndCache.get(m);
+  if (hit && Date.now() - hit.at < 30 * 60_000) return hit.value;
+  const value = (async () => {
+    for (let i = 0; ; i++) {
+      const { data, error } = await supabasePublic.from("mis_datas_mv").select("invoice_month").eq("marketplace", m).order("invoice_month", { ascending: false }).limit(1);
+      if (!error) {
+        const month = (data?.[0] as { invoice_month?: string } | undefined)?.invoice_month;
+        return month ? monthEnd(month) : null;
+      }
+      if (i >= 3) throw new Error(`ERP invoice data (${m}): ${error.message}`);
+      await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
+    }
+  })();
+  misEndCache.set(m, { at: Date.now(), value });
+  value.catch(() => misEndCache.delete(m));
+  return value;
+}
+
+function loadMisLines(m: MisMarketplace, start: string, end: string): Promise<MisLine[]> {
+  return fetchAllRows(
+    "mis_datas_mv",
+    (q) => q.eq("marketplace", m).gte("invoice_month", monthStartOf(start)).lte("invoice_month", monthStartOf(end)),
+    "line_uid",
+    "line_uid,invoice_date,invoice_month,order_id,quantity,sales_with_tax,returns_with_tax",
+  ) as Promise<MisLine[]>;
+}
+
+/** `base` (order reports, both periods) with every ERP-covered day replaced by the ERP's figures.
+ *  `orderOnly(s, e)` gives the order-report summary for the days after the ERP's last day. */
+async function withMisInvoices(m: MisMarketplace, base: ChannelSummary, orderOnly: (s: string, e: string) => Promise<ChannelSummary>): Promise<ChannelSummary> {
+  // A failure throws (the shared loader cache then keeps its last good copy and tries again) rather
+  // than quietly showing order-report figures for days the ERP covers.
+  const misEnd = await misCoverageEnd(m);
+  const splits = {
+    previous: splitPeriod(base.previousRange.start, base.previousRange.end, misEnd),
+    current: splitPeriod(base.currentRange.start, base.currentRange.end, misEnd),
+  };
+  const misParts = [splits.previous.mis, splits.current.mis].filter((x): x is { start: string; end: string } => !!x);
+  if (!misEnd || !misParts.length) return base;
+  const lines = await loadMisLines(m, misParts[0].start, misParts[misParts.length - 1].end);
+
+  const period = async (label: "previous" | "current"): Promise<PeriodSummary> => {
+    const sp = splits[label];
+    const b = base[label];
+    if (!sp.mis) return b;
+    const t = summarizeMisLines(lines, sp.mis.start, sp.mis.end);
+    const after = sp.orders ? (await orderOnly(sp.orders.start, sp.orders.end)).current : null;
+    return {
+      sales: t.sales + (after?.sales ?? 0),
+      units: t.units + (after?.units ?? 0),
+      orders: t.orders + (after?.orders ?? 0),
+      allReturns: t.allReturns + (after?.allReturns ?? 0),
+      // the invoice reports list only returns that were refunded or credited: customer returns
+      customerReturns: t.allReturns + (after?.customerReturns ?? 0),
+      netOrders: t.netOrders + (after?.netOrders ?? 0),
+      adSpendTax: b.adSpendTax,
+      cancelledOrders: undefined, // the invoice reports leave cancelled orders out
+      unpricedUnits: after?.unpricedUnits,
+      unpricedSkus: after?.unpricedSkus,
+    };
+  };
+  const [previous, current] = await Promise.all([period("previous"), period("current")]);
+  const through = dayLabel(misEnd);
+  return {
+    ...base,
+    previous,
+    current,
+    salesLabel: "Gross Sales",
+    note: `Up to ${through}: the B-ARM ERP's MIS figures (${m} invoice reports; Sales incl. tax before returns; Net = the ERP's Qty). After ${through}: ${base.note ?? "the order reports."}`,
+  };
+}
+
 export function fetchMeeshoSummary(start: string, end: string): Promise<ChannelSummary> {
   if (inBrowser()) return viaServer<ChannelSummary>("fetchMeeshoSummary", [start, end]); // runs on the server, shared (viaServer.ts)
-  return sharedFetch(`channel-summary:fetchMeeshoSummary:${start}:${end}`, () => fetchMeeshoSummaryUncached(start, end), 120_000);
+  return sharedFetch(`channel-summary:fetchMeeshoSummary:${start}:${end}`, async () => withMisInvoices("Meesho", await meeshoOrderSummary(start, end), meeshoOrderSummary), 120_000);
+}
+
+/** Meesho from the order reports only (meesho_barm_ord and its return tables). */
+function meeshoOrderSummary(start: string, end: string): Promise<ChannelSummary> {
+  return sharedFetch(`channel-summary:meeshoOrders:${start}:${end}`, () => fetchMeeshoSummaryUncached(start, end), 120_000);
 }
 
 async function fetchMeeshoSummaryUncached(start: string, end: string): Promise<ChannelSummary> {
@@ -137,7 +225,12 @@ async function fetchBarmSummaryUncached(start: string, end: string): Promise<Cha
 // price (barm_flipkart_listings) × units, a COMPUTED figure (the order report carries no prices).
 export function fetchFlipkartOrderSummary(start: string, end: string): Promise<ChannelSummary> {
   if (inBrowser()) return viaServer<ChannelSummary>("fetchFlipkartOrderSummary", [start, end]); // runs on the server, shared (viaServer.ts)
-  return sharedFetch(`channel-summary:fetchFlipkartOrderSummary:${start}:${end}`, () => fetchFlipkartOrderSummaryUncached(start, end), 120_000);
+  return sharedFetch(`channel-summary:fetchFlipkartOrderSummary:${start}:${end}`, async () => withMisInvoices("Flipkart", await flipkartOrderSummary(start, end), flipkartOrderSummary), 120_000);
+}
+
+/** Flipkart from the order reports only (fk_orders plus the daily upload, returns, listing prices). */
+function flipkartOrderSummary(start: string, end: string): Promise<ChannelSummary> {
+  return sharedFetch(`channel-summary:flipkartOrders:${start}:${end}`, () => fetchFlipkartOrderSummaryUncached(start, end), 120_000);
 }
 
 /** A Flipkart order line that counts as a sale: not a skeleton row, not cancelled. */
@@ -253,7 +346,12 @@ function amazonSpendTaxIn(tables: AdTableRows, start: string, end: string): { sp
  *  upload for days the MIS orders table doesn't reach yet. */
 export function fetchAmazonSummary(start: string, end: string): Promise<ChannelSummary> {
   if (inBrowser()) return viaServer<ChannelSummary>("fetchAmazonSummary", [start, end]); // runs on the server, shared (viaServer.ts)
-  return sharedFetch(`channel-summary:fetchAmazonSummary:${start}:${end}`, () => fetchAmazonSummaryUncached(start, end), 120_000);
+  return sharedFetch(`channel-summary:fetchAmazonSummary:${start}:${end}`, async () => withMisInvoices("Amazon", await amazonOrderSummary(start, end), amazonOrderSummary), 120_000);
+}
+
+/** Amazon from the order reports only (amazon_orders plus the daily upload, returns, ads). */
+function amazonOrderSummary(start: string, end: string): Promise<ChannelSummary> {
+  return sharedFetch(`channel-summary:amazonOrders:${start}:${end}`, () => fetchAmazonSummaryUncached(start, end), 120_000);
 }
 
 async function fetchAmazonSummaryUncached(start: string, end: string): Promise<ChannelSummary> {
@@ -304,6 +402,6 @@ async function fetchFlipkartAllSummaryUncached(start: string, end: string): Prom
     current: { ...s.current, adSpendTax: cur },
     previous: { ...s.previous, adSpendTax: before },
     salesLabel: "Gross Sales",
-    note: "Flipkart: listing price × units (computed); returns from the returns report; FSN ad spend. Days the MIS orders table doesn't reach yet come from the daily \"Last 7 days\" upload.",
+    note: `${s.note ?? ""} Ad spend: FSN report.`.trim(),
   };
 }
