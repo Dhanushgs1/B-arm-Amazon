@@ -139,19 +139,8 @@ function flipkartSections(marketplace: "flipkart"): SidebarNavSection[] {
         { id: "marketshare", label: "Market Share", icon: TrendingUp, path: `/dashboard/${marketplace}/marketshare` },
       ],
     },
-    {
-      label: "Intelligence & Workspace",
-      items: [
-        { id: "ratings-reviews", label: "⭐ Ratings & Reviews Intelligence", icon: Star, path: `/dashboard/${marketplace}/ratings-reviews` },
-        // Cross-platform (Amazon+Flipkart+Meesho together) — same shared page
-        // as the Amazon-view sidebar, not a per-marketplace route.
-        { id: "seasonal", label: "Seasonal Analytics", icon: CalendarRange, path: "/dashboard/seasonal" },
-        { id: "daily-ad-spend", label: "Daily Ad Spend", icon: Sparkles, path: "/dashboard/daily-ad-spend" },
-        { id: "ai", label: "AI Assistant", icon: Bot, path: `/dashboard/${marketplace}/ai` },
-        { id: "compare", label: "Overall", icon: GitCompare, path: "/dashboard/compare" },
-        { id: "settings", label: "Settings", icon: Settings, path: `/dashboard/${marketplace}/settings` },
-      ],
-    },
+    // "Intelligence & Workspace" (Ratings, Seasonal, Daily Ad Spend, AI Assistant, Overall, Settings)
+    // removed from the Flipkart sidebar (user, 12 Nov 2026); those pages stay reachable from Overall.
   ];
 }
 
