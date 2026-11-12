@@ -26,7 +26,9 @@ export async function preloadOverallOnce(): Promise<{ lastDate: string | null; l
   const lastDate = (await getCached("fetchChannelLastDataDate", ["compare"])).data;
   if (typeof lastDate !== "string" || !DATE.test(lastDate)) return { lastDate: null, loaded: 0, cached: 0, failed: 0 };
   let loaded = 0, cached = 0, failed = 0;
-  for (const [name, args] of overallPreloadRequests(lastDate)) {
+  // the Profit & actions page: ERP profit lines and the last 30 days of ads per product
+  const profitRequests: [string, string[]][] = [["loadErpProfit", []], ["loadProductAds", [overallPreloadRequests(lastDate, [30])[0][1][0], lastDate]]];
+  for (const [name, args] of [...overallPreloadRequests(lastDate), ...profitRequests]) {
     try {
       if ((await ensureCached(name, args, PRELOAD_MAX_AGE_MS)) === "cached") { cached++; continue; }
       loaded++;

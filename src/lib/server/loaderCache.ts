@@ -14,6 +14,7 @@ import { fetchAmazonSummary, fetchBarmSummary, fetchFlipkartAllSummary, fetchFli
 import { loadMarketplaceAds, loadSpendWindows } from "@/lib/overallData";
 import { fetchShopifyAllSummary, fetchShopifyOrders, fetchShopifySummary } from "@/lib/shopifyOrders";
 import { fetchChannelLastDataDate } from "@/lib/channelLastDataDate";
+import { loadErpProfit, loadProductAds } from "@/lib/profitData";
 import type { MarketplaceTab } from "@/lib/marketplace";
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -32,6 +33,8 @@ export const LOADERS: Record<string, { valid: (a: string[]) => boolean; run: (a:
   loadMarketplaceAds: { valid: keyed(["amazon", "flipkart", "meesho"]), run: (a) => loadMarketplaceAds(a[0] as "amazon", a[1], a[2]) },
   fetchChannelLastDataDate: { valid: (a) => a.length === 1 && ["amazon", "flipkart", "meesho", "shopify", "barm", "compare"].includes(a[0]), run: (a) => fetchChannelLastDataDate(a[0] as MarketplaceTab) },
   loadSpendWindows: { valid: keyed(["google", "meta"]), run: (a) => loadSpendWindows(a[0] as "google", a[1], a[2]) },
+  loadErpProfit: { valid: (a) => a.length === 0, run: () => loadErpProfit() },
+  loadProductAds: { valid: dates, run: (a) => loadProductAds(a[0], a[1]) },
 };
 
 export const FRESH_MS = 5 * 60_000;

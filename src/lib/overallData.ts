@@ -28,7 +28,7 @@ const between = (start: string, end: string) => (q: any) => q.gte("report_date",
 
 let fkFirst: { at: number; value: Promise<string | null> } | null = null;
 /** First day of the daily Flipkart ads upload (kept for an hour). */
-function fkDailyFirstDay(): Promise<string | null> {
+export function fkDailyFirstDay(): Promise<string | null> {
   if (fkFirst && Date.now() - fkFirst.at < 3_600_000) return fkFirst.value;
   const value = (async () => {
     for (let i = 0; ; i++) {

@@ -9,6 +9,7 @@ import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import {
   LayoutDashboard,
   Home,
+  Wallet,
   Megaphone,
   LayoutGrid,
   Target,
@@ -186,6 +187,7 @@ const COMPARE_NAV_SECTIONS: SidebarNavSection[] = [
       { id: "home", label: "Home", icon: Home, path: "/dashboard/home" },
       { id: "executive", label: "Business overview", icon: LayoutDashboard, path: "/dashboard/executive" },
       { id: "compare", label: "Overall", icon: GitCompare, path: "/dashboard/compare" },
+      { id: "profit", label: "Profit & actions", icon: Wallet, path: "/dashboard/profit" },
     ],
   },
   {

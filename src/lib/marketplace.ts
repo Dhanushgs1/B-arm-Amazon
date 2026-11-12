@@ -70,7 +70,7 @@ export const MOCK_MARKETPLACES: MarketplaceId[] = ["flipkart"];
 // sync.
 // ---------------------------------------------------------------------------
 
-export const OVERALL_ONLY_PATHS = ["/dashboard/home", "/dashboard/executive", "/dashboard/master", "/dashboard/ratings-reviews", "/dashboard/seasonal", "/dashboard/settings"];
+export const OVERALL_ONLY_PATHS = ["/dashboard/home", "/dashboard/profit", "/dashboard/executive", "/dashboard/master", "/dashboard/ratings-reviews", "/dashboard/seasonal", "/dashboard/settings"];
 
 export function getMarketplaceTab(pathname: string | null): MarketplaceTab {
   const p = pathname || "";
