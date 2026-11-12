@@ -136,3 +136,18 @@ test("today, named days and follow-ups", () => {
   assert.equal(followUpQuestion("write a poem", "sales last month", asOf), null);
   assert.equal(followUpQuestion("flipkart sales yesterday", "sales last month", asOf), null); // already a full question
 });
+
+import { shopifyLiveLine } from "./chatAnswers.ts";
+
+test("old website / offline channel is left out; 'website' means Shopify; Shopify live today", () => {
+  const ds = dataset();
+  ds.channels.push({ id: "barm", label: "B-ARM website & offline", basis: "b", firstDate: START, dataThrough: asOf, revenue: ser(() => 0), units: ser(() => 3), returns: ser(() => 0), returnsTracked: true });
+  const a = answerFromData(ds, "sales last month")!.text;
+  assert.doesNotMatch(a, /B-ARM website/);
+  ds.channels.push({ id: "shopify", label: "Shopify", basis: "b", firstDate: START, dataThrough: asOf, revenue: ser(() => 0), units: ser(() => 0), returns: ser(() => null), returnsTracked: false });
+  assert.match(answerFromData(ds, "sales last month")!.text, /Shopify: no orders/);
+  assert.match(answerFromData(ds, "website sales yesterday")!.text, /^Shopify sales on/);
+  const orders = [{ order_date: "2026-11-12", is_cancelled: false, total: 1500, item_quantity: 2 }, { order_date: "2026-11-12", is_cancelled: true, total: 900, item_quantity: 1 }, { order_date: "2026-11-11", is_cancelled: false, total: 700, item_quantity: 1 }];
+  assert.equal(shopifyLiveLine(orders, "2026-11-12"), "Shopify today (12.11.2026, live): **1** order, **₹1,500**, 2 units.");
+  assert.match(shopifyLiveLine(orders, "2026-11-13"), /no orders yet/);
+});

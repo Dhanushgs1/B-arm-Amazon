@@ -11,7 +11,8 @@ import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { ArrowUp, ChevronRight, Loader2, MessageSquare, Sparkles, X } from "lucide-react";
 import type { BiDataset } from "@/lib/bi/types";
-import { answerFromData, followUpQuestion } from "@/lib/home/chatAnswers";
+import { answerFromData, followUpQuestion, isTodayQuestion, shopifyLiveLine } from "@/lib/home/chatAnswers";
+import { fetchShopifyOrders } from "@/lib/shopifyOrders";
 import { askAi } from "@/lib/home/askAi";
 import { useDashboard } from "@/lib/DashboardContext";
 
@@ -74,7 +75,17 @@ export function ChatWidget() {
     const prevUser = [...messages].reverse().find((m) => m.role === "user")?.text;
     const follow = followUpQuestion(question, prevUser, ds.asOf);
     const local = answerFromData(ds, question) ?? (follow ? answerFromData(ds, follow) : null);
-    if (local) { setMessages((m) => [...m, { role: "bot", ...local }]); return; }
+    if (local) {
+      // "today": the marketplace reports run a day behind, but Shopify orders arrive live — add them
+      const asked = follow ?? question;
+      if (isTodayQuestion(asked) && local.href === "/dashboard/compare" && (!/(amazon|flipkart|meesho|website|offline)/i.test(asked) || /shopify/i.test(asked))) {
+        const todayIst = new Date(Date.now() + 5.5 * 3_600_000).toISOString().slice(0, 10);
+        try { local.text += `
+${shopifyLiveLine(await fetchShopifyOrders(), todayIst)}`; } catch { /* the main answer still stands */ }
+      }
+      setMessages((m) => [...m, { role: "bot", ...local }]);
+      return;
+    }
     setBusy(true);
     try {
       setMessages((m) => [...m, { role: "bot", text: "" }]);

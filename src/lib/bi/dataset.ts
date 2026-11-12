@@ -287,8 +287,9 @@ function applyMis(src: { daily: DayAgg; skus: SkuDayAgg }, lines: MisProductLine
   }
 }
 
-/** 2: channels carry their order-report series (BiChannel.orders) next to the ERP figures. */
-export const BI_VERSION = 2;
+/** 2: channels carry their order-report series (BiChannel.orders) next to the ERP figures.
+ *  3: Shopify days with no orders are 0 through the last day (live webhooks), not missing. */
+export const BI_VERSION = 3;
 export const ORDER_REFRESH_DAYS = 35;
 export const ADS_REFRESH_DAYS = 100; // the campaign table needs ~60 days before the last ads day
 export const FULL_REBUILD_HOURS = 24;
@@ -394,7 +395,8 @@ export async function buildBiDataset(previous?: BiDataset | null): Promise<BiDat
     toChannel("amazon", "Amazon", erp("amazon", "order item price × units, cancelled excluded (as the Amazon Overview)"), true, dates, am?.daily ?? empty, am?.dataThrough ?? null),
     toChannel("flipkart", "Flipkart", erp("flipkart", "listing price × units, computed (as the Flipkart Overview)"), true, dates, fk?.daily ?? empty, fk?.dataThrough ?? null),
     toChannel("meesho", "Meesho", erp("meesho", "quantity × supplier listed price, before returns (as the Meesho Overview)"), true, dates, ms?.daily ?? empty, ms?.dataThrough ?? null),
-    toChannel("shopify", "Shopify", "Order totals of non-cancelled orders, incl. shipping and tax", false, dates, sh?.daily ?? empty, null),
+    // Shopify orders arrive live (webhooks): a day with no orders is a real 0, through the last day
+    toChannel("shopify", "Shopify", "Order totals of non-cancelled orders, incl. shipping and tax", false, dates, sh?.daily ?? empty, sh ? asOf : null),
     // still active: offline orders keep coming after the website moved to Shopify
     toChannel("barm", "B-ARM website & offline", "Old website (WooCommerce) order totals of Received orders, plus offline orders (units only — no prices on file)", true, dates, web?.daily ?? empty, web?.dataThrough ?? null),
   ];

@@ -4,7 +4,7 @@
 import { basisOf, channelPeriod, comparableChannel, productRows, type Window } from "../bi/analytics.ts";
 import { addDaysIso } from "../bi/forecast.ts";
 import type { BiDataset } from "../bi/types.ts";
-import { inrShort } from "./chatAnswers.ts";
+import { inrShort, marketplacesOnly } from "./chatAnswers.ts";
 
 export interface Headline { kind: "sales" | "units" | "stock" | "ads" | "returns"; text: string; href: string; linkLabel: string; tone: "good" | "bad" | "neutral" }
 export interface Tile { label: string; value: string; sub: string; change: number | null; inverse?: boolean; href: string }
@@ -32,7 +32,8 @@ function channelSales(ds: BiDataset, win: Window, other?: Window) {
 /** True when some channel is compared on its order-report figures instead of the ERP's. */
 const basisDiffers = (ds: BiDataset, a: Window, b: Window) => ds.channels.some((c) => c.orders && (basisOf(ds, c.id, a) !== basisOf(ds, c.id, b) || basisOf(ds, c.id, a) === "mixed"));
 
-export function homeHeadlines(ds: BiDataset): Headline[] {
+export function homeHeadlines(dsAll: BiDataset): Headline[] {
+  const ds = marketplacesOnly(dsAll);
   const out: Headline[] = [];
   const asOf = ds.asOf;
 
@@ -89,7 +90,8 @@ export function homeHeadlines(ds: BiDataset): Headline[] {
   return out;
 }
 
-export function homeTiles(ds: BiDataset): Tile[] {
+export function homeTiles(dsAll: BiDataset): Tile[] {
+  const ds = marketplacesOnly(dsAll);
   const asOf = ds.asOf;
   const tiles: Tile[] = [];
   const { cur, prev } = lastFullMonths(asOf);

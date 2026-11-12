@@ -33,9 +33,18 @@ const win = (start: string, end: string): Window => ({ start, end, days: daysBet
 const monthEnd = (start: string) => { const [y, m] = start.split("-").map(Number); return `${y}-${String(m).padStart(2, "0")}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, "0")}`; };
 const monthName = (iso: string) => `${MONTHS[Number(iso.slice(5, 7)) - 1][0].toUpperCase()}${MONTHS[Number(iso.slice(5, 7)) - 1].slice(1)} ${iso.slice(0, 4)}`;
 
+// The B-ARM account's website is Shopify (barm_shopify_orders_v2 / _order_lines_live); the old
+// WooCommerce history and offline orders ("barm") are left out of the chat and Home (user, 12 Nov 2026).
 const CHANNEL_WORDS: [RegExp, SalesChannelId][] = [
-  [/\bamazon\b/, "amazon"], [/\bflipkart\b/, "flipkart"], [/\bmeesho\b/, "meesho"], [/\bshopify\b/, "shopify"], [/\b(website|offline|b-?arm)\b/, "barm"],
+  [/\bamazon\b/, "amazon"], [/\bflipkart\b/, "flipkart"], [/\bmeesho\b/, "meesho"], [/\b(shopify|website|site)\b/, "shopify"],
 ];
+
+/** The dataset without the old website / offline channel, for the chat and Home. */
+export function marketplacesOnly(ds: BiDataset): BiDataset {
+  return ds.channels.some((c) => c.id === "barm")
+    ? { ...ds, channels: ds.channels.filter((c) => c.id !== "barm"), products: ds.products.filter((p) => p.channel !== "barm") }
+    : ds;
+}
 function channelOf(q: string): SalesChannelId | null {
   for (const [re, id] of CHANNEL_WORDS) if (re.test(q)) return id;
   return null;
@@ -97,7 +106,8 @@ export function periodOf(q: string, asOf: string): { w: Window; label: string; e
 function salesAnswer(ds: BiDataset, q: string): ChatAnswer {
   const { w, label } = periodOf(q, ds.asOf);
   const only = channelOf(q);
-  const rows = ds.channels.filter((c) => !only || c.id === only).map((c) => channelPeriod(ds, c, w)).filter((p) => p.covered > 0 && (p.revenue || p.units));
+  // channels with data for the period; a covered day with no orders is listed as "no orders", not left out
+  const rows = ds.channels.filter((c) => !only || c.id === only).map((c) => channelPeriod(ds, c, w)).filter((p) => p.covered > 0);
   if (!rows.length) return { text: `No sales data on file for ${label}${only ? ` on ${only}` : ""}.` };
   const revenue = rows.reduce((s, p) => s + (p.revenue ?? 0), 0);
   const units = rows.reduce((s, p) => s + (p.units ?? 0), 0);
@@ -107,7 +117,7 @@ function salesAnswer(ds: BiDataset, q: string): ChatAnswer {
   const lines = [`${who} ${when}: **${inrShort(revenue)}** from **${num(units)}** units.`];
   if (rows.length > 1) {
     const sorted = [...rows].sort((a, b) => (b.revenue ?? 0) - (a.revenue ?? 0));
-    lines.push(...sorted.map((p) => `• ${p.label}: **${inrShort(p.revenue ?? 0)}**, ${num(p.units ?? 0)} units${revenue > 0 ? ` (${(((p.revenue ?? 0) / revenue) * 100).toFixed(0)}%)` : ""}`));
+    lines.push(...sorted.map((p) => (!p.revenue && !p.units ? `• ${p.label}: no orders` : `• ${p.label}: **${inrShort(p.revenue ?? 0)}**, ${num(p.units ?? 0)} units${revenue > 0 ? ` (${(((p.revenue ?? 0) / revenue) * 100).toFixed(0)}%)` : ""}`)));
   }
   if (partial.length) lines.push(`Data covers only part of the period for ${partial.map((p) => `${p.label} (${p.covered} of ${w.days} days)`).join(", ")}.`);
   return { text: lines.join("\n"), href: "/dashboard/compare", hrefLabel: "Open Overall" };
@@ -176,7 +186,8 @@ function adsAnswer(ds: BiDataset, q: string): ChatAnswer {
 }
 
 /** An answer from our data, or null when the question is not one of the recognised kinds. */
-export function answerFromData(ds: BiDataset, question: string): ChatAnswer | null {
+export function answerFromData(dsAll: BiDataset, question: string): ChatAnswer | null {
+  const ds = marketplacesOnly(dsAll);
   const q = question.toLowerCase().replace(/[’']/g, "").replace(/\s+/g, " ").trim();
   if (!q) return null;
   if (/\bout of stock\b|\bstock\b|\brestock\b|\binventory\b/.test(q)) return stockAnswer(ds);
@@ -189,7 +200,8 @@ export function answerFromData(ds: BiDataset, question: string): ChatAnswer | nu
 }
 
 /** A compact text summary of the dataset, given to AI as context for questions answerFromData skips. */
-export function dataSummaryForAi(ds: BiDataset): string {
+export function dataSummaryForAi(dsAll: BiDataset): string {
+  const ds = marketplacesOnly(dsAll);
   const last30 = win(addDaysIso(ds.asOf, -29), ds.asOf);
   const lines = [`Data through ${ds.asOf}. Currency INR. Last 30 days (${last30.start} to ${last30.end}) by channel:`];
   for (const c of ds.channels) {
@@ -222,4 +234,16 @@ export function followUpQuestion(question: string, previous: string | undefined,
 /** True when the question already names something to answer about (sales, stock, ads, …). */
 function answerFromDataIntent(q: string): boolean {
   return /\b(out of stock|stock|restock|inventory|return|top|best|ad ?spend|roas|acos|advertis|ads|campaign|sell|sold|sales|revenue|turnover|earn|orders?|units)\b/.test(q);
+}
+
+/** True for questions about today (the chat then adds Shopify's live orders, which do arrive same-day). */
+export const isTodayQuestion = (q: string) => /\btoday'?s?\b/i.test(q);
+
+/** Shopify's live orders for one day (its orders arrive by webhook, so today is already there). */
+export function shopifyLiveLine(orders: { order_date: string; is_cancelled: boolean; total: number; item_quantity: number }[], day: string): string {
+  const today = orders.filter((o) => o.order_date === day && !o.is_cancelled);
+  if (!today.length) return `Shopify today (${dot(day)}, live): no orders yet.`;
+  const total = today.reduce((t, o) => t + (Number(o.total) || 0), 0);
+  const units = today.reduce((t, o) => t + (Number(o.item_quantity) || 0), 0);
+  return `Shopify today (${dot(day)}, live): **${today.length}** order${today.length === 1 ? "" : "s"}, **${inrShort(total)}**, ${num(units)} units.`;
 }
