@@ -194,6 +194,14 @@ export default function LoginForm() {
                 </>
               )}
             </button>
+
+            {/* One-click sign-in through the B-ARM ERP (b-arm.org) for allow-listed accounts */}
+            <a
+              href="https://b-arm.org/?sso_to=mna"
+              className="w-full h-[48px] border border-white/10 hover:border-indigo-400/40 bg-white/[0.03] hover:bg-white/[0.06] text-slate-200 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2"
+            >
+              <Building size={15} /> Sign in with B-ARM account
+            </a>
           </form>
         </div>
 

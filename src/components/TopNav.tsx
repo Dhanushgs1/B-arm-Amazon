@@ -142,6 +142,10 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
     }
   };
 
+  // Signed in through the B-ARM ERP (see /api/auth/sso): show links to the other B-ARM sites.
+  const [ssoEmail, setSsoEmail] = useState<string | null>(null);
+  useEffect(() => { try { setSsoEmail(localStorage.getItem("barmSsoEmail")); } catch { /* private mode */ } }, []);
+
   const handleLogout = async () => {
     // End the server session first (clears the HttpOnly cookie); only then drop local state.
     // If the request fails the cookie is still valid, so say so rather than pretend to sign out.
@@ -152,6 +156,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
       window.alert("Could not sign out. Check your connection and try again.");
       return;
     }
+    localStorage.removeItem("barmSsoEmail");
     localStorage.removeItem("ppcUser");
     localStorage.removeItem("ppcKeySlot");
     window.location.href = "/";
@@ -276,6 +281,20 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
       >
         {theme === "light" ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
       </button>
+
+      {/* Other B-ARM sites (one click, already signed in) */}
+      {ssoEmail && (
+        <div className="flex items-center gap-1.5">
+          <a href="https://b-arm.org/" target="_blank" rel="noopener" title="Open the B-ARM ERP (b-arm.org)" aria-label="Open the B-ARM ERP (opens in a new tab)"
+            className="h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-[10px] font-black uppercase tracking-wide text-slate-500 dark:text-slate-400 flex items-center hover:border-indigo-500/50 hover:text-indigo-500 transition-colors shadow-sm">
+            ERP
+          </a>
+          <a href="https://b-arm.org/?sso_to=hr" target="_blank" rel="noopener" title="Open the HR portal (hr.b-arm.org)" aria-label="Open the HR portal (opens in a new tab)"
+            className="h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-[10px] font-black uppercase tracking-wide text-slate-500 dark:text-slate-400 flex items-center hover:border-indigo-500/50 hover:text-indigo-500 transition-colors shadow-sm">
+            HR
+          </a>
+        </div>
+      )}
 
       {/* Unified Profile Logout */}
       <div className="relative group">
