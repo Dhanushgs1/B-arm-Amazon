@@ -51,7 +51,7 @@ export function FlipkartDemoGate({
         </div>
         <button
           onClick={() => router.push("/dashboard/flipkart/upload")}
-          className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs px-5 py-2.5 rounded-lg transition shadow-md"
+          className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-5 py-2.5 rounded-lg transition shadow-md"
         >
           Go to Upload Data <ArrowRight className="h-3.5 w-3.5" />
         </button>

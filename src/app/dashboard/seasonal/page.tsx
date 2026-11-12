@@ -42,8 +42,8 @@ const STATUS_META: Record<Status, { icon: typeof TrendingUp; cls: string; color:
   "UNUSUAL SPIKE": { icon: Zap, cls: "bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-800", color: "warning" },
   "DEMAND DROP": { icon: TrendingDown, cls: "bg-red-100 text-red-800 border-red-300 dark:bg-red-950/50 dark:text-red-300 dark:border-red-800", color: "critical" },
   "UNUSUAL DECLINE": { icon: AlertTriangle, cls: "bg-orange-100 text-orange-800 border-orange-300 dark:bg-orange-950/50 dark:text-orange-300 dark:border-orange-800", color: "serious" },
-  "SEASONAL HIGH": { icon: Sun, cls: "bg-blue-100 text-blue-800 border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-800", color: "s1" },
-  "SEASONAL LOW": { icon: Snowflake, cls: "bg-indigo-100 text-indigo-800 border-indigo-300 dark:bg-indigo-950/50 dark:text-indigo-300 dark:border-indigo-800", color: "s1" },
+  "SEASONAL HIGH": { icon: Sun, cls: "bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800", color: "s1" },
+  "SEASONAL LOW": { icon: Snowflake, cls: "bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800", color: "s1" },
   STABLE: { icon: Minus, cls: "bg-slate-100 text-slate-700 border-slate-300 dark:bg-slate-800/60 dark:text-slate-300 dark:border-slate-700", color: "mid" },
   "LOW VOLUME": { icon: Minus, cls: "bg-slate-50 text-slate-500 border-slate-200 dark:bg-slate-900/60 dark:text-slate-400 dark:border-slate-800", color: "mid" },
   "INSUFFICIENT DATA": { icon: HelpCircle, cls: "bg-slate-50 text-slate-500 border-slate-200 dark:bg-slate-900/60 dark:text-slate-400 dark:border-slate-800", color: "mid" },
@@ -60,7 +60,7 @@ function StatusBadge({ status, pattern, plain }: { status: Status; pattern?: str
   );
 }
 function PeakBadge() {
-  return <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-violet-300 bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold text-violet-800 dark:border-violet-800 dark:bg-violet-950/50 dark:text-violet-300"><CalendarClock size={11} /> PEAK APPROACHING</span>;
+  return <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-green-300 bg-green-100 px-1.5 py-0.5 text-[10px] font-bold text-green-800 dark:border-green-800 dark:bg-green-950/50 dark:text-green-300"><CalendarClock size={11} /> PEAK APPROACHING</span>;
 }
 function ConfidenceBadge({ c }: { c: Confidence }) {
   const cls = c === "HIGH" ? "text-emerald-700 dark:text-emerald-400" : c === "MEDIUM" ? "text-amber-700 dark:text-amber-400" : "text-slate-500 dark:text-slate-400";
@@ -279,8 +279,8 @@ export default function SeasonalAnalyticsPage() {
         </div>
         <div className="flex flex-wrap gap-2 text-xs font-bold">
           <div className="flex rounded-lg border border-border bg-background p-0.5">
-            <button onClick={() => setView("simple")} className={`rounded-md px-3 py-1.5 ${view === "simple" ? "bg-indigo-600 text-white" : "text-muted-foreground hover:text-foreground"}`}>Summary</button>
-            <button onClick={() => setView("analysis")} className={`rounded-md px-3 py-1.5 ${view === "analysis" ? "bg-indigo-600 text-white" : "text-muted-foreground hover:text-foreground"}`}>Full Details</button>
+            <button onClick={() => setView("simple")} className={`rounded-md px-3 py-1.5 ${view === "simple" ? "bg-emerald-600 text-white" : "text-muted-foreground hover:text-foreground"}`}>Summary</button>
+            <button onClick={() => setView("analysis")} className={`rounded-md px-3 py-1.5 ${view === "analysis" ? "bg-emerald-600 text-white" : "text-muted-foreground hover:text-foreground"}`}>Full Details</button>
           </div>
           {view === "analysis" && <button onClick={exportCsv} disabled={!data} className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 hover:bg-muted disabled:opacity-50"><Download size={14} /> Export CSV</button>}
           <button onClick={load} className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 hover:bg-muted"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh</button>
@@ -295,7 +295,7 @@ export default function SeasonalAnalyticsPage() {
             const on = mk === "" ? marketplaces.length === 0 : marketplaces.length === 1 && marketplaces[0] === mk;
             return (
               <button key={mk || "all"} onClick={() => setMarketplaces(mk ? [mk] : [])}
-                className={`rounded-md px-3 py-1.5 ${on ? "bg-indigo-600 text-white" : "text-muted-foreground hover:text-foreground"}`}>{mk || "All"}</button>
+                className={`rounded-md px-3 py-1.5 ${on ? "bg-emerald-600 text-white" : "text-muted-foreground hover:text-foreground"}`}>{mk || "All"}</button>
             );
           })}
         </div>
@@ -319,7 +319,7 @@ export default function SeasonalAnalyticsPage() {
                     const cur = marketplaces.length ? marketplaces : all;
                     const next = cur.includes(mk) ? cur.filter((x) => x !== mk) : [...cur, mk];
                     setMarketplaces(next.length === all.length || next.length === 0 ? [] : next);
-                  }} className={`rounded-md border px-2 py-1 font-semibold ${on ? "border-indigo-400 bg-indigo-50 text-indigo-700 dark:border-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300" : "border-border text-muted-foreground"}`}>{mk}</button>
+                  }} className={`rounded-md border px-2 py-1 font-semibold ${on ? "border-emerald-400 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300" : "border-border text-muted-foreground"}`}>{mk}</button>
                 );
               })}
             </div>
@@ -396,7 +396,7 @@ export default function SeasonalAnalyticsPage() {
           {/* ── data quality ── */}
           <div className="premium-card rounded-2xl">
             <button onClick={() => setShowQuality((v) => !v)} className="flex w-full items-center justify-between gap-2 px-4 py-3 text-left">
-              <span className="flex items-center gap-2 text-xs font-bold"><Database size={14} className="text-indigo-500" /> Data coverage & quality
+              <span className="flex items-center gap-2 text-xs font-bold"><Database size={14} className="text-emerald-500" /> Data coverage & quality
                 <span className="font-medium text-muted-foreground">· {data.quality.totalDays} days ({data.quality.totalMonths} months) · {data.quality.warnings.length} note(s)</span>
               </span>
               {showQuality ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
@@ -541,8 +541,8 @@ export default function SeasonalAnalyticsPage() {
                 <p className="text-[10px] text-muted-foreground">{rows.length} rows · units/day unless stated · Current = last 7 days · Recent = last 30 days · Baseline = overall average · click a row to drill down</p>
               </div>
               <div className="flex rounded-lg border border-border p-0.5 text-[11px] font-bold">
-                <button onClick={() => setLevel("master")} className={`rounded-md px-2.5 py-1 ${level === "master" ? "bg-indigo-600 text-white" : "text-muted-foreground"}`}>Master products</button>
-                <button onClick={() => setLevel("sku")} className={`rounded-md px-2.5 py-1 ${level === "sku" ? "bg-indigo-600 text-white" : "text-muted-foreground"}`}>SKUs</button>
+                <button onClick={() => setLevel("master")} className={`rounded-md px-2.5 py-1 ${level === "master" ? "bg-emerald-600 text-white" : "text-muted-foreground"}`}>Master products</button>
+                <button onClick={() => setLevel("sku")} className={`rounded-md px-2.5 py-1 ${level === "sku" ? "bg-emerald-600 text-white" : "text-muted-foreground"}`}>SKUs</button>
               </div>
             </div>
             <div className="overflow-x-auto">
@@ -594,7 +594,7 @@ export default function SeasonalAnalyticsPage() {
               </table>
             </div>
             {rows.length > pageSize && (
-              <button onClick={() => setPageSize((n) => n + 100)} className="w-full border-t border-border py-2 text-xs font-bold text-indigo-600 hover:bg-muted/40 dark:text-indigo-400">Show more ({rows.length - pageSize} remaining)</button>
+              <button onClick={() => setPageSize((n) => n + 100)} className="w-full border-t border-border py-2 text-xs font-bold text-emerald-600 hover:bg-muted/40 dark:text-emerald-400">Show more ({rows.length - pageSize} remaining)</button>
             )}
           </div>
         </>
@@ -618,7 +618,7 @@ function Kpi({ icon: Icon, label, value, sub, onClick }: { icon: typeof Trending
     <div onClick={onClick} role={onClick ? "button" : undefined} tabIndex={onClick ? 0 : undefined}
       onKeyDown={onClick ? (e) => { if (e.key === "Enter") onClick(); } : undefined}
       className={`premium-card rounded-2xl p-3 ${onClick ? "premium-card-hover cursor-pointer" : ""}`}>
-      <div className="flex items-center gap-1.5 text-[9px] font-extrabold uppercase tracking-wider text-muted-foreground"><Icon size={12} className="text-indigo-500" />{label}</div>
+      <div className="flex items-center gap-1.5 text-[9px] font-extrabold uppercase tracking-wider text-muted-foreground"><Icon size={12} className="text-emerald-500" />{label}</div>
       <p className="mt-1.5 text-xl font-bold tabular-nums">{value}</p>
       {sub && <p className="text-[10px] text-muted-foreground">{sub}</p>}
     </div>

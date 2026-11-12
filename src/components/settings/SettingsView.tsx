@@ -38,7 +38,7 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
       onClick={() => onChange(!checked)}
       className={cn(
         "relative w-11 h-6 rounded-full transition-colors duration-200 flex-shrink-0 focus:outline-none focus:ring-2 focus:ring-primary/30",
-        checked ? "bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6]" : "bg-muted border border-border"
+        checked ? "bg-gradient-to-r from-[#059669] to-[#34D399]" : "bg-muted border border-border"
       )}
     >
       <span
@@ -462,7 +462,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
       <motion.div
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
-        className="relative overflow-hidden rounded-[26px] border border-white/40 dark:border-white/5 bg-gradient-to-br from-[#6D5EF8] via-[#7B5CF6] to-[#10B981] text-white shadow-[0_24px_60px_-20px_rgba(108,99,255,0.45)]"
+        className="relative overflow-hidden rounded-[26px] border border-white/40 dark:border-white/5 bg-gradient-to-br from-[#059669] via-[#10B981] to-[#10B981] text-white shadow-[0_24px_60px_-20px_rgba(16, 185, 129,0.45)]"
       >
         <div className="absolute -top-24 -right-16 w-80 h-80 rounded-full bg-white/10 blur-3xl pointer-events-none" />
         <div className="relative z-10 p-8 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
@@ -496,7 +496,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
             <button
               onClick={handleSave}
               disabled={saving}
-              className="flex items-center gap-2 bg-white text-[#5B4FE0] hover:bg-white/90 px-5 py-2.5 rounded-xl text-sm font-bold transition-all shadow-lg shadow-black/10 disabled:opacity-60"
+              className="flex items-center gap-2 bg-white text-[#047857] hover:bg-white/90 px-5 py-2.5 rounded-xl text-sm font-bold transition-all shadow-lg shadow-black/10 disabled:opacity-60"
             >
               {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />} Save Changes
             </button>
@@ -522,7 +522,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
             className="glass gradient-border rounded-2xl p-4 hover:-translate-y-0.5 transition-transform"
           >
             <div className="flex items-center justify-between">
-              <c.icon className="w-4 h-4 text-indigo-500" />
+              <c.icon className="w-4 h-4 text-emerald-500" />
               <span className={cn("w-1.5 h-1.5 rounded-full", c.good ? "bg-emerald-500" : "bg-red-500")} />
             </div>
             <p className="text-[10px] font-extrabold uppercase tracking-widest text-muted-foreground mt-2.5">{c.label}</p>
@@ -544,7 +544,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
                   className={cn(
                     "w-full text-left px-3 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2.5 transition-all",
                     activeTab === n.id
-                      ? "bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white shadow-md shadow-indigo-500/20"
+                      ? "bg-gradient-to-r from-[#059669] to-[#34D399] text-white shadow-md shadow-emerald-500/20"
                       : "text-muted-foreground hover:bg-muted hover:text-foreground hover:translate-x-0.5"
                   )}
                 >
@@ -565,7 +565,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
           )}
 
           {activeTab === "general" && (
-            <Card title="General" icon={Settings} iconColor="bg-indigo-500/10 border-indigo-500/15 text-indigo-500">
+            <Card title="General" icon={Settings} iconColor="bg-emerald-500/10 border-emerald-500/15 text-emerald-500">
               <SettingRow title="Workspace Name" desc={SELLERMATE_ENABLED ? "Synced from your SellerMate workspace." : "The account this sign-in belongs to."}>
                 <span className="text-sm font-bold bg-muted px-3 py-1.5 rounded-xl max-w-[220px] truncate">{account?.name || "—"}</span>
               </SettingRow>
@@ -623,7 +623,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
                   </select>
                 </SettingRow>
               </Card>
-              <Card title="Manual Ingestion" icon={RefreshCw} iconColor="bg-blue-500/10 border-blue-500/15 text-blue-500">
+              <Card title="Manual Ingestion" icon={RefreshCw} iconColor="bg-emerald-500/10 border-emerald-500/15 text-emerald-500">
                 <p className="text-xs text-muted-foreground font-semibold leading-relaxed">
                   Reports are queued on a schedule. Trigger a manual sync to pull the latest PPC and inventory metrics from Amazon instantly.
                 </p>
@@ -631,7 +631,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
                   <button
                     onClick={handleTriggerSync}
                     disabled={syncing}
-                    className="px-4 py-2.5 bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white font-bold text-sm rounded-xl flex items-center gap-2 transition-all shadow-md shadow-indigo-500/20 disabled:opacity-50"
+                    className="px-4 py-2.5 bg-gradient-to-r from-[#059669] to-[#34D399] text-white font-bold text-sm rounded-xl flex items-center gap-2 transition-all shadow-md shadow-emerald-500/20 disabled:opacity-50"
                   >
                     {syncing ? (<><Loader2 className="w-4 h-4 animate-spin" /> Ingesting Live Data...</>) : (<><RefreshCw size={15} /> Synchronize Now</>)}
                   </button>
@@ -760,7 +760,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
                             else { console.error(json.error); setTestEmailStatus("error"); setTimeout(() => setTestEmailStatus("idle"), 4000); }
                           } catch { setTestEmailStatus("error"); setTimeout(() => setTestEmailStatus("idle"), 4000); }
                         }}
-                        className="px-4 py-2 bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm disabled:opacity-50 hover:opacity-90 transition-all"
+                        className="px-4 py-2 bg-gradient-to-r from-[#059669] to-[#34D399] text-white text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm disabled:opacity-50 hover:opacity-90 transition-all"
                       >
                         {testEmailStatus === "sending" ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Sending...</> :
                          testEmailStatus === "sent" ? <><CheckCircle className="w-3.5 h-3.5" /> Sent!</> :
@@ -846,12 +846,12 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
                   </SettingRow>
                 )}
                 {(dailySummary || liveAlerts || fbaWarehouseAlerts || highAcosDaily || ratingDropAlerts || weeklySummary || monthlySummary || searchTermMonthly) && (
-                  <div className="mt-1 mb-2 px-3 py-2.5 bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 rounded-xl">
-                    <p className="text-[11px] font-extrabold text-indigo-600 dark:text-indigo-400 flex items-center gap-1.5">
+                  <div className="mt-1 mb-2 px-3 py-2.5 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-xl">
+                    <p className="text-[11px] font-extrabold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
                       <span>📬</span> Reports will be sent to: <span className="font-black">{notifEmail || "—"}</span>
                       {ccEmail && <span className="font-semibold">(cc: {ccEmail})</span>}
                     </p>
-                    <p className="text-[10px] text-indigo-500/80 font-semibold mt-0.5">
+                    <p className="text-[10px] text-emerald-500/80 font-semibold mt-0.5">
                       {[dailySummary && "Daily digest 9AM", liveAlerts && "Things need attention 9AM", fbaWarehouseAlerts && "FBA stock 9AM", highAcosDaily && "High ACOS after upload", ratingDropAlerts && "Rating drop Monday", weeklySummary && "Weekly Monday", monthlySummary && "Monthly 1st", searchTermMonthly && "Search terms month-end"].filter(Boolean).join(" · ")}
                     </p>
                   </div>
@@ -885,7 +885,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
                             }
                           } catch { setWeeklyReportStatus("error"); setTimeout(() => setWeeklyReportStatus("idle"), 4000); }
                         }}
-                        className="px-4 py-2 bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm disabled:opacity-50 hover:opacity-90 transition-all"
+                        className="px-4 py-2 bg-gradient-to-r from-[#059669] to-[#34D399] text-white text-xs font-bold rounded-xl flex items-center gap-1.5 shadow-sm disabled:opacity-50 hover:opacity-90 transition-all"
                       >
                         {weeklyReportStatus === "sending" ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Sending...</> :
                          weeklyReportStatus === "sent" ? <><CheckCircle className="w-3.5 h-3.5" /> Sent!</> :
@@ -916,7 +916,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
                         <span className="text-muted-foreground">Notify when ACOS exceeds:</span>
                         <span className="text-primary font-extrabold">{acosThreshold}%</span>
                       </div>
-                      <input type="range" min="10" max="100" value={acosThreshold} onChange={(e) => setAcosThreshold(parseInt(e.target.value))} className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-[#6C63FF]" />
+                      <input type="range" min="10" max="100" value={acosThreshold} onChange={(e) => setAcosThreshold(parseInt(e.target.value))} className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-[#059669]" />
                     </div>
                   )}
                   {all && (
@@ -925,7 +925,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
                         <span className="text-muted-foreground">Notify when stock drops below:</span>
                         <span className="text-primary font-extrabold">{lowStockThreshold} units</span>
                       </div>
-                      <input type="range" min="5" max="100" value={lowStockThreshold} onChange={(e) => setLowStockThreshold(parseInt(e.target.value))} className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-[#6C63FF]" />
+                      <input type="range" min="5" max="100" value={lowStockThreshold} onChange={(e) => setLowStockThreshold(parseInt(e.target.value))} className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-[#059669]" />
                     </div>
                   )}
                   <div className="space-y-2">
@@ -933,7 +933,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
                       <span className="text-muted-foreground">High ACOS email: campaigns above</span>
                       <span className="text-primary font-extrabold">{highAcosThreshold}%</span>
                     </div>
-                    <input type="range" min="5" max="100" value={highAcosThreshold} onChange={(e) => setHighAcosThreshold(parseInt(e.target.value))} className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-[#6C63FF]" />
+                    <input type="range" min="5" max="100" value={highAcosThreshold} onChange={(e) => setHighAcosThreshold(parseInt(e.target.value))} className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-[#059669]" />
                   </div>
                   {all && (
                     <div className="space-y-2">
@@ -941,7 +941,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
                         <span className="text-muted-foreground">Things need attention: running out within</span>
                         <span className="text-primary font-extrabold">{stockoutWarnDays} days</span>
                       </div>
-                      <input type="range" min="3" max="30" value={stockoutWarnDays} onChange={(e) => setStockoutWarnDays(parseInt(e.target.value))} className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-[#6C63FF]" />
+                      <input type="range" min="3" max="30" value={stockoutWarnDays} onChange={(e) => setStockoutWarnDays(parseInt(e.target.value))} className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-[#059669]" />
                     </div>
                   )}
                 </div>
@@ -950,7 +950,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
           )}
 
           {activeTab === "automation" && (
-            <Card title="Automation Rules" icon={Zap} iconColor="bg-violet-500/10 border-violet-500/15 text-violet-500">
+            <Card title="Automation Rules" icon={Zap} iconColor="bg-green-500/10 border-green-500/15 text-green-500">
               <p className="text-xs text-muted-foreground font-semibold -mt-1 mb-2">
                 Rules run on the AI engine and surface as recommendations. Auto-apply requires write access (not enabled on this read-only dashboard).
               </p>
@@ -968,13 +968,13 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
                   <span className="text-muted-foreground">ROAS target for scale suggestions:</span>
                   <span className="text-primary font-extrabold">{roasTarget}x</span>
                 </div>
-                <input type="range" min="1" max="10" step="0.5" value={roasTarget} onChange={(e) => setRoasTarget(parseFloat(e.target.value))} className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-[#6C63FF]" />
+                <input type="range" min="1" max="10" step="0.5" value={roasTarget} onChange={(e) => setRoasTarget(parseFloat(e.target.value))} className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-[#059669]" />
               </div>
             </Card>
           )}
 
           {activeTab === "ai" && (
-            <Card title="AI Assistant" icon={Bot} iconColor="bg-indigo-500/10 border-indigo-500/15 text-indigo-500">
+            <Card title="AI Assistant" icon={Bot} iconColor="bg-emerald-500/10 border-emerald-500/15 text-emerald-500">
               <SettingRow title="Enable AI Engine" desc="Powers recommendations, health scores and the copilot.">
                 <Toggle checked={aiEnabled} onChange={setAiEnabled} />
               </SettingRow>
@@ -1001,7 +1001,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
                       className={cn(
                         "px-3 py-1.5 rounded-full text-xs font-bold capitalize transition-all border",
                         recMode === m
-                          ? "bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white border-transparent shadow-sm"
+                          ? "bg-gradient-to-r from-[#059669] to-[#34D399] text-white border-transparent shadow-sm"
                           : "bg-card border-border text-muted-foreground hover:border-primary/40"
                       )}
                     >
@@ -1019,13 +1019,13 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
                 <div className="flex gap-1.5">
                   <button
                     onClick={() => toggleTheme("light")}
-                    className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border transition-all", theme === "light" ? "bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white border-transparent" : "bg-card border-border text-muted-foreground")}
+                    className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border transition-all", theme === "light" ? "bg-gradient-to-r from-[#059669] to-[#34D399] text-white border-transparent" : "bg-card border-border text-muted-foreground")}
                   >
                     <Sun size={13} /> Light
                   </button>
                   <button
                     onClick={() => toggleTheme("dark")}
-                    className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border transition-all", theme === "dark" ? "bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white border-transparent" : "bg-card border-border text-muted-foreground")}
+                    className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border transition-all", theme === "dark" ? "bg-gradient-to-r from-[#059669] to-[#34D399] text-white border-transparent" : "bg-card border-border text-muted-foreground")}
                   >
                     <Moon size={13} /> Dark
                   </button>
@@ -1066,7 +1066,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
 
           {activeTab === "support" && (
             <>
-              <Card title="Documentation & Help" icon={HelpCircle} iconColor="bg-blue-500/10 border-blue-500/15 text-blue-500">
+              <Card title="Documentation & Help" icon={HelpCircle} iconColor="bg-emerald-500/10 border-emerald-500/15 text-emerald-500">
                 <p className="text-xs text-muted-foreground font-semibold leading-relaxed">
                   Need help integrating your SP-API keys or setting up target harvesting? Review our knowledge base tutorials.
                 </p>
@@ -1107,7 +1107,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
                     <button
                       type="submit"
                       disabled={supportSubmitting}
-                      className="px-5 py-2.5 bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white font-bold text-sm rounded-xl flex items-center gap-2 shadow-md shadow-indigo-500/20 disabled:opacity-50"
+                      className="px-5 py-2.5 bg-gradient-to-r from-[#059669] to-[#34D399] text-white font-bold text-sm rounded-xl flex items-center gap-2 shadow-md shadow-emerald-500/20 disabled:opacity-50"
                     >
                       {supportSubmitting ? (<><Loader2 className="w-4 h-4 animate-spin" /> Submitting...</>) : (<><Send size={13} /> Send Ticket</>)}
                     </button>
@@ -1128,7 +1128,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
               <button
                 onClick={handleSave}
                 disabled={saving}
-                className="px-6 py-2.5 bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white font-bold text-sm rounded-xl shadow-md shadow-indigo-500/20 hover:opacity-95 transition-all flex items-center gap-2 disabled:opacity-60"
+                className="px-6 py-2.5 bg-gradient-to-r from-[#059669] to-[#34D399] text-white font-bold text-sm rounded-xl shadow-md shadow-emerald-500/20 hover:opacity-95 transition-all flex items-center gap-2 disabled:opacity-60"
               >
                 {saving ? (<><Loader2 className="w-4 h-4 animate-spin" /> Saving...</>) : "Save Changes"}
               </button>

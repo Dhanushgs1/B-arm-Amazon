@@ -105,7 +105,7 @@ export function MarketplaceBids({ marketplace }: MarketplaceBidsProps) {
         row.recommendation !== "Optimal" ? (
           <button
             onClick={() => applyBidChange(row.id, row.suggestedBid)}
-            className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold shadow transition-all cursor-pointer"
+            className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold shadow transition-all cursor-pointer"
           >
             Apply Bid
           </button>
@@ -121,7 +121,7 @@ export function MarketplaceBids({ marketplace }: MarketplaceBidsProps) {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }} className="space-y-6 pb-12">
       {toast && (
-        <div className="fixed bottom-6 right-6 z-50 bg-white dark:bg-slate-900 text-slate-900 dark:text-white px-4 py-3 rounded-xl border border-indigo-500/30 text-xs font-bold shadow-2xl">
+        <div className="fixed bottom-6 right-6 z-50 bg-white dark:bg-slate-900 text-slate-900 dark:text-white px-4 py-3 rounded-xl border border-emerald-500/30 text-xs font-bold shadow-2xl">
           {toast}
         </div>
       )}

@@ -43,22 +43,24 @@ export function KPICard({ title, value, subtitle, trend, inverseTrend, trendBasi
   const isPositive = trend != null ? trend > 0 : true;
   const isGood = trend != null ? (isPositive === !inverseTrend) : true;
 
+  // Light green theme (user, 12 Nov 2026): every accent is a shade of green / teal, so cards still differ
+  // from each other without leaving the theme. Prop names are kept so pages need no change.
   const accentColors = {
-    purple: { text: "text-[#6C63FF]", bg: "bg-[#6C63FF]/8", border: "border-[#6C63FF]/15", sparkline: "#6C63FF", topbar: "from-[#6D5EF8] to-[#8B5CF6]", cardBorder: "border-purple-500/30 dark:border-purple-500/20" },
-    blue: { text: "text-[#3B82F6]", bg: "bg-[#3B82F6]/8", border: "border-[#3B82F6]/15", sparkline: "#3B82F6", topbar: "from-[#3B82F6] to-[#06B6D4]", cardBorder: "border-blue-500/30 dark:border-blue-500/20" },
-    green: { text: "text-[#10B981]", bg: "bg-[#10B981]/8", border: "border-[#10B981]/15", sparkline: "#10B981", topbar: "from-[#10B981] to-[#34D399]", cardBorder: "border-emerald-500/30 dark:border-emerald-500/20" },
-    cyan: { text: "text-[#06B6D4]", bg: "bg-[#06B6D4]/8", border: "border-[#06B6D4]/15", sparkline: "#06B6D4", topbar: "from-[#06B6D4] to-[#3B82F6]", cardBorder: "border-cyan-500/30 dark:border-cyan-500/20" },
-    orange: { text: "text-[#F59E0B]", bg: "bg-[#F59E0B]/8", border: "border-[#F59E0B]/15", sparkline: "#F59E0B", topbar: "from-[#F59E0B] to-[#F97316]", cardBorder: "border-amber-500/30 dark:border-amber-500/20" },
-    pink: { text: "text-[#EC4899]", bg: "bg-[#EC4899]/8", border: "border-[#EC4899]/15", sparkline: "#EC4899", topbar: "from-[#EC4899] to-[#8B5CF6]", cardBorder: "border-pink-500/30 dark:border-pink-500/20" },
+    purple: { text: "text-[#0D9488]", bg: "bg-[#0D9488]/8", border: "border-[#0D9488]/15", sparkline: "#0D9488", topbar: "from-[#0D9488] to-[#2DD4BF]", cardBorder: "border-teal-500/25 dark:border-teal-500/20" },
+    blue: { text: "text-[#059669]", bg: "bg-[#059669]/8", border: "border-[#059669]/15", sparkline: "#059669", topbar: "from-[#059669] to-[#34D399]", cardBorder: "border-emerald-500/25 dark:border-emerald-500/20" },
+    green: { text: "text-[#16A34A]", bg: "bg-[#16A34A]/8", border: "border-[#16A34A]/15", sparkline: "#16A34A", topbar: "from-[#16A34A] to-[#4ADE80]", cardBorder: "border-green-500/25 dark:border-green-500/20" },
+    cyan: { text: "text-[#14B8A6]", bg: "bg-[#14B8A6]/8", border: "border-[#14B8A6]/15", sparkline: "#14B8A6", topbar: "from-[#14B8A6] to-[#5EEAD4]", cardBorder: "border-teal-500/25 dark:border-teal-500/20" },
+    orange: { text: "text-[#65A30D]", bg: "bg-[#65A30D]/8", border: "border-[#65A30D]/15", sparkline: "#65A30D", topbar: "from-[#65A30D] to-[#A3E635]", cardBorder: "border-lime-500/25 dark:border-lime-500/20" },
+    pink: { text: "text-[#047857]", bg: "bg-[#047857]/8", border: "border-[#047857]/15", sparkline: "#047857", topbar: "from-[#047857] to-[#10B981]", cardBorder: "border-emerald-500/25 dark:border-emerald-500/20" },
   };
 
   const style = accent ? accentColors[accent] : {
-    text: "text-indigo-500 dark:text-indigo-400",
-    bg: "bg-indigo-500/8",
-    border: "border-indigo-500/15",
+    text: "text-emerald-500 dark:text-emerald-400",
+    bg: "bg-emerald-500/8",
+    border: "border-emerald-500/15",
     sparkline: isGood ? "#10B981" : "#EF4444",
-    topbar: "from-[#6D5EF8] to-[#8B5CF6]",
-    cardBorder: "border-indigo-500/20 dark:border-indigo-500/15"
+    topbar: "from-[#059669] to-[#34D399]",
+    cardBorder: "border-emerald-500/20 dark:border-emerald-500/15"
   };
 
   // Dynamically map icons based on title
@@ -90,7 +92,7 @@ export function KPICard({ title, value, subtitle, trend, inverseTrend, trendBasi
       transition={{ delay: enterDelay, duration: 0.55, ease: EASE_OUT_EXPO }}
       className={cn(
         "premium-card premium-card-hover rounded-2xl p-[18px] flex flex-col relative overflow-hidden group",
-        onClick && "cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/60"
+        onClick && "cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60"
       )}
     >
       {/* Accent line — draws in from the left as the card arrives */}

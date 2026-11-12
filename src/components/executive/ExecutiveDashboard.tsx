@@ -81,7 +81,7 @@ function Tile({ label, value, sub, children, badge }: { label: string; value: st
 const KIND_META: Record<Insight["kind"], { label: string; icon: typeof Info; cls: string }> = {
   recommendation: { label: "Recommendation", icon: Lightbulb, cls: "bg-amber-500/10 text-amber-700 dark:text-amber-300" },
   fact: { label: "Fact", icon: CheckCircle2, cls: "bg-sky-500/10 text-sky-700 dark:text-sky-300" },
-  estimate: { label: "Estimate", icon: LineIcon, cls: "bg-violet-500/10 text-violet-700 dark:text-violet-300" },
+  estimate: { label: "Estimate", icon: LineIcon, cls: "bg-green-500/10 text-green-700 dark:text-green-300" },
 };
 
 function Tabs<T extends string>({ value, onChange, options, label }: { value: T; onChange: (v: T) => void; options: { id: T; label: string; count?: number }[]; label: string }) {

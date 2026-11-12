@@ -14,7 +14,7 @@ const cur = (val: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFract
 const statusStyle = (s: string) => {
   const v = (s || "").toUpperCase();
   if (v.includes("DELIVER")) return "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30";
-  if (v.includes("TRANSIT") || v.includes("SHIP")) return "text-blue-600 bg-blue-50 dark:bg-blue-950/30";
+  if (v.includes("TRANSIT") || v.includes("SHIP")) return "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30";
   if (v.includes("RTO") || v.includes("RETURN")) return "text-red-600 bg-red-50 dark:bg-red-950/30";
   if (v.includes("CANCEL")) return "text-slate-500 bg-slate-100 dark:bg-slate-800";
   return "text-amber-600 bg-amber-50 dark:bg-amber-950/30";

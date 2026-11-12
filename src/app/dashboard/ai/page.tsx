@@ -37,7 +37,7 @@ const SUGGESTION_GROUPS: { title: string; items: Suggestion[] }[] = [
   {
     title: "📊 Performance",
     items: [
-      { label: "Overall KPI Summary", prompt: "Give me a full KPI summary of my account", icon: <BarChart3 className="w-3.5 h-3.5" />, color: "from-indigo-500 to-violet-600" },
+      { label: "Overall KPI Summary", prompt: "Give me a full KPI summary of my account", icon: <BarChart3 className="w-3.5 h-3.5" />, color: "from-emerald-500 to-green-600" },
       { label: "Top Campaigns", prompt: "Show me my top performing campaigns by sales", icon: <TrendingUp className="w-3.5 h-3.5" />, color: "from-emerald-500 to-teal-600" },
       { label: "Worst Bleeders", prompt: "Which campaigns are bleeding the most budget with bad ACOS?", icon: <TrendingDown className="w-3.5 h-3.5" />, color: "from-red-500 to-rose-600" },
     ]
@@ -53,7 +53,7 @@ const SUGGESTION_GROUPS: { title: string; items: Suggestion[] }[] = [
   {
     title: "📦 Inventory & Products",
     items: [
-      { label: "Inventory Status", prompt: "Show me my inventory levels and any low-stock alerts", icon: <Package className="w-3.5 h-3.5" />, color: "from-cyan-500 to-blue-600" },
+      { label: "Inventory Status", prompt: "Show me my inventory levels and any low-stock alerts", icon: <Package className="w-3.5 h-3.5" />, color: "from-cyan-500 to-emerald-600" },
       { label: "Best Products", prompt: "Which products are generating the most ad revenue?", icon: <CheckCircle2 className="w-3.5 h-3.5" />, color: "from-green-500 to-emerald-600" },
       { label: "Bleeding Products", prompt: "Which products are spending the most with zero or low sales?", icon: <AlertTriangle className="w-3.5 h-3.5" />, color: "from-red-400 to-red-600" },
     ]
@@ -63,7 +63,7 @@ const SUGGESTION_GROUPS: { title: string; items: Suggestion[] }[] = [
 function TypingIndicator() {
   return (
     <div className="flex gap-3 max-w-[85%] mr-auto">
-      <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center flex-shrink-0 shadow-md shadow-indigo-500/30">
+      <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-emerald-500 to-green-600 flex items-center justify-center flex-shrink-0 shadow-md shadow-emerald-500/30">
         <Bot size={15} className="text-white" />
       </div>
       <div className="flex items-center gap-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl px-4 py-3 shadow-sm">
@@ -73,7 +73,7 @@ function TypingIndicator() {
               key={i}
               animate={{ y: [0, -6, 0] }}
               transition={{ repeat: Infinity, duration: 0.8, delay, ease: "easeInOut" }}
-              className="w-2 h-2 rounded-full bg-gradient-to-br from-indigo-400 to-violet-500"
+              className="w-2 h-2 rounded-full bg-gradient-to-br from-emerald-400 to-green-500"
             />
           ))}
         </div>
@@ -113,7 +113,7 @@ function MessageBubble({ message, index }: { message: Message; index: number }) 
       <div className={cn(
         "w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 shadow-md",
         isAssistant
-          ? "bg-gradient-to-br from-indigo-500 to-violet-600 shadow-indigo-500/30"
+          ? "bg-gradient-to-br from-emerald-500 to-green-600 shadow-emerald-500/30"
           : "bg-gradient-to-br from-emerald-500 to-teal-600 shadow-emerald-500/30"
       )}>
         {isAssistant ? <Bot size={15} className="text-white" /> : <User size={15} className="text-white" />}
@@ -123,7 +123,7 @@ function MessageBubble({ message, index }: { message: Message; index: number }) 
         "rounded-2xl px-4 py-3 text-sm shadow-sm",
         isAssistant
           ? "bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-200"
-          : "bg-gradient-to-br from-indigo-500 to-violet-600 text-white"
+          : "bg-gradient-to-br from-emerald-500 to-green-600 text-white"
       )}>
         <div className="space-y-1 font-medium leading-relaxed text-[13px]">
           {renderContent(message.content)}
@@ -395,13 +395,13 @@ Based on these metrics, provide a concise, expert, and direct answer. Avoid gene
       {/* Header */}
       <div className="flex items-center justify-between py-4 px-1 mb-2">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shadow-lg shadow-indigo-500/30">
+          <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-emerald-500 to-green-600 flex items-center justify-center shadow-lg shadow-emerald-500/30">
             <Brain className="w-5 h-5 text-white" />
           </div>
           <div>
             <h1 className="text-xl font-black tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
               Marketplace360 Assistant
-              <span className="text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-500">LIVE DATA</span>
+              <span className="text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-500">LIVE DATA</span>
             </h1>
             <p className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold">Ask anything about your campaigns, inventory & revenue</p>
           </div>
@@ -414,7 +414,7 @@ Based on these metrics, provide a concise, expert, and direct answer. Avoid gene
               { label: "Spend", val: cur(spendVal, currency), color: "text-rose-500" },
               { label: "Sales", val: cur(salesVal, currency), color: "text-emerald-500" },
               { label: "ACOS", val: `${acosVal.toFixed(1)}%`, color: acosVal > 40 ? "text-red-500" : "text-amber-500" },
-              { label: "ROAS", val: `${roasVal.toFixed(2)}x`, color: "text-indigo-500" },
+              { label: "ROAS", val: `${roasVal.toFixed(2)}x`, color: "text-emerald-500" },
             ].map((s) => (
               <div key={s.label} className="text-center px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl">
                 <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">{s.label}</p>
@@ -453,13 +453,13 @@ Based on these metrics, provide a concise, expert, and direct answer. Avoid gene
                     <button
                       key={s.label}
                       onClick={() => handleSend(null, s.prompt)}
-                      className="group flex items-center gap-2 text-[12px] px-3.5 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-indigo-500/50 dark:hover:border-indigo-500/40 text-slate-700 dark:text-slate-300 transition-all shadow-sm font-semibold hover:shadow-md hover:-translate-y-0.5"
+                      className="group flex items-center gap-2 text-[12px] px-3.5 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-emerald-500/50 dark:hover:border-emerald-500/40 text-slate-700 dark:text-slate-300 transition-all shadow-sm font-semibold hover:shadow-md hover:-translate-y-0.5"
                     >
                       <span className={cn("w-5 h-5 rounded-lg bg-gradient-to-br flex items-center justify-center text-white flex-shrink-0", s.color)}>
                         {s.icon}
                       </span>
                       {s.label}
-                      <ChevronRight className="w-3 h-3 text-slate-400 group-hover:text-indigo-500 transition-colors" />
+                      <ChevronRight className="w-3 h-3 text-slate-400 group-hover:text-emerald-500 transition-colors" />
                     </button>
                   ))}
                 </div>
@@ -476,7 +476,7 @@ Based on these metrics, provide a concise, expert, and direct answer. Avoid gene
             <button
               key={chip}
               onClick={() => handleSend(null, chip)}
-              className="text-[11px] px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:border-indigo-500/50 hover:text-indigo-600 dark:hover:text-indigo-400 transition-all font-semibold"
+              className="text-[11px] px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:border-emerald-500/50 hover:text-emerald-600 dark:hover:text-emerald-400 transition-all font-semibold"
             >
               {chip}
             </button>
@@ -493,7 +493,7 @@ Based on these metrics, provide a concise, expert, and direct answer. Avoid gene
             value={input}
             onChange={e => setInput(e.target.value)}
             placeholder="Ask about campaigns, ACOS, inventory, keywords..."
-            className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-foreground pl-4 pr-12 py-3.5 rounded-2xl text-[13px] shadow-md focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 focus:outline-none transition-all font-medium"
+            className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-foreground pl-4 pr-12 py-3.5 rounded-2xl text-[13px] shadow-md focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/30 focus:outline-none transition-all font-medium"
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
@@ -508,7 +508,7 @@ Based on these metrics, provide a concise, expert, and direct answer. Avoid gene
         <button
           type="submit"
           disabled={sending || !input.trim()}
-          className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white flex items-center justify-center hover:from-indigo-600 hover:to-violet-700 transition-all shadow-lg shadow-indigo-500/30 disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
+          className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-500 to-green-600 text-white flex items-center justify-center hover:from-emerald-600 hover:to-green-700 transition-all shadow-lg shadow-emerald-500/30 disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
         >
           {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
         </button>

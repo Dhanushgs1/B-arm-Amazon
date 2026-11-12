@@ -206,7 +206,7 @@ export default function InventoryPage() {
         </p>
         {data && (
           <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-            <span className="inline-flex items-center gap-1 font-semibold text-foreground"><CalendarClock className="w-3.5 h-3.5 text-indigo-500" />
+            <span className="inline-flex items-center gap-1 font-semibold text-foreground"><CalendarClock className="w-3.5 h-3.5 text-emerald-500" />
               {usesReport ? <>Data as of {data.reportAsOf ?? "unknown date"} — FBA Available from Amazon&apos;s FBA Inventory report</> : <>Data as of {data.ledgerAsOf ?? "unknown date"} — FBA from SellerMate ledger</>}
             </span>
             <span className="font-semibold text-foreground">Source: {usesReport ? "Amazon FBA Inventory Report" : "SellerMate (no Amazon report on file)"}</span>

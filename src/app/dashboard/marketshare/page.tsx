@@ -195,10 +195,10 @@ export default function MarketSharePage() {
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 {opportunities.map((o: any) => (
-                  <div key={o.searchQuery + o.asin} className="p-3 rounded-xl border border-indigo-200 dark:border-indigo-900 bg-indigo-50/50 dark:bg-indigo-950/20 text-xs">
-                    <p className="font-bold text-indigo-800 dark:text-indigo-400">🎯 &quot;{o.searchQuery}&quot;</p>
+                  <div key={o.searchQuery + o.asin} className="p-3 rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50/50 dark:bg-emerald-950/20 text-xs">
+                    <p className="font-bold text-emerald-800 dark:text-emerald-400">🎯 &quot;{o.searchQuery}&quot;</p>
                     <p className="text-muted-foreground mt-1 font-bold">Volume: {num(o.volume)} · Your impression share: {pct(o.impressionShare)}</p>
-                    <p className="font-bold text-indigo-700 dark:text-indigo-500 mt-1.5">High demand, low visibility — target this query with exact-match campaigns.</p>
+                    <p className="font-bold text-emerald-700 dark:text-emerald-500 mt-1.5">High demand, low visibility — target this query with exact-match campaigns.</p>
                   </div>
                 ))}
               </div>

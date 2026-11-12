@@ -47,10 +47,10 @@ export function MasterProductEditModal({ row, onClose, onSaved }: MasterProductE
           initial={{ opacity: 0, scale: 0.95, y: 10 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 10 }}
-          className="relative w-full max-w-md bg-background border border-indigo-500/20 rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+          className="relative w-full max-w-md bg-background border border-emerald-500/20 rounded-2xl shadow-2xl flex flex-col overflow-hidden"
         >
-          <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-gradient-to-br from-indigo-500/10 to-purple-500/10">
-            <h2 className="text-lg font-bold text-indigo-600 dark:text-indigo-400 flex items-center gap-2">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-gradient-to-br from-emerald-500/10 to-teal-500/10">
+            <h2 className="text-lg font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-2">
               <Pencil className="w-5 h-5" /> Edit Product
             </h2>
             <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground transition-colors">
@@ -72,7 +72,7 @@ export function MasterProductEditModal({ row, onClose, onSaved }: MasterProductE
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+                className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
               />
             </div>
 
@@ -81,7 +81,7 @@ export function MasterProductEditModal({ row, onClose, onSaved }: MasterProductE
               <select
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+                className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
               >
                 {CATEGORIES.map((c) => (
                   <option key={c} value={c}>
@@ -97,7 +97,7 @@ export function MasterProductEditModal({ row, onClose, onSaved }: MasterProductE
                 type="text"
                 value={platform}
                 onChange={(e) => setPlatform(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+                className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
               />
             </div>
 
@@ -115,7 +115,7 @@ export function MasterProductEditModal({ row, onClose, onSaved }: MasterProductE
             <button
               onClick={handleSave}
               disabled={status === "saving" || !name.trim()}
-              className="px-4 py-2 rounded-xl text-xs font-black bg-indigo-600 text-white hover:bg-indigo-500 transition-colors disabled:opacity-50 flex items-center gap-1.5"
+              className="px-4 py-2 rounded-xl text-xs font-black bg-emerald-600 text-white hover:bg-emerald-500 transition-colors disabled:opacity-50 flex items-center gap-1.5"
             >
               {status === "saving" && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
               Save Changes

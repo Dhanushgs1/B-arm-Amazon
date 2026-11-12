@@ -438,7 +438,7 @@ function DashboardOverview() {
     ...(overallAcos > 40 ? [{ icon: '🚨', color: 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900', textColor: 'text-red-700 dark:text-red-400', bodyColor: 'text-red-600 dark:text-red-300', tag: 'High ACOS', title: `ACOS at ${overallAcos.toFixed(1)}%`, body: 'Review bids on campaigns with >50% ACOS. Pause underperformers.' }] : []),
     ...(downCampaigns.length > 0 ? [{ icon: '📉', color: 'bg-orange-50 dark:bg-orange-950/30 border-orange-200 dark:border-orange-900', textColor: 'text-orange-700 dark:text-orange-400', bodyColor: 'text-orange-600 dark:text-orange-300', tag: 'Campaigns', title: `${downCampaigns.length} campaigns overspending`, body: `Top offender: ${downCampaigns[0]?.campaignName?.substring(0,35) || 'N/A'}` }] : []),
     ...(lowInventory.length > 0 ? [{ icon: '📦', color: 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900', textColor: 'text-amber-700 dark:text-amber-400', bodyColor: 'text-amber-600 dark:text-amber-300', tag: 'Inventory', title: `${lowInventory.length} products low on stock`, body: lowInventory[0]?.itemName?.substring(0, 40) || 'Check inventory page' }] : []),
-    ...(wastedTerms.length > 0 ? [{ icon: '💸', color: 'bg-purple-50 dark:bg-purple-950/30 border-purple-200 dark:border-purple-900', textColor: 'text-purple-700 dark:text-purple-400', bodyColor: 'text-purple-600 dark:text-purple-300', tag: 'Wasted Spend', title: `${wastedTerms.length} zero-sale search terms`, body: `Add as negatives to save ad spend.` }] : []),
+    ...(wastedTerms.length > 0 ? [{ icon: '💸', color: 'bg-teal-50 dark:bg-teal-950/30 border-teal-200 dark:border-teal-900', textColor: 'text-teal-700 dark:text-teal-400', bodyColor: 'text-teal-600 dark:text-teal-300', tag: 'Wasted Spend', title: `${wastedTerms.length} zero-sale search terms`, body: `Add as negatives to save ad spend.` }] : []),
     { icon: '✨', color: 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900', textColor: 'text-emerald-700 dark:text-emerald-400', bodyColor: 'text-emerald-600 dark:text-emerald-300', tag: 'Tip', title: 'Boost Organic Sales', body: 'Products with >40% organic share are performing well. Increase visibility on top ASINs.' },
   ];
 
@@ -494,7 +494,7 @@ function DashboardOverview() {
   const SUMMARY_TAG_CONFIG: Record<string, { label: string; textColor: string; bgColor: string; borderColor: string; icon: string }> = {
     WIN:         { label: 'Win',         textColor: 'text-emerald-700 dark:text-emerald-400', bgColor: 'bg-emerald-100 dark:bg-emerald-900/40', borderColor: 'border-emerald-300 dark:border-emerald-700', icon: '🏆' },
     ALERT:       { label: 'Alert',       textColor: 'text-red-700 dark:text-red-400',     bgColor: 'bg-red-100 dark:bg-red-900/40',     borderColor: 'border-red-300 dark:border-red-700',     icon: '⚠️' },
-    OPPORTUNITY: { label: 'Opportunity', textColor: 'text-blue-700 dark:text-blue-400',   bgColor: 'bg-blue-100 dark:bg-blue-900/40',   borderColor: 'border-blue-300 dark:border-blue-700',   icon: '💡' },
+    OPPORTUNITY: { label: 'Opportunity', textColor: 'text-emerald-700 dark:text-emerald-400',   bgColor: 'bg-emerald-100 dark:bg-emerald-900/40',   borderColor: 'border-emerald-300 dark:border-emerald-700',   icon: '💡' },
     ACTION:      { label: 'Action',      textColor: 'text-orange-700 dark:text-orange-400', bgColor: 'bg-orange-100 dark:bg-orange-900/40', borderColor: 'border-orange-300 dark:border-orange-700', icon: '🚀' },
     INSIGHT:     { label: 'Insight',     textColor: 'text-slate-600 dark:text-slate-400', bgColor: 'bg-slate-100 dark:bg-slate-800/60', borderColor: 'border-slate-200 dark:border-slate-700', icon: '📊' },
   };
@@ -665,12 +665,12 @@ Write 6 tagged insight lines now:`;
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[10px] font-extrabold bg-indigo-500/10 text-indigo-500 px-3 py-1.5 rounded-full">
+          <span className="text-[10px] font-extrabold bg-emerald-500/10 text-emerald-500 px-3 py-1.5 rounded-full">
             {useUploaded
               ? `Orders to ${formatDayLabel(uploadedTotals.ordersThrough)} · Ads to ${formatDayLabel(uploadedTotals.adsThrough)}`
               : "Synced just now"}
           </span>
-          <button onClick={() => window.location.reload()} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-full text-xs font-bold transition-all shadow-md shadow-indigo-600/20">
+          <button onClick={() => window.location.reload()} className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-full text-xs font-bold transition-all shadow-md shadow-emerald-600/20">
             <RefreshCw className="w-3.5 h-3.5" /> Refresh
           </button>
         </div>
@@ -687,7 +687,7 @@ Write 6 tagged insight lines now:`;
       </div>
 
       {/* AI Quick-Action Bar */}
-      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-indigo-600 via-violet-600 to-purple-600 p-4 border border-indigo-400/30 shadow-lg">
+      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-emerald-600 via-green-600 to-teal-600 p-4 border border-emerald-400/30 shadow-lg">
         <div className="absolute inset-0 bg-gradient-to-r from-black/10 to-transparent" />
         <div className="relative flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-3">
@@ -711,7 +711,7 @@ Write 6 tagged insight lines now:`;
             ))}
             <Link
               href="/dashboard/ai"
-              className="flex items-center gap-1.5 text-[11px] font-black px-4 py-1.5 rounded-xl bg-white text-indigo-700 hover:bg-indigo-50 transition-all shadow-md ml-1"
+              className="flex items-center gap-1.5 text-[11px] font-black px-4 py-1.5 rounded-xl bg-white text-emerald-700 hover:bg-emerald-50 transition-all shadow-md ml-1"
             >
               Open AI <ArrowRight className="w-3 h-3" />
             </Link>
@@ -722,7 +722,7 @@ Write 6 tagged insight lines now:`;
       {/*  Performance Trends header + granularity toggle  */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-2">
-          <TrendingUp className="w-4 h-4 text-indigo-500" />
+          <TrendingUp className="w-4 h-4 text-emerald-500" />
           <h2 className="text-base font-black text-slate-800 dark:text-slate-200 tracking-tight">Performance Trends</h2>
         </div>
         <div className="flex items-center gap-0.5 bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg">
@@ -733,7 +733,7 @@ Write 6 tagged insight lines now:`;
               className={cn(
                 "text-[10px] font-black px-3 py-1 rounded-md transition-all capitalize",
                 trendGranularity === g
-                  ? "bg-white dark:bg-slate-700 shadow-sm text-indigo-600 dark:text-indigo-400"
+                  ? "bg-white dark:bg-slate-700 shadow-sm text-emerald-600 dark:text-emerald-400"
                   : "text-muted-foreground hover:text-slate-600 dark:hover:text-slate-300"
               )}
             >
@@ -761,10 +761,10 @@ Write 6 tagged insight lines now:`;
             {/* Header */}
             <div className="flex items-center justify-between mb-3 relative z-10">
               <div className="flex items-center gap-2">
-                <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/30">
+                <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-500/30">
                   <Sparkles className="w-3.5 h-3.5 text-white" />
                 </div>
-                <h3 className="font-extrabold text-[15px] tracking-tight bg-gradient-to-r from-indigo-600 to-purple-600 dark:from-indigo-400 dark:to-purple-400 bg-clip-text text-transparent">
+                <h3 className="font-extrabold text-[15px] tracking-tight bg-gradient-to-r from-emerald-600 to-teal-600 dark:from-emerald-400 dark:to-teal-400 bg-clip-text text-transparent">
                   AI Executive Summary
                 </h3>
               </div>
@@ -780,7 +780,7 @@ Write 6 tagged insight lines now:`;
                     className={cn(
                       "text-[9px] font-black px-1.5 py-0.5 rounded-full border",
                       usingGemini
-                        ? "text-indigo-500 bg-indigo-500/8 border-indigo-500/15"
+                        ? "text-emerald-500 bg-emerald-500/8 border-emerald-500/15"
                         : "text-slate-400 dark:text-slate-500 bg-slate-500/8 border-slate-500/15"
                     )}
                   >
@@ -791,11 +791,11 @@ Write 6 tagged insight lines now:`;
                   onClick={() => refetchGeminiSummary()}
                   disabled={geminiFetching}
                   title="Regenerate with Gemini"
-                  className="text-slate-400 hover:text-indigo-500 transition-colors disabled:opacity-50"
+                  className="text-slate-400 hover:text-emerald-500 transition-colors disabled:opacity-50"
                 >
                   <RotateCcw className={cn("w-3.5 h-3.5", geminiFetching && "animate-spin")} />
                 </button>
-                <Link href="/dashboard/ai" className="flex items-center gap-1 text-[10px] font-black text-indigo-500 hover:text-indigo-600 transition-colors">
+                <Link href="/dashboard/ai" className="flex items-center gap-1 text-[10px] font-black text-emerald-500 hover:text-emerald-600 transition-colors">
                   Full AI <ChevronRight className="w-3 h-3" />
                 </Link>
               </div>
@@ -830,7 +830,7 @@ Write 6 tagged insight lines now:`;
               <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">Quick Actions</p>
               <div className="flex flex-wrap gap-1.5">
                 <Link href="/dashboard/campaigns"
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors">
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 text-[10px] font-bold border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors">
                   <Megaphone className="w-2.5 h-2.5" /> Campaigns
                 </Link>
                 {wastedTerms.length > 0 && (
@@ -852,7 +852,7 @@ Write 6 tagged insight lines now:`;
                   </Link>
                 )}
                 <Link href="/dashboard/ai"
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-[10px] font-bold border border-purple-200 dark:border-purple-800 hover:bg-purple-100 transition-colors">
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-teal-50 dark:bg-teal-900/30 text-teal-600 dark:text-teal-400 text-[10px] font-bold border border-teal-200 dark:border-teal-800 hover:bg-teal-100 transition-colors">
                   <Bot className="w-2.5 h-2.5" /> Full AI
                 </Link>
               </div>
@@ -890,15 +890,15 @@ Write 6 tagged insight lines now:`;
             <div className="grid grid-cols-3 gap-2">
               <div className="bg-muted/40 rounded-xl p-2 text-center border border-transparent">
                 <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider mb-0.5">Next Day</p>
-                <p className="text-[12px] font-black text-indigo-600 dark:text-indigo-400">{cur(recentAvgDaily, currency)}</p>
+                <p className="text-[12px] font-black text-emerald-600 dark:text-emerald-400">{cur(recentAvgDaily, currency)}</p>
               </div>
               <div className="bg-muted/40 rounded-xl p-2 text-center border border-transparent">
                 <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider mb-0.5">Next Week</p>
-                <p className="text-[12px] font-black text-indigo-600 dark:text-indigo-400">{cur(recentAvgDaily * 7, currency)}</p>
+                <p className="text-[12px] font-black text-emerald-600 dark:text-emerald-400">{cur(recentAvgDaily * 7, currency)}</p>
               </div>
               <div className="bg-muted/40 rounded-xl p-2 text-center border border-transparent">
                 <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider mb-0.5">Next Month</p>
-                <p className="text-[12px] font-black text-indigo-600 dark:text-indigo-400">{cur(recentAvgDaily * 30, currency)}</p>
+                <p className="text-[12px] font-black text-emerald-600 dark:text-emerald-400">{cur(recentAvgDaily * 30, currency)}</p>
               </div>
             </div>
           </div>
@@ -944,7 +944,7 @@ Write 6 tagged insight lines now:`;
         <div className="mt-4 flex justify-end">
           <button 
             onClick={() => router.push('/dashboard/products')}
-            className="flex items-center gap-1.5 text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 transition-colors py-1.5 px-3 rounded-lg hover:bg-indigo-50 dark:hover:bg-indigo-950/30"
+            className="flex items-center gap-1.5 text-xs font-bold text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 transition-colors py-1.5 px-3 rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-950/30"
           >
             View All Products <ArrowRight className="w-3.5 h-3.5" />
           </button>
@@ -952,7 +952,7 @@ Write 6 tagged insight lines now:`;
          {/*  Business Insights  */}
       <div>
         <div className="flex items-center gap-2 mb-5 mt-8">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-sky-500 to-indigo-600 flex items-center justify-center shadow-md">
+          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-sky-500 to-emerald-600 flex items-center justify-center shadow-md">
             <Sparkles className="w-4 h-4 text-white" />
           </div>
           <div>
@@ -1020,7 +1020,7 @@ Write 6 tagged insight lines now:`;
             {/* Campaigns */}
             <div className="glass rounded-2xl border border-border p-4 shadow-sm bg-white dark:bg-slate-900">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="font-black text-xs flex items-center gap-1.5 text-slate-800 dark:text-slate-200"><Megaphone className="w-3.5 h-3.5 text-purple-500" /> Campaigns</h3>
+                <h3 className="font-black text-xs flex items-center gap-1.5 text-slate-800 dark:text-slate-200"><Megaphone className="w-3.5 h-3.5 text-teal-500" /> Campaigns</h3>
                 <div className="flex items-center gap-0.5 bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg">
                   <button onClick={() => setCampaignTab('top')} className={cn("text-[9px] font-black px-2 py-1 rounded-md transition-all", campaignTab === 'top' ? "bg-white dark:bg-slate-700 shadow-sm text-emerald-600" : "text-muted-foreground hover:text-slate-600")}>Top</button>
                   <button onClick={() => setCampaignTab('down')} className={cn("text-[9px] font-black px-2 py-1 rounded-md transition-all", campaignTab === 'down' ? "bg-white dark:bg-slate-700 shadow-sm text-red-500" : "text-muted-foreground hover:text-slate-600")}>⚠️ High ACOS</button>
@@ -1029,9 +1029,9 @@ Write 6 tagged insight lines now:`;
               <div className="space-y-2.5">
                 {displayCampaigns.slice(0, 4).map((c: any, i: number) => (
                   <div key={i} className="flex items-center gap-2.5 cursor-pointer group" onClick={() => { setSelectedCampaignName(c.campaignName); router.push('/dashboard/campaigns'); }}>
-                    <span className={cn("text-[10px] font-black w-5 h-5 flex items-center justify-center flex-shrink-0 rounded-full", i === 0 ? "bg-purple-100 text-purple-600" : "text-slate-400")}>{i + 1}</span>
+                    <span className={cn("text-[10px] font-black w-5 h-5 flex items-center justify-center flex-shrink-0 rounded-full", i === 0 ? "bg-teal-100 text-teal-600" : "text-slate-400")}>{i + 1}</span>
                     <div className="flex-1 min-w-0">
-                      <p className="text-[11px] font-bold truncate group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">{c.campaignName}</p>
+                      <p className="text-[11px] font-bold truncate group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors">{c.campaignName}</p>
                       <div className="flex items-center gap-1.5 mt-0.5">
                         <span className="text-[9px] font-bold bg-slate-50 dark:bg-slate-800 px-1.5 py-0.5 rounded text-slate-600 dark:text-slate-400">{cur(c.spend, currency)} spend</span>
                         <span className={cn("text-[9px] font-bold px-1.5 py-0.5 rounded",
@@ -1039,12 +1039,12 @@ Write 6 tagged insight lines now:`;
                         )}>{pct(c.acos)} ACOS</span>
                       </div>
                     </div>
-                    <ChevronRight className="w-3 h-3 text-muted-foreground group-hover:text-indigo-500 transition-colors" />
+                    <ChevronRight className="w-3 h-3 text-muted-foreground group-hover:text-emerald-500 transition-colors" />
                   </div>
                 ))}
                 {displayCampaigns.length === 0 && <p className="text-xs text-muted-foreground">No campaigns found</p>}
               </div>
-              <button onClick={() => router.push('/dashboard/campaigns')} className="mt-3 w-full text-[9px] font-black text-purple-600 dark:text-purple-400 py-1.5 border border-purple-200 dark:border-purple-800 rounded-lg hover:bg-purple-50 dark:hover:bg-purple-950/30 transition-all flex items-center justify-center gap-1">
+              <button onClick={() => router.push('/dashboard/campaigns')} className="mt-3 w-full text-[9px] font-black text-teal-600 dark:text-teal-400 py-1.5 border border-teal-200 dark:border-teal-800 rounded-lg hover:bg-teal-50 dark:hover:bg-teal-950/30 transition-all flex items-center justify-center gap-1">
                 View All Campaigns <ArrowRight className="w-3 h-3" />
               </button>
             </div>
@@ -1137,14 +1137,14 @@ Write 6 tagged insight lines now:`;
             {/* AI Recommendations */}
             <div className="glass rounded-2xl border border-border p-4 shadow-sm bg-white dark:bg-slate-900">
               <div className="flex items-center gap-2 mb-3">
-                <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center">
+                <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center">
                   <Bot className="w-3.5 h-3.5 text-white" />
                 </div>
                 <div>
                   <h3 className="font-black text-xs text-slate-800 dark:text-slate-200">AI Recommendations</h3>
                   <p className="text-[9px] text-muted-foreground font-semibold">Powered by Marketplace360</p>
                 </div>
-                <span className="ml-auto text-[8px] font-black bg-gradient-to-r from-violet-500 to-indigo-600 text-white px-1.5 py-0.5 rounded-full animate-pulse">{aiAlerts.length} alerts</span>
+                <span className="ml-auto text-[8px] font-black bg-gradient-to-r from-green-500 to-emerald-600 text-white px-1.5 py-0.5 rounded-full animate-pulse">{aiAlerts.length} alerts</span>
               </div>
               <div className="space-y-2">
                 {aiAlerts.slice(0, 4).map((alert, i) => (
@@ -1160,7 +1160,7 @@ Write 6 tagged insight lines now:`;
                   </div>
                 ))}
               </div>
-              <button onClick={() => router.push('/dashboard/ai')} className="mt-3 w-full text-[9px] font-black text-violet-600 dark:text-violet-400 py-1.5 border border-violet-200 dark:border-violet-800 rounded-lg hover:bg-violet-50 dark:hover:bg-violet-950/30 transition-all flex items-center justify-center gap-1">
+              <button onClick={() => router.push('/dashboard/ai')} className="mt-3 w-full text-[9px] font-black text-green-600 dark:text-green-400 py-1.5 border border-green-200 dark:border-green-800 rounded-lg hover:bg-green-50 dark:hover:bg-green-950/30 transition-all flex items-center justify-center gap-1">
                 Open AI Copilot <ArrowRight className="w-3 h-3" />
               </button>
             </div>

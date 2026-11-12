@@ -158,7 +158,7 @@ Based on this, provide a concise, expert, and direct answer. Use bold text and b
       <div className="bg-popover/80 border border-border rounded-2xl h-[500px] flex flex-col overflow-hidden shadow-xl">
         <div className="p-4 bg-white dark:bg-slate-950 border-b border-slate-200 dark:border-border flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
+            <div className="w-8 h-8 rounded-xl bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
               <Bot className="w-4 h-4" />
             </div>
             <div>
@@ -179,7 +179,7 @@ Based on this, provide a concise, expert, and direct answer. Use bold text and b
               <div
                 className={`max-w-[80%] p-3.5 rounded-2xl text-xs ${
                   m.sender === "user"
-                    ? "bg-indigo-600 text-white rounded-br-none"
+                    ? "bg-emerald-600 text-white rounded-br-none"
                     : "bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 rounded-bl-none"
                 }`}
               >
@@ -203,12 +203,12 @@ Based on this, provide a concise, expert, and direct answer. Use bold text and b
             onChange={(e) => setInput(e.target.value)}
             disabled={sending}
             placeholder={`Ask ${meta.label} AI... (e.g., "What rules should I enable for Flipkart PLA?")`}
-            className="flex-1 px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 text-xs focus:outline-none focus:border-indigo-500 disabled:opacity-60"
+            className="flex-1 px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 text-xs focus:outline-none focus:border-emerald-500 disabled:opacity-60"
           />
           <button
             type="submit"
             disabled={sending}
-            className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-all disabled:opacity-60"
+            className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all disabled:opacity-60"
           >
             {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
           </button>

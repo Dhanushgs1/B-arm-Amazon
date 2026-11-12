@@ -11,7 +11,7 @@ function Inlines({ parts }: { parts: Inline[] }) {
         p.t === "b" ? <strong key={i} className="font-bold text-foreground">{p.v}</strong>
         : p.t === "code" ? <code key={i} className="px-1 py-0.5 rounded bg-muted text-[0.9em] font-mono">{p.v}</code>
         : p.t === "link" ? (
-          <a key={i} href={p.href} target={p.href.startsWith("http") ? "_blank" : undefined} rel="noreferrer" className="font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">{p.v}</a>
+          <a key={i} href={p.href} target={p.href.startsWith("http") ? "_blank" : undefined} rel="noreferrer" className="font-semibold text-emerald-600 dark:text-emerald-400 hover:underline">{p.v}</a>
         )
         : <Fragment key={i}>{p.v}</Fragment>,
       )}
@@ -30,7 +30,7 @@ export function MarkdownDoc({ markdown }: { markdown: string }) {
       {toc.length > 2 && (
         <nav className="rounded-xl border border-border bg-muted/30 p-3 flex flex-wrap gap-x-4 gap-y-1">
           {toc.map((h) => h.type === "h" && (
-            <a key={h.id} href={`#${h.id}`} className="text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:underline">
+            <a key={h.id} href={`#${h.id}`} className="text-xs font-bold text-emerald-600 dark:text-emerald-400 hover:underline">
               {h.text.map((p) => p.v).join("")}
             </a>
           ))}

@@ -121,8 +121,8 @@ export function AllMarketplacesSummary() {
       )}
 
       {allLoaded && insights.length > 0 && (
-        <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 px-4 py-3 space-y-1.5">
-          <p className="text-[10px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-300 flex items-center gap-1.5">
+        <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-3 space-y-1.5">
+          <p className="text-[10px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-300 flex items-center gap-1.5">
             <Sparkles className="w-3 h-3" /> Insights
           </p>
           {insights.map((t) => (

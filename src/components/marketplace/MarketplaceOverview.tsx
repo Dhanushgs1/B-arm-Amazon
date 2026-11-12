@@ -55,7 +55,7 @@ export function MarketplaceOverview({ marketplace }: { marketplace: Exclude<Mark
         </div>
         <Link
           href="/dashboard/compare"
-          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-full text-xs font-bold transition-all shadow-md shadow-indigo-600/20 cursor-pointer"
+          className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-full text-xs font-bold transition-all shadow-md shadow-emerald-600/20 cursor-pointer"
         >
           Compare vs other marketplaces <ArrowRight className="w-3.5 h-3.5" />
         </Link>
@@ -177,11 +177,11 @@ export function MarketplaceOverview({ marketplace }: { marketplace: Exclude<Mark
         initial={{ opacity: 0, y: 20 }} 
         animate={{ opacity: 1, y: 0 }} 
         transition={{ delay: 0.4, duration: 0.5 }}
-        className="glass rounded-2xl border border-indigo-500/20 p-5 shadow-sm bg-gradient-to-r from-indigo-100 via-indigo-50 to-white dark:from-indigo-950/20 dark:via-slate-900 dark:to-slate-950 flex flex-col md:flex-row items-center justify-between gap-4"
+        className="glass rounded-2xl border border-emerald-500/20 p-5 shadow-sm bg-gradient-to-r from-emerald-100 via-emerald-50 to-white dark:from-emerald-950/20 dark:via-slate-900 dark:to-slate-950 flex flex-col md:flex-row items-center justify-between gap-4"
       >
         <div className="space-y-1">
           <div className="flex items-center gap-2">
-            <span className="text-xs font-black text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">Automated Rules Engine</span>
+            <span className="text-xs font-black text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">Automated Rules Engine</span>
             <span className="bg-emerald-500/20 text-emerald-400 text-[9px] font-bold px-2 py-0.5 rounded-full border border-emerald-500/30">Active</span>
           </div>
           <h3 className="text-base font-extrabold text-slate-900 dark:text-white">{meta.label} Automation Guardrails Enabled</h3>
@@ -189,7 +189,7 @@ export function MarketplaceOverview({ marketplace }: { marketplace: Exclude<Mark
         </div>
         <Link
           href={`/dashboard/${marketplace}/optimization`}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow-lg shadow-indigo-600/20 transition-all flex-shrink-0 cursor-pointer"
+          className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-lg shadow-emerald-600/20 transition-all flex-shrink-0 cursor-pointer"
         >
           Manage Rules <ArrowRight className="w-3.5 h-3.5" />
         </Link>

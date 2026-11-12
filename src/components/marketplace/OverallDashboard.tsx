@@ -110,7 +110,7 @@ function PlatformCard({ p, snap, loading, insights, note, summary }: { p: (typeo
   const m = platformMetrics(snap);
   const status = platformStatus(insights);
   return (
-    <Link href={p.href} className="group glass rounded-2xl border border-border p-4 shadow-sm space-y-3 min-w-0 hover:border-indigo-500/40 transition-colors">
+    <Link href={p.href} className="group glass rounded-2xl border border-border p-4 shadow-sm space-y-3 min-w-0 hover:border-emerald-500/40 transition-colors">
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-2 font-black text-sm truncate"><Mark p={p} /> {p.label}</span>
         {loading ? (
@@ -157,7 +157,7 @@ function PlatformCard({ p, snap, loading, insights, note, summary }: { p: (typeo
         </ul>
       )}
       {note && <p className="text-[10px] text-muted-foreground">{note}</p>}
-      <span className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 dark:text-indigo-400 group-hover:underline">
+      <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 dark:text-emerald-400 group-hover:underline">
         Open {p.label} <ArrowRight className="w-3 h-3" />
       </span>
     </Link>
@@ -209,7 +209,7 @@ function CampaignsSection({ stats, loading }: { stats: Record<AdPlatform, Campai
                 key={t.key}
                 type="button"
                 onClick={() => { setTab(t.key); setSearch(""); }}
-                className={cn("inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black border", tab === t.key ? "bg-indigo-600 text-white border-indigo-600" : "bg-background border-border hover:bg-muted")}
+                className={cn("inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black border", tab === t.key ? "bg-emerald-600 text-white border-emerald-600" : "bg-background border-border hover:bg-muted")}
               >
                 <Mark p={p} size={14} /> {t.label}
                 {stats[t.key] && <span className="opacity-70 font-bold">{stats[t.key]!.length}</span>}
@@ -227,7 +227,7 @@ function CampaignsSection({ stats, loading }: { stats: Record<AdPlatform, Campai
             <p className="text-[11px] text-muted-foreground rounded-xl border border-dashed border-border px-3 py-2">
               The {tab === "google" ? "Google Ads" : "Meta"} upload has spend per campaign but no sales per campaign, so campaigns are ranked by spend.
               Sales from these ads (Shopify orders tagged {tab === "google" ? "Google Ads" : "Meta Ads"}) are on the platform card above and the{" "}
-              <Link href={`/dashboard/shopify/sources?source=${tab === "google" ? "google_ads" : "meta_ads"}`} className="font-bold text-indigo-600 dark:text-indigo-400 hover:underline">Google &amp; Meta page</Link>.
+              <Link href={`/dashboard/shopify/sources?source=${tab === "google" ? "google_ads" : "meta_ads"}`} className="font-bold text-emerald-600 dark:text-emerald-400 hover:underline">Google &amp; Meta page</Link>.
             </p>
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">

@@ -35,7 +35,7 @@ const productScore = (p: any) => {
   return Math.max(5, Math.min(99, Math.round(score)));
 };
 const healthColor = (score: number) =>
-  score >= 75 ? "bg-emerald-500" : score >= 55 ? "bg-blue-500" : score >= 35 ? "bg-amber-500" : "bg-red-500";
+  score >= 75 ? "bg-emerald-500" : score >= 55 ? "bg-emerald-500" : score >= 35 ? "bg-amber-500" : "bg-red-500";
 
 function ProductsContent() {
   const { keySlot, startDate, endDate, account, contextLoading, setSelectedAsin } = useDashboard();
@@ -358,8 +358,8 @@ function ProductsContent() {
             {row.image ? (
               <img src={row.image} alt="" className="w-10 h-10 rounded-xl object-cover border border-border flex-shrink-0" onError={(e: any) => e.target.style.display = "none"} />
             ) : (
-              <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/15 flex items-center justify-center flex-shrink-0">
-                <Package className="w-4 h-4 text-indigo-500" />
+              <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/15 flex items-center justify-center flex-shrink-0">
+                <Package className="w-4 h-4 text-emerald-500" />
               </div>
             )}
             <div className="min-w-0">
@@ -403,9 +403,9 @@ function ProductsContent() {
       </div>
     ) },
     { key: "spend", label: "Spend", sortable: true, summable: true, render: (val: number) => <span className="font-bold text-foreground">{cur(val, currency)}</span> },
-    { key: "adSales", label: "Ad Sales", sortable: true, summable: true, render: (val: number) => <span className="text-blue-600 dark:text-blue-400 font-extrabold">{cur(val, currency)}</span> },
+    { key: "adSales", label: "Ad Sales", sortable: true, summable: true, render: (val: number) => <span className="text-emerald-600 dark:text-emerald-400 font-extrabold">{cur(val, currency)}</span> },
     { key: "organicSales", label: "Organic Sales", sortable: true, summable: true, render: (val: number) => <span className="text-emerald-600 dark:text-emerald-400 font-extrabold">{cur(val, currency)}</span> },
-    { key: "totalSales", label: "Total Sales", sortable: true, summable: true, render: (val: number) => <span className="text-violet-600 dark:text-violet-400 font-extrabold">{cur(val, currency)}</span> },
+    { key: "totalSales", label: "Total Sales", sortable: true, summable: true, render: (val: number) => <span className="text-green-600 dark:text-green-400 font-extrabold">{cur(val, currency)}</span> },
     { key: "tacos", label: "TACOS", sortable: true, render: (val: number) => val ? pct(val) : "—" },
     {
       key: "acos",
@@ -424,7 +424,7 @@ function ProductsContent() {
       render: (val: number) => (
         <span className={cn(
           "px-2 py-0.5 rounded-full text-xs font-extrabold",
-          val > 5 ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : val > 3 ? "bg-blue-500/10 text-blue-600 dark:text-blue-400" : val > 0 ? "bg-amber-500/10 text-amber-600 dark:text-amber-400" : "text-muted-foreground"
+          val > 5 ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : val > 3 ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : val > 0 ? "bg-amber-500/10 text-amber-600 dark:text-amber-400" : "text-muted-foreground"
         )}>
           {val ? `${val.toFixed(2)}x` : "—"}
         </span>
@@ -432,9 +432,9 @@ function ProductsContent() {
     },
     { key: "impressions", label: "Impressions", sortable: true, summable: true, render: (val: number) => num(val) },
     { key: "clicks", label: "Clicks", sortable: true, summable: true, render: (val: number) => num(val) },
-    { key: "adOrders", label: "Ad Orders", sortable: true, summable: true, render: (val: number) => <span className="font-semibold text-blue-600 dark:text-blue-400">{num(val)}</span> },
+    { key: "adOrders", label: "Ad Orders", sortable: true, summable: true, render: (val: number) => <span className="font-semibold text-emerald-600 dark:text-emerald-400">{num(val)}</span> },
     { key: "organicOrders", label: "Organic Orders", sortable: true, summable: true, render: (val: number) => <span className="font-semibold text-emerald-600 dark:text-emerald-400">{num(val)}</span> },
-    { key: "totalOrders", label: "Total Orders", sortable: true, summable: true, render: (val: number) => <span className="font-bold text-violet-600 dark:text-violet-400">{num(val)}</span> },
+    { key: "totalOrders", label: "Total Orders", sortable: true, summable: true, render: (val: number) => <span className="font-bold text-green-600 dark:text-green-400">{num(val)}</span> },
     { key: "ctr", label: "CTR", sortable: true, render: (val: number) => val ? pct(val) : "—" },
     { key: "cpc", label: "CPC", sortable: true, render: (val: number) => cur(val, currency) },
     { key: "adCvr", label: "CVR", sortable: true, render: (val: number) => val ? pct(val) : "—" },
@@ -539,7 +539,7 @@ function ProductsContent() {
           <div className="glass gradient-border rounded-[22px] p-6">
             <div className="flex flex-col lg:flex-row lg:items-center gap-6 justify-between">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#6D5EF8] to-[#8B5CF6] flex items-center justify-center shadow-md shadow-indigo-500/20">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#6D5EF8] to-[#8B5CF6] flex items-center justify-center shadow-md shadow-emerald-500/20">
                   <Bot className="w-4.5 h-4.5 text-white" />
                 </div>
                 <div>
@@ -559,9 +559,9 @@ function ProductsContent() {
               </div>
               <div className="text-center lg:text-right">
                 <p className="text-[10px] font-extrabold uppercase tracking-widest text-muted-foreground">Hero Product Revenue</p>
-                <p className="text-2xl font-extrabold text-violet-600 dark:text-violet-400">{heroProduct ? cur(heroProduct.totalSales || heroProduct.sales, currency) : "—"}</p>
+                <p className="text-2xl font-extrabold text-green-600 dark:text-green-400">{heroProduct ? cur(heroProduct.totalSales || heroProduct.sales, currency) : "—"}</p>
                 <p className="text-[11px] font-bold text-muted-foreground truncate max-w-[220px]" title={heroProduct?.adProductName}>{heroProduct?.adProductName?.split("|")[0].trim().slice(0, 34) || "No sales yet"}</p>
-                <button className="mt-2.5 flex items-center gap-2 bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] hover:opacity-90 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md shadow-indigo-500/20 mx-auto lg:ml-auto lg:mr-0">
+                <button className="mt-2.5 flex items-center gap-2 bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] hover:opacity-90 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md shadow-emerald-500/20 mx-auto lg:ml-auto lg:mr-0">
                   <Zap className="w-3.5 h-3.5" /> Apply AI Optimizations
                 </button>
               </div>
@@ -604,13 +604,13 @@ function ProductsContent() {
               </div>
             ))}
             {clickNoOrderProducts.slice(0, 1).map((p: any) => (
-              <div key={"conv" + (p.adAsin || p.asin)} className="p-4 rounded-2xl border border-blue-200 dark:border-blue-900 bg-gradient-to-br from-blue-50/80 to-white dark:from-blue-950/30 dark:to-transparent text-xs hover:-translate-y-0.5 transition-transform">
-                <p className="font-extrabold text-blue-700 dark:text-blue-400 flex items-center gap-1.5 text-sm"><MousePointerClick className="w-4 h-4" /> Traffic, No Conversion</p>
+              <div key={"conv" + (p.adAsin || p.asin)} className="p-4 rounded-2xl border border-emerald-200 dark:border-emerald-900 bg-gradient-to-br from-emerald-50/80 to-white dark:from-emerald-950/30 dark:to-transparent text-xs hover:-translate-y-0.5 transition-transform">
+                <p className="font-extrabold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5 text-sm"><MousePointerClick className="w-4 h-4" /> Traffic, No Conversion</p>
                 <p className="font-bold mt-1.5 truncate text-[13px]" title={p.adProductName}>{p.adProductName?.split("|")[0].trim()}</p>
                 <p className="text-muted-foreground mt-1 font-bold">{p.clicks} clicks · 0 orders · {cur(p.spend, currency)}</p>
                 <div className="flex items-center justify-between mt-2.5">
-                  <p className="font-extrabold text-blue-700 dark:text-blue-500">Improve listing / check price</p>
-                  <span className="bg-blue-500/10 text-blue-600 font-extrabold px-2 py-0.5 rounded-full text-[10px]">+18% CVR est</span>
+                  <p className="font-extrabold text-emerald-700 dark:text-emerald-500">Improve listing / check price</p>
+                  <span className="bg-emerald-500/10 text-emerald-600 font-extrabold px-2 py-0.5 rounded-full text-[10px]">+18% CVR est</span>
                 </div>
               </div>
             ))}

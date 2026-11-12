@@ -15,7 +15,7 @@ export function InventoryTabs() {
   const live = pathname?.startsWith("/dashboard/inventory/live");
   const consolidated = pathname?.startsWith("/dashboard/inventory/consolidated");
   const tab = (active: boolean) =>
-    `flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-bold transition ${active ? "bg-indigo-600 text-white shadow" : "text-muted-foreground hover:text-foreground"}`;
+    `flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-bold transition ${active ? "bg-emerald-600 text-white shadow" : "text-muted-foreground hover:text-foreground"}`;
   return (
     <div className="inline-flex rounded-xl border border-border bg-background p-1 shadow-sm">
       <Link href="/dashboard/inventory" className={tab(!live && !consolidated)}><FileSpreadsheet className="w-3.5 h-3.5" /> Inventory</Link>

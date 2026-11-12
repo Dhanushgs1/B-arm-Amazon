@@ -18,25 +18,24 @@ export default function ComparePage() {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }} className="space-y-6 pb-12">
-      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-900 via-purple-900 to-slate-900 p-6 border border-indigo-500/30 shadow-xl">
-        <div className="absolute -top-12 -right-12 w-48 h-48 rounded-full bg-indigo-500/10 blur-3xl" />
-        <div className="absolute -bottom-8 -left-8 w-36 h-36 rounded-full bg-purple-500/10 blur-3xl" />
-        <div className="relative flex items-start justify-between flex-wrap gap-4">
+      {/* light page header (user, 12 Nov 2026: no dark banner, light green theme) */}
+      <div className="rounded-2xl bg-white dark:bg-slate-900 p-6 border border-emerald-100 dark:border-slate-800 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+        <div className="flex items-start justify-between flex-wrap gap-4">
           <div>
             <div className="flex items-center gap-2 mb-2">
-              <div className="w-8 h-8 rounded-xl bg-white/10 flex items-center justify-center">
-                <GitCompare className="w-4 h-4 text-indigo-300" />
+              <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-500/15 flex items-center justify-center">
+                <GitCompare className="w-4 h-4 text-emerald-600 dark:text-emerald-300" />
               </div>
-              <span className="text-indigo-300 text-[10px] font-black uppercase tracking-widest">Overall</span>
+              <span className="text-emerald-700 dark:text-emerald-300 text-[10px] font-black uppercase tracking-widest">Overall</span>
             </div>
-            <h1 className="text-2xl font-black tracking-tight text-white">Marketplace Intelligence Dashboard</h1>
-            <p className="text-indigo-300/80 text-xs mt-1 font-semibold">
+            <h1 className="text-2xl font-black tracking-tight text-slate-900 dark:text-white">Marketplace Intelligence Dashboard</h1>
+            <p className="text-slate-500 dark:text-slate-400 text-xs mt-1 font-semibold">
               {dot(startDate)} – {dot(endDate)} · Amazon, Flipkart, Meesho, Shopify, Google Ads &amp; Meta
             </p>
           </div>
           {SELLERMATE_ENABLED && <Link
             href="/dashboard/ai"
-            className="flex items-center gap-2 bg-white/10 hover:bg-white/20 text-white border border-white/20 px-4 py-2 rounded-xl text-xs font-black transition-all backdrop-blur-sm"
+            className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-xs font-black transition-all"
           >
             <Brain className="w-3.5 h-3.5" /> Ask AI Assistant <ArrowRight className="w-3 h-3" />
           </Link>}

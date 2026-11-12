@@ -71,7 +71,7 @@ export default function LiveInventoryPage() {
           <h1 className="text-2xl font-bold tracking-tight mb-0.5">Live Inventory</h1>
           <p className="text-muted-foreground text-sm">{account?.name} · straight from SellerMate</p>
           <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-            <span className="inline-flex items-center gap-1 font-semibold text-foreground"><Database className="w-3.5 h-3.5 text-indigo-500" /> Source: SellerMate</span>
+            <span className="inline-flex items-center gap-1 font-semibold text-foreground"><Database className="w-3.5 h-3.5 text-emerald-500" /> Source: SellerMate</span>
             <span className="inline-flex items-center gap-1"><CalendarClock className="w-3.5 h-3.5" /> Data as of: {data?.ledgerDates.length ? data.ledgerDates.join(", ") : "—"} (SellerMate ledger date)</span>
             <span>Last fetched: {dateIn(data?.fetchedAt)}</span>
           </p>
@@ -100,17 +100,17 @@ export default function LiveInventoryPage() {
           </div>
 
           <div className="rounded-2xl border border-border bg-muted/30 p-3 text-xs space-y-1">
-            <p className="flex gap-1.5"><Info className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-indigo-500" />
+            <p className="flex gap-1.5"><Info className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-emerald-500" />
               <span>SellerMate provides the FBA <b>warehouse balance</b> (Amazon Inventory Ledger, daily) per warehouse, and the FBM quantity. It does <b>not</b> provide Available, Reserved, Inbound or Unfulfillable — those columns show “—”. For Amazon&apos;s Available/Inbound figures use the Inventory tab (uploaded report).</span></p>
-            <p className="flex gap-1.5"><Info className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-indigo-500" />
+            <p className="flex gap-1.5"><Info className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-emerald-500" />
               <span>SellerMate returns two FBA figures: its product total and its warehouse-wise rows. They differ for some products (highlighted) — the warehouse rows also carry damaged/defective units, and SellerMate keeps one stock condition per warehouse. Both are shown exactly as SellerMate sends them.</span></p>
             {data.notes.map((n) => <p key={n} className="flex gap-1.5 text-amber-800 dark:text-amber-300"><Info className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" /><span>{n}</span></p>)}
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="inline-flex rounded-lg border border-border p-0.5 text-xs font-bold">
-              <button onClick={() => setView("products")} className={`rounded-md px-3 py-1.5 ${view === "products" ? "bg-indigo-600 text-white" : "text-muted-foreground"}`}>Products ({fmt(data.products.length)})</button>
-              <button onClick={() => setView("warehouses")} className={`rounded-md px-3 py-1.5 ${view === "warehouses" ? "bg-indigo-600 text-white" : "text-muted-foreground"}`}><Warehouse className="inline w-3.5 h-3.5 mr-1" />Warehouses ({fmt(data.warehouses.length)})</button>
+              <button onClick={() => setView("products")} className={`rounded-md px-3 py-1.5 ${view === "products" ? "bg-emerald-600 text-white" : "text-muted-foreground"}`}>Products ({fmt(data.products.length)})</button>
+              <button onClick={() => setView("warehouses")} className={`rounded-md px-3 py-1.5 ${view === "warehouses" ? "bg-emerald-600 text-white" : "text-muted-foreground"}`}><Warehouse className="inline w-3.5 h-3.5 mr-1" />Warehouses ({fmt(data.warehouses.length)})</button>
             </div>
             {view === "products" && (
               <label className="relative">
@@ -158,7 +158,7 @@ export default function LiveInventoryPage() {
                             <td className="px-3 py-2 max-w-[280px]"><p className="font-semibold text-sm truncate" title={p.title ?? ""}>{name(p)}</p><p className="font-mono text-[10px] text-muted-foreground">{p.asin}</p></td>
                             <td className="px-3 py-2 max-w-[220px]">
                               <div className="flex flex-wrap gap-1">{p.skus.length ? p.skus.map((s) => (
-                                <span key={s.sku} className="rounded border border-border px-1.5 py-0.5 font-mono text-[10px]">{s.sku}{s.channel && <span className={`ml-1 font-sans font-bold ${s.channel === "FBA" ? "text-indigo-600 dark:text-indigo-400" : "text-amber-700 dark:text-amber-400"}`}>{s.channel}</span>}</span>
+                                <span key={s.sku} className="rounded border border-border px-1.5 py-0.5 font-mono text-[10px]">{s.sku}{s.channel && <span className={`ml-1 font-sans font-bold ${s.channel === "FBA" ? "text-emerald-600 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400"}`}>{s.channel}</span>}</span>
                               )) : <NA />}</div>
                             </td>
                             <td className="px-3 py-2 text-right font-bold tabular-nums">{fmt(p.fbaWarehouseBalance)}</td>
@@ -214,7 +214,7 @@ export default function LiveInventoryPage() {
                   </tbody>
                 </table>
               </div>
-              {rows.length > limit && <button onClick={() => setLimit((n) => n + 100)} className="w-full border-t border-border py-2 text-xs font-bold text-indigo-600 hover:bg-muted/40 dark:text-indigo-400">Show more ({rows.length - limit} remaining)</button>}
+              {rows.length > limit && <button onClick={() => setLimit((n) => n + 100)} className="w-full border-t border-border py-2 text-xs font-bold text-emerald-600 hover:bg-muted/40 dark:text-emerald-400">Show more ({rows.length - limit} remaining)</button>}
             </div>
           ) : (
             <div className="glass rounded-2xl border border-border overflow-hidden">

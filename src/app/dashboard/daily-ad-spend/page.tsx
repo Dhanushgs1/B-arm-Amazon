@@ -32,15 +32,15 @@ interface Recommendation { action: Action; reason: string }
 
 const ACTION_STYLE: Record<Action, { icon: typeof TrendingUp; className: string }> = {
   "Scale Up": { icon: TrendingUp, className: "text-green-700 bg-green-50 border-green-200 dark:text-green-400 dark:bg-green-950/40 dark:border-green-800" },
-  "Maintain": { icon: Minus, className: "text-blue-600 bg-blue-50 border-blue-200 dark:text-blue-400 dark:bg-blue-950/40 dark:border-blue-800" },
+  "Maintain": { icon: Minus, className: "text-emerald-600 bg-emerald-50 border-emerald-200 dark:text-emerald-400 dark:bg-emerald-950/40 dark:border-emerald-800" },
   "Reduce Bid": { icon: TrendingDown, className: "text-orange-600 bg-orange-50 border-orange-200 dark:text-orange-400 dark:bg-orange-950/40 dark:border-orange-800" },
   "Pause Campaign": { icon: PauseCircle, className: "text-red-600 bg-red-50 border-red-200 dark:text-red-400 dark:bg-red-950/40 dark:border-red-800" },
 };
 
 const PLATFORM_DOT: Record<Platform, string> = {
   Amazon: "bg-orange-500",
-  Flipkart: "bg-blue-500",
-  Meesho: "bg-purple-500",
+  Flipkart: "bg-emerald-500",
+  Meesho: "bg-teal-500",
 };
 
 const PLATFORM_TABS: ("All" | Platform)[] = ["All", "Amazon", "Flipkart", "Meesho"];

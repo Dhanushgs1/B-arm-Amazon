@@ -32,7 +32,7 @@ const kwScore = (k: any) => {
   return Math.max(5, Math.min(99, Math.round(score)));
 };
 const healthColor = (score: number) =>
-  score >= 75 ? "bg-emerald-500" : score >= 55 ? "bg-blue-500" : score >= 35 ? "bg-amber-500" : "bg-red-500";
+  score >= 75 ? "bg-emerald-500" : score >= 55 ? "bg-emerald-500" : score >= 35 ? "bg-amber-500" : "bg-red-500";
 
 // Suggested bid derived from current CPC vs a 30% target ACOS
 const suggestedBid = (k: any) => {
@@ -47,12 +47,12 @@ const suggestedBid = (k: any) => {
 const searchIntent = (k: any) => {
   const v = (k.targetingValue || "").trim();
   const type = (k.targetingType || "").toUpperCase();
-  if (/^b0[a-z0-9]{8}$/i.test(v) || type.includes("ASIN") || type.includes("PRODUCT")) return { label: "Product Target", cls: "bg-violet-500/10 text-violet-600 dark:text-violet-400" };
+  if (/^b0[a-z0-9]{8}$/i.test(v) || type.includes("ASIN") || type.includes("PRODUCT")) return { label: "Product Target", cls: "bg-green-500/10 text-green-600 dark:text-green-400" };
   if (type.includes("AUTO") || ["close-match", "loose-match", "substitutes", "complements"].includes(v.toLowerCase())) return { label: "Discovery", cls: "bg-cyan-500/10 text-cyan-600 dark:text-cyan-400" };
   const words = v.split(/\s+/).length;
-  if (words >= 4) return { label: "Long Tail", cls: "bg-blue-500/10 text-blue-600 dark:text-blue-400" };
+  if (words >= 4) return { label: "Long Tail", cls: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" };
   if (words === 1) return { label: "Generic", cls: "bg-amber-500/10 text-amber-600 dark:text-amber-400" };
-  return { label: "Category", cls: "bg-indigo-500/10 text-indigo-500" };
+  return { label: "Category", cls: "bg-emerald-500/10 text-emerald-500" };
 };
 
 const ScoreRing = ({ value, label, color, onClick }: { value: number; label: string; color: string; onClick?: () => void }) => {
@@ -136,8 +136,8 @@ export default function KeywordsPage() {
         const intent = searchIntent(row);
         return (
           <div className="flex items-center gap-2.5 max-w-[340px]">
-            <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/15 flex items-center justify-center flex-shrink-0">
-              <KeyRound className="w-3.5 h-3.5 text-indigo-500" />
+            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/15 flex items-center justify-center flex-shrink-0">
+              <KeyRound className="w-3.5 h-3.5 text-emerald-500" />
             </div>
             <div className="min-w-0">
               <span className="font-bold text-foreground text-sm block max-w-[270px] truncate" title={val}>
@@ -201,7 +201,7 @@ export default function KeywordsPage() {
       render: (val: number) => (
         <span className={cn(
           "px-2 py-0.5 rounded-full text-xs font-extrabold",
-          val > 5 ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : val > 3 ? "bg-blue-500/10 text-blue-600 dark:text-blue-400" : val > 0 ? "bg-amber-500/10 text-amber-600 dark:text-amber-400" : "text-muted-foreground"
+          val > 5 ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : val > 3 ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : val > 0 ? "bg-amber-500/10 text-amber-600 dark:text-amber-400" : "text-muted-foreground"
         )}>
           {val ? `${val.toFixed(2)}x` : "—"}
         </span>
@@ -296,7 +296,7 @@ export default function KeywordsPage() {
           <div className="glass gradient-border rounded-[22px] p-6">
             <div className="flex flex-col lg:flex-row lg:items-center gap-6 justify-between">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#6D5EF8] to-[#8B5CF6] flex items-center justify-center shadow-md shadow-indigo-500/20">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#6D5EF8] to-[#8B5CF6] flex items-center justify-center shadow-md shadow-emerald-500/20">
                   <Bot className="w-4.5 h-4.5 text-white" />
                 </div>
                 <div>
@@ -320,7 +320,7 @@ export default function KeywordsPage() {
                 <p className="text-[11px] font-bold text-muted-foreground">from top 5 scale candidates · 93% confidence</p>
                 <button 
                   onClick={() => alert("AI Optimizations are currently not enabled. Please contact support to enable this feature.")}
-                  className="mt-2.5 flex items-center gap-2 bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] hover:opacity-90 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md shadow-indigo-500/20 mx-auto lg:ml-auto lg:mr-0">
+                  className="mt-2.5 flex items-center gap-2 bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] hover:opacity-90 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md shadow-emerald-500/20 mx-auto lg:ml-auto lg:mr-0">
                   <Zap className="w-3.5 h-3.5" /> Apply AI Optimizations
                 </button>
               </div>
@@ -352,13 +352,13 @@ export default function KeywordsPage() {
               </div>
             ))}
             {scalingKeywords.slice(1, 2).map((k: any) => (
-              <div key={"scale" + k.targetingValue} className="p-4 rounded-2xl border border-blue-200 dark:border-blue-900 bg-gradient-to-br from-blue-50/80 to-white dark:from-blue-950/30 dark:to-transparent text-xs hover:-translate-y-0.5 transition-transform">
-                <p className="font-extrabold text-blue-700 dark:text-blue-400 flex items-center gap-1.5 text-sm"><Rocket className="w-4 h-4" /> Scale Opportunity</p>
+              <div key={"scale" + k.targetingValue} className="p-4 rounded-2xl border border-emerald-200 dark:border-emerald-900 bg-gradient-to-br from-emerald-50/80 to-white dark:from-emerald-950/30 dark:to-transparent text-xs hover:-translate-y-0.5 transition-transform">
+                <p className="font-extrabold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5 text-sm"><Rocket className="w-4 h-4" /> Scale Opportunity</p>
                 <p className="font-bold mt-1.5 truncate text-[13px]" title={k.targetingValue}>{k.targetingValue}</p>
                 <p className="text-muted-foreground mt-1 font-bold">{k.orders} orders · CVR strong</p>
                 <div className="flex items-center justify-between mt-2.5">
-                  <p className="font-extrabold text-blue-700 dark:text-blue-500">Est. +{cur(k.sales * 0.2, currency)} sales</p>
-                  <span className="bg-blue-500/10 text-blue-600 font-extrabold px-2 py-0.5 rounded-full text-[10px]">Low risk</span>
+                  <p className="font-extrabold text-emerald-700 dark:text-emerald-500">Est. +{cur(k.sales * 0.2, currency)} sales</p>
+                  <span className="bg-emerald-500/10 text-emerald-600 font-extrabold px-2 py-0.5 rounded-full text-[10px]">Low risk</span>
                 </div>
               </div>
             ))}

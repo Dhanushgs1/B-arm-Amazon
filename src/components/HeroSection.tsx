@@ -34,18 +34,18 @@ export default function HeroSection() {
   return (
     <div className="relative w-full h-full bg-[#070B17] text-white p-12 flex flex-col justify-between overflow-hidden">
       {/* Background Subtle Particle Glows */}
-      <div className="absolute top-1/4 left-1/4 w-80 h-80 bg-indigo-500/10 rounded-full blur-[80px] pointer-events-none" />
-      <div className="absolute bottom-1/4 right-1/4 w-80 h-80 bg-purple-500/10 rounded-full blur-[80px] pointer-events-none" />
+      <div className="absolute top-1/4 left-1/4 w-80 h-80 bg-emerald-500/10 rounded-full blur-[80px] pointer-events-none" />
+      <div className="absolute bottom-1/4 right-1/4 w-80 h-80 bg-teal-500/10 rounded-full blur-[80px] pointer-events-none" />
 
       {/* Top Branding Section */}
       <div className="relative z-10 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-indigo-500/15 rounded-xl flex items-center justify-center text-[#6C63FF] border border-indigo-500/20 shadow-[0_0_20px_rgba(20,184,166,0.15)]">
-            <Hexagon size={22} fill="currentColor" className="text-[#6C63FF]" />
+          <div className="w-10 h-10 bg-emerald-500/15 rounded-xl flex items-center justify-center text-[#059669] border border-emerald-500/20 shadow-[0_0_20px_rgba(20,184,166,0.15)]">
+            <Hexagon size={22} fill="currentColor" className="text-[#059669]" />
           </div>
           <div>
             <span className="font-extrabold text-xl tracking-tight block">Marketplace360</span>
-            <small className="text-[10px] text-indigo-400 font-bold uppercase tracking-widest block -mt-1">
+            <small className="text-[10px] text-emerald-400 font-bold uppercase tracking-widest block -mt-1">
               Amazon Analytics Platform
             </small>
           </div>
@@ -62,7 +62,7 @@ export default function HeroSection() {
         <div className="max-w-xl space-y-4">
           <h1 className="text-4xl xl:text-5xl font-extrabold tracking-tight leading-[1.1] mb-2">
             Turn advertising data into{" "}
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 via-purple-400 to-[#22D3EE]">
+            <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 via-teal-400 to-[#22D3EE]">
               profitable decisions
             </span>
           </h1>
@@ -100,8 +100,8 @@ export default function HeroSection() {
               {/* Glowing Gradient Area */}
               <defs>
                 <linearGradient id="chartGlow" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#6C63FF" stopOpacity="0.25" />
-                  <stop offset="100%" stopColor="#6D5EF8" stopOpacity="0.0" />
+                  <stop offset="0%" stopColor="#059669" stopOpacity="0.25" />
+                  <stop offset="100%" stopColor="#059669" stopOpacity="0.0" />
                 </linearGradient>
               </defs>
               <path
@@ -122,8 +122,8 @@ export default function HeroSection() {
               />
 
               <linearGradient id="lineGradient" x1="0" y1="0" x2="1" y2="0">
-                <stop offset="0%" stopColor="#6C63FF" />
-                <stop offset="50%" stopColor="#6D5EF8" />
+                <stop offset="0%" stopColor="#059669" />
+                <stop offset="50%" stopColor="#059669" />
                 <stop offset="100%" stopColor="#22D3EE" />
               </linearGradient>
             </svg>
@@ -138,7 +138,7 @@ export default function HeroSection() {
               className="p-3 rounded-2xl bg-white/[0.02] border border-white/5 backdrop-blur-md"
             >
               <span className="text-[9px] text-slate-400 font-bold block uppercase">ROAS</span>
-              <span className="text-sm font-black text-indigo-400 mt-0.5 block">{roas}x</span>
+              <span className="text-sm font-black text-emerald-400 mt-0.5 block">{roas}x</span>
             </motion.div>
 
             {/* ACOS Card */}
@@ -172,9 +172,9 @@ export default function HeroSection() {
             transition={{ delay: 1 }}
             className="absolute top-24 right-4 z-20 p-3 rounded-xl bg-slate-950/75 border border-white/10 shadow-2xl backdrop-blur-md flex gap-2.5 items-start max-w-[200px]"
           >
-            <ShieldCheck size={14} className="text-indigo-400 flex-shrink-0 mt-0.5" />
+            <ShieldCheck size={14} className="text-emerald-400 flex-shrink-0 mt-0.5" />
             <div>
-              <p className="text-[9px] font-bold text-indigo-300">PPC Automation</p>
+              <p className="text-[9px] font-bold text-emerald-300">PPC Automation</p>
               <p className="text-[9px] text-slate-300 mt-0.5 leading-normal">Harvested 18 high-ROAS search terms.</p>
             </div>
           </motion.div>

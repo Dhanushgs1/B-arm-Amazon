@@ -178,7 +178,7 @@ export default function ConsolidatedStockPage() {
 
   const dates = data?.dates ?? [];
   const tabBtn = (v: View, label: string, n: number) => (
-    <button key={v} onClick={() => setView(v)} className={`rounded-lg px-3.5 py-1.5 text-xs font-bold transition ${view === v ? "bg-indigo-600 text-white shadow" : "text-muted-foreground hover:text-foreground"}`}>
+    <button key={v} onClick={() => setView(v)} className={`rounded-lg px-3.5 py-1.5 text-xs font-bold transition ${view === v ? "bg-emerald-600 text-white shadow" : "text-muted-foreground hover:text-foreground"}`}>
       {label} <span className="tabular-nums opacity-80">({n})</span>
     </button>
   );
@@ -203,11 +203,11 @@ export default function ConsolidatedStockPage() {
 
       <div className="flex flex-wrap items-center gap-2">
         <input ref={godownRef} id="godown-file" type="file" accept=".xlsx,.xls" className="hidden" onChange={(e) => upload(e.target.files?.[0])} />
-        <button onClick={() => godownRef.current?.click()} disabled={busy} className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-bold text-white hover:bg-indigo-700 disabled:opacity-60">
+        <button onClick={() => godownRef.current?.click()} disabled={busy} className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-60">
           {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />} Upload godown stock sheet
         </button>
         <input ref={restockRef} id="restock-file" type="file" accept=".xlsx,.xls" className="hidden" onChange={(e) => uploadRestock(e.target.files?.[0])} />
-        <button onClick={() => restockRef.current?.click()} disabled={busy} title='"Current stock sheet-DD-MM-YYYY.xlsx": in transit and order placed · "Stock Purchase Sheet.xlsx": purchase sheet qty' className="flex items-center gap-1.5 rounded-lg border border-indigo-300 bg-background px-3.5 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50 disabled:opacity-60 dark:border-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-950">
+        <button onClick={() => restockRef.current?.click()} disabled={busy} title='"Current stock sheet-DD-MM-YYYY.xlsx": in transit and order placed · "Stock Purchase Sheet.xlsx": purchase sheet qty' className="flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-background px-3.5 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-50 disabled:opacity-60 dark:border-emerald-700 dark:text-emerald-300 dark:hover:bg-emerald-950">
           {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />} Upload restock inputs
         </button>
         <button onClick={exportExcel} disabled={!data?.rows.length || exporting} className="flex items-center gap-1.5 rounded-lg border border-border bg-background px-3.5 py-2 text-xs font-bold hover:bg-muted disabled:opacity-60">
@@ -352,7 +352,7 @@ export default function ConsolidatedStockPage() {
                         <td className={td}>{int(r.orderPlaced)}</td>
                         <td className={`${td} ${r.qtyToRestock < 0 ? "text-muted-foreground" : ""}`}>{int(r.qtyToRestock)}</td>
                         <td className={td}>{int(r.purchaseQty)}</td>
-                        <td className={`${td} font-bold text-indigo-700 dark:text-indigo-300`}>{int(r.finalQtyToRestock)}</td>
+                        <td className={`${td} font-bold text-emerald-700 dark:text-emerald-300`}>{int(r.finalQtyToRestock)}</td>
                         <td className={td} title="Components Sheet: Σ qty per unit × RFQ of each product it goes into, less its stock">{int(r.comboQty)}</td>
                       </>}
                       {(view === "all" || view === "running") && <td className="px-2.5 py-2 text-right">{coverChip(r.daysOfStock)}</td>}

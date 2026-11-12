@@ -11,7 +11,7 @@ const cur = (val: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFract
 
 const STATUS_STYLE: Record<string, string> = {
   Delivered: "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30",
-  Shipped: "text-blue-600 bg-blue-50 dark:bg-blue-950/30",
+  Shipped: "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30",
   RTO: "text-red-600 bg-red-50 dark:bg-red-950/30",
   Cancelled: "text-slate-500 bg-slate-100 dark:bg-slate-800",
   Pending: "text-amber-600 bg-amber-50 dark:bg-amber-950/30",

@@ -34,7 +34,7 @@ const LABEL: Record<FcAlertStatus, { text: string; cls: string }> = {
   sent: { text: "Mail sent", cls: "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300" },
   failed: { text: "Mail failed", cls: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300" },
   nothing_missing: { text: "Nothing flagged — no mail", cls: "bg-muted text-muted-foreground" },
-  already_sent: { text: "Already mailed — not sent again", cls: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300" },
+  already_sent: { text: "Already mailed — not sent again", cls: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300" },
   paused: { text: "Not sent — email paused", cls: "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200" },
 };
 const chip = (s: FcAlertStatus) => {
@@ -100,7 +100,7 @@ function AlertLogPanel({ id, title, table, queryKey, run, buttonTitle, intro, to
     <div className="glass rounded-2xl border border-border p-4" id={id}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <Mail className="h-4 w-4 text-indigo-600" />
+          <Mail className="h-4 w-4 text-emerald-600" />
           <p className="text-sm font-bold">{title}</p>
           {latest && chip(latest.status)}
         </div>

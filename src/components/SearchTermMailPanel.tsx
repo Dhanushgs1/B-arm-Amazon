@@ -116,7 +116,7 @@ export function SearchTermMailPanel({ keySlot }: { keySlot: string }) {
       <div className="glass rounded-2xl border border-border p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <Mail className="h-4 w-4 text-indigo-600" />
+            <Mail className="h-4 w-4 text-emerald-600" />
             <p className="text-sm font-bold">Monthly Search Terms mail</p>
             <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${enabled ? "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300" : "bg-muted text-muted-foreground"}`}>{enabled ? "On" : "Off"}</span>
           </div>
@@ -128,7 +128,7 @@ export function SearchTermMailPanel({ keySlot }: { keySlot: string }) {
             <button onClick={() => download("previous")} disabled={!!busy} className={btn} title={`Workbook for ${previous.label} (${dmy(previous.start)} to ${dmy(previous.end)})`}>
               {busy === "previous" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} {previous.label}
             </button>
-            <button onClick={send} disabled={!!busy || !to} className={`${btn} border-indigo-300 text-indigo-700 dark:text-indigo-300`}>
+            <button onClick={send} disabled={!!busy || !to} className={`${btn} border-emerald-300 text-emerald-700 dark:text-emerald-300`}>
               {busy === "send" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />} Send now
             </button>
           </div>

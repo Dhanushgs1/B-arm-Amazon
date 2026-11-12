@@ -122,7 +122,7 @@ export function RatingUploadDialog({
             </p>
             <p className="mt-1 text-xs text-muted-foreground">The dashboard now compares this week with the previous upload.</p>
             {mailNote && <p className="mt-2 text-xs text-muted-foreground">{mailNote}</p>}
-            <button onClick={close} className="mt-5 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700">
+            <button onClick={close} className="mt-5 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700">
               Done
             </button>
           </div>
@@ -149,7 +149,7 @@ export function RatingUploadDialog({
             <label
               className={cn(
                 "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border px-4 py-8 text-center hover:bg-muted/50",
-                file && "border-indigo-400"
+                file && "border-emerald-400"
               )}
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => {
@@ -159,7 +159,7 @@ export function RatingUploadDialog({
             >
               <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => pick(e.target.files?.[0])} />
               {busy === "parse" ? (
-                <Loader2 className="h-6 w-6 animate-spin text-indigo-500" />
+                <Loader2 className="h-6 w-6 animate-spin text-emerald-500" />
               ) : (
                 <FileSpreadsheet className="h-6 w-6 text-muted-foreground" />
               )}
@@ -216,7 +216,7 @@ export function RatingUploadDialog({
               <button
                 onClick={submit}
                 disabled={!ok || busy !== null || !date}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-40"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
               >
                 {busy === "upload" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
                 {replacing ? "Replace snapshot" : "Upload"}

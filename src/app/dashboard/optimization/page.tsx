@@ -278,7 +278,7 @@ export default function OptimizationPage() {
   const actionColor: Record<string, string> = {
     amber: "border-amber-200 dark:border-amber-900 bg-amber-50/60 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400",
     red: "border-red-200 dark:border-red-900 bg-red-50/60 dark:bg-red-950/20 text-red-700 dark:text-red-400",
-    indigo: "border-indigo-200 dark:border-indigo-900 bg-indigo-50/60 dark:bg-indigo-950/20 text-indigo-700 dark:text-indigo-400",
+    indigo: "border-emerald-200 dark:border-emerald-900 bg-emerald-50/60 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400",
     emerald: "border-emerald-200 dark:border-emerald-900 bg-emerald-50/60 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400",
   };
 
@@ -380,7 +380,7 @@ export default function OptimizationPage() {
           {actions.length > 0 && (
             <div className="glass gradient-border rounded-[22px] p-6">
               <div className="flex items-center gap-2.5 mb-4">
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#6D5EF8] to-[#8B5CF6] flex items-center justify-center shadow-md shadow-indigo-500/20">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#6D5EF8] to-[#8B5CF6] flex items-center justify-center shadow-md shadow-emerald-500/20">
                   <Sparkles className="w-4.5 h-4.5 text-white" />
                 </div>
                 <div>

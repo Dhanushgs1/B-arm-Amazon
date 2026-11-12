@@ -33,7 +33,7 @@ const agScore = (r: any) => {
   return Math.max(5, Math.min(99, Math.round(score)));
 };
 const healthColor = (score: number) =>
-  score >= 75 ? "bg-emerald-500" : score >= 55 ? "bg-blue-500" : score >= 35 ? "bg-amber-500" : "bg-red-500";
+  score >= 75 ? "bg-emerald-500" : score >= 55 ? "bg-emerald-500" : score >= 35 ? "bg-amber-500" : "bg-red-500";
 
 export default function AdGroupsPage() {
   const { keySlot, startDate, endDate, account, contextLoading, setSelectedCampaignName } = useDashboard();
@@ -182,8 +182,8 @@ export default function AdGroupsPage() {
         const type = targetingType(row.campaignName);
         return (
           <div className="flex items-center gap-2.5 max-w-[320px]">
-            <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/15 flex items-center justify-center flex-shrink-0">
-              <LayoutGrid className="w-3.5 h-3.5 text-blue-500" />
+            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/15 flex items-center justify-center flex-shrink-0">
+              <LayoutGrid className="w-3.5 h-3.5 text-emerald-500" />
             </div>
             <div className="min-w-0">
               <button
@@ -196,7 +196,7 @@ export default function AdGroupsPage() {
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className={cn(
                   "text-[10px] font-extrabold px-1.5 py-px rounded-full",
-                  type === "Automatic" ? "bg-cyan-500/10 text-cyan-600 dark:text-cyan-400" : "bg-indigo-500/10 text-indigo-500"
+                  type === "Automatic" ? "bg-cyan-500/10 text-cyan-600 dark:text-cyan-400" : "bg-emerald-500/10 text-emerald-500"
                 )}>
                   {type}
                 </span>
@@ -247,7 +247,7 @@ export default function AdGroupsPage() {
       render: (val: number) => (
         <span className={cn(
           "px-2 py-0.5 rounded-full text-xs font-extrabold",
-          val > 5 ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : val > 3 ? "bg-blue-500/10 text-blue-600 dark:text-blue-400" : val > 0 ? "bg-amber-500/10 text-amber-600 dark:text-amber-400" : "text-muted-foreground"
+          val > 5 ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : val > 3 ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : val > 0 ? "bg-amber-500/10 text-amber-600 dark:text-amber-400" : "text-muted-foreground"
         )}>
           {val ? `${val.toFixed(2)}x` : "—"}
         </span>
@@ -325,7 +325,7 @@ export default function AdGroupsPage() {
           {(winners.length > 0 || bleeders.length > 0) && (
             <div className="glass gradient-border rounded-[22px] p-6 space-y-4">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#6D5EF8] to-[#8B5CF6] flex items-center justify-center shadow-md shadow-indigo-500/20">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#6D5EF8] to-[#8B5CF6] flex items-center justify-center shadow-md shadow-emerald-500/20">
                   <Bot className="w-4.5 h-4.5 text-white" />
                 </div>
                 <div>

@@ -140,7 +140,7 @@ export function MarketplaceOptimization({ marketplace }: MarketplaceOptimization
     >
       {/* Toast Notification */}
       {toastMessage && (
-        <div className="fixed bottom-6 right-6 z-50 bg-white dark:bg-slate-900 text-slate-900 dark:text-white px-4 py-3 rounded-xl shadow-2xl border border-slate-200 dark:border-indigo-500/30 flex items-center gap-3 animate-in fade-in slide-in-from-bottom-4 duration-300">
+        <div className="fixed bottom-6 right-6 z-50 bg-white dark:bg-slate-900 text-slate-900 dark:text-white px-4 py-3 rounded-xl shadow-2xl border border-slate-200 dark:border-emerald-500/30 flex items-center gap-3 animate-in fade-in slide-in-from-bottom-4 duration-300">
           <CheckCircle2 className="w-5 h-5 text-emerald-400 flex-shrink-0" />
           <span className="text-xs font-bold">{toastMessage}</span>
         </div>
@@ -188,16 +188,16 @@ export function MarketplaceOptimization({ marketplace }: MarketplaceOptimization
         initial={{ opacity: 0, y: 20 }} 
         animate={{ opacity: 1, y: 0 }} 
         transition={{ delay: 0.2, duration: 0.5 }}
-        className="bg-gradient-to-r from-indigo-950/40 via-purple-950/20 to-slate-950 p-5 rounded-2xl border border-indigo-500/20 shadow-lg relative overflow-hidden"
+        className="bg-gradient-to-r from-emerald-950/40 via-teal-950/20 to-slate-950 p-5 rounded-2xl border border-emerald-500/20 shadow-lg relative overflow-hidden"
       >
         <div className="flex items-start gap-4">
-          <div className="w-10 h-10 rounded-xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 flex-shrink-0">
+          <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400 flex-shrink-0">
             <Sparkles className="w-5 h-5 animate-pulse" />
           </div>
           <div className="flex-1 space-y-1">
             <div className="flex items-center gap-2">
               <h3 className="font-extrabold text-sm text-white">AI Rule Recommendations for {meta.label}</h3>
-              <span className="text-[10px] uppercase font-black tracking-widest px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+              <span className="text-[10px] uppercase font-black tracking-widest px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                 Recommended
               </span>
             </div>
@@ -219,7 +219,7 @@ export function MarketplaceOptimization({ marketplace }: MarketplaceOptimization
               className={cn(
                 "px-3 py-1.5 rounded-lg text-xs font-bold capitalize transition-all cursor-pointer",
                 filterType === type
-                  ? "bg-indigo-600 text-white shadow-md shadow-indigo-500/20"
+                  ? "bg-emerald-600 text-white shadow-md shadow-emerald-500/20"
                   : "bg-slate-100 dark:bg-slate-900 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-slate-800"
               )}
             >
@@ -249,7 +249,7 @@ export function MarketplaceOptimization({ marketplace }: MarketplaceOptimization
               className={cn(
                 "p-4 rounded-xl border transition-all bg-card/80 backdrop-blur-md flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm hover:shadow-md",
                 rule.enabled
-                  ? "border-indigo-500/20 hover:border-indigo-500/40"
+                  ? "border-emerald-500/20 hover:border-emerald-500/40"
                   : "border-slate-800/80 opacity-75 bg-slate-950/40"
               )}
             >
@@ -260,8 +260,8 @@ export function MarketplaceOptimization({ marketplace }: MarketplaceOptimization
                   rule.type === "roas" ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
                   : rule.type === "stock" ? "bg-amber-500/10 border-amber-500/20 text-amber-400"
                   : rule.type === "rto" ? "bg-red-500/10 border-red-500/20 text-red-400"
-                  : rule.type === "negative" ? "bg-purple-500/10 border-purple-500/20 text-purple-400"
-                  : "bg-indigo-500/10 border-indigo-500/20 text-indigo-400"
+                  : rule.type === "negative" ? "bg-teal-500/10 border-teal-500/20 text-teal-400"
+                  : "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
                 )}>
                   {rule.type === "roas" && <TrendingUp className="w-5 h-5" />}
                   {rule.type === "stock" && <AlertTriangle className="w-5 h-5" />}
@@ -291,7 +291,7 @@ export function MarketplaceOptimization({ marketplace }: MarketplaceOptimization
                       <strong className="text-slate-700 dark:text-slate-300">If:</strong> {rule.condition}
                     </div>
                     <div>
-                      <strong className="text-slate-700 dark:text-slate-300">Then:</strong> <span className="text-indigo-600 dark:text-indigo-400 font-bold">{rule.action}</span>
+                      <strong className="text-slate-700 dark:text-slate-300">Then:</strong> <span className="text-emerald-600 dark:text-emerald-400 font-bold">{rule.action}</span>
                     </div>
                   </div>
 
@@ -311,7 +311,7 @@ export function MarketplaceOptimization({ marketplace }: MarketplaceOptimization
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-900 hover:bg-slate-200 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition-colors cursor-pointer"
                   title="Trigger rule execution test"
                 >
-                  {isRunning ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-400" /> : <Play className="w-3.5 h-3.5 text-indigo-400" />}
+                  {isRunning ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-400" /> : <Play className="w-3.5 h-3.5 text-emerald-400" />}
                   <span>{isRunning ? "Running..." : "Test Run"}</span>
                 </button>
 
@@ -320,7 +320,7 @@ export function MarketplaceOptimization({ marketplace }: MarketplaceOptimization
                   onClick={() => toggleRule(rule.id)}
                   className={cn(
                     "relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer focus:outline-none",
-                    rule.enabled ? "bg-indigo-600" : "bg-slate-300 dark:bg-slate-800"
+                    rule.enabled ? "bg-emerald-600" : "bg-slate-300 dark:bg-slate-800"
                   )}
                   title={rule.enabled ? "Disable Rule" : "Enable Rule"}
                 >
@@ -365,7 +365,7 @@ export function MarketplaceOptimization({ marketplace }: MarketplaceOptimization
 
             <div className="space-y-1">
               <h3 className="font-extrabold text-lg text-slate-900 dark:text-white flex items-center gap-2">
-                <Wand2 className="w-5 h-5 text-indigo-400" />
+                <Wand2 className="w-5 h-5 text-emerald-400" />
                 Create {meta.label} Automation Rule
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400">Set trigger conditions and automatic guardrail actions for {meta.label} campaigns.</p>
@@ -380,7 +380,7 @@ export function MarketplaceOptimization({ marketplace }: MarketplaceOptimization
                   value={ruleName}
                   onChange={(e) => setRuleName(e.target.value)}
                   placeholder={`e.g. ${meta.label} High ACOS Bid Down`}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 text-xs focus:outline-none focus:border-indigo-500"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 text-xs focus:outline-none focus:border-emerald-500"
                 />
               </div>
 
@@ -390,7 +390,7 @@ export function MarketplaceOptimization({ marketplace }: MarketplaceOptimization
                   <select
                     value={ruleType}
                     onChange={(e) => setRuleType(e.target.value as any)}
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white text-xs focus:outline-none focus:border-indigo-500"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white text-xs focus:outline-none focus:border-emerald-500"
                   >
                     <option value="roas">ACOS / ROAS Guardrail</option>
                     <option value="stock">Stock Safety Net</option>
@@ -407,7 +407,7 @@ export function MarketplaceOptimization({ marketplace }: MarketplaceOptimization
                     value={conditionVal}
                     onChange={(e) => setConditionVal(e.target.value)}
                     placeholder="e.g. 35"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 text-xs focus:outline-none focus:border-indigo-500"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 text-xs focus:outline-none focus:border-emerald-500"
                   />
                 </div>
               </div>
@@ -417,7 +417,7 @@ export function MarketplaceOptimization({ marketplace }: MarketplaceOptimization
                 <select
                   value={actionType}
                   onChange={(e) => setActionType(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white text-xs focus:outline-none focus:border-indigo-500"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white text-xs focus:outline-none focus:border-emerald-500"
                 >
                   <option value="reduce_bid">Reduce Bid by 12% - 15%</option>
                   <option value="increase_bid">Increase Bid by 10% - 18%</option>
@@ -436,7 +436,7 @@ export function MarketplaceOptimization({ marketplace }: MarketplaceOptimization
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white text-xs font-bold shadow-lg shadow-indigo-500/25"
+                  className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white text-xs font-bold shadow-lg shadow-emerald-500/25"
                 >
                   Save & Enable Rule
                 </button>

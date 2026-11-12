@@ -252,7 +252,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
   };
 
   const isLkn = loggedInUser === "Lkn";
-  const avatarGradient = isLkn ? "from-[#6D5EF8] to-[#8B5CF6]" : "from-emerald-500 to-teal-600";
+  const avatarGradient = isLkn ? "from-[#059669] to-[#34D399]" : "from-emerald-500 to-teal-600";
   const initials = isLkn ? "LK" : "BA";
 
   const baseSections =
@@ -298,7 +298,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
           {!collapsed && (
             <div className="min-w-0 transition-opacity duration-300">
               <span className="font-extrabold text-[13.5px] text-slate-900 dark:text-white block tracking-tight">{isLkn ? "LKN AI" : "Marketplace360"}</span>
-              <small className="block font-bold text-emerald-600 dark:text-indigo-400/90 text-[8px] uppercase tracking-widest -mt-1 truncate">
+              <small className="block font-bold text-emerald-600 dark:text-emerald-400/90 text-[8px] uppercase tracking-widest -mt-1 truncate">
                 {sidebarTagline}
               </small>
             </div>
@@ -389,7 +389,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
         <Link
           href="/dashboard/ai"
           className={cn(
-            "flex items-center rounded-xl transition-all duration-200 font-black text-[11px] bg-gradient-to-r from-indigo-600 to-violet-700 text-white hover:from-indigo-500 hover:to-violet-600 shadow-md shadow-indigo-500/20",
+            "flex items-center rounded-xl transition-all duration-200 font-black text-[11px] bg-gradient-to-r from-emerald-600 to-green-700 text-white hover:from-emerald-500 hover:to-green-600 shadow-md shadow-emerald-500/20",
             collapsed ? "justify-center p-2 w-10 h-10" : "gap-2.5 px-3 py-2 w-full"
           )}
           onClick={() => { if (closeOnNavigate) onCloseMobile?.(); }}

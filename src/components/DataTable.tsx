@@ -144,7 +144,7 @@ export function DataTable<T>({
                         else if (visibleColumns.length > 1) next.add(c.key);
                         setHiddenCols(next);
                       }}
-                      className="accent-[#6C63FF]"
+                      className="accent-[#059669]"
                     />
                     {c.label}
                   </label>
@@ -210,7 +210,7 @@ export function DataTable<T>({
                   className={cn(
                     "transition-colors group/row",
                     onRowClick && "cursor-pointer",
-                    "hover:bg-indigo-50/60 dark:hover:bg-indigo-950/20",
+                    "hover:bg-emerald-50/60 dark:hover:bg-emerald-950/20",
                     rowClassName?.(row)
                   )}
                 >
@@ -265,7 +265,7 @@ export function DataTable<T>({
                   className={cn(
                     "w-8 h-8 rounded-lg text-xs font-extrabold transition-colors",
                     p === safePage
-                      ? "bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white shadow-sm"
+                      ? "bg-gradient-to-r from-[#059669] to-[#34D399] text-white shadow-sm"
                       : "border border-border hover:border-primary"
                   )}
                 >

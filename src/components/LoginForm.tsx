@@ -95,14 +95,14 @@ export default function LoginForm() {
                 Username or Email
               </label>
               <div className="relative group">
-                <User className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-indigo-400 transition-colors" />
+                <User className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-emerald-400 transition-colors" />
                 <input
                   ref={usernameRef}
                   type="text"
                   required
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  className="w-full pl-11 pr-4 h-[52px] bg-white/[0.03] border border-white/10 rounded-xl text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-[#6C63FF] transition-all text-sm font-semibold shadow-inner"
+                  className="w-full pl-11 pr-4 h-[52px] bg-white/[0.03] border border-white/10 rounded-xl text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-[#059669] transition-all text-sm font-semibold shadow-inner"
                   placeholder="e.g. Barm"
                 />
               </div>
@@ -114,18 +114,18 @@ export default function LoginForm() {
                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">
                   Password
                 </label>
-                <a href="#" className="text-[10px] font-black text-indigo-400 hover:text-indigo-300 transition-colors tracking-wide">
+                <a href="#" className="text-[10px] font-black text-emerald-400 hover:text-emerald-300 transition-colors tracking-wide">
                   Forgot Password?
                 </a>
               </div>
               <div className="relative group">
-                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-indigo-400 transition-colors" />
+                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-emerald-400 transition-colors" />
                 <input
                   type={showPassword ? "text" : "password"}
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full pl-11 pr-12 h-[52px] bg-white/[0.03] border border-white/10 rounded-xl text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-[#6C63FF] transition-all text-sm font-semibold shadow-inner"
+                  className="w-full pl-11 pr-12 h-[52px] bg-white/[0.03] border border-white/10 rounded-xl text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-[#059669] transition-all text-sm font-semibold shadow-inner"
                   placeholder="••••••••"
                 />
                 <button
@@ -172,7 +172,7 @@ export default function LoginForm() {
                 type="checkbox"
                 checked={rememberMe}
                 onChange={(e) => setRememberMe(e.target.checked)}
-                className="w-4 h-4 rounded-md border-white/10 bg-white/5 text-indigo-600 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                className="w-4 h-4 rounded-md border-white/10 bg-white/5 text-emerald-600 focus:ring-0 focus:ring-offset-0 cursor-pointer"
               />
               <label htmlFor="remember" className="text-[11px] font-bold text-slate-400 cursor-pointer hover:text-slate-300">
                 Remember my workspace
@@ -183,7 +183,7 @@ export default function LoginForm() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full h-[54px] bg-gradient-to-r from-[#6C63FF] to-[#6D5EF8] hover:from-[#8B5CF6] hover:to-[#5B4FE0] text-white rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 disabled:opacity-75 shadow-lg shadow-indigo-500/15 hover:shadow-indigo-500/30 active:scale-[0.98] mt-2 group"
+              className="w-full h-[54px] bg-gradient-to-r from-[#059669] to-[#059669] hover:from-[#34D399] hover:to-[#047857] text-white rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 disabled:opacity-75 shadow-lg shadow-emerald-500/15 hover:shadow-emerald-500/30 active:scale-[0.98] mt-2 group"
             >
               {loading ? (
                 <Loader2 className="w-5 h-5 animate-spin text-white" />
@@ -198,7 +198,7 @@ export default function LoginForm() {
             {/* One-click sign-in through the B-ARM ERP (b-arm.org) for allow-listed accounts */}
             <a
               href="https://b-arm.org/?sso_to=mna"
-              className="w-full h-[48px] border border-white/10 hover:border-indigo-400/40 bg-white/[0.03] hover:bg-white/[0.06] text-slate-200 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2"
+              className="w-full h-[48px] border border-white/10 hover:border-emerald-400/40 bg-white/[0.03] hover:bg-white/[0.06] text-slate-200 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2"
             >
               <Building size={15} /> Sign in with B-ARM account
             </a>

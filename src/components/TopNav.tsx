@@ -63,7 +63,7 @@ function MarketplaceSwitcher() {
               aria-current={isActive ? "page" : undefined}
               aria-label={tab.label}
               className={cn(
-                "relative flex items-center gap-1.5 h-8 px-2 sm:px-2.5 rounded-lg text-[11px] font-black whitespace-nowrap transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/60",
+                "relative flex items-center gap-1.5 h-8 px-2 sm:px-2.5 rounded-lg text-[11px] font-black whitespace-nowrap transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60",
                 isActive ? "text-white" : "text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-white/70 dark:hover:bg-slate-800/70"
               )}
               title={meta ? meta.tagline : "Overall — every platform's KPIs together"}
@@ -173,7 +173,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
   const accountLabel = isLkn ? "LKN" : "Barm";
   const initials = isLkn ? "LK" : "BA";
   const avatarGradient = isLkn
-    ? "from-indigo-500 to-violet-600"
+    ? "from-emerald-500 to-green-600"
     : "from-emerald-500 to-teal-600";
 
   return (
@@ -181,7 +181,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
       {/* Mobile Sidebar Toggle */}
       <button
         onClick={onOpenMobileNav}
-        className="w-10 h-10 flex-shrink-0 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 flex items-center justify-center hover:border-indigo-500/50 hover:text-indigo-500 transition-colors shadow-sm focus:outline-none md:hidden"
+        className="w-10 h-10 flex-shrink-0 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 flex items-center justify-center hover:border-emerald-500/50 hover:text-emerald-500 transition-colors shadow-sm focus:outline-none md:hidden"
         title="Open menu"
         aria-label="Open menu"
       >
@@ -191,7 +191,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
       {/* Workspace Switcher */}
       <div className="hidden sm:flex items-center gap-2 bg-white dark:bg-slate-900 ring-1 ring-slate-200/80 dark:ring-slate-800 px-3.5 py-2.5 rounded-xl text-xs font-black shadow-sm">
         {contextLoading ? (
-          <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-500" />
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-500" />
         ) : (
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse flex-shrink-0" />
         )}
@@ -209,7 +209,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
       {/* Refresh */}
       <button
         onClick={() => window.location.reload()}
-        className="w-10 h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 flex items-center justify-center hover:border-indigo-500/50 hover:text-indigo-500 transition-colors shadow-sm focus:outline-none"
+        className="w-10 h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 flex items-center justify-center hover:border-emerald-500/50 hover:text-emerald-500 transition-colors shadow-sm focus:outline-none"
         title="Refresh data"
         aria-label="Refresh data"
       >
@@ -225,7 +225,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
             localStorage.setItem("ppcNotifications", JSON.stringify(updated));
             setNotifications(updated);
           }}
-          className="relative w-10 h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 flex items-center justify-center hover:border-indigo-500/50 hover:text-indigo-500 transition-colors shadow-sm focus:outline-none"
+          className="relative w-10 h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 flex items-center justify-center hover:border-emerald-500/50 hover:text-emerald-500 transition-colors shadow-sm focus:outline-none"
           title="Notifications"
           aria-label={notifications.some(n => !n.read) ? "Notifications (unread)" : "Notifications"}
           aria-expanded={showNotifications}
@@ -255,12 +255,12 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
                 <p className="text-center text-slate-500 dark:text-slate-400 py-4 font-semibold text-[11px]">No notifications yet. Confirmations from Settings and uploads appear here.</p>
               ) : (
                 notifications.map(n => (
-                  <div key={n.id} className={cn("p-3 rounded-xl border flex flex-col gap-1 transition-all", n.read ? "bg-slate-50/50 dark:bg-slate-900/10 border-slate-200/50 dark:border-slate-800/50" : "bg-indigo-500/5 border-indigo-500/20")}>
+                  <div key={n.id} className={cn("p-3 rounded-xl border flex flex-col gap-1 transition-all", n.read ? "bg-slate-50/50 dark:bg-slate-900/10 border-slate-200/50 dark:border-slate-800/50" : "bg-emerald-500/5 border-emerald-500/20")}>
                     <div className="flex items-center justify-between">
                       <span className={cn("font-bold text-[11px]", 
                         n.type === "danger" ? "text-red-500" :
                         n.type === "warning" ? "text-amber-500" :
-                        n.type === "success" ? "text-emerald-500" : "text-indigo-500"
+                        n.type === "success" ? "text-emerald-500" : "text-emerald-500"
                       )}>
                         {n.title}
                       </span>
@@ -278,7 +278,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
       {/* Theme Toggle */}
       <button
         onClick={toggleTheme}
-        className="w-10 h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 flex items-center justify-center hover:border-indigo-500/50 hover:text-indigo-500 transition-colors shadow-sm focus:outline-none"
+        className="w-10 h-10 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 flex items-center justify-center hover:border-emerald-500/50 hover:text-emerald-500 transition-colors shadow-sm focus:outline-none"
         title="Toggle theme"
         aria-label={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
       >
@@ -289,11 +289,11 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
       {ssoEmail && (
         <div className="flex items-center gap-1.5">
           <a href="https://b-arm.org/" target="_blank" rel="noopener" title="Open the B-ARM ERP (b-arm.org)" aria-label="Open the B-ARM ERP (opens in a new tab)"
-            className="h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-[10px] font-black uppercase tracking-wide text-slate-500 dark:text-slate-400 flex items-center hover:border-indigo-500/50 hover:text-indigo-500 transition-colors shadow-sm">
+            className="h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-[10px] font-black uppercase tracking-wide text-slate-500 dark:text-slate-400 flex items-center hover:border-emerald-500/50 hover:text-emerald-500 transition-colors shadow-sm">
             ERP
           </a>
           <a href="https://b-arm.org/?sso_to=hr" target="_blank" rel="noopener" title="Open the HR portal (hr.b-arm.org)" aria-label="Open the HR portal (opens in a new tab)"
-            className="h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-[10px] font-black uppercase tracking-wide text-slate-500 dark:text-slate-400 flex items-center hover:border-indigo-500/50 hover:text-indigo-500 transition-colors shadow-sm">
+            className="h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-[10px] font-black uppercase tracking-wide text-slate-500 dark:text-slate-400 flex items-center hover:border-emerald-500/50 hover:text-emerald-500 transition-colors shadow-sm">
             HR
           </a>
         </div>

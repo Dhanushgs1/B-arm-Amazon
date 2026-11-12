@@ -20,7 +20,7 @@ export default function GlobalError({
           {error?.digest && <p style={{ fontSize: 12, color: "#64748b", margin: 0 }}>Reference: {error.digest}</p>}
           <button
             onClick={() => unstable_retry()}
-            style={{ background: "#4f46e5", color: "#fff", border: 0, borderRadius: 8, padding: "10px 18px", fontWeight: 800, fontSize: 13, cursor: "pointer" }}
+            style={{ background: "#059669", color: "#fff", border: 0, borderRadius: 8, padding: "10px 18px", fontWeight: 800, fontSize: 13, cursor: "pointer" }}
           >
             Try again
           </button>

@@ -25,7 +25,7 @@ const elapsed = (from: number, to: number) => {
 };
 
 const ICON = {
-  running: <Loader2 className="w-4 h-4 animate-spin text-indigo-500 shrink-0" />,
+  running: <Loader2 className="w-4 h-4 animate-spin text-emerald-500 shrink-0" />,
   done: <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />,
   warning: <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />,
   error: <XCircle className="w-4 h-4 text-red-500 shrink-0" />,
@@ -53,9 +53,9 @@ function JobRow({ j, now }: { j: UploadJob; now: number }) {
         <div className="space-y-1">
           <div className="h-1.5 rounded-full bg-muted overflow-hidden">
             {pct === null ? (
-              <div className="h-full w-1/3 rounded-full bg-indigo-500 animate-pulse" />
+              <div className="h-full w-1/3 rounded-full bg-emerald-500 animate-pulse" />
             ) : (
-              <div className="h-full rounded-full bg-indigo-500 transition-all" style={{ width: `${Math.max(4, pct)}%` }} />
+              <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${Math.max(4, pct)}%` }} />
             )}
           </div>
           <p className="text-[10px] text-muted-foreground">
@@ -66,7 +66,7 @@ function JobRow({ j, now }: { j: UploadJob; now: number }) {
       {j.status !== "running" && (
         <p className={cn("text-[10px] leading-snug", j.status === "error" ? "text-red-600 dark:text-red-400" : j.status === "warning" ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground")}>
           <b>{STATUS_TEXT[j.status]}.</b> {j.message}{" "}
-          <Link href={j.href} className="font-bold text-indigo-600 dark:text-indigo-400 hover:underline">Details</Link>
+          <Link href={j.href} className="font-bold text-emerald-600 dark:text-emerald-400 hover:underline">Details</Link>
         </p>
       )}
     </div>
@@ -104,7 +104,7 @@ export function UploadStatusTray() {
   return (
     <div className="fixed bottom-4 right-4 z-50 w-[min(340px,calc(100vw-32px))] rounded-2xl border border-border bg-background shadow-2xl overflow-hidden">
       <button type="button" onClick={() => setOpen((o) => !o)} className="w-full flex items-center gap-2 px-3 py-2.5 bg-muted/50 text-left">
-        {running ? <Loader2 className="w-4 h-4 animate-spin text-indigo-500" /> : failed ? <XCircle className="w-4 h-4 text-red-500" /> : <UploadCloud className="w-4 h-4 text-emerald-500" />}
+        {running ? <Loader2 className="w-4 h-4 animate-spin text-emerald-500" /> : failed ? <XCircle className="w-4 h-4 text-red-500" /> : <UploadCloud className="w-4 h-4 text-emerald-500" />}
         <span className="text-xs font-black flex-1">
           {running ? `Uploading ${running} file${running === 1 ? "" : "s"}…` : failed ? `${failed} upload${failed === 1 ? "" : "s"} failed` : "Uploads finished"}
         </span>

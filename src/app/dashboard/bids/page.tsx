@@ -63,7 +63,7 @@ const ACTION_META: Record<Action, { label: string; cls: string; icon: any }> = {
   increase: { label: "Increase", cls: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20", icon: TrendingUp },
   reduce: { label: "Reduce", cls: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20", icon: TrendingDown },
   pause: { label: "Pause / Cut", cls: "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20", icon: PauseCircle },
-  keep: { label: "Keep", cls: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20", icon: Minus },
+  keep: { label: "Keep", cls: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20", icon: Minus },
   nodata: { label: "No Data", cls: "bg-muted text-muted-foreground border-border", icon: Minus },
 };
 
@@ -277,7 +277,7 @@ export default function BidAdjustmentPage() {
               </span>
             )}
             {!row.keywordText && row.expressionType && (
-              <span className="text-[10px] font-extrabold px-1.5 py-px rounded-full bg-violet-500/10 text-violet-600 dark:text-violet-400">
+              <span className="text-[10px] font-extrabold px-1.5 py-px rounded-full bg-green-500/10 text-green-600 dark:text-green-400">
                 {row.expressionType}
               </span>
             )}
@@ -462,7 +462,7 @@ export default function BidAdjustmentPage() {
       render: (val: number) => (
         <span className={cn(
           "px-2 py-0.5 rounded-full text-xs font-extrabold",
-          val > 5 ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : val > 3 ? "bg-blue-500/10 text-blue-600 dark:text-blue-400" : val > 0 ? "bg-amber-500/10 text-amber-600 dark:text-amber-400" : "text-muted-foreground"
+          val > 5 ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : val > 3 ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : val > 0 ? "bg-amber-500/10 text-amber-600 dark:text-amber-400" : "text-muted-foreground"
         )}>
           {val ? `${val.toFixed(2)}x` : "—"}
         </span>
@@ -564,11 +564,11 @@ export default function BidAdjustmentPage() {
               </div>
             ))}
             {increaseList.slice(1, 2).map((r: any) => (
-              <div key={"up2" + r.label + r.campaignName} className="p-4 rounded-2xl border border-blue-200 dark:border-blue-900 bg-gradient-to-br from-blue-50/80 to-white dark:from-blue-950/30 dark:to-transparent text-xs hover:-translate-y-0.5 transition-transform">
-                <p className="font-extrabold text-blue-700 dark:text-blue-400 flex items-center gap-1.5 text-sm"><Rocket className="w-4 h-4" /> Scale Opportunity</p>
+              <div key={"up2" + r.label + r.campaignName} className="p-4 rounded-2xl border border-emerald-200 dark:border-emerald-900 bg-gradient-to-br from-emerald-50/80 to-white dark:from-emerald-950/30 dark:to-transparent text-xs hover:-translate-y-0.5 transition-transform">
+                <p className="font-extrabold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5 text-sm"><Rocket className="w-4 h-4" /> Scale Opportunity</p>
                 <p className="font-bold mt-1.5 truncate text-[13px]" title={r.label}>{r.label}</p>
                 <p className="text-muted-foreground mt-1 font-bold">{r.orders} orders · ROAS {r.roas.toFixed(2)}x</p>
-                <p className="font-extrabold text-blue-700 dark:text-blue-500 mt-2">
+                <p className="font-extrabold text-emerald-700 dark:text-emerald-500 mt-2">
                   {cur(r.bid || r.cpc, currency)} → {cur(r.newBid, currency)}
                 </p>
               </div>
@@ -594,7 +594,7 @@ export default function BidAdjustmentPage() {
                   className={cn(
                     "px-3.5 py-1.5 rounded-full text-xs font-extrabold border transition-all",
                     filter === f.id
-                      ? "bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white border-transparent shadow-md shadow-indigo-500/20"
+                      ? "bg-gradient-to-r from-[#6D5EF8] to-[#8B5CF6] text-white border-transparent shadow-md shadow-emerald-500/20"
                       : "bg-background border-border text-muted-foreground hover:border-primary hover:text-foreground"
                   )}
                 >

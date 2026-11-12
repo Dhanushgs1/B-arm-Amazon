@@ -54,7 +54,7 @@ export default function PlacementsPage() {
       render: (val: string, row: any) => {
         const type = val || row.placement || "—";
         let color = "text-slate-600 dark:text-slate-400 bg-slate-100 dark:bg-slate-800";
-        if (type.toLowerCase().includes("top")) color = "text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30";
+        if (type.toLowerCase().includes("top")) color = "text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30";
         if (type.toLowerCase().includes("rest")) color = "text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30";
         if (type.toLowerCase().includes("product")) color = "text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/30";
         
@@ -219,7 +219,7 @@ export default function PlacementsPage() {
           {(winners.length > 0 || bleeders.length > 0) && (
             <div className="glass gradient-border rounded-[22px] p-6 space-y-4">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#6D5EF8] to-[#8B5CF6] flex items-center justify-center shadow-md shadow-indigo-500/20">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#6D5EF8] to-[#8B5CF6] flex items-center justify-center shadow-md shadow-emerald-500/20">
                   <Bot className="w-4.5 h-4.5 text-white" />
                 </div>
                 <div>

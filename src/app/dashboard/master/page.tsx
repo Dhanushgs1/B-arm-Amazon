@@ -46,7 +46,7 @@ const PLATFORM_COLORS: Record<string, string> = {
   Shopsy: "#0F9D58",
   Shopify: "#5E8E3E",
 };
-const platformColor = (p: string) => PLATFORM_COLORS[p] || "#6c63ff";
+const platformColor = (p: string) => PLATFORM_COLORS[p] || "#059669";
 
 const PAGE_SIZE = 25;
 const fmtInt = (n: number) => n.toLocaleString("en-IN");
@@ -72,7 +72,7 @@ function Stat({ icon: Icon, label, value, sub }: { icon: React.ElementType; labe
     <div className="rounded-2xl border border-border bg-card p-4 shadow-sm">
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium text-muted-foreground">{label}</span>
-        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
+        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
           <Icon className="h-4 w-4" />
         </span>
       </div>
@@ -320,7 +320,7 @@ export default function MasterPage() {
     <div className="flex items-center gap-1">
       <button
         onClick={() => setEditingRow(row)}
-        className="cursor-pointer rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-indigo-500/10 hover:text-indigo-600"
+        className="cursor-pointer rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-emerald-500/10 hover:text-emerald-600"
         title="Edit"
       >
         <Pencil size={14} />
@@ -494,7 +494,7 @@ export default function MasterPage() {
                   label={p === "All" ? "All platforms" : p}
                   count={n}
                   active={selectedPlatform === p}
-                  color={p === "All" ? "#6c63ff" : platformColor(p)}
+                  color={p === "All" ? "#059669" : platformColor(p)}
                   onClick={() => {
                     setSelectedPlatform(p);
                     setPage(0);
@@ -576,7 +576,7 @@ export default function MasterPage() {
                         setPage(0);
                       }}
                       placeholder="Search product or SKU"
-                      className="w-full rounded-lg border border-border bg-background py-2 pl-8 pr-3 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+                      className="w-full rounded-lg border border-border bg-background py-2 pl-8 pr-3 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
                     />
                   </div>
                   <button
@@ -694,7 +694,7 @@ export default function MasterPage() {
                             <td className="px-3 py-2.5 text-right">
                               <span className="inline-flex items-center gap-2">
                                 <span className="h-1.5 w-12 overflow-hidden rounded-full bg-muted">
-                                  <span className="block h-full rounded-full bg-indigo-500" style={{ width: `${(p.coverage / Math.max(1, platforms.length)) * 100}%` }} />
+                                  <span className="block h-full rounded-full bg-emerald-500" style={{ width: `${(p.coverage / Math.max(1, platforms.length)) * 100}%` }} />
                                 </span>
                                 <span className="text-xs tabular-nums text-foreground">
                                   {p.coverage}/{platforms.length}
