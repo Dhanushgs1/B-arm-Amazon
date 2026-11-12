@@ -67,6 +67,8 @@ function addTo(agg: DayAgg, d: string, revenue: number, units: number, returns: 
 function addSku(agg: SkuDayAgg, sku: string, name: string, category: string | null, d: string, units: number, revenue: number, returns: number) {
   let s = agg.get(sku);
   if (!s) { s = { name, category, days: new Map() }; agg.set(sku, s); }
+  if (!s.name && name) s.name = name;
+  if (!s.category && category) s.category = category;
   const cur = s.days.get(d) || { units: 0, revenue: 0, returns: 0 };
   cur.units += units; cur.revenue += revenue; cur.returns += returns;
   s.days.set(d, cur);
@@ -120,7 +122,7 @@ async function flipkart(start: string, end: string, productFrom: string) {
     const qty = Number(r.quantity) || 0;
     addTo(daily, d, 0, 0, qty);
     const sku = String(r.sku || "").trim();
-    if (d >= productFrom && sku && skus.has(sku)) addSku(skus, sku, "", null, d, 0, 0, qty);
+    if (d >= productFrom && sku) addSku(skus, sku, "", null, d, 0, 0, qty);
   }
   return { daily, skus, dataThrough, unpriced: [...new Set(orderRows.filter((r) => !priceBySku.has(String(r.sku || "").trim())).map((r) => String(r.sku || "").trim()))].length };
 }
@@ -244,29 +246,69 @@ function adSeries(dates: string[], rows: { date: string; spend: number; sales: n
   };
 }
 
-export async function buildBiDataset(): Promise<BiDataset> {
+// Incremental refresh. Re-reading seven months of orders and ads takes 1–2 minutes on this
+// database, but orders older than a few weeks no longer change. So between full builds only the
+// last ORDER_REFRESH_DAYS of orders and ADS_REFRESH_DAYS of ads are re-read, and older days are
+// copied from the previous build. A full re-read runs at least every FULL_REBUILD_HOURS, and
+// whenever the previous build had a failed source.
+export const ORDER_REFRESH_DAYS = 35;
+export const ADS_REFRESH_DAYS = 100; // the campaign table needs ~60 days before the last ads day
+export const FULL_REBUILD_HOURS = 24;
+
+export function canBuildIncrementally(prev: BiDataset | null | undefined, now = Date.now()): prev is BiDataset {
+  if (!prev || prev.errors.length || !prev.dates.length || prev.dates[0] !== HISTORY_START) return false;
+  const full = Date.parse(prev.fullBuiltAt ?? "");
+  return Number.isFinite(full) && now - full < FULL_REBUILD_HOURS * 3_600_000;
+}
+
+/** Copy a channel's days before `before` (and its products' days) from the previous build. */
+function seedFromPrevious(prev: BiDataset, id: SalesChannelId, before: string, productFrom: string, src: { daily: DayAgg; skus: SkuDayAgg }) {
+  const ch = prev.channels.find((c) => c.id === id);
+  if (ch) prev.dates.forEach((d, i) => {
+    if (d >= before || ch.revenue[i] === null) return;
+    addTo(src.daily, d, ch.revenue[i] ?? 0, ch.units[i] ?? 0, ch.returns[i] ?? 0);
+  });
+  for (const p of prev.products) {
+    if (p.channel !== id) continue;
+    prev.productDates.forEach((d, i) => {
+      if (d >= before || d < productFrom || (!p.units[i] && !p.revenue[i] && !p.returns[i])) return;
+      addSku(src.skus, p.sku, p.name, p.category, d, p.units[i], p.revenue[i], p.returns[i]);
+    });
+  }
+}
+
+export async function buildBiDataset(previous?: BiDataset | null): Promise<BiDataset> {
   const asOf = istYesterday();
   const dates = dayRange(HISTORY_START, asOf);
   const productDates = dates.slice(-PRODUCT_DAYS);
   const productFrom = productDates[0];
   const periods: PeriodWindow[] = dates.map((d) => ({ label: d, start: d, end: d }));
+  const inc = canBuildIncrementally(previous) ? previous : null;
+  const orderFrom = inc ? addDaysIso(asOf, -(ORDER_REFRESH_DAYS - 1)) : HISTORY_START;
+  const adsFrom = inc ? addDaysIso(asOf, -(ADS_REFRESH_DAYS - 1)) : HISTORY_START;
   const errors: BiDataset["errors"] = [];
   const notes: string[] = [];
   // One retry per source: this database has short bursts of statement timeouts under load, and a
   // second attempt a few seconds later usually succeeds. A source that fails twice is reported.
+  const timings: Record<string, number> = {};
   const attempt = async <T,>(source: string, run: () => Promise<T>): Promise<T | null> => {
+    const t0 = Date.now();
     try { return await run(); } catch {
       await new Promise((r) => setTimeout(r, 3000));
       try { return await run(); } catch (e) { errors.push({ source, message: e instanceof Error ? e.message : String(e) }); return null; }
-    }
+    } finally { timings[source] = Math.round((Date.now() - t0) / 100) / 10; }
   };
 
   // The three large order reads run one after another, not together: run in parallel they compete
   // for this busy database and push each other past its 3-second statement limit. The light reads
   // (Shopify, ads, stock) run alongside them.
   const heavy = (async () => {
-    const amazon = await attempt("Amazon orders", () => fromPeriodLoader("amazon", periods, productFrom));
-    const flip = await attempt("Flipkart orders", () => flipkart(HISTORY_START, asOf, productFrom));
+    const amazon = await attempt("Amazon orders", () => fromPeriodLoader("amazon", periods.filter((p) => p.label >= orderFrom), productFrom));
+    const flip = await attempt("Flipkart orders", () => flipkart(orderFrom, asOf, productFrom));
+    if (inc) {
+      if (amazon) seedFromPrevious(inc, "amazon", orderFrom, productFrom, amazon);
+      if (flip) seedFromPrevious(inc, "flipkart", orderFrom, productFrom, flip);
+    }
     const meesho = await attempt("Meesho orders", () => fromPeriodLoader("meesho", periods, productFrom));
     return [amazon, flip, meesho] as const;
   })();
@@ -276,9 +318,9 @@ export async function buildBiDataset(): Promise<BiDataset> {
     attempt("B-ARM website orders", () => barmWebsite(HISTORY_START, asOf, productFrom)),
     attempt("Warehouse stock", warehouseStock),
     attempt("Intervals", intervals),
-    attempt("Amazon ads", () => loadMarketplaceAds("amazon", HISTORY_START, asOf)),
-    attempt("Flipkart ads", () => loadMarketplaceAds("flipkart", HISTORY_START, asOf)),
-    attempt("Meesho ads", () => loadMarketplaceAds("meesho", HISTORY_START, asOf)),
+    attempt("Amazon ads", () => loadMarketplaceAds("amazon", adsFrom, asOf)),
+    attempt("Flipkart ads", () => loadMarketplaceAds("flipkart", adsFrom, asOf)),
+    attempt("Meesho ads", () => loadMarketplaceAds("meesho", adsFrom, asOf)),
     attempt("Google Ads spend", () => loadSpendWindows("google", HISTORY_START, asOf)),
     attempt("Meta Ads spend", () => loadSpendWindows("meta", HISTORY_START, asOf)),
     attempt("Amazon FBA stock", () => fetchAllRows("barm_amazon_fba_inventory", (q) => q, "id", "id,sku,product_name,afn_fulfillable_quantity,snapshot_date,created_at")),
@@ -319,7 +361,10 @@ export async function buildBiDataset(): Promise<BiDataset> {
   for (const [id, label, rows, basis] of marketAds) {
     if (!rows) continue;
     const s = adSeries(dates, rows);
-    ads.push({ id, label, spend: s.spend, sales: s.sales, adsThrough: s.adsThrough, salesBasis: basis });
+    // days before the re-read range come from the previous build (same dates from HISTORY_START)
+    const p = inc?.ads.find((a) => a.id === id);
+    if (p) dates.forEach((d, i) => { if (d < adsFrom && i < p.spend.length) { s.spend[i] = p.spend[i]; s.sales[i] = p.sales[i]; } });
+    ads.push({ id, label, spend: s.spend, sales: s.sales, adsThrough: s.adsThrough ?? p?.adsThrough ?? null, salesBasis: basis });
   }
   for (const [id, label, win, channel] of [["google", "Google Ads", gWin, "google_ads"], ["meta", "Meta Ads", mWin, "meta_ads"]] as const) {
     if (!win) continue;
@@ -377,6 +422,6 @@ export async function buildBiDataset(): Promise<BiDataset> {
 
   return {
     generatedAt: new Date().toISOString(), asOf, dates, channels, productDates, products, ads,
-    campaignWindow, campaigns, stock, warehouse: wh ?? [], intervals: iv ?? null, gstMultiplier: DEFAULT_GST_MULTIPLIER, errors, notes,
+    campaignWindow, campaigns, timings, buildKind: inc ? "incremental" : "full", fullBuiltAt: inc ? inc.fullBuiltAt : new Date().toISOString(), stock, warehouse: wh ?? [], intervals: iv ?? null, gstMultiplier: DEFAULT_GST_MULTIPLIER, errors, notes,
   };
 }

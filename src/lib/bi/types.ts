@@ -86,6 +86,13 @@ export interface BiDataset {
   /** Range the campaign figures cover. */
   campaignWindow: { start: string; end: string; prevStart: string; prevEnd: string };
   campaigns: BiCampaign[];
+  /** When the last full re-read of all history happened. Builds in between re-read only recent
+   *  weeks (see bi/dataset.ts) and carry this forward. */
+  fullBuiltAt?: string;
+  /** "full" or "recent weeks only" — how this copy was built. */
+  buildKind?: "full" | "incremental";
+  /** Seconds each source took to load in the last build (for diagnosing slow loads). */
+  timings?: Record<string, number>;
   stock: BiStock[];
   warehouse: BiWarehouseStock[];
   intervals: BiIntervals | null;

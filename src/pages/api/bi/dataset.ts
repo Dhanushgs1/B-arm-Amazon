@@ -9,14 +9,35 @@ import { checkSession, clientIp, guard } from "@/lib/apiAuth";
 import { rateLimit } from "@/lib/rateLimit";
 import { buildBiDataset } from "@/lib/bi/dataset";
 import type { BiDataset } from "@/lib/bi/types";
+import fs from "node:fs";
+import path from "node:path";
 
 const TTL_MS = 20 * 60_000;
 const store = globalThis as typeof globalThis & { __m360Bi?: { at: number; data: BiDataset | null; building: Promise<BiDataset> | null } };
 const cache = (store.__m360Bi ??= { at: 0, data: null, building: null });
 
+// The last complete copy is also saved on this server's disk, so after a restart or deploy the page
+// opens at once with it (marked as refreshing) instead of every viewer waiting for a rebuild.
+const DISK = path.join(process.cwd(), ".cache", "bi-dataset.json");
+function loadFromDisk() {
+  try {
+    const saved = JSON.parse(fs.readFileSync(DISK, "utf8")) as { savedAt: number; data: BiDataset };
+    if (saved?.data?.dates?.length) { cache.data = saved.data; cache.at = saved.savedAt; }
+  } catch { /* no saved copy yet */ }
+}
+function saveToDisk(d: BiDataset) {
+  try {
+    fs.mkdirSync(path.dirname(DISK), { recursive: true });
+    const tmp = `${DISK}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify({ savedAt: Date.now(), data: d }));
+    fs.renameSync(tmp, DISK); // atomic: a reader never sees half a file
+  } catch (e) { console.error("[bi] could not save the dataset to disk:", e); }
+}
+if (!cache.data) loadFromDisk();
+
 function rebuild(): Promise<BiDataset> {
   if (!cache.building) {
-    cache.building = buildBiDataset()
+    cache.building = buildBiDataset(cache.data)
       .then((d) => {
         // A rebuild where a source failed must not replace a complete dataset: keep serving the
         // complete one and try again in two minutes instead of twenty.
@@ -25,7 +46,9 @@ function rebuild(): Promise<BiDataset> {
           cache.at = Date.now() - TTL_MS + 2 * 60_000;
           return cache.data;
         }
-        cache.data = d; cache.at = Date.now(); return d;
+        cache.data = d; cache.at = Date.now();
+        if (!d.errors.length) saveToDisk(d);
+        return d;
       })
       .finally(() => { cache.building = null; });
   }

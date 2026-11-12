@@ -65,3 +65,6 @@ supabase/.temp/
 
 # per-machine email settings snapshot (recipient + account ids); the live copy is the email_settings table
 .email-settings.json
+
+# executive dashboard: last built dataset (server-side cache)
+/.cache/
