@@ -18,10 +18,13 @@ export function ChannelSummaryStrip({
   channel,
   fetcher,
   title = "Summary",
+  hideAdSpend = false,
 }: {
   channel: string;
   fetcher: (start: string, end: string) => Promise<ChannelSummary>;
   title?: string;
+  /** Leave out the Ad Spend card where the page has its own advertising section (Amazon). */
+  hideAdSpend?: boolean;
 }) {
   const { startDate, endDate } = useDashboard();
   const { data, isLoading, error } = useQuery({
@@ -90,7 +93,7 @@ export function ChannelSummaryStrip({
               trend={growth(data.current.netOrders, data.previous.netOrders)}
               accent="cyan"
             />
-            {data.current.adSpendTax !== null ? (
+            {data.current.adSpendTax !== null && !hideAdSpend ? (
               <KPICard
                 title="Ad Spend"
                 value={cur(data.current.adSpendTax)}

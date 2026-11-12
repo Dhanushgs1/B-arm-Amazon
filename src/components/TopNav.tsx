@@ -8,7 +8,6 @@ import { motion, useReducedMotion } from "framer-motion";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { DateRangePicker } from "@/components/DateRangePicker";
-import { PageFinder } from "@/components/PageFinder";
 
 // Example entries an older version seeded into every browser. They were never real alerts, so they
 // are removed wherever they are still stored.
@@ -202,10 +201,7 @@ export function TopNav({ onOpenMobileNav }: TopNavProps = {}) {
       {/* Marketplace Switcher — Overall / Amazon / Flipkart / Meesho / Shopify */}
       <MarketplaceSwitcher />
 
-      {/* Page search */}
-      <PageFinder className="hidden lg:block flex-1 min-w-[150px] max-w-[340px]" />
-
-      <div className="flex-grow hidden xl:block" />
+      <div className="flex-grow hidden sm:block" />
 
       {/* Date Range Picker */}
       <DateRangePicker lastDataDate={lastDataDate || undefined} />
