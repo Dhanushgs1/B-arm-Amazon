@@ -113,3 +113,26 @@ test("ERP months vs order-report months are compared on the order reports", () =
   const lfl = likeForLike(ds, oct, { start: "2026-09-03", end: "2026-09-30", days: 28 }, ["amazon"]);
   assert.equal(lfl.revenuePct, 0);
 });
+
+import { dayOf, followUpQuestion } from "./chatAnswers.ts";
+
+test("today, named days and follow-ups", () => {
+  const asOf = "2026-10-28";
+  assert.deepEqual(periodOf("today sales", asOf).w, { start: asOf, end: asOf, days: 1 });
+  assert.match(periodOf("today sales", asOf).label, /latest day on file/);
+  assert.equal(dayOf("sales on 10 nov", "2026-11-11"), "2026-11-10");
+  assert.equal(dayOf("sales nov 5th", "2026-11-11"), "2026-11-05");
+  assert.equal(dayOf("sales 05.11.2026", "2026-11-11"), "2026-11-05");
+  assert.equal(dayOf("sales 15 dec", "2026-11-11"), "2025-12-15"); // not in the future
+  assert.equal(dayOf("top 5 products", "2026-11-11"), null);
+  assert.equal(dayOf("sales in august", "2026-11-11"), null);
+  assert.deepEqual(periodOf("sales 10 oct", asOf).w, { start: "2026-10-10", end: "2026-10-10", days: 1 });
+  // "today sales" answered for the latest day: 10,000 + 4,000
+  assert.match(answerFromData(dataset(), "today sales")!.text, /₹14,000/);
+  // "i ask today" after "sales last month" → sales for the latest day
+  const f = followUpQuestion("i ask today", "How much did we sell last month?", asOf)!;
+  assert.ok(f && !/last month/.test(f) && /today/.test(f));
+  assert.match(answerFromData(dataset(), f)!.text, /₹14,000/);
+  assert.equal(followUpQuestion("write a poem", "sales last month", asOf), null);
+  assert.equal(followUpQuestion("flipkart sales yesterday", "sales last month", asOf), null); // already a full question
+});

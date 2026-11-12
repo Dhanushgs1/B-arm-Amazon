@@ -42,7 +42,34 @@ function channelOf(q: string): SalesChannelId | null {
 }
 
 /** The period a question asks about, ending no later than the dataset's last day. Default: last 30 days. */
+/** A single day named in the question: "10 nov", "nov 10", "10th of november", "10.11.2026", "2026-11-10". */
+export function dayOf(q: string, asOf: string): string | null {
+  const iso = q.match(/\b(20\d\d)-(\d{2})-(\d{2})\b/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const dm = q.match(/\b(\d{1,2})[./-](\d{1,2})(?:[./-](20\d\d))?\b/);
+  const mon = "(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*";
+  const a = q.match(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?${mon}\\b`));
+  const b = q.match(new RegExp(`\\b${mon}\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`));
+  let d: number | null = null, m: number | null = null, y: number | null = null;
+  if (a) { d = Number(a[1]); m = MONTH_SHORT.indexOf(a[2].slice(0, 3)) + 1; }
+  else if (b) { d = Number(b[2]); m = MONTH_SHORT.indexOf(b[1].slice(0, 3)) + 1; }
+  else if (dm) { d = Number(dm[1]); m = Number(dm[2]); y = dm[3] ? Number(dm[3]) : null; }
+  if (!d || !m || m < 1 || m > 12 || d > 31) return null;
+  let year = y ?? Number(asOf.slice(0, 4));
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (!y && `${year}-${pad(m)}-${pad(d)}` > asOf) year -= 1; // "15 dec" asked in November means last December
+  return `${year}-${pad(m)}-${pad(d)}`;
+}
+
+/** Period phrases, removed from an earlier question when a follow-up names a new period. */
+export const PERIOD_WORDS = /\b(today|todays|yesterday|last day|latest day|(this|last|past|previous)\s+(week|month|quarter)|last\s+\d{1,3}\s+days?|month to date|mtd|(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*(\s+20\d\d)?|\d{1,2}(st|nd|rd|th)?|20\d\d-\d{2}-\d{2}|\d{1,2}[./-]\d{1,2}([./-]20\d\d)?)\b/g;
+
 export function periodOf(q: string, asOf: string): { w: Window; label: string; explicit: boolean } {
+  // today: the order uploads run a day behind, so the latest day on file stands in for it
+  if (/\btoday'?s?\b|\blatest day\b|\bthis day\b/.test(q)) return { w: win(asOf, asOf), label: `${dot(asOf)} (the latest day on file; today's orders come with tomorrow's upload)`, explicit: true };
+  const day = dayOf(q, asOf);
+  if (day && day <= asOf) return { w: win(day, day), label: dot(day), explicit: true };
+  if (day && day > asOf) return { w: win(asOf, asOf), label: `${dot(asOf)} (data on file only goes to this day, not ${dot(day)})`, explicit: true };
   const lastN = q.match(/\blast\s+(\d{1,3})\s+days?\b/);
   if (lastN) { const n = Math.min(365, Math.max(1, Number(lastN[1]))); return { w: win(addDaysIso(asOf, -(n - 1)), asOf), label: `the last ${n} days`, explicit: true }; }
   if (/\byesterday\b|\blast day\b/.test(q)) return { w: win(asOf, asOf), label: dot(asOf), explicit: true };
@@ -167,7 +194,30 @@ export function dataSummaryForAi(ds: BiDataset): string {
     const p = channelPeriod(ds, c, last30);
     if (p.covered) lines.push(`- ${c.label}: revenue ${Math.round(p.revenue ?? 0)}, units ${Math.round(p.units ?? 0)}, returns ${Math.round(p.returns ?? 0)}; basis: ${c.basis}`);
   }
+  lines.push("Daily figures, last 14 days (revenue / units per channel):");
+  for (let i = 13; i >= 0; i--) {
+    const d = addDaysIso(ds.asOf, -i);
+    const parts = ds.channels.map((c) => { const p = channelPeriod(ds, c, win(d, d)); return p.covered ? `${c.label} ${Math.round(p.revenue ?? 0)}/${Math.round(p.units ?? 0)}` : null; }).filter(Boolean);
+    lines.push(`- ${d}: ${parts.join(", ")}`);
+  }
+  lines.push(`Note: data runs to ${ds.asOf}; orders for later days are not uploaded yet.`);
   const top = productRows(ds, 30).sort((a, b) => b.revenue - a.revenue).slice(0, 15);
   lines.push("Top products last 30 days:", ...top.map((p) => `- ${shortName(p.name)} [${p.channel}] revenue ${Math.round(p.revenue)}, units ${p.units}, returns ${p.returns}, FBA stock ${p.stock ?? "n/a"}`));
   return lines.join("\n");
+}
+
+/** A short follow-up that only names a period ("and today?", "i ask today", "what about 5 nov") reuses the
+ *  previous question with the new period. Returns the question to answer, or null when it is not one. */
+export function followUpQuestion(question: string, previous: string | undefined, asOf: string): string | null {
+  if (!previous) return null;
+  const q = question.toLowerCase().trim();
+  if (q.split(/\s+/).length > 6 || !periodOf(q, asOf).explicit) return null;
+  if (answerFromDataIntent(q)) return null; // it is a full question already
+  const prevBase = previous.toLowerCase().replace(PERIOD_WORDS, " ").replace(/\s+/g, " ").trim();
+  return `${prevBase} ${q}`;
+}
+
+/** True when the question already names something to answer about (sales, stock, ads, …). */
+function answerFromDataIntent(q: string): boolean {
+  return /\b(out of stock|stock|restock|inventory|return|top|best|ad ?spend|roas|acos|advertis|ads|campaign|sell|sold|sales|revenue|turnover|earn|orders?|units)\b/.test(q);
 }

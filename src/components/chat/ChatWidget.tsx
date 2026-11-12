@@ -11,7 +11,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { ArrowUp, ChevronRight, Loader2, MessageSquare, Sparkles, X } from "lucide-react";
 import type { BiDataset } from "@/lib/bi/types";
-import { answerFromData } from "@/lib/home/chatAnswers";
+import { answerFromData, followUpQuestion } from "@/lib/home/chatAnswers";
 import { askAi } from "@/lib/home/askAi";
 import { useDashboard } from "@/lib/DashboardContext";
 
@@ -70,12 +70,16 @@ export function ChatWidget() {
     if (!question || !ds || busy) return;
     setInput("");
     setMessages((m) => [...m, { role: "user", text: question }]);
-    const local = answerFromData(ds, question);
+    // a follow-up naming only a period ("i ask today") reuses the previous question
+    const prevUser = [...messages].reverse().find((m) => m.role === "user")?.text;
+    const follow = followUpQuestion(question, prevUser, ds.asOf);
+    const local = answerFromData(ds, question) ?? (follow ? answerFromData(ds, follow) : null);
     if (local) { setMessages((m) => [...m, { role: "bot", ...local }]); return; }
     setBusy(true);
     try {
       setMessages((m) => [...m, { role: "bot", text: "" }]);
-      const text = await askAi(ds, question);
+      const history = messages.filter((m) => m.text).slice(-6).map((m) => ({ role: m.role === "user" ? ("user" as const) : ("assistant" as const), content: m.text }));
+      const text = await askAi(ds, question, history);
       setMessages((m) => [...m.slice(0, -1), { role: "bot", text }]);
     } catch (e) {
       setMessages((m) => [...m.slice(0, -1), { role: "bot", text: `The AI answer could not be fetched (${e instanceof Error ? e.message : "error"}). Questions about sales, products, stock, returns and ad spend are answered from your data.` }]);
