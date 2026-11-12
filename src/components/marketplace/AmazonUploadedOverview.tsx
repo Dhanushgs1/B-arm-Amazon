@@ -11,6 +11,7 @@ import { UploadOnlyOverview } from "@/components/marketplace/UploadOnlyOverview"
 import { ChannelSummaryStrip } from "@/components/marketplace/ChannelSummaryStrip";
 import { fetchAmazonSummary, previousRange } from "@/lib/channelSummary";
 import { DEFAULT_GST_MULTIPLIER } from "@/lib/masterProductSkuid";
+import type { BiDataset } from "@/lib/bi/types";
 import { loadMarketplaceAds } from "@/lib/overallData";
 import { adCampaigns, adDailySeries, adTotals, pct, ratio } from "@/lib/uploadedAmazonRules";
 import { fetchAllReportDataInfo, REPORT_LABEL, type UploadReportType } from "@/lib/amazonReportUpload";
@@ -50,6 +51,23 @@ export function AmazonUploadedOverview() {
     queryFn: fetchAllReportDataInfo,
   });
 
+  // Total Amazon sales per day for the trend chart: the Business overview dataset (the B-ARM ERP's
+  // figures for the months it covers, the order reports otherwise; the same basis as Gross Sales above).
+  // Same query key as the Business overview page, so the two share one load.
+  const biQ = useQuery<BiDataset>({
+    queryKey: ["bi-dataset"],
+    queryFn: async () => {
+      const r = await fetch("/api/bi/dataset");
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      return j as BiDataset;
+    },
+    staleTime: 10 * 60_000,
+  });
+  const totalByDay = new Map<string, number>();
+  const amazonCh = biQ.data?.channels.find((c) => c.id === "amazon");
+  if (biQ.data && amazonCh) biQ.data.dates.forEach((d, i) => { const v = amazonCh.revenue[i]; if (v !== null && v !== undefined) totalByDay.set(d, v); });
+
   const rows = adsQ.data;
   const now = rows ? adTotals(rows, startDate, endDate) : null;
   const before = rows ? adTotals(rows, prev.start, prev.end) : null;
@@ -59,7 +77,7 @@ export function AmazonUploadedOverview() {
   const pRoas = before ? ratio(before.sales, before.spend) : null;
   const pAcos = before ? pct(before.spend, before.sales) : null;
   const campaigns = rows ? adCampaigns(rows, startDate, endDate) : [];
-  const chartData = rows ? adDailySeries(rows, startDate, endDate).map((d) => ({ ...d, date: dayLabel(d.rawDate) })) : [];
+  const chartData = rows ? adDailySeries(rows, startDate, endDate).map((d) => ({ ...d, overallSales: totalByDay.get(d.rawDate) ?? null, date: dayLabel(d.rawDate) })) : [];
   const adsShort = !!now?.through && endDate > now.through;
   // A change vs the previous period is only shown when both periods are fully covered by uploads.
   // If the uploads start part-way through the previous window, or stop before the end of this one,
@@ -71,8 +89,8 @@ export function AmazonUploadedOverview() {
 
   const summary = (
     <div className="space-y-6">
-      {/* ad spend is in the Advertising section below (before GST), so not repeated here */}
-      <ChannelSummaryStrip channel="Amazon" fetcher={fetchAmazonSummary} title="Sales, orders and returns" hideAdSpend />
+      {/* ad spend before GST here; the Advertising section below shows it incl. 18% GST */}
+      <ChannelSummaryStrip channel="Amazon" fetcher={fetchAmazonSummary} title="Sales, orders and returns" adSpendBeforeGst />
 
       <div className="glass rounded-2xl border border-border p-5 shadow-sm space-y-4">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -110,7 +128,7 @@ export function AmazonUploadedOverview() {
                 </div>
               )}
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                <KPICard title="Ad Spend (incl. 18% GST)" value={cur(now.spend * DEFAULT_GST_MULTIPLIER)} subtitle={`${cur(now.spend)} before GST · ROAS and ACOS use this`} trend={trendOf(now.spend, before.spend)} trendBasis={trendBasis} inverseTrend accent="orange" />
+                <KPICard title="Ad Spend (incl. 18% GST)" value={cur(now.spend * DEFAULT_GST_MULTIPLIER)} subtitle={`${cur(now.spend)} before GST · ROAS and ACOS use that`} trend={trendOf(now.spend, before.spend)} trendBasis={trendBasis} inverseTrend accent="orange" />
                 <KPICard title="Ad Sales" value={cur(now.sales)} subtitle={`${num(now.orders)} ad orders`} trend={trendOf(now.sales, before.sales)} trendBasis={trendBasis} accent="green" />
                 <KPICard title="ROAS" value={roas === null ? "—" : `${one(roas)}x`} subtitle={roas === null ? "No ad spend in this period" : "Ad sales ÷ ad spend"} trend={trendOf(roas, pRoas)} trendBasis={trendBasis} accent="purple" />
                 <KPICard title="ACOS" value={acos === null ? "—" : `${one(acos)}%`} subtitle={acos === null ? "No ad sales in this period" : "Ad spend ÷ ad sales"} trend={trendOf(acos, pAcos)} trendBasis={trendBasis} inverseTrend accent="pink" />

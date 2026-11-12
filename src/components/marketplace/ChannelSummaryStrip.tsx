@@ -5,6 +5,7 @@ import { Loader2 } from "lucide-react";
 import { useDashboard } from "@/lib/DashboardContext";
 import { KPICard } from "@/components/KPICard";
 import type { ChannelSummary } from "@/lib/channelSummary";
+import { DEFAULT_GST_MULTIPLIER } from "@/lib/masterProductSkuid";
 
 const cur = (v: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(v || 0))}`;
 const num = (v: number) => new Intl.NumberFormat("en-IN").format(Math.round(v || 0));
@@ -18,13 +19,13 @@ export function ChannelSummaryStrip({
   channel,
   fetcher,
   title = "Summary",
-  hideAdSpend = false,
+  adSpendBeforeGst = false,
 }: {
   channel: string;
   fetcher: (start: string, end: string) => Promise<ChannelSummary>;
   title?: string;
-  /** Leave out the Ad Spend card where the page has its own advertising section (Amazon). */
-  hideAdSpend?: boolean;
+  /** Show Ad Spend before GST (the page's advertising section shows it incl. GST). */
+  adSpendBeforeGst?: boolean;
 }) {
   const { startDate, endDate } = useDashboard();
   const { data, isLoading, error } = useQuery({
@@ -93,11 +94,11 @@ export function ChannelSummaryStrip({
               trend={growth(data.current.netOrders, data.previous.netOrders)}
               accent="cyan"
             />
-            {data.current.adSpendTax !== null && !hideAdSpend ? (
+            {data.current.adSpendTax !== null ? (
               <KPICard
-                title="Ad Spend"
-                value={cur(data.current.adSpendTax)}
-                subtitle={data.adSpendComparable === false ? "Ad data does not cover both periods in full" : `Last period ${cur(data.previous.adSpendTax || 0)}`}
+                title={adSpendBeforeGst ? "Ad Spend (before GST)" : "Ad Spend"}
+                value={cur(adSpendBeforeGst ? data.current.adSpendTax / DEFAULT_GST_MULTIPLIER : data.current.adSpendTax)}
+                subtitle={data.adSpendComparable === false ? "Ad data does not cover both periods in full" : `Last period ${cur(adSpendBeforeGst ? (data.previous.adSpendTax || 0) / DEFAULT_GST_MULTIPLIER : data.previous.adSpendTax || 0)}`}
                 trend={data.adSpendComparable === false ? undefined : growth(data.current.adSpendTax, data.previous.adSpendTax || 0)}
                 inverseTrend
                 accent="pink"
