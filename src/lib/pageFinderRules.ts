@@ -4,6 +4,7 @@
 export interface PageEntry { label: string; href: string; group: string; keywords: string }
 
 const PAGES: PageEntry[] = [
+  { label: "Business overview", href: "/dashboard/executive", group: "Overall", keywords: "executive health forecast insights kpi management summary" },
   { label: "Overall", href: "/dashboard/compare", group: "Overall", keywords: "all marketplaces summary total sales tacos" },
   { label: "Seasonal Analytics", href: "/dashboard/seasonal", group: "Overall", keywords: "season trend month year" },
   { label: "Ratings & Reviews", href: "/dashboard/ratings-reviews", group: "Overall", keywords: "stars rating review drop" },

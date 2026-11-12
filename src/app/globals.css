@@ -261,3 +261,24 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* ── Executive dashboard series colours (validated categorical set: CVD ΔE ≥ 9 light and dark).
+   Fixed per channel, never by rank. ── */
+:root {
+  --series-amazon: #2a78d6;
+  --series-flipkart: #eb6834;
+  --series-meesho: #6250d6;
+  --series-shopify: #1baf7a;
+  --series-forecast: #52514e;
+  --status-good: #0f7b3e;
+  --status-bad: #c2410c;
+}
+.dark {
+  --series-amazon: #3987e5;
+  --series-flipkart: #d95926;
+  --series-meesho: #9085e9;
+  --series-shopify: #199e70;
+  --series-forecast: #c3c2b7;
+  --status-good: #4ade80;
+  --status-bad: #fb923c;
+}

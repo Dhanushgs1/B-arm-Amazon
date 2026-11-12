@@ -434,7 +434,10 @@ async function fetchMisDateFiltered<T extends Record<string, any>>(
   mappedField: string,
   marginDays: number,
   apply: ApplyFn,
-  mapRow: (row: RawRow) => T
+  mapRow: (row: RawRow) => T,
+  // true for a table whose date column has no index (fk_orders): sorting by that column makes the
+  // database sort the whole range on every page and time out; paging by id after the last id does not.
+  pageById = false
 ): Promise<T[]> {
   const { start, end } = peekDateBound(apply, mappedField);
   // Ordered by (rawCol, id) instead of fetchAllRows's default "id" whenever this call actually
@@ -444,7 +447,7 @@ async function fetchMisDateFiltered<T extends Record<string, any>>(
   // fetchMisAmazonOrders/fetchMisFbaReturns hit a statement timeout once these MIS tables grew —
   // same root cause and fix as adSpendReportExport.ts's fetchDailyAmazonOrders/fetchDailyFlipkartOrders.
   // "id" stays as a tiebreaker for .range() pagination stability (fetchAllRows's own requirement).
-  const orderBy = start || end ? [rawCol, "id"] : "id";
+  const orderBy = (start || end) && !pageById ? [rawCol, "id"] : "id";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rows = await fetchAllRows(table, (q: any) => {
     let qq = q;
@@ -481,7 +484,7 @@ export async function fetchMisFkOrders(apply: ApplyFn): Promise<ReturnType<typeo
   // order_date is the same field name and timeline raw and mapped — still a
   // 1-day margin since callers may pass a bare date while the raw column
   // carries a full timestamp.
-  return fetchMisDateFiltered("fk_orders", "order_date", "order_date", 1, apply, mapMisFkOrderRow);
+  return fetchMisDateFiltered("fk_orders", "order_date", "order_date", 1, apply, mapMisFkOrderRow, true);
 }
 
 export async function fetchMisFkReturns(apply: ApplyFn): Promise<ReturnType<typeof mapMisFkReturnRow>[]> {

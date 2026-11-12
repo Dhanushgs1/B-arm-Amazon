@@ -193,6 +193,7 @@ const COMPARE_NAV_SECTIONS: SidebarNavSection[] = [
   {
     label: "Combined Workspace",
     items: [
+      { id: "executive", label: "Business overview", icon: LayoutDashboard, path: "/dashboard/executive" },
       { id: "compare", label: "Overall", icon: GitCompare, path: "/dashboard/compare" },
     ],
   },

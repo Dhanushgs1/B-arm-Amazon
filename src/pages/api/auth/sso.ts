@@ -53,5 +53,5 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const who = JSON.stringify(email).replace(/</g, "\\u003c");
   return res.status(200).send(page(
     `<p style="font-size:12px;font-weight:800;letter-spacing:.2em;text-transform:uppercase">Signing in…</p>` +
-    `<script>try{localStorage.setItem("ppcUser","Barm");localStorage.setItem("ppcKeySlot","B");localStorage.setItem("barmSsoEmail",${who});}catch(e){}location.replace("/dashboard");</script>`));
+    `<script>try{localStorage.setItem("ppcUser","Barm");localStorage.setItem("ppcKeySlot","B");localStorage.setItem("barmSsoEmail",${who});}catch(e){}location.replace("/dashboard/executive");</script>`));
 }

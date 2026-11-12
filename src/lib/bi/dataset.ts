@@ -1,0 +1,271 @@
+// Builds the executive dashboard's dataset on the server. Every figure comes from the same loaders
+// the rest of the dashboard uses, so the executive page and the channel pages cannot disagree:
+//   Amazon    loadAmazonSkuPeriodData   (MIS orders + daily upload; gross = price × units, as the Overview)
+//   Flipkart  loadFlipkartOrderData     (listing price × units, as the Flipkart Overview)
+//   Meesho    loadMeeshoSkuPeriodData   (gross = Quantity × Supplier Listed Price)
+//   Shopify   fetchShopifyOrders        (order totals of non-cancelled orders)
+//   Ads       loadMarketplaceAds / loadSpendWindows (as the Overall page)
+// A source that fails is listed in `errors` and its series are left empty — never filled with zeros.
+
+import { loadAmazonSkuPeriodData, type PeriodWindow } from "@/lib/amazonSkuPeriodData";
+import { loadMeeshoSkuPeriodData } from "@/lib/meeshoSkuPeriodData";
+import { loadFlipkartOrderData, isCountedFlipkartLine } from "@/lib/channelSummary";
+import { fetchShopifyOrders } from "@/lib/shopifyOrders";
+import { loadMarketplaceAds, loadSpendWindows } from "@/lib/overallData";
+import { resolveDailySpend } from "@/lib/adSpendDailyRules";
+import { fetchAllRows } from "@/lib/amazonReportShared";
+import { DEFAULT_GST_MULTIPLIER } from "@/lib/masterProductSkuid";
+import { addDaysIso } from "@/lib/bi/forecast";
+import type { BiAdChannel, BiCampaign, BiChannel, BiDataset, BiProduct, BiStock, SalesChannelId, Series } from "@/lib/bi/types";
+
+/** First day the order history covers (Amazon and Flipkart MIS start on 15 Apr 2026). */
+export const HISTORY_START = "2026-04-15";
+const PRODUCT_DAYS = 120;
+
+const istYesterday = () => addDaysIso(new Date(Date.now() + 5.5 * 3_600_000).toISOString().slice(0, 10), -1);
+
+function dayRange(start: string, end: string): string[] {
+  const out: string[] = [];
+  for (let d = start; d <= end && out.length < 1000; d = addDaysIso(d, 1)) out.push(d);
+  return out;
+}
+
+type DayAgg = Map<string, { revenue: number; units: number; returns: number }>;
+type SkuDayAgg = Map<string, { name: string; category: string | null; days: Map<string, { units: number; revenue: number; returns: number }> }>;
+
+/** A channel series: null before its first day with data and after its last; 0 on covered days without sales. */
+function toChannel(id: SalesChannelId, label: string, basis: string, returnsTracked: boolean, dates: string[], agg: DayAgg, dataThrough: string | null): BiChannel {
+  const withSales = [...agg.entries()].filter(([, v]) => v.units > 0 || v.revenue > 0).map(([d]) => d).sort();
+  const first = withSales[0] ?? null;
+  const last = dataThrough ?? withSales[withSales.length - 1] ?? null;
+  const covered = (d: string) => !!first && !!last && d >= first && d <= last;
+  const pick = (k: "revenue" | "units" | "returns"): Series => dates.map((d) => (covered(d) ? agg.get(d)?.[k] ?? 0 : null));
+  return { id, label, basis, firstDate: first, dataThrough: last, revenue: pick("revenue"), units: pick("units"), returns: pick("returns"), returnsTracked };
+}
+
+function toProducts(channel: SalesChannelId, agg: SkuDayAgg, productDates: string[]): BiProduct[] {
+  const out: BiProduct[] = [];
+  for (const [sku, v] of agg) {
+    const units = productDates.map((d) => v.days.get(d)?.units ?? 0);
+    if (!units.some((u) => u > 0)) continue;
+    out.push({
+      channel, sku, name: v.name || sku, category: v.category,
+      units, revenue: productDates.map((d) => v.days.get(d)?.revenue ?? 0), returns: productDates.map((d) => v.days.get(d)?.returns ?? 0),
+    });
+  }
+  return out;
+}
+
+function addTo(agg: DayAgg, d: string, revenue: number, units: number, returns: number) {
+  const cur = agg.get(d) || { revenue: 0, units: 0, returns: 0 };
+  cur.revenue += revenue; cur.units += units; cur.returns += returns;
+  agg.set(d, cur);
+}
+function addSku(agg: SkuDayAgg, sku: string, name: string, category: string | null, d: string, units: number, revenue: number, returns: number) {
+  let s = agg.get(sku);
+  if (!s) { s = { name, category, days: new Map() }; agg.set(sku, s); }
+  const cur = s.days.get(d) || { units: 0, revenue: 0, returns: 0 };
+  cur.units += units; cur.revenue += revenue; cur.returns += returns;
+  s.days.set(d, cur);
+}
+
+// Period loaders (Amazon, Meesho) take one period per day: the same rules as their weekly reports,
+// split by day.
+async function fromPeriodLoader(kind: "amazon" | "meesho", periods: PeriodWindow[], productFrom: string) {
+  const data = kind === "amazon"
+    ? await loadAmazonSkuPeriodData({ periods, includeAds: false, includeStock: false, fillFromDailyUpload: true })
+    : await loadMeeshoSkuPeriodData({ periods });
+  const daily: DayAgg = new Map();
+  const skus: SkuDayAgg = new Map();
+  for (const p of data.visibleRows) {
+    for (const pd of periods) {
+      const s = p.periods[pd.label];
+      if (!s) continue;
+      const revenue = kind === "amazon" ? s.price * s.orders : s.grossSales ?? 0;
+      if (!s.orders && !revenue && !s.allReturns) continue;
+      addTo(daily, pd.label, revenue, s.orders, s.allReturns);
+      if (pd.label >= productFrom) addSku(skus, p.sku, p.name, data.catBySku?.get(p.sku) ?? null, pd.label, s.orders, revenue, s.allReturns);
+    }
+  }
+  // Units the report rules leave out: SKUs whose category is "Other" (no master mapping) or
+  // "Discontinued" (the same rule as the weekly reports). Counted for the last 30 days so the page can say so.
+  const last30 = new Set(periods.slice(-30).map((p) => p.label));
+  let excludedUnits = 0;
+  for (const [cat, c] of data.categoryAgg) {
+    if (cat !== "Other" && cat !== "Discontinued") continue;
+    for (const [label, v] of Object.entries(c.periods)) if (last30.has(label)) excludedUnits += v.units;
+  }
+  return { daily, skus, dataThrough: data.dataThrough ? String(data.dataThrough).slice(0, 10) : null, excludedUnits };
+}
+
+async function flipkart(start: string, end: string, productFrom: string) {
+  const { orderRows, returnRows, priceBySku, dataThrough } = await loadFlipkartOrderData(start, end);
+  const daily: DayAgg = new Map();
+  const skus: SkuDayAgg = new Map();
+  for (const r of orderRows) {
+    const d = r.order_date ? String(r.order_date).slice(0, 10) : null;
+    if (!d || d < start || d > end || !isCountedFlipkartLine(r)) continue;
+    const qty = Number(r.quantity) || 0;
+    const sku = String(r.sku || "").trim();
+    const revenue = qty * (priceBySku.get(sku) || 0);
+    addTo(daily, d, revenue, qty, 0);
+    if (d >= productFrom && sku) addSku(skus, sku, String((r as { product_title?: string }).product_title || sku), null, d, qty, revenue, 0);
+  }
+  for (const r of returnRows) {
+    const d = r.return_requested_date ? String(r.return_requested_date).slice(0, 10) : null;
+    if (!d || d < start || d > end) continue;
+    const qty = Number(r.quantity) || 0;
+    addTo(daily, d, 0, 0, qty);
+    const sku = String(r.sku || "").trim();
+    if (d >= productFrom && sku && skus.has(sku)) addSku(skus, sku, "", null, d, 0, 0, qty);
+  }
+  return { daily, skus, dataThrough, unpriced: [...new Set(orderRows.filter((r) => !priceBySku.has(String(r.sku || "").trim())).map((r) => String(r.sku || "").trim()))].length };
+}
+
+async function shopify(start: string, end: string, productFrom: string) {
+  const orders = await fetchShopifyOrders();
+  const daily: DayAgg = new Map();
+  const skus: SkuDayAgg = new Map();
+  for (const o of orders) {
+    if (o.order_date < start || o.order_date > end || o.is_cancelled) continue;
+    addTo(daily, o.order_date, o.total, o.item_quantity, 0);
+    if (o.order_date >= productFrom) for (const it of o.items) {
+      const sku = String(it.sku || it.title || "").trim();
+      if (sku) addSku(skus, sku, it.title || sku, null, o.order_date, Number(it.quantity) || 0, Number(it.line_total) || 0, 0);
+    }
+  }
+  return { daily, skus, orders };
+}
+
+function adSeries(dates: string[], rows: { date: string; spend: number; sales: number }[]) {
+  const by = new Map<string, { spend: number; sales: number }>();
+  for (const r of rows) {
+    const d = String(r.date).slice(0, 10);
+    const cur = by.get(d) || { spend: 0, sales: 0 };
+    cur.spend += r.spend; cur.sales += r.sales;
+    by.set(d, cur);
+  }
+  const days = [...by.keys()].sort();
+  const first = days[0], last = days[days.length - 1];
+  const inside = (d: string) => !!first && d >= first && d <= last;
+  return {
+    spend: dates.map((d) => (inside(d) ? by.get(d)?.spend ?? 0 : null)),
+    sales: dates.map((d) => (inside(d) ? by.get(d)?.sales ?? 0 : null)),
+    adsThrough: last ?? null,
+  };
+}
+
+export async function buildBiDataset(): Promise<BiDataset> {
+  const asOf = istYesterday();
+  const dates = dayRange(HISTORY_START, asOf);
+  const productDates = dates.slice(-PRODUCT_DAYS);
+  const productFrom = productDates[0];
+  const periods: PeriodWindow[] = dates.map((d) => ({ label: d, start: d, end: d }));
+  const errors: BiDataset["errors"] = [];
+  const notes: string[] = [];
+  const attempt = async <T,>(source: string, run: () => Promise<T>): Promise<T | null> => {
+    try { return await run(); } catch (e) { errors.push({ source, message: e instanceof Error ? e.message : String(e) }); return null; }
+  };
+
+  const [am, fk, ms, sh, adAm, adFk, adMs, gWin, mWin, stockRows] = await Promise.all([
+    attempt("Amazon orders", () => fromPeriodLoader("amazon", periods, productFrom)),
+    attempt("Flipkart orders", () => flipkart(HISTORY_START, asOf, productFrom)),
+    attempt("Meesho orders", () => fromPeriodLoader("meesho", periods, productFrom)),
+    attempt("Shopify orders", () => shopify(HISTORY_START, asOf, productFrom)),
+    attempt("Amazon ads", () => loadMarketplaceAds("amazon", HISTORY_START, asOf)),
+    attempt("Flipkart ads", () => loadMarketplaceAds("flipkart", HISTORY_START, asOf)),
+    attempt("Meesho ads", () => loadMarketplaceAds("meesho", HISTORY_START, asOf)),
+    attempt("Google Ads spend", () => loadSpendWindows("google", HISTORY_START, asOf)),
+    attempt("Meta Ads spend", () => loadSpendWindows("meta", HISTORY_START, asOf)),
+    attempt("Amazon FBA stock", () => fetchAllRows("barm_amazon_fba_inventory", (q) => q, "id", "id,sku,product_name,afn_fulfillable_quantity,snapshot_date,created_at")),
+  ]);
+
+  const empty: DayAgg = new Map();
+  const channels: BiChannel[] = [
+    toChannel("amazon", "Amazon", "Order item price × units, cancelled excluded (as the Amazon Overview)", true, dates, am?.daily ?? empty, am?.dataThrough ?? null),
+    toChannel("flipkart", "Flipkart", "Listing price × units — computed, not settled revenue (as the Flipkart Overview)", true, dates, fk?.daily ?? empty, fk?.dataThrough ?? null),
+    toChannel("meesho", "Meesho", "Quantity × supplier listed price, before returns (as the Meesho Overview)", true, dates, ms?.daily ?? empty, ms?.dataThrough ?? null),
+    toChannel("shopify", "Shopify", "Order totals of non-cancelled orders, incl. shipping and tax", false, dates, sh?.daily ?? empty, null),
+  ];
+  for (const [label, src] of [["Amazon", am], ["Meesho", ms]] as const) {
+    if (src && src.excludedUnits > 0) notes.push(`${label}: ${Math.round(src.excludedUnits).toLocaleString("en-IN")} units sold in the last 30 days are in products with no category ("Other") or marked Discontinued, and are left out — the same rule as the ${label} Overview and weekly report. Map these SKUs in Master to include them.`);
+  }
+  if (fk && fk.unpriced > 0) notes.push(`Flipkart: ${fk.unpriced} SKUs have no listing price, so their units add ₹0 to Flipkart revenue.`);
+
+  const products: BiProduct[] = [
+    ...(am ? toProducts("amazon", am.skus, productDates) : []),
+    ...(fk ? toProducts("flipkart", fk.skus, productDates) : []),
+    ...(ms ? toProducts("meesho", ms.skus, productDates) : []),
+    ...(sh ? toProducts("shopify", sh.skus, productDates) : []),
+  ];
+
+  // ads
+  const ads: BiAdChannel[] = [];
+  const marketAds: [BiAdChannel["id"], string, typeof adAm, string][] = [
+    ["amazon", "Amazon Ads", adAm, "Sales the Amazon ads reports attribute to ads (7/14-day)"],
+    ["flipkart", "Flipkart Ads", adFk, "Revenue the Flipkart ads report attributes to ads"],
+    ["meesho", "Meesho Ads", adMs, "Ad orders × the product's average Meesho price (estimated)"],
+  ];
+  for (const [id, label, rows, basis] of marketAds) {
+    if (!rows) continue;
+    const s = adSeries(dates, rows);
+    ads.push({ id, label, spend: s.spend, sales: s.sales, adsThrough: s.adsThrough, salesBasis: basis });
+  }
+  for (const [id, label, win, channel] of [["google", "Google Ads", gWin, "google_ads"], ["meta", "Meta Ads", mWin, "meta_ads"]] as const) {
+    if (!win) continue;
+    const resolved = resolveDailySpend(win, HISTORY_START, asOf);
+    const spendByDay = new Map(resolved.days.filter((d) => d.source && d.spend !== null).map((d) => [d.date, d.spend as number]));
+    const salesByDay = new Map<string, number>();
+    for (const o of sh?.orders ?? []) if (!o.is_cancelled && o.ad_channel === channel) salesByDay.set(o.order_date, (salesByDay.get(o.order_date) || 0) + o.total);
+    const days = [...spendByDay.keys()].sort();
+    ads.push({
+      id, label, adsThrough: days[days.length - 1] ?? null,
+      spend: dates.map((d) => (spendByDay.has(d) ? spendByDay.get(d)! : null)),
+      sales: dates.map((d) => (spendByDay.has(d) ? salesByDay.get(d) ?? 0 : null)),
+      salesBasis: sh ? `Shopify orders whose visit came from ${label}` : "Shopify orders unavailable",
+    });
+  }
+
+  // campaigns: last 30 days of each marketplace's ads, ending on the earliest last ads day among them
+  const lastAdDays = ads.filter((a) => ["amazon", "flipkart", "meesho"].includes(a.id) && a.adsThrough).map((a) => a.adsThrough!).sort();
+  const cEnd = lastAdDays[0] ?? asOf;
+  const campaignWindow = { start: addDaysIso(cEnd, -29), end: cEnd, prevStart: addDaysIso(cEnd, -59), prevEnd: addDaysIso(cEnd, -30) };
+  const campaigns: BiCampaign[] = [];
+  for (const [id, , rows] of marketAds) {
+    if (!rows) continue;
+    const by = new Map<string, BiCampaign>();
+    for (const r of rows) {
+      const d = String(r.date).slice(0, 10);
+      const cur = d >= campaignWindow.start && d <= campaignWindow.end;
+      const prev = d >= campaignWindow.prevStart && d <= campaignWindow.prevEnd;
+      if (!cur && !prev) continue;
+      const c = by.get(r.name) || { channel: id, name: r.name, spend: 0, sales: 0, orders: 0, prevSpend: 0, prevSales: 0 };
+      if (cur) { c.spend += r.spend; c.sales += r.sales; c.orders += r.orders; } else { c.prevSpend += r.spend; c.prevSales += r.sales; }
+      by.set(r.name, c);
+    }
+    campaigns.push(...by.values());
+  }
+  if (lastAdDays.length && lastAdDays[lastAdDays.length - 1] !== cEnd) notes.push(`Campaign figures cover ${campaignWindow.start} to ${cEnd}, the last day every marketplace's ads are uploaded for.`);
+
+  // stock (Amazon FBA "Available" from the latest uploaded FBA Inventory report)
+  const stock: BiStock[] = [];
+  if (stockRows) {
+    const bySku = new Map<string, BiStock>();
+    for (const r of stockRows as { sku?: string; product_name?: string; afn_fulfillable_quantity?: number; snapshot_date?: string; created_at?: string }[]) {
+      const sku = String(r.sku || "").trim();
+      if (!sku) continue;
+      const cur = bySku.get(sku) || { sku, name: String(r.product_name || sku), available: 0, asOf: r.snapshot_date || (r.created_at ? String(r.created_at).slice(0, 10) : null) };
+      cur.available += Number(r.afn_fulfillable_quantity) || 0;
+      bySku.set(sku, cur);
+    }
+    stock.push(...bySku.values());
+  }
+
+  if (!channels.some((c) => c.id === "shopify" && c.firstDate)) notes.push("Shopify order history is not available.");
+  notes.push("Year-on-year comparisons start in April 2027: order history begins on 15 Apr 2026.");
+
+  return {
+    generatedAt: new Date().toISOString(), asOf, dates, channels, productDates, products, ads,
+    campaignWindow, campaigns, stock, gstMultiplier: DEFAULT_GST_MULTIPLIER, errors, notes,
+  };
+}

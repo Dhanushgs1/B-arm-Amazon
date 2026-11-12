@@ -136,11 +136,18 @@ export function fetchFlipkartOrderSummary(start: string, end: string): Promise<C
   return sharedFetch(`channel-summary:fetchFlipkartOrderSummary:${start}:${end}`, () => fetchFlipkartOrderSummaryUncached(start, end), 120_000);
 }
 
-async function fetchFlipkartOrderSummaryUncached(start: string, end: string): Promise<ChannelSummary> {
-  const periods = periodsFor(start, end);
+/** A Flipkart order line that counts as a sale: not a skeleton row, not cancelled. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function isCountedFlipkartLine(r: any): boolean {
+  return !isFkSkeletonOrderRow(r) && !String(r.order_item_status || "").toUpperCase().startsWith("CANCEL");
+}
+
+/** Flipkart order lines (MIS, plus the daily upload for days MIS does not reach yet), returns and
+ *  listing prices for [rangeStart, end]. Used by the Overview summary and the executive dataset. */
+export async function loadFlipkartOrderData(rangeStart: string, end: string) {
   const [misOrderRows, returnRows, listingRows, misMax] = await Promise.all([
-    fetchMisFkOrders((q) => q.gte("order_date", periods[0].start).lte("order_date", end)),
-    fetchMisFkReturns((q) => q.gte("return_requested_date", periods[0].start).lte("return_requested_date", end)),
+    fetchMisFkOrders((q) => q.gte("order_date", rangeStart).lte("order_date", end)),
+    fetchMisFkReturns((q) => q.gte("return_requested_date", rangeStart).lte("return_requested_date", end)),
     fetchAllRows("barm_flipkart_listings", (q) => q),
     supabasePublic.from("fk_orders").select("order_date").not("order_date", "is", null).order("order_date", { ascending: false }).limit(1),
   ]);
@@ -153,7 +160,7 @@ async function fetchFlipkartOrderSummaryUncached(start: string, end: string): Pr
     { maxDate: (misMax.data?.[0] as { order_date?: string } | undefined)?.order_date ?? null, error: misMax.error },
     misOrderRows.map((r) => r.order_date),
   );
-  const fillFrom = dailyFallbackStart(fkMisMax, periods[0].start, end);
+  const fillFrom = dailyFallbackStart(fkMisMax, rangeStart, end);
   if (fillFrom) {
     const daily = await fetchAllRows("barm_daily_fk_orders", (q) => q.gte("report_date", fillFrom).lte("report_date", end), ["report_date", "id"]);
     const mapped = dedupeOrderLines(daily.map(dailyFkRowAsMis), (r) => r.order_item_status);
@@ -166,6 +173,13 @@ async function fetchFlipkartOrderSummaryUncached(start: string, end: string): Pr
     const price = Number(r.selling_price) || 0;
     if (sku && price > 0 && !priceBySku.has(sku)) priceBySku.set(sku, price);
   });
+  const dates = orderRows.map((r) => r.order_date).filter((d): d is string => !!d).sort();
+  return { orderRows, returnRows, priceBySku, dataThrough: dates.length ? dates[dates.length - 1].slice(0, 10) : null };
+}
+
+async function fetchFlipkartOrderSummaryUncached(start: string, end: string): Promise<ChannelSummary> {
+  const periods = periodsFor(start, end);
+  const { orderRows, returnRows, priceBySku, dataThrough } = await loadFlipkartOrderData(periods[0].start, end);
   const sum = (p: PeriodWindow): PeriodSummary => {
     const inP = (d: string | null | undefined) => !!d && d.slice(0, 10) >= p.start && d.slice(0, 10) <= p.end;
     const ids = new Set<string>();
@@ -175,9 +189,9 @@ async function fetchFlipkartOrderSummaryUncached(start: string, end: string): Pr
     let unpricedUnits = 0;
     const unpricedSkus = new Set<string>();
     orderRows.forEach((r) => {
-      if (!inP(r.order_date) || isFkSkeletonOrderRow(r)) return;
-      if (String(r.order_item_status || "").toUpperCase().startsWith("CANCEL")) {
-        if (r.order_id) cancelledIds.add(r.order_id);
+      if (!inP(r.order_date)) return;
+      if (!isCountedFlipkartLine(r)) {
+        if (!isFkSkeletonOrderRow(r) && r.order_id) cancelledIds.add(r.order_id);
         return;
       }
       const qty = Number(r.quantity) || 0;
@@ -199,13 +213,12 @@ async function fetchFlipkartOrderSummaryUncached(start: string, end: string): Pr
     const cancelledOrders = [...cancelledIds].filter((id) => !ids.has(id)).length;
     return { sales: priceBySku.size ? sales : null, units, orders: ids.size, allReturns, customerReturns, netOrders: units - allReturns, adSpendTax: null, cancelledOrders, unpricedUnits, unpricedSkus: unpricedSkus.size };
   };
-  const dates = orderRows.map((r) => r.order_date).filter((d): d is string => !!d).sort();
   return {
     current: sum(periods[1]),
     previous: sum(periods[0]),
     currentRange: { start, end },
     previousRange: periods[0],
-    dataThrough: dates.length ? dates[dates.length - 1].slice(0, 10) : null,
+    dataThrough,
     note: "From the Flipkart order and returns reports. Sales = listing price × units (computed, like the Flipkart Weekly Sales Report — not settled revenue). Returns include courier returns; Customer Returns excludes them.",
   };
 }
