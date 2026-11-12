@@ -11,13 +11,15 @@ import { loadAmazonSkuPeriodData, type PeriodWindow } from "@/lib/amazonSkuPerio
 import { loadMeeshoSkuPeriodData } from "@/lib/meeshoSkuPeriodData";
 import { loadFlipkartOrderData, isCountedFlipkartLine } from "@/lib/channelSummary";
 import { fetchShopifyOrders } from "@/lib/shopifyOrders";
+import { fetchBarmOnlineOrders } from "@/lib/barmOnlineOrders";
+import { supabasePublic } from "@/lib/supabasePublic";
 import { shopifyCompleteFrom } from "./analytics";
 import { loadMarketplaceAds, loadSpendWindows } from "@/lib/overallData";
 import { resolveDailySpend } from "@/lib/adSpendDailyRules";
 import { fetchAllRows } from "@/lib/amazonReportShared";
 import { DEFAULT_GST_MULTIPLIER } from "@/lib/masterProductSkuid";
 import { addDaysIso } from "@/lib/bi/forecast";
-import type { BiAdChannel, BiCampaign, BiChannel, BiDataset, BiProduct, BiStock, SalesChannelId, Series } from "@/lib/bi/types";
+import type { BiAdChannel, BiCampaign, BiChannel, BiDataset, BiIntervals, BiProduct, BiStock, BiWarehouseStock, SalesChannelId, Series } from "@/lib/bi/types";
 
 /** First day the order history covers (Amazon and Flipkart MIS start on 15 Apr 2026). */
 export const HISTORY_START = "2026-04-15";
@@ -123,6 +125,89 @@ async function flipkart(start: string, end: string, productFrom: string) {
   return { daily, skus, dataThrough, unpriced: [...new Set(orderRows.filter((r) => !priceBySku.has(String(r.sku || "").trim())).map((r) => String(r.sku || "").trim()))].length };
 }
 
+/** A calendar day from the formats the website tables use: "DD-MM-YYYY hh:mm:ss", "DD.MM.YYYY" or ISO. */
+export function parseDay(v: unknown): string | null {
+  const s = String(v ?? "").trim();
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = s.match(/^(\d{1,2})[-./](\d{1,2})[-./](\d{4})/);
+  if (!m || Number(m[2]) < 1 || Number(m[2]) > 12 || Number(m[1]) < 1 || Number(m[1]) > 31) return null;
+  return `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+}
+
+// B-ARM's own website before the move to Shopify: barm_online_orders (with the B-ARM Overview's rules:
+// Received orders only, Order Total Amount once per order), barm_offline_orders (units only — the
+// table has no prices) and barm_website_returns (by received date).
+async function barmWebsite(start: string, end: string, productFrom: string) {
+  const [online, offline, returns] = await Promise.all([
+    fetchBarmOnlineOrders(),
+    fetchAllRows("barm_offline_orders", (q) => q),
+    fetchAllRows("barm_website_returns", (q) => q),
+  ]);
+  const daily: DayAgg = new Map();
+  const skus: SkuDayAgg = new Map();
+  const saleDays: string[] = [];
+  for (const o of online) {
+    const d = o.order_date;
+    if (d < start || d > end) continue;
+    const qty = o.lines.reduce((s, l) => s + l.quantity, 0);
+    addTo(daily, d, o.total, qty, 0); saleDays.push(d);
+    // a multi-product order's total is not split across its products (the B-ARM Overview's rule)
+    if (d >= productFrom) for (const l of o.lines) addSku(skus, l.sku, l.name || l.sku, null, d, l.quantity, o.lines.length === 1 ? o.total : 0, 0);
+  }
+  let offlineUnits = 0;
+  for (const r of offline as Record<string, unknown>[]) {
+    const d = parseDay(r["Date"]);
+    const qty = Number(r["Quantity"]) || 0;
+    if (!d || d < start || d > end || qty <= 0) continue;
+    const revenue = Number(r["Total Price"]) || 0;
+    addTo(daily, d, revenue, qty, 0); saleDays.push(d); offlineUnits += qty;
+    const sku = String(r["SKU ID"] ?? "").trim();
+    if (d >= productFrom && sku) addSku(skus, sku, String(r["Product"] ?? "") || sku, null, d, qty, revenue, 0);
+  }
+  let returnUnits = 0;
+  for (const r of returns as Record<string, unknown>[]) {
+    const d = parseDay(r.received_date) ?? parseDay(r.order_date);
+    const qty = Number(r.quantity) || 0;
+    if (!d || d < start || d > end || qty <= 0) continue;
+    addTo(daily, d, 0, 0, qty); returnUnits += qty;
+    const sku = String(r.sku_id ?? "").trim();
+    if (d >= productFrom && sku && skus.has(sku)) addSku(skus, sku, "", null, d, 0, 0, qty);
+  }
+  const last = saleDays.sort().pop() ?? null;
+  const onlineThrough = online.map((o) => o.order_date).sort().pop() ?? null;
+  return { daily, skus, dataThrough: last, onlineThrough, offlineUnits, returnUnits, orders: online.length };
+}
+
+/** Warehouse stock per master product: current_stock's "Final Stock in Warehouse", replaced by
+ *  current_stock_override where someone has edited it. */
+async function warehouseStock(): Promise<BiWarehouseStock[]> {
+  const [cur, ovr] = await Promise.all([fetchAllRows("current_stock", (q) => q), fetchAllRows("current_stock_override", (q) => q, "product")]);
+  const out = new Map<string, BiWarehouseStock>();
+  for (const r of cur as Record<string, unknown>[]) {
+    const product = String(r["Product name"] ?? "").trim();
+    if (!product) continue;
+    out.set(product.toLowerCase(), { product, stock: Number(r["Final Stock in Warehouse"]) || 0, source: "current_stock", asOf: r.created_at ? String(r.created_at).slice(0, 10) : null });
+  }
+  for (const r of ovr as Record<string, unknown>[]) {
+    const product = String(r.product ?? "").trim();
+    if (!product) continue;
+    out.set(product.toLowerCase(), { product, stock: Number(r.stock) || 0, source: "override", asOf: r.edited_at ? String(r.edited_at).slice(0, 10) : null });
+  }
+  return [...out.values()];
+}
+
+/** The report window from the single row of Intervals. */
+async function intervals(): Promise<BiIntervals | null> {
+  const { data, error } = await supabasePublic.from("Intervals").select("*").order("id", { ascending: false }).limit(1);
+  if (error) throw new Error(`Intervals: ${error.message}`);
+  const r = data?.[0] as Record<string, unknown> | undefined;
+  if (!r) return null;
+  const v = { from30: parseDay(r["From Date 30D"]), to30: parseDay(r["To Date 30D"]), from7: parseDay(r["From Date 7D"]), to7: parseDay(r["To Date 7D"]) };
+  if (!v.from30 || !v.to30 || !v.from7 || !v.to7 || v.from30 > v.to30 || v.from7 > v.to7) return null;
+  return { from30: v.from30, to30: v.to30, from7: v.from7, to7: v.to7, setAt: r.created_at ? String(r.created_at).slice(0, 10) : null };
+}
+
 async function shopify(start: string, end: string, productFrom: string) {
   const all = await fetchShopifyOrders();
   const completeFrom = shopifyCompleteFrom(all);
@@ -185,9 +270,12 @@ export async function buildBiDataset(): Promise<BiDataset> {
     const meesho = await attempt("Meesho orders", () => fromPeriodLoader("meesho", periods, productFrom));
     return [amazon, flip, meesho] as const;
   })();
-  const [[am, fk, ms], sh, adAm, adFk, adMs, gWin, mWin, stockRows] = await Promise.all([
+  const [[am, fk, ms], sh, web, wh, iv, adAm, adFk, adMs, gWin, mWin, stockRows] = await Promise.all([
     heavy,
     attempt("Shopify orders", () => shopify(HISTORY_START, asOf, productFrom)),
+    attempt("B-ARM website orders", () => barmWebsite(HISTORY_START, asOf, productFrom)),
+    attempt("Warehouse stock", warehouseStock),
+    attempt("Intervals", intervals),
     attempt("Amazon ads", () => loadMarketplaceAds("amazon", HISTORY_START, asOf)),
     attempt("Flipkart ads", () => loadMarketplaceAds("flipkart", HISTORY_START, asOf)),
     attempt("Meesho ads", () => loadMarketplaceAds("meesho", HISTORY_START, asOf)),
@@ -202,11 +290,15 @@ export async function buildBiDataset(): Promise<BiDataset> {
     toChannel("flipkart", "Flipkart", "Listing price × units — computed, not settled revenue (as the Flipkart Overview)", true, dates, fk?.daily ?? empty, fk?.dataThrough ?? null),
     toChannel("meesho", "Meesho", "Quantity × supplier listed price, before returns (as the Meesho Overview)", true, dates, ms?.daily ?? empty, ms?.dataThrough ?? null),
     toChannel("shopify", "Shopify", "Order totals of non-cancelled orders, incl. shipping and tax", false, dates, sh?.daily ?? empty, null),
+    // still active: offline orders keep coming after the website moved to Shopify
+    toChannel("barm", "B-ARM website & offline", "Old website (WooCommerce) order totals of Received orders, plus offline orders (units only — no prices on file)", true, dates, web?.daily ?? empty, web?.dataThrough ?? null),
   ];
   for (const [label, src] of [["Amazon", am], ["Meesho", ms]] as const) {
     if (src && src.excludedUnits > 0) notes.push(`${label}: ${Math.round(src.excludedUnits).toLocaleString("en-IN")} units sold in the last 30 days are in products with no category ("Other") or marked Discontinued, and are left out — the same rule as the ${label} Overview and weekly report. Map these SKUs in Master to include them.`);
   }
   if (sh && sh.skippedOrders > 0) notes.push(`Shopify: order history before ${sh.completeFrom!.split("-").reverse().join(".")} has gaps in the order numbers (orders before the webhooks went live were only partly back-filled), so Shopify is counted from that date. ${sh.skippedOrders} earlier orders are left out.`);
+  if (web) notes.push(`B-ARM website: website orders (barm_online_orders) run to ${web.onlineThrough ? web.onlineThrough.split("-").reverse().join(".") : "—"}, when the site moved to Shopify; since then this channel is offline orders only. Offline orders (barm_offline_orders, ${web.offlineUnits.toLocaleString("en-IN")} units) have no prices, so they add units but no revenue. Returns come from barm_website_returns (${web.returnUnits} units).`);
+  if (wh && wh.length === 0) notes.push("Warehouse stock: current_stock and current_stock_override can only be read by signed-in database users, so the dashboard (public key) gets no rows. The warehouse column stays empty until read access is granted — a database security change, held with Phase 6.");
   if (fk && fk.unpriced > 0) notes.push(`Flipkart: ${fk.unpriced} SKUs have no listing price, so their units add ₹0 to Flipkart revenue.`);
 
   const products: BiProduct[] = [
@@ -214,6 +306,7 @@ export async function buildBiDataset(): Promise<BiDataset> {
     ...(fk ? toProducts("flipkart", fk.skus, productDates) : []),
     ...(ms ? toProducts("meesho", ms.skus, productDates) : []),
     ...(sh ? toProducts("shopify", sh.skus, productDates) : []),
+    ...(web ? toProducts("barm", web.skus, productDates) : []),
   ];
 
   // ads
@@ -284,6 +377,6 @@ export async function buildBiDataset(): Promise<BiDataset> {
 
   return {
     generatedAt: new Date().toISOString(), asOf, dates, channels, productDates, products, ads,
-    campaignWindow, campaigns, stock, gstMultiplier: DEFAULT_GST_MULTIPLIER, errors, notes,
+    campaignWindow, campaigns, stock, warehouse: wh ?? [], intervals: iv ?? null, gstMultiplier: DEFAULT_GST_MULTIPLIER, errors, notes,
   };
 }

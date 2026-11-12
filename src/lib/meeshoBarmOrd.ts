@@ -20,6 +20,9 @@ import { sharedFetch } from "@/lib/sharedFetch";
 
 export const MEESHO_ORDERS_TABLE = "meesho_barm_ord";
 export const MEESHO_DAILY_ORDERS_TABLE = "barm_daily_ms_barm_orders";
+/** The second Meesho account (MW). Same columns as meesho_barm_ord; its orders are added to BARM's
+ *  (Sub Order Nos are unique per account, so nothing is counted twice). Empty until MW data is loaded. */
+export const MEESHO_MW_ORDERS_TABLE = "meesho_mw_ord";
 
 const MONTHS: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
@@ -64,14 +67,15 @@ export interface MeeshoOrderRow {
   raw: Record<string, unknown>;
 }
 
-/** Every Meesho order in meesho_barm_ord + barm_daily_ms_barm_orders, one row per Sub Order No (latest load wins). */
+/** Every Meesho order in meesho_barm_ord + meesho_mw_ord + barm_daily_ms_barm_orders, one row per Sub Order No (latest load wins). */
 export function fetchMeeshoOrderRows(): Promise<MeeshoOrderRow[]> {
   return sharedFetch(MEESHO_ORDERS_TABLE, loadMeeshoOrderRows);
 }
 
 async function loadMeeshoOrderRows(): Promise<MeeshoOrderRow[]> {
-  const [raw, daily] = await Promise.all([
+  const [raw, mw, daily] = await Promise.all([
     fetchAllRows(MEESHO_ORDERS_TABLE, (q) => q),
+    fetchAllRows(MEESHO_MW_ORDERS_TABLE, (q) => q),
     fetchAllRows(MEESHO_DAILY_ORDERS_TABLE, (q) => q),
   ]);
   const latest = new Map<string, MeeshoOrderRow>();
@@ -81,6 +85,7 @@ async function loadMeeshoOrderRows(): Promise<MeeshoOrderRow[]> {
     if (!prev || row.created_at > prev.created_at) latest.set(row.sub_order_no, row);
   };
   raw.forEach((r) => keep(fromMeeshoBarmOrd(r)));
+  mw.forEach((r) => keep(fromMeeshoBarmOrd(r)));
   daily.forEach((r) => keep(fromDailyUpload(r)));
   return [...latest.values()];
 }
@@ -151,6 +156,10 @@ export const MEESHO_RETURN_TABLES = [
   { table: "meesho_barm_return_intransit", stage: "In Transit", rank: 1 },
   { table: "meesho_barm_return_ofd", stage: "Out for Delivery", rank: 2 },
   { table: "meesho_barm_return_delivered", stage: "Delivered", rank: 3 },
+  // MW account: same columns and stages (empty until MW data is loaded)
+  { table: "meesho_mw_return_intransit", stage: "In Transit", rank: 1 },
+  { table: "meesho_mw_return_ofd", stage: "Out for Delivery", rank: 2 },
+  { table: "meesho_mw_return_delivered", stage: "Delivered", rank: 3 },
 ] as const;
 
 const RETURN_DATE_COLUMNS = ["Dispatch Date", "Return Created Date", "Expected Delivery Date", "Delivered Date"];

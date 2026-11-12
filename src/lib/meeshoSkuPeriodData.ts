@@ -11,7 +11,7 @@ import type { WeeklySkuPeriodData } from "@/lib/weeklySalesExport";
 // Meesho Weekly Sales Report runs through weeklySalesExport.ts's exact sheets and formulas (the
 // seller asked for Meesho to be calculated the same way as the Amazon weekly report, 29 Sep 2026).
 //
-//   Orders           = units in meesho_barm_ord, every status except CANCELLED, by Order Date.
+//   Orders           = units in meesho_barm_ord + meesho_mw_ord, every status except CANCELLED, by Order Date.
 //   All Returns      = units in meesho_barm_return_intransit / _ofd / _delivered, each Suborder
 //                      Number once, by Return Created Date (customer returns and courier RTO).
 //   Customer Returns = the "Customer Return" rows of All Returns (courier RTO excluded), like Amazon.

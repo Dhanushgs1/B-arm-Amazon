@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { addDaysIso } from "./forecast.ts";
 import {
   windowEnding, previousWindow, monthToDate, daysInMonth, totals, likeForLike, productRows, rankProducts,
-  healthScore, buildInsights, channelForecasts, shopifyCompleteFrom, shortName, combineForecasts, monthEndEstimate, campaignFindings, adChannels,
+  healthScore, buildInsights, channelForecasts, shopifyCompleteFrom, shortName, reportWindow, combineForecasts, monthEndEstimate, campaignFindings, adChannels,
 } from "./analytics.ts";
 import type { BiDataset, Series } from "./types.ts";
 
@@ -34,6 +34,8 @@ function dataset(): BiDataset {
       { channel: "amazon", name: "Star", spend: 2000, sales: 20000, orders: 50, prevSpend: 2000, prevSales: 18000 },
     ],
     stock: [{ sku: "RISE", name: "Riser", available: 30, asOf }],
+    warehouse: [{ product: "Riser", stock: 400, source: "override", asOf }],
+    intervals: null,
     gstMultiplier: 1.18, errors: [], notes: [],
   };
 }
@@ -132,4 +134,30 @@ test("month-end estimate: a channel last uploaded in the previous month only for
   // 30 November days at about 1,000 a day; the 2 October days after the last upload are not counted
   assert.ok(Math.abs(me.estimate - 30000) < 300, `estimate ${me.estimate}`);
   assert.equal(me.actualSoFar, 0);
+});
+
+test("Intervals set the 30- and 7-day windows exactly; 90 days ends on its To date", () => {
+  const ds = dataset();
+  ds.intervals = { from30: "2026-10-07", to30: "2026-11-05", from7: "2026-10-30", to7: "2026-11-05", setAt: null };
+  assert.deepEqual(reportWindow(ds, 30, "2026-11-10"), { start: "2026-10-07", end: "2026-11-05", days: 30 });
+  assert.deepEqual(reportWindow(ds, 7, "2026-11-10"), { start: "2026-10-30", end: "2026-11-05", days: 7 });
+  assert.equal(reportWindow(ds, 90, "2026-11-10").end, "2026-11-05");
+  ds.intervals = null;
+  assert.equal(reportWindow(ds, 30, "2026-11-10").end, "2026-11-10");
+});
+
+test("a closed channel stays in history but is not forecast or ranked", () => {
+  const ds = dataset();
+  ds.channels.push({ id: "barm", label: "B-ARM website", basis: "b", firstDate: START, dataThrough: dates[60], revenue: ser((i) => (i <= 60 ? 500 : null)), units: ser((i) => (i <= 60 ? 2 : null)), returns: ser(() => 0), returnsTracked: true, closedNote: "Moved to Shopify" });
+  ds.products.push({ channel: "barm", sku: "OLD", name: "Old", category: null, units: dates.map(() => 1), revenue: dates.map(() => 10), returns: dates.map(() => 0) });
+  assert.ok(!channelForecasts(ds).some((f) => f.id === "barm"));
+  assert.ok(!productRows(ds, 30).some((r) => r.channel === "barm"));
+});
+
+test("warehouse stock is matched to products by name", () => {
+  const rows = productRows(dataset(), 30);
+  const riser = rows.find((r) => r.sku === "RISE")!;
+  assert.equal(riser.warehouse, 400);
+  assert.equal(riser.warehouseSource, "override");
+  assert.equal(rows.find((r) => r.sku === "FALL")!.warehouse, null);
 });

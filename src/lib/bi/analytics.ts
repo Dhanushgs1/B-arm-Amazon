@@ -119,13 +119,23 @@ export function shopifyCompleteFrom(orders: { order_number: number; order_date: 
   return byNumber[i].order_date;
 }
 
+/** The report windows. With an Intervals row, 30 and 7 days are exactly its From/To dates (as the
+ *  weekly reports use) and 90 days ends on its To date; otherwise they end on `fallbackEnd`. */
+export function reportWindow(ds: BiDataset, days: 7 | 30 | 90, fallbackEnd: string): Window {
+  const iv = ds.intervals;
+  if (iv && days === 30) return { start: iv.from30, end: iv.to30, days: dayDiff(iv.from30, iv.to30) + 1 };
+  if (iv && days === 7) return { start: iv.from7, end: iv.to7, days: dayDiff(iv.from7, iv.to7) + 1 };
+  return windowEnding(iv ? iv.to30 : fallbackEnd, days);
+}
+const dayDiff = (a: string, b: string) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86_400_000);
+
 // ── Forecasts ─────────────────────────────────────────────────────────────────────────────────
 
 export interface ChannelForecast { id: SalesChannelId; label: string; revenue: Forecast; units: Forecast; lastActual: string | null }
 
 /** Each channel forecast from its own last day with data (channels are uploaded on different days). */
 export function channelForecasts(ds: BiDataset, only?: SalesChannelId[]): ChannelForecast[] {
-  return ds.channels.filter((c) => !only || only.includes(c.id)).map((c) => {
+  return ds.channels.filter((c) => !c.closedNote && (!only || only.includes(c.id))).map((c) => {
     const last = c.dataThrough ? ds.dates.indexOf(c.dataThrough) : -1;
     const dates = last >= 0 ? ds.dates.slice(0, last + 1) : [];
     return {
@@ -209,6 +219,10 @@ export interface ProductRow {
   stock: number | null;
   /** Date of the stock file the figure comes from. */
   stockAsOf: string | null;
+  /** Warehouse (godown) stock for this product from current_stock / current_stock_override, matched by product name. */
+  warehouse: number | null;
+  warehouseAsOf: string | null;
+  warehouseSource: "override" | "current_stock" | null;
   daysOfCover: number | null;
   reason: string;
 }
@@ -223,11 +237,13 @@ export function productRows(ds: BiDataset, days = 30, only?: SalesChannelId[]): 
   const pd = ds.productDates;
   const stockBySku = new Map(ds.stock.map((s) => [s.sku.trim().toUpperCase(), s.available]));
   const stockAsOf = ds.stock.map((s) => s.asOf).filter((d): d is string => !!d).sort().pop() ?? null;
+  const whByName = new Map((ds.warehouse ?? []).map((w) => [w.product.trim().toLowerCase().replace(/\s+/g, " "), w]));
   const rows: ProductRow[] = [];
   for (const p of ds.products) {
     if (only && !only.includes(p.channel)) continue;
     const ch = ds.channels.find((c) => c.id === p.channel);
-    if (!ch?.dataThrough) continue;
+    // a closed channel's "last 30 days" would be months old: it is not ranked
+    if (!ch?.dataThrough || ch.closedNote) continue;
     const end = lastIndexOnOrBefore(pd, ch.dataThrough);
     if (end < days * 2 - 1) continue;
     const sum = (xs: number[], from: number, to: number) => xs.slice(from, to + 1).reduce((s, v) => s + v, 0);
@@ -242,6 +258,7 @@ export function productRows(ds: BiDataset, days = 30, only?: SalesChannelId[]): 
       units, revenue, prevUnits, prevRevenue, growthPct: pctChange(revenue, prevRevenue),
       returns, returnRatePct: ch.returnsTracked && units > 0 ? (returns / units) * 100 : null,
       weekly, avgDailyUnits, stock, stockAsOf: stock === null ? null : stockAsOf,
+      ...(() => { const w = whByName.get(p.name.trim().toLowerCase().replace(/\s+/g, " ")); return { warehouse: w ? w.stock : null, warehouseAsOf: w?.asOf ?? null, warehouseSource: w?.source ?? null }; })(),
       daysOfCover: stock !== null && avgDailyUnits > 0 ? stock / avgDailyUnits : null,
       reason: "",
     });
@@ -281,7 +298,7 @@ export function rankProducts(rows: ProductRow[], limit = 10): Rankings {
       (r) => `${r.returns} returns on ${r.units} units (${r.returnRatePct!.toFixed(0)}%)`),
     stockRisk: [...rows.filter((r) => r.daysOfCover !== null && r.avgDailyUnits >= 1 && r.daysOfCover < 14)]
       .sort((a, b) => a.daysOfCover! - b.daysOfCover!).slice(0, limit)
-      .map((r) => ({ ...r, reason: `${r.stock} units available in FBA${r.stockAsOf ? ` on ${r.stockAsOf.split("-").reverse().join(".")}` : ""}, selling ${r.avgDailyUnits.toFixed(1)}/day → about ${Math.floor(r.daysOfCover!)} days of cover at that date${r.stock === 0 ? " — yet it kept selling, so orders are probably shipped by the seller; check before restocking" : ""}` })),
+      .map((r) => ({ ...r, reason: `${r.stock} units available in FBA${r.stockAsOf ? ` on ${r.stockAsOf.split("-").reverse().join(".")}` : ""}, selling ${r.avgDailyUnits.toFixed(1)}/day → about ${Math.floor(r.daysOfCover!)} days of cover at that date${r.stock === 0 ? (r.warehouse ? ` — the warehouse holds ${r.warehouse} (${r.warehouseSource === "override" ? "edited" : "stock sheet"} ${r.warehouseAsOf ? r.warehouseAsOf.split("-").reverse().join(".") : ""}), so orders are probably shipped from there` : " — yet it kept selling, so orders are probably shipped by the seller; check before restocking") : r.warehouse !== null ? `; ${r.warehouse} more in the warehouse` : ""}` })),
   };
 }
 
@@ -354,7 +371,7 @@ export function healthScore(ds: BiDataset, w: Window): { score: number | null; p
   const covered = topAmazon.filter((r) => (r.daysOfCover ?? Infinity) >= 14).length;
   const returnsCh = ds.channels.filter((c) => c.returnsTracked && t.included.includes(c.id));
   const rt = totals(ds, w, returnsCh.map((c) => c.id));
-  const lags = ds.channels.filter((c) => c.dataThrough).map((c) => Math.round((Date.parse(ds.asOf) - Date.parse(c.dataThrough!)) / 86_400_000));
+  const lags = ds.channels.filter((c) => c.dataThrough && !c.closedNote).map((c) => Math.round((Date.parse(ds.asOf) - Date.parse(c.dataThrough!)) / 86_400_000));
   const parts: HealthPart[] = [
     { name: "Sales momentum", weight: 30, score: lfl.revenuePct === null ? null : lerp(lfl.revenuePct, -20, 20),
       detail: lfl.revenuePct === null ? "Not enough comparable data" : `Revenue ${fmtPct(lfl.revenuePct)} vs the previous ${w.days} days (${lfl.channels.length} channels)`,

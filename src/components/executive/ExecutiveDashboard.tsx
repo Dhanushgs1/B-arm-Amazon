@@ -13,7 +13,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { cn } from "@/lib/utils";
 import { addDaysIso } from "@/lib/bi/forecast";
 import {
-  windowEnding, previousWindow, monthToDate, likeForLike, totals, channelPeriod, channelForecasts, combineForecasts,
+  windowEnding, reportWindow, previousWindow, monthToDate, likeForLike, totals, channelPeriod, channelForecasts, combineForecasts,
   monthEndEstimate, productRows, rankProducts, adChannels, campaignFindings, healthScore, buildInsights, monthly,
   sumWindow, pctChange, type Insight, type ProductRow, type Window,
 } from "@/lib/bi/analytics";
@@ -30,9 +30,9 @@ const dayLabel = (iso: string) => new Date(`${iso}T00:00:00Z`).toLocaleDateStrin
 const monthLabel = (ym: string) => new Date(`${ym}-01T00:00:00Z`).toLocaleDateString("en-IN", { month: "short", year: "2-digit", timeZone: "UTC" });
 
 const CH_COLOR: Record<SalesChannelId, string> = {
-  amazon: "var(--series-amazon)", flipkart: "var(--series-flipkart)", meesho: "var(--series-meesho)", shopify: "var(--series-shopify)",
+  amazon: "var(--series-amazon)", flipkart: "var(--series-flipkart)", meesho: "var(--series-meesho)", shopify: "var(--series-shopify)", barm: "var(--series-barm)",
 };
-const CH_HREF: Record<string, string> = { amazon: "/dashboard", flipkart: "/dashboard/flipkart", meesho: "/dashboard/meesho", shopify: "/dashboard/shopify", google: "/dashboard/shopify/sources", meta: "/dashboard/shopify/sources" };
+const CH_HREF: Record<string, string> = { amazon: "/dashboard", flipkart: "/dashboard/flipkart", meesho: "/dashboard/meesho", shopify: "/dashboard/shopify", barm: "/dashboard/barm", google: "/dashboard/shopify/sources", meta: "/dashboard/shopify/sources" };
 
 // ── small building blocks ─────────────────────────────────────────────────────────────────────
 function Section({ title, subtitle, children, action, id }: { title: string; subtitle?: string; children: React.ReactNode; action?: React.ReactNode; id?: string }) {
@@ -155,10 +155,13 @@ function Overview({ ds, refreshing, onRefresh }: { ds: Dataset; refreshing: bool
   const sel = useMemo(() => (only === "all" ? undefined : [only]), [only]);
   // KPIs end on the last day every included channel has data, so a channel uploaded later does not drop out.
   const reportEnd = useMemo(() => {
-    const ends = ds.channels.filter((c) => c.dataThrough && (!sel || sel.includes(c.id))).map((c) => c.dataThrough!).sort();
-    return ends[0] ?? ds.asOf;
+    const ends = ds.channels.filter((c) => c.dataThrough && !c.closedNote && (!sel || sel.includes(c.id))).map((c) => c.dataThrough!).sort();
+    const fallback = ends[0] ?? ds.asOf;
+    // with an Intervals row, the report runs to its To date (the same window as the weekly reports)
+    return ds.intervals ? ds.intervals.to30 : fallback;
   }, [ds, sel]);
-  const w: Window = windowEnding(reportEnd, Number(periodId));
+  const w: Window = reportWindow(ds, Number(periodId) as 7 | 30 | 90, reportEnd);
+  const w30: Window = reportWindow(ds, 30, reportEnd);
   const prev = previousWindow(w);
 
   const a = useMemo(() => {
@@ -173,12 +176,12 @@ function Overview({ ds, refreshing, onRefresh }: { ds: Dataset; refreshing: bool
     const ranks = rankProducts(rows, 10);
     const ads = adChannels(ds, w);
     const camp = campaignFindings(ds);
-    const health = healthScore(ds, windowEnding(reportEnd, 30));
-    const insights = buildInsights(ds, windowEnding(reportEnd, 30));
+    const health = healthScore(ds, w30);
+    const insights = buildInsights(ds, w30);
     return { lfl, cur, mtd, mtdL, fcs, horizons, me, ranks, ads, camp, health, insights, months: monthly(ds) };
   }, [ds, w.start, w.end, prev.start, sel?.[0]]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const latest = ds.channels.filter((c) => c.dataThrough && (!sel || sel.includes(c.id))).map((c) => {
+  const latest = ds.channels.filter((c) => c.dataThrough && !c.closedNote && (!sel || sel.includes(c.id))).map((c) => {
     const i = ds.dates.indexOf(c.dataThrough!);
     return { c, day: c.dataThrough!, revenue: c.revenue[i], dayBefore: i > 0 ? c.revenue[i - 1] : null };
   });
@@ -192,7 +195,7 @@ function Overview({ ds, refreshing, onRefresh }: { ds: Dataset; refreshing: bool
         <div className="min-w-0">
           <h1 className="text-2xl font-bold tracking-tight text-foreground">Business overview</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            {dot(w.start)} – {dot(w.end)} vs {dot(prev.start)} – {dot(prev.end)} · data as of each channel&apos;s last upload
+            {dot(w.start)} – {dot(w.end)} vs {dot(prev.start)} – {dot(prev.end)} · {ds.intervals && periodId !== "90" ? "report window from Intervals" : ds.intervals ? "ending on the Intervals To date" : "data as of each channel's last upload"}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -212,8 +215,8 @@ function Overview({ ds, refreshing, onRefresh }: { ds: Dataset; refreshing: bool
             <span key={c.id} className="inline-flex items-center gap-1.5 text-xs rounded-full border border-border bg-card px-2.5 py-1">
               <span className="w-2 h-2 rounded-full" style={{ background: CH_COLOR[c.id] }} aria-hidden="true" />
               <span className="font-semibold text-foreground">{c.label}</span>
-              <span className={cn("text-muted-foreground", lag !== null && lag > 3 && "text-amber-700 dark:text-amber-400 font-semibold")}>
-                {c.dataThrough ? `through ${dayLabel(c.dataThrough)}` : "no data"}
+              <span className={cn("text-muted-foreground", !c.closedNote && lag !== null && lag > 3 && "text-amber-700 dark:text-amber-400 font-semibold")}>
+                {c.closedNote ? `history to ${c.dataThrough ? dayLabel(c.dataThrough) : "—"} · ${c.closedNote}` : c.dataThrough ? `through ${dayLabel(c.dataThrough)}` : "no data"}
               </span>
             </span>
           );
@@ -338,7 +341,7 @@ function TrendChart({ ds, sel, fcs }: { ds: BiDataset; sel?: SalesChannelId[]; f
     const chans = ds.channels.filter((c) => !sel || sel.includes(c.id));
     const fcOk = fcs.filter((f) => f.revenue.ok);
     // actuals: last 90 days up to the earliest last-upload among channels (so the line never drops at a ragged end)
-    const end = chans.map((c) => c.dataThrough).filter(Boolean).sort()[0] ?? ds.asOf;
+    const end = chans.filter((c) => !c.closedNote || chans.length === 1).map((c) => c.dataThrough).filter(Boolean).sort()[0] ?? ds.asOf;
     const endIdx = ds.dates.indexOf(end);
     const rows: Record<string, number | string | null | [number, number]>[] = [];
     for (let i = Math.max(0, endIdx - 89); i <= endIdx; i++) {
@@ -490,7 +493,7 @@ function ChannelTable({ ds, w, sel, ads }: { ds: BiDataset; w: Window; sel?: Sal
   return (
     <Section title="Marketplace comparison" subtitle={`Last ${w.days} days vs the ${w.days} before. Profit per channel is not shown: there is no reliable product cost data yet.`}>
       <div className="overflow-x-auto">
-        <table className="w-full text-sm min-w-[720px]">
+        <table className="w-full text-sm min-w-[800px]">
           <thead><tr className="text-left text-xs text-muted-foreground border-b border-border">
             {["Channel", "Revenue", "Share", "Growth", "Units", "Return rate", "Ad spend (incl. GST)", "TACOS"].map((h, i) => <th key={h} scope="col" className={cn("py-2 pr-3 font-semibold", i > 0 && "text-right")}>{h}</th>)}
           </tr></thead>
@@ -532,7 +535,7 @@ function ProductSection({ ranks }: { ranks: ReturnType<typeof rankProducts> }) {
         <div className="overflow-x-auto">
           <table className="w-full text-sm min-w-[720px]">
             <thead><tr className="text-left text-xs text-muted-foreground border-b border-border">
-              {["#", "Product", "Channel", "Units", "Revenue", "Growth", "Why it's here"].map((h, i) => <th key={h} scope="col" className={cn("py-2 pr-3 font-semibold", i >= 3 && i <= 5 && "text-right")}>{h}</th>)}
+              {["#", "Product", "Channel", "Units", "Revenue", "Growth", "Stock", "Why it's here"].map((h, i) => <th key={h} scope="col" className={cn("py-2 pr-3 font-semibold", i >= 3 && i <= 6 && "text-right")}>{h}</th>)}
             </tr></thead>
             <tbody className="divide-y divide-border">
               {rows.map((p, i) => (
@@ -543,6 +546,11 @@ function ProductSection({ ranks }: { ranks: ReturnType<typeof rankProducts> }) {
                   <td className="py-2.5 pr-3 text-right tabular-nums">{num(p.units)}</td>
                   <td className="py-2.5 pr-3 text-right tabular-nums">{inr(p.revenue)}</td>
                   <td className="py-2.5 pr-3 text-right"><Change pct={p.growthPct} label="new" /></td>
+                  <td className="py-2.5 pr-3 text-right text-xs tabular-nums whitespace-nowrap">
+                    {p.stock !== null && <p title={p.stockAsOf ? `Amazon FBA available on ${dot(p.stockAsOf)}` : "Amazon FBA available"}>FBA {num(p.stock)}</p>}
+                    {p.warehouse !== null && <p className="text-muted-foreground" title={`${p.warehouseSource === "override" ? "Edited stock (current_stock_override)" : "current_stock sheet"}${p.warehouseAsOf ? ` on ${dot(p.warehouseAsOf)}` : ""}`}>WH {num(p.warehouse)}{p.warehouseAsOf ? ` · ${dot(p.warehouseAsOf).slice(0, 5)}` : ""}</p>}
+                    {p.stock === null && p.warehouse === null && <span className="text-muted-foreground">—</span>}
+                  </td>
                   <td className="py-2.5 text-xs text-muted-foreground">{p.reason}</td>
                 </tr>
               ))}
