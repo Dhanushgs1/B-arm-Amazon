@@ -305,12 +305,6 @@ async function fetchFlipkartOrderSummaryUncached(start: string, end: string): Pr
 // returns (Amazon: order item prices; Flipkart: listing price × units; Meesho: Quantity × Supplier
 // Listed Price; BARM: Order Total Amount once per order). Ad spend includes 18% GST.
 
-async function spendTaxIn(table: string, col: string, start: string, end: string): Promise<number> {
-  const rows = await fetchAllRows(table, (q) => q.gte("report_date", start).lte("report_date", end));
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (rows as any[]).reduce((t, r) => t + (Number(r[col]) || 0), 0) * DEFAULT_GST_MULTIPLIER;
-}
-
 /** Amazon ad spend (with GST) the same way the Ad Spend Report counts it: every Sponsored Products
  *  row (which already carries the seller's per-SKU split of Brand/Display spend) plus each Sponsored
  *  Brands / Display campaign-day that has no such split, so nothing is counted twice. */
@@ -372,16 +366,18 @@ export function fetchFlipkartAllSummary(start: string, end: string): Promise<Cha
 
 async function fetchFlipkartAllSummaryUncached(start: string, end: string): Promise<ChannelSummary> {
   const prev = previousRange(start, end);
-  const [s, cur, before] = await Promise.all([
-    fetchFlipkartOrderSummary(start, end),
-    spendTaxIn("barm_flipkart_fsn_report", "ad_spend", start, end),
-    spendTaxIn("barm_flipkart_fsn_report", "ad_spend", prev.start, prev.end),
-  ]);
+  // Ad spend: the daily Flipkart ads upload, with the older campaign-performance upload for the days
+  // before it began (loadMarketplaceAds — the same rows as the Overall page and the Flipkart page).
+  const { loadMarketplaceAds } = await import("@/lib/overallData");
+  const [s, adRows] = await Promise.all([fetchFlipkartOrderSummary(start, end), loadMarketplaceAds("flipkart", prev.start, end)]);
+  const spendIn = (a: string, b: string) => adRows.filter((r) => r.date >= a && r.date <= b).reduce((t, r) => t + r.spend, 0) * DEFAULT_GST_MULTIPLIER;
+  const cur = spendIn(start, end);
+  const before = spendIn(prev.start, prev.end);
   return {
     ...s,
     current: { ...s.current, adSpendTax: cur },
     previous: { ...s.previous, adSpendTax: before },
     salesLabel: "Gross Sales",
-    note: `${s.note ?? ""} Ad spend: FSN report.`.trim(),
+    note: `${s.note ?? ""} Ad spend: Flipkart ads uploads.`.trim(),
   };
 }

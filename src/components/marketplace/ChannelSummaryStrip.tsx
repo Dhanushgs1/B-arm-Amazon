@@ -125,14 +125,12 @@ export function ChannelSummaryStrip({
               They are counted in Orders but add ₹0 to {data.salesLabel ?? "Sales"}, so {data.salesLabel ?? "Sales"} is understated. Upload the current listings file to price them.
             </p>
           )}
-          <p className="text-[11px] text-muted-foreground">
-            {data.note}
-            {data.dataThrough && data.dataThrough < data.currentRange.end
-              ? ` ⚠ Data only goes up to ${dot(data.dataThrough)}, so the last ${Math.round(
-                  (Date.parse(data.currentRange.end) - Date.parse(data.dataThrough)) / 86_400_000
-                )} day(s) of the selected range read as zero.`
-              : ""}
-          </p>
+          {/* the source note (data.note) is not shown here, by request (12 Nov 2026); only a data gap is flagged */}
+          {data.dataThrough && data.dataThrough < data.currentRange.end && (
+            <p className="text-[11px] text-muted-foreground">
+              ⚠ Data only goes up to {dot(data.dataThrough)}, so the last {Math.round((Date.parse(data.currentRange.end) - Date.parse(data.dataThrough)) / 86_400_000)} day(s) of the selected range read as zero.
+            </p>
+          )}
         </>
       )}
     </div>

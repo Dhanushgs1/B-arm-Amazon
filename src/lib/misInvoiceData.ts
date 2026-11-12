@@ -23,15 +23,32 @@ async function edgeMonth(m: MisMarketplace, ascending: boolean): Promise<string 
 
 const coverageCache = new Map<MisMarketplace, { at: number; value: Promise<MisCoverage | null> }>();
 
-/** First and last day the ERP's invoice reports cover for a marketplace (whole report months).
- *  Kept for 30 minutes: it moves once a month, when a new month's reports are uploaded. */
+/** Last invoice day on file in the ERP's newest report month (null when none can be read). */
+async function lastDayIn(m: MisMarketplace, month: string): Promise<string | null> {
+  for (let i = 0; ; i++) {
+    const { data, error } = await supabasePublic.from("mis_datas_mv").select("invoice_date").eq("marketplace", m).eq("invoice_month", month).order("invoice_date", { ascending: false }).limit(1);
+    if (!error) return (data?.[0] as { invoice_date?: string } | undefined)?.invoice_date?.slice(0, 10) ?? null;
+    if (i >= 3) throw new Error(`ERP invoice data (${m}): ${error.message}`);
+    await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
+  }
+}
+
+/** First and last day the ERP's invoice reports cover for a marketplace. Earlier report months count
+ *  in full; the newest one runs to its last invoice day on file, so a month uploaded part-way (e.g.
+ *  October to the 15th) leaves the later days to the order reports instead of showing zeros. A new
+ *  month (e.g. October) is picked up by itself once the ERP has it: this is re-read every 30 minutes. */
 export function misCoverage(m: MisMarketplace): Promise<MisCoverage | null> {
   const hit = coverageCache.get(m);
   if (hit && Date.now() - hit.at < 30 * 60_000) return hit.value;
   const value = (async () => {
     const first = await edgeMonth(m, true);
     const last = await edgeMonth(m, false);
-    return first && last ? { start: first, end: monthEnd(last) } : null;
+    if (!first || !last) return null;
+    const full = monthEnd(last);
+    const lastDay = await lastDayIn(m, last);
+    // a last day inside the month ends coverage there; anything else (none, or a date outside it) keeps the whole month
+    const end = lastDay && lastDay >= last && lastDay < full ? lastDay : full;
+    return { start: first, end };
   })();
   coverageCache.set(m, { at: Date.now(), value });
   value.catch(() => coverageCache.delete(m));

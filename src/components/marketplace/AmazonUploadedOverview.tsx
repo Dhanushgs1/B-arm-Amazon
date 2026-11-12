@@ -11,7 +11,7 @@ import { UploadOnlyOverview } from "@/components/marketplace/UploadOnlyOverview"
 import { ChannelSummaryStrip } from "@/components/marketplace/ChannelSummaryStrip";
 import { fetchAmazonSummary, previousRange } from "@/lib/channelSummary";
 import { DEFAULT_GST_MULTIPLIER } from "@/lib/masterProductSkuid";
-import type { BiDataset } from "@/lib/bi/types";
+import { useBiDailySales } from "@/lib/useBiDailySales";
 import { loadMarketplaceAds } from "@/lib/overallData";
 import { adCampaigns, adDailySeries, adTotals, pct, ratio } from "@/lib/uploadedAmazonRules";
 import { fetchAllReportDataInfo, REPORT_LABEL, type UploadReportType } from "@/lib/amazonReportUpload";
@@ -51,22 +51,8 @@ export function AmazonUploadedOverview() {
     queryFn: fetchAllReportDataInfo,
   });
 
-  // Total Amazon sales per day for the trend chart: the Business overview dataset (the B-ARM ERP's
-  // figures for the months it covers, the order reports otherwise; the same basis as Gross Sales above).
-  // Same query key as the Business overview page, so the two share one load.
-  const biQ = useQuery<BiDataset>({
-    queryKey: ["bi-dataset"],
-    queryFn: async () => {
-      const r = await fetch("/api/bi/dataset");
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
-      return j as BiDataset;
-    },
-    staleTime: 10 * 60_000,
-  });
-  const totalByDay = new Map<string, number>();
-  const amazonCh = biQ.data?.channels.find((c) => c.id === "amazon");
-  if (biQ.data && amazonCh) biQ.data.dates.forEach((d, i) => { const v = amazonCh.revenue[i]; if (v !== null && v !== undefined) totalByDay.set(d, v); });
+  // Total Amazon sales per day for the trend chart (ERP figures for its months, order reports otherwise)
+  const totalByDay = useBiDailySales("amazon");
 
   const rows = adsQ.data;
   const now = rows ? adTotals(rows, startDate, endDate) : null;

@@ -89,9 +89,12 @@ function load(key: string, run: () => Promise<unknown>, entry: Entry | undefined
 }
 
 /** Bump when a loader's figures change meaning, so stored copies from before are not served.
- *  v4 (12 Nov 2026): Amazon / Flipkart / Meesho summaries use the B-ARM ERP invoice figures (with returns value and cancellations). */
+ *  v5 (12 Nov 2026): Amazon / Flipkart / Meesho summaries use the B-ARM ERP invoice figures. */
 const CACHE_VERSION = "v5";
-const keyOf = (name: string, args: string[]) => `${CACHE_VERSION}|${name}|${args.join("|")}`;
+/** Per-loader bumps, so a change to one channel does not empty everyone's cache (a cold load is slow).
+ *  fk2 (12 Nov 2026): Flipkart ads include campaign-performance days before the daily upload began. */
+const versionOf = (name: string, args: string[]) => (name === "fetchFlipkartAllSummary" || (name === "loadMarketplaceAds" && args[0] === "flipkart") ? "|fk2" : "");
+const keyOf = (name: string, args: string[]) => `${CACHE_VERSION}${versionOf(name, args)}|${name}|${args.join("|")}`;
 function lookup(key: string): Entry | undefined {
   let entry = cache.get(key);
   if (!entry) { const d = fromDisk(key); if (d) { cache.set(key, d); entry = d; } }
