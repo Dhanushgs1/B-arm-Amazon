@@ -7,7 +7,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { checkSession, clientIp, guard } from "@/lib/apiAuth";
 import { rateLimit } from "@/lib/rateLimit";
-import { buildBiDataset } from "@/lib/bi/dataset";
+import { BI_VERSION, buildBiDataset } from "@/lib/bi/dataset";
 import type { BiDataset } from "@/lib/bi/types";
 import fs from "node:fs";
 import path from "node:path";
@@ -68,7 +68,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (!r.ok) return res.status(429).json({ error: "Refreshed recently — try again in a few minutes." });
     }
     const stale = !cache.data || Date.now() - cache.at > TTL_MS;
-    if (cache.data && !wantFresh) {
+    // a copy built by older code (different layout / rules) is never shown: wait for the rebuild
+    const outdated = !!cache.data && cache.data.version !== BI_VERSION;
+    if (cache.data && !wantFresh && !outdated) {
       if (stale) rebuild().catch((e) => console.error("[bi] background rebuild failed:", e));
       return res.status(200).json({ ...cache.data, cacheAgeSeconds: Math.round((Date.now() - cache.at) / 1000), refreshing: stale });
     }

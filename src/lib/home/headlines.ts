@@ -6,7 +6,7 @@ import { addDaysIso } from "../bi/forecast.ts";
 import type { BiDataset } from "../bi/types.ts";
 import { inrShort } from "./chatAnswers.ts";
 
-export interface Headline { text: string; href: string; linkLabel: string; tone: "good" | "bad" | "neutral" }
+export interface Headline { kind: "sales" | "units" | "stock" | "ads" | "returns"; text: string; href: string; linkLabel: string; tone: "good" | "bad" | "neutral" }
 export interface Tile { label: string; value: string; sub: string; change: number | null; inverse?: boolean; href: string }
 
 const num = (v: number) => Math.round(v).toLocaleString("en-IN");
@@ -48,7 +48,7 @@ export function homeHeadlines(ds: BiDataset): Headline[] {
     const driver = [...moves].sort((p, q) => (ch !== null && ch < 0 ? p.d - q.d : q.d - p.d))[0];
     const top = [...both].sort((p, q) => (q.revenue ?? 0) - (p.revenue ?? 0))[0];
     if (ch !== null) {
-      out.push({
+      out.push({ kind: "sales",
         tone: ch >= 0 ? "good" : "bad",
         text: `Sales ${ch >= 0 ? "rose" : "fell"} **${Math.abs(ch).toFixed(1)}%** in ${monthLabel(cur.start)}, mostly **${driver.x.label}** (${driver.d >= 0 ? "+" : "−"}${inrShort(Math.abs(driver.d)).replace("−", "")}). **${top.label}** brings **${ra > 0 ? (((top.revenue ?? 0) / ra) * 100).toFixed(0) : 0}%** of ${monthLabel(cur.start)} sales (${inrShort(ra)}).`,
         href: "/dashboard/compare", linkLabel: "Open Overall",
@@ -63,7 +63,7 @@ export function homeHeadlines(ds: BiDataset): Headline[] {
   if (both7.length) {
     const ua = both7.reduce((s, x) => s + (x.units ?? 0), 0), ub = both7.reduce((s, x) => s + (u7p.find((y) => y.id === x.id)!.units ?? 0), 0);
     const ch = pct(ua, ub);
-    out.push({ tone: ch === null || ch >= 0 ? "good" : "bad", text: `**${num(ua)}** units in the last 7 days${ch === null ? "" : ` (${ch >= 0 ? "up" : "down"} ${Math.abs(ch).toFixed(1)}% on the week before)`}.`, href: "/dashboard/compare", linkLabel: "Open Overall" });
+    out.push({ kind: "units", tone: ch === null || ch >= 0 ? "good" : "bad", text: `**${num(ua)}** units in the last 7 days${ch === null ? "" : ` (${ch >= 0 ? "up" : "down"} ${Math.abs(ch).toFixed(1)}% on the week before)`}.`, href: "/dashboard/compare", linkLabel: "Open Overall" });
   }
 
   // 3. FBA stock
@@ -71,20 +71,20 @@ export function homeHeadlines(ds: BiDataset): Headline[] {
   const amz = rows.filter((p) => p.channel === "amazon" && p.stock !== null);
   const out0 = amz.filter((p) => p.stock === 0 && p.units > 0).length;
   const low = amz.filter((p) => (p.stock ?? 0) > 0 && p.daysOfCover !== null && p.daysOfCover < 14).length;
-  if (amz.length) out.push({ tone: out0 + low > 0 ? "bad" : "good", text: out0 + low > 0 ? `**${out0}** selling products have **0** FBA stock and **${low}** have under 2 weeks left.` : "Every selling Amazon product has at least 2 weeks of FBA stock.", href: "/dashboard/inventory", linkLabel: "Open Inventory" });
+  if (amz.length) out.push({ kind: "stock", tone: out0 + low > 0 ? "bad" : "good", text: out0 + low > 0 ? `**${out0}** selling products have **0** FBA stock and **${low}** have under 2 weeks left.` : "Every selling Amazon product has at least 2 weeks of FBA stock.", href: "/dashboard/inventory", linkLabel: "Open Inventory" });
 
   // 4. advertising, last 30 days
   const w30 = w(addDaysIso(asOf, -29), asOf);
   let spend = 0, adSales = 0;
   for (const ad of ds.ads) ad.spend.forEach((s, i) => { if (s !== null && ds.dates[i] >= w30.start && ds.dates[i] <= w30.end) { spend += s; adSales += ad.sales[i] ?? 0; } });
   const sales30 = channelSales(ds, w30).reduce((s, x) => s + (x.revenue ?? 0), 0);
-  if (spend > 0) out.push({ tone: "neutral", text: `Ad spend **${inrShort(spend * ds.gstMultiplier)}** incl. GST in the last 30 days; ads returned **${(adSales / spend).toFixed(1)}x**${sales30 > 0 ? `, TACOS **${(((spend * ds.gstMultiplier) / sales30) * 100).toFixed(1)}%**` : ""}.`, href: "/dashboard/daily-ad-spend", linkLabel: "Open Daily Ad Spend" });
+  if (spend > 0) out.push({ kind: "ads", tone: "neutral", text: `Ad spend **${inrShort(spend * ds.gstMultiplier)}** incl. GST in the last 30 days; ads returned **${(adSales / spend).toFixed(1)}x**${sales30 > 0 ? `, TACOS **${(((spend * ds.gstMultiplier) / sales30) * 100).toFixed(1)}%**` : ""}.`, href: "/dashboard/daily-ad-spend", linkLabel: "Open Daily Ad Spend" });
 
   // 5. returns, last 30 days
   const ret = channelSales(ds, w30).filter((x) => x.returns !== null);
   const ru = ret.reduce((s, x) => s + (x.units ?? 0), 0), rr = ret.reduce((s, x) => s + (x.returns ?? 0), 0);
   const worst = rows.filter((p) => p.returns > 0).sort((p, q) => q.returns - p.returns)[0];
-  if (ru > 0) out.push({ tone: rr / ru > 0.1 ? "bad" : "neutral", text: `Returns are **${((rr / ru) * 100).toFixed(1)}%** of units in the last 30 days${worst ? `; most on **${worst.name.split(/\s+/).slice(0, 5).join(" ")}** (${num(worst.returns)})` : ""}.`, href: "/dashboard/executive", linkLabel: "Open Business overview" });
+  if (ru > 0) out.push({ kind: "returns", tone: rr / ru > 0.1 ? "bad" : "neutral", text: `Returns are **${((rr / ru) * 100).toFixed(1)}%** of units in the last 30 days${worst ? `; most on **${worst.name.split(/\s+/).slice(0, 5).join(" ")}** (${num(worst.returns)})` : ""}.`, href: "/dashboard/executive", linkLabel: "Open Business overview" });
 
   return out;
 }

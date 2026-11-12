@@ -15,6 +15,7 @@ const ProductDetailDrawer = dynamic(() => import("@/components/ProductDetailDraw
 const BidsPrefetcher = dynamic(() => import("@/components/BidsPrefetcher").then((m) => m.BidsPrefetcher), { ssr: false });
 import { getMarketplaceTab } from "@/lib/marketplace";
 import { UploadStatusTray } from "@/components/UploadStatusTray";
+import { ChatWidget } from "@/components/chat/ChatWidget";
 import { DataSourceNotice } from "@/components/DataSourceNotice";
 import { useDashboard } from "@/lib/DashboardContext";
 import { SELLERMATE_ENABLED, isSellerMateOnlyPath } from "@/lib/sellerMate";
@@ -38,6 +39,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <Sidebar mobileOpen={mobileNavOpen} onCloseMobile={() => setMobileNavOpen(false)} />
       {/* uploads keep showing their progress / result on every page */}
       <UploadStatusTray />
+      {/* "Ask Marketplace360" chat, bottom-right on every page */}
+      <ChatWidget />
       <div className="flex flex-col flex-1 min-w-0">
         <TopNav onOpenMobileNav={() => setMobileNavOpen(true)} />
         <main className="premium-canvas flex-1 overflow-y-auto overflow-x-hidden p-3 sm:p-5 relative">

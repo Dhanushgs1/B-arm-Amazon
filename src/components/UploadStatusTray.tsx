@@ -102,7 +102,7 @@ export function UploadStatusTray() {
   const failed = jobs.filter((j) => j.status === "error").length;
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 w-[min(340px,calc(100vw-32px))] rounded-2xl border border-border bg-background shadow-2xl overflow-hidden">
+    <div className="fixed bottom-24 right-4 z-50 w-[min(340px,calc(100vw-32px))] rounded-2xl border border-border bg-background shadow-2xl overflow-hidden">
       <button type="button" onClick={() => setOpen((o) => !o)} className="w-full flex items-center gap-2 px-3 py-2.5 bg-muted/50 text-left">
         {running ? <Loader2 className="w-4 h-4 animate-spin text-emerald-500" /> : failed ? <XCircle className="w-4 h-4 text-red-500" /> : <UploadCloud className="w-4 h-4 text-emerald-500" />}
         <span className="text-xs font-black flex-1">
