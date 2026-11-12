@@ -1,4 +1,5 @@
 import { supabasePublic } from "@/lib/supabasePublic";
+import { inBrowser, viaServer } from "@/lib/viaServer";
 import { sharedFetch } from "@/lib/sharedFetch";
 import { previousRange } from "@/lib/dateRanges";
 import type { ChannelSummary, PeriodSummary } from "@/lib/channelSummary";
@@ -33,6 +34,7 @@ async function loadShopifyOrders(): Promise<ShopifyOrder[]> {
 /** Every real Shopify order, oldest first. Shared for 60 s so the Overview's parts read it once;
  *  a new webhook order shows up on the next load after that. */
 export function fetchShopifyOrders(): Promise<ShopifyOrder[]> {
+  if (inBrowser()) return viaServer<ShopifyOrder[]>("fetchShopifyOrders", []); // runs on the server, shared (viaServer.ts)
   return sharedFetch(SHOPIFY_ORDERS_RPC, loadShopifyOrders);
 }
 
@@ -73,6 +75,7 @@ export interface ShopifySummary {
  *  of those orders. Cancelled orders aren't sales, and Shopify returns aren't tracked yet, so
  *  Net Orders = units. Ad spend is not attributed to Shopify here (null = "No ads"), as for B-ARM. */
 export async function fetchShopifyAllSummary(start: string, end: string): Promise<ChannelSummary> {
+  if (inBrowser()) return viaServer<ChannelSummary>("fetchShopifyAllSummary", [start, end]); // runs on the server, shared (viaServer.ts)
   const s = await fetchShopifySummary(start, end);
   const toPeriod = (t: ShopifyPeriodTotals): PeriodSummary => ({
     sales: t.sales,
@@ -98,6 +101,7 @@ export async function fetchShopifyAllSummary(start: string, end: string): Promis
 
 /** The selected dates vs the same-length period before, plus the selected range's orders. */
 export async function fetchShopifySummary(start: string, end: string): Promise<ShopifySummary> {
+  if (inBrowser()) return viaServer<ShopifySummary>("fetchShopifySummary", [start, end]); // runs on the server, shared (viaServer.ts)
   const all = await fetchShopifyOrders();
   const prev = previousRange(start, end);
   const inRange = (s: string, e: string) => all.filter((o) => o.order_date >= s && o.order_date <= e);

@@ -1,4 +1,5 @@
 import { supabasePublic } from "@/lib/supabasePublic";
+import { inBrowser, viaServer } from "@/lib/viaServer";
 import type { MarketplaceTab } from "@/lib/marketplace";
 import { fetchMeeshoOrdersDataInfo } from "@/lib/meeshoBarmOrd";
 import { fetchBarmOnlineOrdersDataInfo } from "@/lib/barmOnlineOrders";
@@ -69,9 +70,13 @@ async function compute(tab: MarketplaceTab): Promise<string | null> {
 const cache = new Map<MarketplaceTab, Promise<string | null>>();
 
 export function fetchChannelLastDataDate(tab: MarketplaceTab): Promise<string | null> {
+  // On the server this must not be kept for the life of the process (dates move every day):
+  // /api/data/loader shares and refreshes the answer instead.
+  if (!inBrowser()) return compute(tab).catch(() => null);
   let p = cache.get(tab);
   if (!p) {
-    p = compute(tab).catch(() => null);
+    // in a browser: ask the server, which keeps the answer for every viewer (viaServer.ts)
+    p = viaServer<string | null>("fetchChannelLastDataDate", [tab]).catch(() => null);
     cache.set(tab, p);
   }
   return p;

@@ -1,4 +1,5 @@
 import { fetchAllRows } from "@/lib/amazonReportShared";
+import { inBrowser, viaServer } from "@/lib/viaServer";
 import type { PeriodWindow } from "@/lib/amazonSkuPeriodData";
 import type { WeeklySkuPeriodData } from "@/lib/weeklySalesExport";
 import { loadMeeshoSkuPeriodData } from "@/lib/meeshoSkuPeriodData";
@@ -86,6 +87,7 @@ function summarize(data: WeeklySkuPeriodData & { cancelledOrdersByPeriod?: Map<s
 }
 
 export function fetchMeeshoSummary(start: string, end: string): Promise<ChannelSummary> {
+  if (inBrowser()) return viaServer<ChannelSummary>("fetchMeeshoSummary", [start, end]); // runs on the server, shared (viaServer.ts)
   return sharedFetch(`channel-summary:fetchMeeshoSummary:${start}:${end}`, () => fetchMeeshoSummaryUncached(start, end), 120_000);
 }
 
@@ -112,6 +114,7 @@ async function fetchMeeshoSummaryUncached(start: string, end: string): Promise<C
 }
 
 export function fetchBarmSummary(start: string, end: string): Promise<ChannelSummary> {
+  if (inBrowser()) return viaServer<ChannelSummary>("fetchBarmSummary", [start, end]); // runs on the server, shared (viaServer.ts)
   return sharedFetch(`channel-summary:fetchBarmSummary:${start}:${end}`, () => fetchBarmSummaryUncached(start, end), 120_000);
 }
 
@@ -133,6 +136,7 @@ async function fetchBarmSummaryUncached(start: string, end: string): Promise<Cha
 // excluded, returns from the Returns report by Return Requested Date, and Sales = the listing
 // price (barm_flipkart_listings) × units, a COMPUTED figure (the order report carries no prices).
 export function fetchFlipkartOrderSummary(start: string, end: string): Promise<ChannelSummary> {
+  if (inBrowser()) return viaServer<ChannelSummary>("fetchFlipkartOrderSummary", [start, end]); // runs on the server, shared (viaServer.ts)
   return sharedFetch(`channel-summary:fetchFlipkartOrderSummary:${start}:${end}`, () => fetchFlipkartOrderSummaryUncached(start, end), 120_000);
 }
 
@@ -248,6 +252,7 @@ function amazonSpendTaxIn(tables: AdTableRows, start: string, end: string): { sp
 /** Amazon, from the same MIS tables and rules as the Amazon Weekly Sales Report — plus the daily
  *  upload for days the MIS orders table doesn't reach yet. */
 export function fetchAmazonSummary(start: string, end: string): Promise<ChannelSummary> {
+  if (inBrowser()) return viaServer<ChannelSummary>("fetchAmazonSummary", [start, end]); // runs on the server, shared (viaServer.ts)
   return sharedFetch(`channel-summary:fetchAmazonSummary:${start}:${end}`, () => fetchAmazonSummaryUncached(start, end), 120_000);
 }
 
@@ -283,6 +288,7 @@ export interface MarketplaceSummaryRow {
 
 /** Flipkart for the All tab: the Overview's order summary plus FSN-report ad spend. */
 export function fetchFlipkartAllSummary(start: string, end: string): Promise<ChannelSummary> {
+  if (inBrowser()) return viaServer<ChannelSummary>("fetchFlipkartAllSummary", [start, end]); // runs on the server, shared (viaServer.ts)
   return sharedFetch(`channel-summary:fetchFlipkartAllSummary:${start}:${end}`, () => fetchFlipkartAllSummaryUncached(start, end), 120_000);
 }
 

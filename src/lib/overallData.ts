@@ -7,6 +7,7 @@
 //   Google   barm_daily_google_ad_spend          report windows → resolveDailySpend
 //   Meta     barm_daily_social_media             report windows → resolveDailySpend
 import { fetchAllRows } from "@/lib/amazonReportShared";
+import { inBrowser, viaServer } from "@/lib/viaServer";
 import { amazonRows, flipkartRows, meeshoRows, meeshoAvgPrice, type ChannelAdRow } from "@/lib/highAcosChannels";
 import type { AdSpendRow } from "@/lib/adSpendDailyRules";
 import { amazonCardSpendRows } from "@/lib/amazonAdSourceRules";
@@ -24,6 +25,7 @@ export type MarketplaceAdKey = "amazon" | "flipkart" | "meesho";
 const between = (start: string, end: string) => (q: any) => q.gte("report_date", start).lte("report_date", end);
 
 export async function loadMarketplaceAds(key: MarketplaceAdKey, start: string, end: string): Promise<ChannelAdRow[]> {
+  if (inBrowser()) return viaServer<ChannelAdRow[]>("loadMarketplaceAds", [key, start, end]); // runs on the server, shared (viaServer.ts)
   if (key === "amazon") {
     // Sponsored Products card rows, plus each Sponsored Brands / Display card campaign-day the SP card
     // doesn't split per SKU (amazonCardSpendRows — the same Amazon spend the Weekly and Live reports count).
@@ -50,6 +52,7 @@ const WINDOW_TABLE = { google: "barm_daily_google_ad_spend", meta: "barm_daily_s
 
 /** Report windows touching start..end, plus a week either side so missing days can be worked out. */
 export async function loadSpendWindows(source: keyof typeof WINDOW_TABLE, start: string, end: string): Promise<AdSpendRow[]> {
+  if (inBrowser()) return viaServer<AdSpendRow[]>("loadSpendWindows", [source, start, end]); // runs on the server, shared (viaServer.ts)
   return (await fetchAllRows(WINDOW_TABLE[source], (q) => q.lte("report_start", addDays(end, 6)).gte("report_end", addDays(start, -6)))) as AdSpendRow[];
 }
 
