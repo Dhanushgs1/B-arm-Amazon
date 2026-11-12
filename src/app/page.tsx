@@ -5,7 +5,7 @@ import LoginForm from "@/components/LoginForm";
 // says plainly what the dashboard does; no sample figures (the old page showed made-up numbers).
 const POINTS = [
   "Amazon, Flipkart, Meesho, Shopify and website sales in one place",
-  "Sales figures that match the B-ARM ERP",
+  "Ad spend, ROAS and ACOS for every channel, day by day",
   "Ask questions about sales, stock, returns and ads",
 ];
 
