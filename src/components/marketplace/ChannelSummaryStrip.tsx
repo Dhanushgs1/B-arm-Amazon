@@ -67,7 +67,7 @@ export function ChannelSummaryStrip({
             <KPICard
               title="Orders"
               value={num(data.current.units)}
-              subtitle={`units · ${num(data.current.orders)} orders${data.current.invoiceLines !== undefined ? ` · ${num(data.current.invoiceLines)} ERP lines` : ""}`}
+              subtitle={`units · ${num(data.current.orders)} orders`}
               trend={growth(data.current.units, data.previous.units)}
               accent="blue"
             />

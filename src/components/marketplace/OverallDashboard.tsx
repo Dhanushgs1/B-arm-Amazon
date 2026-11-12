@@ -79,11 +79,11 @@ function OrderStats({ s }: { s: ChannelSummary }) {
   const tracked = s.returnsTracked !== false;
   const rate = tracked && c.units > 0 ? (c.allReturns / c.units) * 100 : null;
   return (
-    <div className="grid grid-cols-3 gap-2 text-xs border-t border-border/60 pt-2.5">
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs border-t border-border/60 pt-2.5">
       <div>
         <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Orders</p>
         <p className="font-black">{num(c.orders)}</p>
-        <p className="text-[10px] text-muted-foreground">{num(c.units)} units{tracked ? ` · ${num(c.netOrders)} net` : ""}{c.invoiceLines !== undefined ? ` · ${num(c.invoiceLines)} ERP lines` : ""}</p>
+        <p className="text-[10px] text-muted-foreground">{num(c.units)} units</p>
       </div>
       <div>
         <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Returns</p>
@@ -91,6 +91,11 @@ function OrderStats({ s }: { s: ChannelSummary }) {
         <p className="text-[10px] text-muted-foreground">{!tracked ? "Not tracked"
           : c.returnsValue !== undefined ? `${cur(c.returnsValue)}${c.sales ? ` · ${one((c.returnsValue / c.sales) * 100)}% of sales` : ""}`
           : `${rate === null ? "—" : one(rate) + "%"} of units · ${num(c.customerReturns)} customer`}</p>
+      </div>
+      <div>
+        <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Net Orders</p>
+        <p className="font-black flex items-center gap-1.5 flex-wrap">{num(c.netOrders)} <Growth v={s.previous.netOrders > 0 ? ((c.netOrders - s.previous.netOrders) / s.previous.netOrders) * 100 : null} /></p>
+        <p className="text-[10px] text-muted-foreground">{tracked ? "Orders − Returns" : "Same as units (returns not tracked)"}</p>
       </div>
       <div>
         <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Cancelled</p>
