@@ -73,7 +73,7 @@ function MarketplaceSwitcher() {
                 <motion.span
                   layoutId="marketplace-switcher-active"
                   transition={reduceMotion ? { duration: 0 } : { type: "spring", stiffness: 420, damping: 34 }}
-                  className={cn("absolute inset-0 rounded-lg shadow-sm", tab.id === "compare" && "bg-blue-600")}
+                  className={cn("absolute inset-0 rounded-lg shadow-sm", tab.id === "compare" && "bg-emerald-600")}
                   style={meta ? { background: `linear-gradient(90deg, ${meta.color}, ${meta.color}cc)`, boxShadow: `0 4px 14px -4px ${meta.color}80` } : undefined}
                 />
               )}

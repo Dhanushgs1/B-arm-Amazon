@@ -292,13 +292,13 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
       {/* Sidebar Header / Logo */}
       <div className="flex items-center justify-between px-3.5 py-3 border-b border-slate-200 dark:border-slate-900 h-[60px]">
         <div className="flex items-center gap-2.5 overflow-hidden">
-          <div className="w-8 h-8 rounded-xl bg-blue-600 flex items-center justify-center text-white shadow-sm flex-shrink-0">
+          <div className="w-8 h-8 rounded-xl bg-emerald-600 flex items-center justify-center text-white shadow-sm flex-shrink-0">
             <BarChart3 className="w-4 h-4 text-white" />
           </div>
           {!collapsed && (
             <div className="min-w-0 transition-opacity duration-300">
               <span className="font-extrabold text-[13.5px] text-slate-900 dark:text-white block tracking-tight">{isLkn ? "LKN AI" : "Marketplace360"}</span>
-              <small className="block font-bold text-blue-600 dark:text-indigo-400/90 text-[8px] uppercase tracking-widest -mt-1 truncate">
+              <small className="block font-bold text-emerald-600 dark:text-indigo-400/90 text-[8px] uppercase tracking-widest -mt-1 truncate">
                 {sidebarTagline}
               </small>
             </div>
@@ -350,7 +350,7 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
                     className={cn(
                       "relative w-full flex items-center rounded-xl text-[12px] font-bold transition-colors duration-200 cursor-pointer",
                       collapsed ? "justify-center p-2" : "gap-2.5 px-2 py-1.5",
-                      isActive ? "text-blue-700 dark:text-white" : "text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-white/5 dark:hover:text-white"
+                      isActive ? "text-emerald-700 dark:text-white" : "text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-white/5 dark:hover:text-white"
                     )}
                   >
                     {/* The active highlight is one shared element that slides to whichever item is
@@ -359,14 +359,14 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: SidebarProps) {
                       <motion.span
                         layoutId={`sidebar-active-${closeOnNavigate ? "mobile" : "desktop"}`}
                         transition={reduceMotion ? { duration: 0 } : { type: "spring", stiffness: 420, damping: 36 }}
-                        className="absolute inset-0 rounded-xl bg-blue-50 dark:bg-blue-500/20"
+                        className="absolute inset-0 rounded-xl bg-emerald-50 dark:bg-emerald-500/20"
                       />
                     )}
                     <span className={cn(
                       "relative w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors",
                       isActive ? "bg-white dark:bg-white/15 shadow-sm" : "bg-transparent"
                     )}>
-                      <Icon className={cn("w-3.5 h-3.5", isActive ? "text-blue-600 dark:text-white" : "text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300")} />
+                      <Icon className={cn("w-3.5 h-3.5", isActive ? "text-emerald-600 dark:text-white" : "text-slate-400 group-hover:text-slate-600 dark:group-hover:text-slate-300")} />
                     </span>
                     {!collapsed && <span className="relative truncate">{item.label}</span>}
                   </Link>

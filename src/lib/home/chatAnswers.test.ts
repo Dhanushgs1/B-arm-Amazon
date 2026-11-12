@@ -92,3 +92,24 @@ test("home: last full month, headlines and tiles", () => {
   assert.equal(t[0].value, "₹4.2 L");
   assert.equal(t.length, 5);
 });
+
+import { basisOf, comparableChannel, likeForLike } from "../bi/analytics.ts";
+
+test("ERP months vs order-report months are compared on the order reports", () => {
+  const ds = dataset();
+  // Amazon: ERP figures (main series) 8,000 a day for Jul–Sep; the order reports say 10,000 every day
+  ds.misCoverage = { amazon: { start: "2026-07-01", end: "2026-09-30" } };
+  const amz = ds.channels[0];
+  amz.orders = { revenue: amz.revenue.slice(), units: amz.units.slice(), returns: amz.returns.slice() };
+  amz.revenue = dates.map((d) => (d <= "2026-09-30" ? 8000 : 10000));
+  const sep = { start: "2026-09-01", end: "2026-09-30", days: 30 }, aug = { start: "2026-08-01", end: "2026-08-30", days: 30 };
+  const oct = { start: "2026-10-01", end: "2026-10-28", days: 28 };
+  assert.equal(basisOf(ds, "amazon", sep), "erp");
+  assert.equal(basisOf(ds, "amazon", oct), "orders");
+  assert.equal(basisOf(ds, "amazon", { start: "2026-09-20", end: "2026-10-05", days: 16 }), "mixed");
+  assert.equal(comparableChannel(ds, amz, sep, aug), amz); // both ERP: the ERP figures
+  assert.equal(comparableChannel(ds, amz, oct, { ...sep, days: 28, end: "2026-09-28" }).revenue, amz.orders.revenue);
+  // October vs the 28 days before: 10,000 vs 10,000 on the order reports, not +25% against ERP's 8,000
+  const lfl = likeForLike(ds, oct, { start: "2026-09-03", end: "2026-09-30", days: 28 }, ["amazon"]);
+  assert.equal(lfl.revenuePct, 0);
+});

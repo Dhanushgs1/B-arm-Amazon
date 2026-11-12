@@ -123,12 +123,12 @@ export function HomeDashboard() {
         <div className="flex-1 space-y-4 overflow-y-auto pr-1">
           {headlines.map((h, i) => (
             <div key={i} className="flex items-start gap-3">
-              <span className={cn("mt-1 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-white", h.tone === "bad" ? "bg-rose-500" : h.tone === "good" ? "bg-emerald-500" : "bg-blue-600")} aria-hidden>
+              <span className={cn("mt-1 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-white", h.tone === "bad" ? "bg-rose-500" : "bg-emerald-600")} aria-hidden>
                 <Sparkles className="h-4 w-4" />
               </span>
               <div className="rounded-2xl bg-slate-50 dark:bg-slate-800/60 px-4 py-3 text-[15px] leading-relaxed text-slate-700 dark:text-slate-300 max-w-3xl">
                 <Rich text={h.text} />
-                <Link href={h.href} className="mt-1.5 inline-flex items-center gap-0.5 text-sm font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400">
+                <Link href={h.href} className="mt-1.5 inline-flex items-center gap-0.5 text-sm font-semibold text-emerald-600 hover:text-emerald-700 dark:text-emerald-400">
                   {h.linkLabel} <ChevronRight className="h-3.5 w-3.5" />
                 </Link>
               </div>
@@ -137,14 +137,14 @@ export function HomeDashboard() {
 
           {messages.map((m, i) => m.role === "user" ? (
             <div key={`m${i}`} className="flex justify-end">
-              <div className="rounded-2xl rounded-br-md bg-blue-600 text-white px-4 py-2.5 text-[15px] max-w-xl">{m.text}</div>
+              <div className="rounded-2xl rounded-br-md bg-emerald-600 text-white px-4 py-2.5 text-[15px] max-w-xl">{m.text}</div>
             </div>
           ) : (
             <div key={`m${i}`} className="flex items-start gap-3">
-              <span className="mt-1 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-white" aria-hidden><Sparkles className="h-4 w-4" /></span>
+              <span className="mt-1 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white" aria-hidden><Sparkles className="h-4 w-4" /></span>
               <div className="rounded-2xl rounded-tl-md bg-slate-50 dark:bg-slate-800/60 px-4 py-3 text-[15px] leading-relaxed text-slate-700 dark:text-slate-300 max-w-3xl">
                 <Rich text={m.text} />
-                {m.href && <Link href={m.href} className="mt-1.5 inline-flex items-center gap-0.5 text-sm font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400">{m.hrefLabel ?? "Open"} <ChevronRight className="h-3.5 w-3.5" /></Link>}
+                {m.href && <Link href={m.href} className="mt-1.5 inline-flex items-center gap-0.5 text-sm font-semibold text-emerald-600 hover:text-emerald-700 dark:text-emerald-400">{m.hrefLabel ?? "Open"} <ChevronRight className="h-3.5 w-3.5" /></Link>}
               </div>
             </div>
           ))}
@@ -158,15 +158,15 @@ export function HomeDashboard() {
         <div className="mt-6 space-y-3">
           <div className="flex flex-wrap gap-2">
             {SUGGESTIONS.map((s) => (
-              <button key={s} onClick={() => ask(s)} disabled={!ds || busy} className="rounded-full border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3.5 py-1.5 text-sm text-slate-600 dark:text-slate-300 hover:border-blue-300 hover:text-blue-700 transition-colors disabled:opacity-50">
+              <button key={s} onClick={() => ask(s)} disabled={!ds || busy} className="rounded-full border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3.5 py-1.5 text-sm text-slate-600 dark:text-slate-300 hover:border-emerald-300 hover:text-emerald-700 transition-colors disabled:opacity-50">
                 {s}
               </button>
             ))}
           </div>
-          <form onSubmit={(e) => { e.preventDefault(); ask(input); }} className="flex items-center gap-2 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 pl-5 pr-2 py-2 focus-within:border-blue-400 focus-within:ring-4 focus-within:ring-blue-500/10 transition">
+          <form onSubmit={(e) => { e.preventDefault(); ask(input); }} className="flex items-center gap-2 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 pl-5 pr-2 py-2 focus-within:border-emerald-400 focus-within:ring-4 focus-within:ring-emerald-500/10 transition">
             <label htmlFor="home-ask" className="sr-only">Ask anything about the business</label>
             <input id="home-ask" value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ask anything about the business" disabled={!ds} className="flex-1 bg-transparent py-1.5 text-[15px] text-slate-800 dark:text-slate-100 placeholder:text-slate-400 outline-none" />
-            <button type="submit" disabled={!input.trim() || !ds || busy} aria-label="Send" className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-600 text-white hover:bg-blue-700 disabled:bg-blue-300 transition-colors">
+            <button type="submit" disabled={!input.trim() || !ds || busy} aria-label="Send" className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-emerald-300 transition-colors">
               <ArrowUp className="h-4 w-4" />
             </button>
           </form>
@@ -178,7 +178,7 @@ export function HomeDashboard() {
         {(isLoading ? Array.from({ length: 5 }).map(() => null) : tiles).map((t, i) => t === null ? (
           <div key={i} className="h-32 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 animate-pulse" />
         ) : (
-          <Link key={t.label} href={t.href} className="block rounded-3xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)] hover:border-blue-200 hover:shadow-md transition">
+          <Link key={t.label} href={t.href} className="block rounded-3xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)] hover:border-emerald-200 hover:shadow-md transition">
             <p className="text-sm font-medium text-slate-500 dark:text-slate-400">{t.label}</p>
             <p className="mt-2 text-[30px] leading-none font-bold tracking-tight text-slate-900 dark:text-white tabular-nums">{t.value}</p>
             <p className="mt-2.5 flex items-center gap-1.5 text-sm text-slate-500 dark:text-slate-400">

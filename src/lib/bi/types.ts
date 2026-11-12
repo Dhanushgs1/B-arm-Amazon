@@ -21,6 +21,10 @@ export interface BiChannel {
   /** Set when the channel has stopped (e.g. the old website after the move to Shopify): it stays in
    *  history but is left out of forecasts, freshness and the report end date. */
   closedNote?: string;
+  /** The same series from the order reports only, when ERP invoice figures replaced some days in the
+   *  main series. Comparisons that cross between ERP and order-report days, and forecasts, use this
+   *  so they compare like with like. */
+  orders?: { revenue: Series; units: Series; returns: Series };
 }
 
 export interface BiProduct {
@@ -89,6 +93,8 @@ export interface BiDataset {
   /** When the last full re-read of all history happened. Builds in between re-read only recent
    *  weeks (see bi/dataset.ts) and carry this forward. */
   fullBuiltAt?: string;
+  /** Dataset layout version (BI_VERSION in dataset.ts); an older saved build forces a full rebuild. */
+  version?: number;
   /** Per marketplace, the ERP invoice-report days this build used (misInvoiceData.ts); absent on
    *  builds from before the ERP figures, which forces one full rebuild. */
   misCoverage?: Partial<Record<"amazon" | "flipkart" | "meesho", { start: string; end: string } | null>>;

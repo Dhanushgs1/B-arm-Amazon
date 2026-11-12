@@ -112,10 +112,14 @@ async function withMisInvoices(m: MisMarketplace, base: ChannelSummary, orderOnl
   if (!cov || !misParts.length) return base;
   const lines = await loadMisLines(m, misParts[0].start, misParts[misParts.length - 1].end);
 
+  // Like for like: the previous period uses the ERP only when the current one is entirely ERP days.
+  // Otherwise it stays on the order reports, as the current period is, so a % change never compares
+  // invoiced figures with ordered ones (Flipkart's listing price × units runs ~30% above its invoices).
+  const curAllErp = !!splits.current.mis && !splits.current.before && !splits.current.after;
   const period = async (label: "previous" | "current"): Promise<PeriodSummary> => {
     const sp = splits[label];
     const b = base[label];
-    if (!sp.mis) return b;
+    if (!sp.mis || (label === "previous" && !curAllErp)) return b;
     const t = summarizeMisLines(lines, sp.mis.start, sp.mis.end);
     const others = (await Promise.all([sp.before, sp.after].map((r) => (r ? orderOnly(r.start, r.end).then((x) => x.current) : null)))).filter((x): x is PeriodSummary => !!x);
     const add = (k: "sales" | "units" | "orders" | "allReturns" | "customerReturns" | "netOrders") => others.reduce((s, o) => s + (Number(o[k]) || 0), 0);

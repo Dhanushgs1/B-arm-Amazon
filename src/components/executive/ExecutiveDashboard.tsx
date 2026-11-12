@@ -15,7 +15,7 @@ import { addDaysIso } from "@/lib/bi/forecast";
 import {
   windowEnding, reportWindow, previousWindow, monthToDate, likeForLike, totals, channelPeriod, channelForecasts, combineForecasts,
   monthEndEstimate, productRows, rankProducts, adChannels, campaignFindings, healthScore, buildInsights, monthly,
-  sumWindow, pctChange, type Insight, type ProductRow, type Window,
+  sumWindow, pctChange, comparableChannel, type Insight, type ProductRow, type Window,
 } from "@/lib/bi/analytics";
 import type { BiDataset, SalesChannelId } from "@/lib/bi/types";
 
@@ -480,13 +480,14 @@ function MonthlyChart({ months, ds }: { months: ReturnType<typeof monthly>; ds: 
 function ChannelTable({ ds, w, sel, ads }: { ds: BiDataset; w: Window; sel?: SalesChannelId[]; ads: ReturnType<typeof adChannels> }) {
   const prev = previousWindow(w);
   const rows = ds.channels.filter((c) => !sel || sel.includes(c.id)).map((c) => {
-    const cur = channelPeriod(ds, c, w), before = channelPeriod(ds, c, prev);
+    const like = comparableChannel(ds, c, w, prev);
+    const cur = channelPeriod(ds, c, w), curLike = channelPeriod(ds, like, w), before = channelPeriod(ds, like, prev);
     const adId = c.id === "shopify" ? null : c.id;
     const ad = ads.find((x) => x.id === adId);
     const shopifyAds = c.id === "shopify" ? ads.filter((x) => x.id === "google" || x.id === "meta") : [];
     const spendGst = ad ? ad.spendGst : shopifyAds.length ? shopifyAds.reduce((s, x) => s + (x.spendGst ?? 0), 0) : null;
     const adComplete = ad ? ad.complete : shopifyAds.every((x) => x.complete);
-    return { c, cur, growth: cur.complete && before.complete ? pctChange(cur.revenue, before.revenue) : null, spendGst, adComplete };
+    return { c, cur, growth: curLike.complete && before.complete ? pctChange(curLike.revenue, before.revenue) : null, spendGst, adComplete };
   });
   const total = rows.reduce((s, r) => s + (r.cur.complete ? r.cur.revenue ?? 0 : 0), 0);
   const best = [...rows].filter((r) => r.growth !== null).sort((a, b) => b.growth! - a.growth!)[0];

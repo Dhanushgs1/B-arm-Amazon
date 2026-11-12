@@ -80,10 +80,31 @@ export interface Totals {
 }
 
 /** Totals over channels with complete data for the window (optionally only `only`). */
-export function totals(ds: BiDataset, w: Window, only?: SalesChannelId[]): Totals {
+// ── ERP vs order-report days ──
+// The main series use the B-ARM ERP's invoice figures for the months it covers and the order reports
+// otherwise. Two windows are compared on one basis: the main series when both are wholly ERP days or
+// wholly order-report days, otherwise the order-report series (BiChannel.orders) for both.
+export type Basis = "erp" | "orders" | "mixed";
+export function basisOf(ds: BiDataset, id: SalesChannelId, w: Window): Basis {
+  const cov = ds.misCoverage?.[id as "amazon" | "flipkart" | "meesho"];
+  if (!cov || w.end < cov.start || w.start > cov.end) return "orders";
+  return w.start >= cov.start && w.end <= cov.end ? "erp" : "mixed";
+}
+/** The channel as its order-report series (itself when it has none). */
+export function asOrders(ch: BiChannel): BiChannel {
+  return ch.orders ? { ...ch, revenue: ch.orders.revenue, units: ch.orders.units, returns: ch.orders.returns } : ch;
+}
+/** The channel series to compare windows a and b with. */
+export function comparableChannel(ds: BiDataset, ch: BiChannel, a: Window, b: Window): BiChannel {
+  const x = basisOf(ds, ch.id, a), y = basisOf(ds, ch.id, b);
+  return x === y && x !== "mixed" ? ch : asOrders(ch);
+}
+
+export function totals(ds: BiDataset, w: Window, only?: SalesChannelId[], view: (ch: BiChannel) => BiChannel = (c) => c): Totals {
   const t: Totals = { revenue: 0, units: 0, returns: 0, included: [], partial: [] };
-  for (const ch of ds.channels) {
-    if (only && !only.includes(ch.id)) continue;
+  for (const ch0 of ds.channels) {
+    if (only && !only.includes(ch0.id)) continue;
+    const ch = view(ch0);
     const p = channelPeriod(ds, ch, w);
     if (!p.complete) { if (p.covered > 0) t.partial.push({ id: ch.id, label: ch.label, covered: p.covered }); continue; }
     t.revenue += p.revenue ?? 0; t.units += p.units ?? 0; t.returns += p.returns ?? 0;
@@ -94,9 +115,10 @@ export function totals(ds: BiDataset, w: Window, only?: SalesChannelId[]): Total
 
 /** Growth on a like-for-like basis: only channels complete in BOTH windows. */
 export function likeForLike(ds: BiDataset, cur: Window, prev: Window, only?: SalesChannelId[]) {
-  const a = totals(ds, cur, only), b = totals(ds, prev, only);
+  const view = (ch: BiChannel) => comparableChannel(ds, ch, cur, prev);
+  const a = totals(ds, cur, only, view), b = totals(ds, prev, only, view);
   const both = a.included.filter((id) => b.included.includes(id));
-  const ca = totals(ds, cur, both), cb = totals(ds, prev, both);
+  const ca = totals(ds, cur, both, view), cb = totals(ds, prev, both, view);
   return { current: ca, previous: cb, channels: both, revenuePct: pctChange(ca.revenue, cb.revenue), unitsPct: pctChange(ca.units, cb.units) };
 }
 
@@ -135,7 +157,8 @@ export interface ChannelForecast { id: SalesChannelId; label: string; revenue: F
 
 /** Each channel forecast from its own last day with data (channels are uploaded on different days). */
 export function channelForecasts(ds: BiDataset, only?: SalesChannelId[]): ChannelForecast[] {
-  return ds.channels.filter((c) => !c.closedNote && (!only || only.includes(c.id))).map((c) => {
+  // forecasts learn from one basis: the order reports, which continue past the ERP months
+  return ds.channels.filter((c) => !c.closedNote && (!only || only.includes(c.id))).map(asOrders).map((c) => {
     const last = c.dataThrough ? ds.dates.indexOf(c.dataThrough) : -1;
     const dates = last >= 0 ? ds.dates.slice(0, last + 1) : [];
     return {
@@ -411,7 +434,8 @@ export function buildInsights(ds: BiDataset, w: Window): Insight[] {
 
   // channel growth (facts)
   const growth = ds.channels.map((c) => {
-    const a = channelPeriod(ds, c, w), b = channelPeriod(ds, c, prev);
+    const cc = comparableChannel(ds, c, w, prev);
+    const a = channelPeriod(ds, cc, w), b = channelPeriod(ds, cc, prev);
     return { c, a, b, pct: a.complete && b.complete ? pctChange(a.revenue, b.revenue) : null };
   }).filter((g) => g.pct !== null);
   for (const g of growth) {

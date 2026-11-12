@@ -287,12 +287,14 @@ function applyMis(src: { daily: DayAgg; skus: SkuDayAgg }, lines: MisProductLine
   }
 }
 
+/** 2: channels carry their order-report series (BiChannel.orders) next to the ERP figures. */
+export const BI_VERSION = 2;
 export const ORDER_REFRESH_DAYS = 35;
 export const ADS_REFRESH_DAYS = 100; // the campaign table needs ~60 days before the last ads day
 export const FULL_REBUILD_HOURS = 24;
 
 export function canBuildIncrementally(prev: BiDataset | null | undefined, now = Date.now()): prev is BiDataset {
-  if (!prev || prev.errors.length || !prev.dates.length || prev.dates[0] !== HISTORY_START || !prev.misCoverage) return false;
+  if (!prev || prev.errors.length || !prev.dates.length || prev.dates[0] !== HISTORY_START || !prev.misCoverage || prev.version !== BI_VERSION) return false;
   const full = Date.parse(prev.fullBuiltAt ?? "");
   return Number.isFinite(full) && now - full < FULL_REBUILD_HOURS * 3_600_000;
 }
@@ -339,6 +341,8 @@ export async function buildBiDataset(previous?: BiDataset | null): Promise<BiDat
   // for this busy database and push each other past its 3-second statement limit. The light reads
   // (Shopify, ads, stock) run alongside them.
   const misCov: NonNullable<BiDataset["misCoverage"]> = {};
+  // Each channel's daily figures from the order reports, kept before the ERP figures replace them
+  const ordersDaily: Partial<Record<MisKey, DayAgg>> = {};
   const heavy = (async () => {
     const amazon = await attempt("Amazon orders", () => fromPeriodLoader("amazon", periods.filter((p) => p.label >= orderFrom), productFrom));
     const flip = await attempt("Flipkart orders", () => flipkart(orderFrom, asOf, productFrom));
@@ -350,6 +354,16 @@ export async function buildBiDataset(previous?: BiDataset | null): Promise<BiDat
     // the ERP's invoice figures replace the days its reports cover (one marketplace at a time)
     for (const [key, src] of [["amazon", amazon], ["flipkart", flip], ["meesho", meesho]] as const) {
       if (!src) continue;
+      const snap: DayAgg = new Map([...src.daily].map(([d, v]) => [d, { ...v }]));
+      // days copied from the previous build carry its ERP figures; take its order-report ones instead
+      const pch = inc?.channels.find((c) => c.id === key);
+      if (inc && pch?.orders) inc.dates.forEach((d, i) => {
+        if (d >= orderFrom) return;
+        const r = pch.orders!.revenue[i];
+        if (r === null) snap.delete(d);
+        else snap.set(d, { revenue: r, units: pch.orders!.units[i] ?? 0, returns: pch.orders!.returns[i] ?? 0 });
+      });
+      ordersDaily[key] = snap;
       const m = await attempt(`B-ARM ERP invoices (${MIS_NAME[key]})`, () => loadMis(key, monthStartOf(orderFrom), inc?.misCoverage?.[key]));
       if (!m) continue;
       misCov[key] = m.cov;
@@ -384,6 +398,15 @@ export async function buildBiDataset(previous?: BiDataset | null): Promise<BiDat
     // still active: offline orders keep coming after the website moved to Shopify
     toChannel("barm", "B-ARM website & offline", "Old website (WooCommerce) order totals of Received orders, plus offline orders (units only — no prices on file)", true, dates, web?.daily ?? empty, web?.dataThrough ?? null),
   ];
+  // the order-report series alongside, for like-for-like comparisons and forecasts (analytics.ts)
+  for (const ch of channels) {
+    const key = ch.id as MisKey;
+    const od = ordersDaily[key];
+    if (!od || !misCov[key]) continue;
+    const src = key === "amazon" ? am : key === "flipkart" ? fk : ms;
+    const oc = toChannel(ch.id, ch.label, ch.basis, ch.returnsTracked, dates, od, src?.dataThrough ?? null);
+    ch.orders = { revenue: oc.revenue, units: oc.units, returns: oc.returns };
+  }
   for (const [label, src] of [["Amazon", am], ["Meesho", ms]] as const) {
     if (src && src.excludedUnits > 0) notes.push(`${label}: ${Math.round(src.excludedUnits).toLocaleString("en-IN")} units sold in the last 30 days are in products with no category ("Other") or marked Discontinued, and are left out — the same rule as the ${label} Overview and weekly report. Map these SKUs in Master to include them.`);
   }
@@ -471,6 +494,6 @@ export async function buildBiDataset(previous?: BiDataset | null): Promise<BiDat
 
   return {
     generatedAt: new Date().toISOString(), asOf, dates, channels, productDates, products, ads,
-    misCoverage: misCov, campaignWindow, campaigns, timings, buildKind: inc ? "incremental" : "full", fullBuiltAt: inc ? inc.fullBuiltAt : new Date().toISOString(), stock, warehouse: wh ?? [], intervals: iv ?? null, gstMultiplier: DEFAULT_GST_MULTIPLIER, errors, notes,
+    version: BI_VERSION, misCoverage: misCov, campaignWindow, campaigns, timings, buildKind: inc ? "incremental" : "full", fullBuiltAt: inc ? inc.fullBuiltAt : new Date().toISOString(), stock, warehouse: wh ?? [], intervals: iv ?? null, gstMultiplier: DEFAULT_GST_MULTIPLIER, errors, notes,
   };
 }

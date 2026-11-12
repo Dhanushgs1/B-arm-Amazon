@@ -1,7 +1,7 @@
 // The Home page's headline cards and KPI tiles, from the Business overview dataset. Short, plain
 // sentences with the key figure in **bold** and a link to the page that explains it.
 
-import { channelPeriod, productRows, type Window } from "../bi/analytics.ts";
+import { basisOf, channelPeriod, comparableChannel, productRows, type Window } from "../bi/analytics.ts";
 import { addDaysIso } from "../bi/forecast.ts";
 import type { BiDataset } from "../bi/types.ts";
 import { inrShort } from "./chatAnswers.ts";
@@ -24,10 +24,13 @@ export function lastFullMonths(asOf: string): { cur: Window; prev: Window } {
   return { cur: w(curStart, monthEnd(curStart)), prev: w(prevStart, monthEnd(prevStart)) };
 }
 
-/** Sales per channel for a window, channels with every day covered only (missing days are not zero). */
-function channelSales(ds: BiDataset, win: Window) {
-  return ds.channels.map((c) => channelPeriod(ds, c, win)).filter((p) => p.complete);
+/** Sales per channel for a window, channels with every day covered only (missing days are not zero).
+ *  With `other`, on the basis comparable with that window (ERP vs order reports, analytics.ts). */
+function channelSales(ds: BiDataset, win: Window, other?: Window) {
+  return ds.channels.map((c) => channelPeriod(ds, other ? comparableChannel(ds, c, win, other) : c, win)).filter((p) => p.complete);
 }
+/** True when some channel is compared on its order-report figures instead of the ERP's. */
+const basisDiffers = (ds: BiDataset, a: Window, b: Window) => ds.channels.some((c) => c.orders && (basisOf(ds, c.id, a) !== basisOf(ds, c.id, b) || basisOf(ds, c.id, a) === "mixed"));
 
 export function homeHeadlines(ds: BiDataset): Headline[] {
   const out: Headline[] = [];
@@ -35,7 +38,7 @@ export function homeHeadlines(ds: BiDataset): Headline[] {
 
   // 1. last full month vs the month before, like for like
   const { cur, prev } = lastFullMonths(asOf);
-  const a = channelSales(ds, cur), b = channelSales(ds, prev);
+  const a = channelSales(ds, cur, prev), b = channelSales(ds, prev, cur);
   const both = a.filter((x) => b.some((y) => y.id === x.id));
   if (both.length) {
     const ra = both.reduce((s, x) => s + (x.revenue ?? 0), 0);
@@ -55,7 +58,7 @@ export function homeHeadlines(ds: BiDataset): Headline[] {
 
   // 2. units, last 7 days vs the 7 before
   const w7 = w(addDaysIso(asOf, -6), asOf), p7 = w(addDaysIso(asOf, -13), addDaysIso(asOf, -7));
-  const u7 = channelSales(ds, w7), u7p = channelSales(ds, p7);
+  const u7 = channelSales(ds, w7, p7), u7p = channelSales(ds, p7, w7);
   const both7 = u7.filter((x) => u7p.some((y) => y.id === x.id));
   if (both7.length) {
     const ua = both7.reduce((s, x) => s + (x.units ?? 0), 0), ub = both7.reduce((s, x) => s + (u7p.find((y) => y.id === x.id)!.units ?? 0), 0);
@@ -90,18 +93,21 @@ export function homeTiles(ds: BiDataset): Tile[] {
   const asOf = ds.asOf;
   const tiles: Tile[] = [];
   const { cur, prev } = lastFullMonths(asOf);
-  const sum = (win: Window, k: "revenue" | "units" | "returns") => channelSales(ds, win).reduce((s, x) => s + (x[k] ?? 0), 0);
+  const sum = (win: Window, k: "revenue" | "units" | "returns", other?: Window) => channelSales(ds, win, other).reduce((s, x) => s + (x[k] ?? 0), 0);
 
-  const ra = sum(cur, "revenue"), rb = sum(prev, "revenue");
-  tiles.push({ label: `Sales · ${monthLabel(cur.start)}`, value: inrShort(ra), sub: `${monthLabel(prev.start)}: ${inrShort(rb)}`, change: pct(ra, rb), href: "/dashboard/compare" });
+  // value on the main figures; the % and the comparison month like for like (order reports when one month is ERP)
+  const ra = sum(cur, "revenue"), raL = sum(cur, "revenue", prev), rbL = sum(prev, "revenue", cur);
+  const mixed = basisDiffers(ds, cur, prev);
+  tiles.push({ label: `Sales · ${monthLabel(cur.start)}`, value: inrShort(ra), sub: `vs ${monthLabel(prev.start)} ${inrShort(rbL)}${mixed ? " (order reports)" : ""}`, change: pct(raL, rbL), href: "/dashboard/compare" });
 
   const y = w(asOf, asOf), yb = w(addDaysIso(asOf, -1), addDaysIso(asOf, -1));
   const ua = sum(y, "units"), ub = sum(yb, "units");
   tiles.push({ label: `Units · ${asOf.slice(8, 10)} ${MONTHS[Number(asOf.slice(5, 7)) - 1].slice(0, 3)}`, value: num(ua), sub: "vs day before", change: pct(ua, ub), href: "/dashboard/compare" });
 
   const w30 = w(addDaysIso(asOf, -29), asOf);
-  const s30 = sum(w30, "revenue"), s30p = sum(w(addDaysIso(asOf, -59), addDaysIso(asOf, -30)), "revenue");
-  tiles.push({ label: "Sales · last 30 days", value: inrShort(s30), sub: "vs the 30 days before", change: pct(s30, s30p), href: "/dashboard/executive" });
+  const p30 = w(addDaysIso(asOf, -59), addDaysIso(asOf, -30));
+  const s30 = sum(w30, "revenue"), s30L = sum(w30, "revenue", p30), s30p = sum(p30, "revenue", w30);
+  tiles.push({ label: "Sales · last 30 days", value: inrShort(s30), sub: "vs the 30 days before", change: pct(s30L, s30p), href: "/dashboard/executive" });
 
   let spend = 0, adSales = 0;
   for (const ad of ds.ads) ad.spend.forEach((s, i) => { if (s !== null && ds.dates[i] >= w30.start && ds.dates[i] <= w30.end) { spend += s; adSales += ad.sales[i] ?? 0; } });
