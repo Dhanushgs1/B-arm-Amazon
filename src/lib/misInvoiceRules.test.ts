@@ -32,6 +32,7 @@ test("August 2026 Amazon lines reproduce the ERP's Sales and Qty", () => {
   assert.equal(t.netOrders, 8381); // the ERP's Qty
   assert.equal(t.returnsValue, 457099);
   assert.equal(t.orders, 2);
+  assert.equal(t.lines, 3); // the ERP's Lines: sales, free replacements and refunds
 });
 
 test("Flipkart cancellations count as returns and return cancellations as sales, as in the ERP", () => {
@@ -46,12 +47,16 @@ test("Flipkart cancellations count as returns and return cancellations as sales,
   assert.equal(t.netOrders, 4556);
 });
 
-test("splitPeriod: invoice days first, order-report days after the ERP's last day", () => {
-  assert.deepEqual(splitPeriod("2026-09-13", "2026-10-12", "2026-09-30"), { mis: { start: "2026-09-13", end: "2026-09-30" }, orders: { start: "2026-10-01", end: "2026-10-12" } });
-  assert.deepEqual(splitPeriod("2026-08-01", "2026-08-31", "2026-09-30"), { mis: { start: "2026-08-01", end: "2026-08-31" }, orders: null });
-  assert.deepEqual(splitPeriod("2026-10-13", "2026-11-11", "2026-09-30"), { mis: null, orders: { start: "2026-10-13", end: "2026-11-11" } });
-  assert.deepEqual(splitPeriod("2026-10-13", "2026-11-11", null), { mis: null, orders: { start: "2026-10-13", end: "2026-11-11" } });
-  assert.deepEqual(splitPeriod("2026-12-31", "2027-01-05", "2026-12-31"), { mis: { start: "2026-12-31", end: "2026-12-31" }, orders: { start: "2027-01-01", end: "2027-01-05" } });
+test("splitPeriod: order-report days before and after the ERP months, invoice days between", () => {
+  const cov = { start: "2026-06-01", end: "2026-09-30" };
+  assert.deepEqual(splitPeriod("2026-09-13", "2026-10-12", cov), { before: null, mis: { start: "2026-09-13", end: "2026-09-30" }, after: { start: "2026-10-01", end: "2026-10-12" } });
+  assert.deepEqual(splitPeriod("2026-08-01", "2026-08-31", cov), { before: null, mis: { start: "2026-08-01", end: "2026-08-31" }, after: null });
+  assert.deepEqual(splitPeriod("2026-10-13", "2026-11-11", cov), { before: null, mis: null, after: { start: "2026-10-13", end: "2026-11-11" } });
+  // May is before the ERP history: order reports only, never zeros
+  assert.deepEqual(splitPeriod("2026-05-01", "2026-05-31", cov), { before: null, mis: null, after: { start: "2026-05-01", end: "2026-05-31" } });
+  assert.deepEqual(splitPeriod("2026-05-20", "2026-06-10", cov), { before: { start: "2026-05-20", end: "2026-05-31" }, mis: { start: "2026-06-01", end: "2026-06-10" }, after: null });
+  assert.deepEqual(splitPeriod("2026-05-01", "2026-10-31", cov), { before: { start: "2026-05-01", end: "2026-05-31" }, mis: cov, after: { start: "2026-10-01", end: "2026-10-31" } });
+  assert.deepEqual(splitPeriod("2026-10-13", "2026-11-11", null), { before: null, mis: null, after: { start: "2026-10-13", end: "2026-11-11" } });
 });
 
 test("dayLabel", () => assert.equal(dayLabel("2026-09-30"), "30 Sep 2026"));

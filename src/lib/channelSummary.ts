@@ -14,7 +14,8 @@ import { sharedFetch } from "@/lib/sharedFetch";
 import { previousRange } from "@/lib/dateRanges";
 import { amazonCardSpendRows } from "@/lib/amazonAdSourceRules";
 import { dailyFallbackStart, dailyFkRowAsMis, dedupeOrderLines, misMaxForFill } from "@/lib/dailyOrderFallbackRules";
-import { dayLabel, monthEnd, monthStartOf, splitPeriod, summarizeMisLines, type MisLine, type MisMarketplace } from "@/lib/misInvoiceRules";
+import { dayLabel, splitPeriod, summarizeMisLines, type MisMarketplace } from "@/lib/misInvoiceRules";
+import { loadMisLines, misCoverage } from "@/lib/misInvoiceData";
 
 // Short "this period vs the previous period" summary for the Meesho, BARM and Flipkart Overview
 // pages, for the date range selected at the top of the dashboard. Meesho and BARM reuse the same
@@ -34,6 +35,11 @@ export interface PeriodSummary {
   unpricedUnits?: number;
   /** How many different products those units belong to. */
   unpricedSkus?: number;
+  /** Value of returns incl. tax (the ERP's "Returns (w/ Tax)"); only when every day of the period is
+   *  covered by the ERP's invoice reports, since the order reports carry no return values. */
+  returnsValue?: number;
+  /** The ERP's "Lines" count (invoice lines, sales and returns); same condition as returnsValue. */
+  invoiceLines?: number;
 }
 
 export interface ChannelSummary {
@@ -87,55 +93,23 @@ function summarize(data: WeeklySkuPeriodData & { cancelledOrdersByPeriod?: Map<s
   };
 }
 
-// ── B-ARM ERP invoice figures (misInvoiceRules.ts) ─────────────────────────────
+// ── B-ARM ERP invoice figures (misInvoiceRules.ts, misInvoiceData.ts) ───────────
 // For every day the ERP's monthly invoice reports cover, Amazon / Flipkart / Meesho Sales, Units,
-// Orders and Returns are the ERP's (public.mis_datas_mv, as its "MIS Data's" page shows them); the
-// days after come from the order reports below, as before. Ad spend is unchanged.
-
-/** Last day the ERP's invoice reports cover for a marketplace: the end of its newest report month.
- *  Kept for 30 minutes (it moves once a month) and retried, since this database has bursts of
- *  statement timeouts. */
-const misEndCache = new Map<MisMarketplace, { at: number; value: Promise<string | null> }>();
-function misCoverageEnd(m: MisMarketplace): Promise<string | null> {
-  const hit = misEndCache.get(m);
-  if (hit && Date.now() - hit.at < 30 * 60_000) return hit.value;
-  const value = (async () => {
-    for (let i = 0; ; i++) {
-      const { data, error } = await supabasePublic.from("mis_datas_mv").select("invoice_month").eq("marketplace", m).order("invoice_month", { ascending: false }).limit(1);
-      if (!error) {
-        const month = (data?.[0] as { invoice_month?: string } | undefined)?.invoice_month;
-        return month ? monthEnd(month) : null;
-      }
-      if (i >= 3) throw new Error(`ERP invoice data (${m}): ${error.message}`);
-      await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
-    }
-  })();
-  misEndCache.set(m, { at: Date.now(), value });
-  value.catch(() => misEndCache.delete(m));
-  return value;
-}
-
-function loadMisLines(m: MisMarketplace, start: string, end: string): Promise<MisLine[]> {
-  return fetchAllRows(
-    "mis_datas_mv",
-    (q) => q.eq("marketplace", m).gte("invoice_month", monthStartOf(start)).lte("invoice_month", monthStartOf(end)),
-    "line_uid",
-    "line_uid,invoice_date,invoice_month,order_id,quantity,sales_with_tax,returns_with_tax",
-  ) as Promise<MisLine[]>;
-}
+// Orders and Returns are the ERP's (public.mis_datas_mv, as its "MIS Data's" page shows them); days
+// before or after those months come from the order reports below, as before. Ad spend is unchanged.
 
 /** `base` (order reports, both periods) with every ERP-covered day replaced by the ERP's figures.
- *  `orderOnly(s, e)` gives the order-report summary for the days after the ERP's last day. */
+ *  `orderOnly(s, e)` gives the order-report summary for days outside the ERP's months. */
 async function withMisInvoices(m: MisMarketplace, base: ChannelSummary, orderOnly: (s: string, e: string) => Promise<ChannelSummary>): Promise<ChannelSummary> {
   // A failure throws (the shared loader cache then keeps its last good copy and tries again) rather
   // than quietly showing order-report figures for days the ERP covers.
-  const misEnd = await misCoverageEnd(m);
+  const cov = await misCoverage(m);
   const splits = {
-    previous: splitPeriod(base.previousRange.start, base.previousRange.end, misEnd),
-    current: splitPeriod(base.currentRange.start, base.currentRange.end, misEnd),
+    previous: splitPeriod(base.previousRange.start, base.previousRange.end, cov),
+    current: splitPeriod(base.currentRange.start, base.currentRange.end, cov),
   };
   const misParts = [splits.previous.mis, splits.current.mis].filter((x): x is { start: string; end: string } => !!x);
-  if (!misEnd || !misParts.length) return base;
+  if (!cov || !misParts.length) return base;
   const lines = await loadMisLines(m, misParts[0].start, misParts[misParts.length - 1].end);
 
   const period = async (label: "previous" | "current"): Promise<PeriodSummary> => {
@@ -143,29 +117,35 @@ async function withMisInvoices(m: MisMarketplace, base: ChannelSummary, orderOnl
     const b = base[label];
     if (!sp.mis) return b;
     const t = summarizeMisLines(lines, sp.mis.start, sp.mis.end);
-    const after = sp.orders ? (await orderOnly(sp.orders.start, sp.orders.end)).current : null;
+    const others = (await Promise.all([sp.before, sp.after].map((r) => (r ? orderOnly(r.start, r.end).then((x) => x.current) : null)))).filter((x): x is PeriodSummary => !!x);
+    const add = (k: "sales" | "units" | "orders" | "allReturns" | "customerReturns" | "netOrders") => others.reduce((s, o) => s + (Number(o[k]) || 0), 0);
+    const unpriced = others.reduce((s, o) => s + (o.unpricedUnits || 0), 0);
     return {
-      sales: t.sales + (after?.sales ?? 0),
-      units: t.units + (after?.units ?? 0),
-      orders: t.orders + (after?.orders ?? 0),
-      allReturns: t.allReturns + (after?.allReturns ?? 0),
+      sales: t.sales + add("sales"),
+      units: t.units + add("units"),
+      orders: t.orders + add("orders"),
+      allReturns: t.allReturns + add("allReturns"),
       // the invoice reports list only returns that were refunded or credited: customer returns
-      customerReturns: t.allReturns + (after?.customerReturns ?? 0),
-      netOrders: t.netOrders + (after?.netOrders ?? 0),
+      customerReturns: t.allReturns + add("customerReturns"),
+      netOrders: t.netOrders + add("netOrders"),
       adSpendTax: b.adSpendTax,
-      cancelledOrders: undefined, // the invoice reports leave cancelled orders out
-      unpricedUnits: after?.unpricedUnits,
-      unpricedSkus: after?.unpricedSkus,
+      // the invoice reports leave cancelled orders out, so cancellations stay from the order reports,
+      // which cover the whole period (base)
+      cancelledOrders: b.cancelledOrders,
+      unpricedUnits: unpriced || undefined,
+      returnsValue: others.length ? undefined : t.returnsValue,
+      invoiceLines: others.length ? undefined : t.lines,
+      unpricedSkus: others.reduce((s, o) => s + (o.unpricedSkus || 0), 0) || undefined,
     };
   };
   const [previous, current] = await Promise.all([period("previous"), period("current")]);
-  const through = dayLabel(misEnd);
+  const span = `${dayLabel(cov.start)} – ${dayLabel(cov.end)}`;
   return {
     ...base,
     previous,
     current,
     salesLabel: "Gross Sales",
-    note: `Up to ${through}: the B-ARM ERP's MIS figures (${m} invoice reports; Sales incl. tax before returns; Net = the ERP's Qty). After ${through}: ${base.note ?? "the order reports."}`,
+    note: `${span}: the B-ARM ERP's MIS figures (${m} invoice reports; Sales incl. tax before returns; Net = the ERP's Qty; Cancelled from the order reports, as the ERP leaves cancellations out). Other days: ${base.note ?? "the order reports."}`,
   };
 }
 

@@ -83,12 +83,14 @@ function OrderStats({ s }: { s: ChannelSummary }) {
       <div>
         <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Orders</p>
         <p className="font-black">{num(c.orders)}</p>
-        <p className="text-[10px] text-muted-foreground">{num(c.units)} units</p>
+        <p className="text-[10px] text-muted-foreground">{num(c.units)} units{tracked ? ` · ${num(c.netOrders)} net` : ""}{c.invoiceLines !== undefined ? ` · ${num(c.invoiceLines)} ERP lines` : ""}</p>
       </div>
       <div>
         <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Returns</p>
         <p className="font-black">{tracked ? num(c.allReturns) : "—"}</p>
-        <p className="text-[10px] text-muted-foreground">{tracked ? `${rate === null ? "—" : one(rate) + "%"} of units · ${num(c.customerReturns)} customer` : "Not tracked"}</p>
+        <p className="text-[10px] text-muted-foreground">{!tracked ? "Not tracked"
+          : c.returnsValue !== undefined ? `${cur(c.returnsValue)}${c.sales ? ` · ${one((c.returnsValue / c.sales) * 100)}% of sales` : ""}`
+          : `${rate === null ? "—" : one(rate) + "%"} of units · ${num(c.customerReturns)} customer`}</p>
       </div>
       <div>
         <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Cancelled</p>

@@ -19,6 +19,8 @@ import { resolveDailySpend } from "@/lib/adSpendDailyRules";
 import { fetchAllRows } from "@/lib/amazonReportShared";
 import { DEFAULT_GST_MULTIPLIER } from "@/lib/masterProductSkuid";
 import { addDaysIso } from "@/lib/bi/forecast";
+import { effectiveDate, monthStartOf, dayLabel, type MisMarketplace } from "@/lib/misInvoiceRules";
+import { loadMisProductLines, misCoverage, type MisProductLine } from "@/lib/misInvoiceData";
 import type { BiAdChannel, BiCampaign, BiChannel, BiDataset, BiIntervals, BiProduct, BiStock, BiWarehouseStock, SalesChannelId, Series } from "@/lib/bi/types";
 
 /** First day the order history covers (Amazon and Flipkart MIS start on 15 Apr 2026). */
@@ -251,12 +253,46 @@ function adSeries(dates: string[], rows: { date: string; spend: number; sales: n
 // last ORDER_REFRESH_DAYS of orders and ADS_REFRESH_DAYS of ads are re-read, and older days are
 // copied from the previous build. A full re-read runs at least every FULL_REBUILD_HOURS, and
 // whenever the previous build had a failed source.
+// ── B-ARM ERP invoice figures ─────────────────────────────────────────────────
+// For the days the ERP's monthly invoice reports cover, Amazon / Flipkart / Meesho revenue, units
+// and returns are the ERP's (as its "MIS Data's" page and the Overall page show them); other days
+// stay from the order reports. Rules: misInvoiceRules.ts.
+type MisKey = "amazon" | "flipkart" | "meesho";
+const MIS_NAME: Record<MisKey, MisMarketplace> = { amazon: "Amazon", flipkart: "Flipkart", meesho: "Meesho" };
+
+async function loadMis(key: MisKey, refreshFrom: string, prevCov: { start: string; end: string } | null | undefined) {
+  const cov = await misCoverage(MIS_NAME[key]);
+  if (!cov) return { cov: null, from: null, lines: [] as MisProductLine[] };
+  // re-read only recent months when the previous build used the same ERP months; all of them otherwise
+  const same = !!prevCov && prevCov.start === cov.start && prevCov.end === cov.end;
+  const from = same ? (refreshFrom > cov.start ? refreshFrom : cov.start) : cov.start;
+  if (from > cov.end) return { cov, from: null, lines: [] as MisProductLine[] };
+  return { cov, from, lines: await loadMisProductLines(MIS_NAME[key], from, cov.end) };
+}
+
+/** Replace the days [from, cov.end] of a channel (and its products) with the ERP's figures. */
+function applyMis(src: { daily: DayAgg; skus: SkuDayAgg }, lines: MisProductLine[], from: string, to: string, productFrom: string) {
+  for (const d of [...src.daily.keys()]) if (d >= from && d <= to) src.daily.delete(d);
+  for (const s of src.skus.values()) for (const d of [...s.days.keys()]) if (d >= from && d <= to) s.days.delete(d);
+  for (const l of lines) {
+    const d = effectiveDate(l);
+    if (!d || d < from || d > to) continue;
+    const q = Number(l.quantity) || 0;
+    const revenue = Number(l.sales_with_tax) || 0;
+    const units = q > 0 ? q : 0;
+    const returns = q < 0 ? -q : 0;
+    addTo(src.daily, d, revenue, units, returns);
+    const sku = String(l.sku || "").trim();
+    if (d >= productFrom && sku) addSku(src.skus, sku, String(l.product_name || ""), l.category && l.category !== "Unmapped" ? l.category : null, d, units, revenue, returns);
+  }
+}
+
 export const ORDER_REFRESH_DAYS = 35;
 export const ADS_REFRESH_DAYS = 100; // the campaign table needs ~60 days before the last ads day
 export const FULL_REBUILD_HOURS = 24;
 
 export function canBuildIncrementally(prev: BiDataset | null | undefined, now = Date.now()): prev is BiDataset {
-  if (!prev || prev.errors.length || !prev.dates.length || prev.dates[0] !== HISTORY_START) return false;
+  if (!prev || prev.errors.length || !prev.dates.length || prev.dates[0] !== HISTORY_START || !prev.misCoverage) return false;
   const full = Date.parse(prev.fullBuiltAt ?? "");
   return Number.isFinite(full) && now - full < FULL_REBUILD_HOURS * 3_600_000;
 }
@@ -302,6 +338,7 @@ export async function buildBiDataset(previous?: BiDataset | null): Promise<BiDat
   // The three large order reads run one after another, not together: run in parallel they compete
   // for this busy database and push each other past its 3-second statement limit. The light reads
   // (Shopify, ads, stock) run alongside them.
+  const misCov: NonNullable<BiDataset["misCoverage"]> = {};
   const heavy = (async () => {
     const amazon = await attempt("Amazon orders", () => fromPeriodLoader("amazon", periods.filter((p) => p.label >= orderFrom), productFrom));
     const flip = await attempt("Flipkart orders", () => flipkart(orderFrom, asOf, productFrom));
@@ -310,6 +347,14 @@ export async function buildBiDataset(previous?: BiDataset | null): Promise<BiDat
       if (flip) seedFromPrevious(inc, "flipkart", orderFrom, productFrom, flip);
     }
     const meesho = await attempt("Meesho orders", () => fromPeriodLoader("meesho", periods, productFrom));
+    // the ERP's invoice figures replace the days its reports cover (one marketplace at a time)
+    for (const [key, src] of [["amazon", amazon], ["flipkart", flip], ["meesho", meesho]] as const) {
+      if (!src) continue;
+      const m = await attempt(`B-ARM ERP invoices (${MIS_NAME[key]})`, () => loadMis(key, monthStartOf(orderFrom), inc?.misCoverage?.[key]));
+      if (!m) continue;
+      misCov[key] = m.cov;
+      if (m.cov && m.from) applyMis(src, m.lines, m.from, m.cov.end, productFrom);
+    }
     return [amazon, flip, meesho] as const;
   })();
   const [[am, fk, ms], sh, web, wh, iv, adAm, adFk, adMs, gWin, mWin, stockRows] = await Promise.all([
@@ -327,10 +372,14 @@ export async function buildBiDataset(previous?: BiDataset | null): Promise<BiDat
   ]);
 
   const empty: DayAgg = new Map();
+  const erp = (key: MisKey, other: string) => {
+    const c = misCov[key];
+    return c ? `${dayLabel(c.start)} – ${dayLabel(c.end)}: B-ARM ERP invoiced sales incl. tax, before returns (as its MIS Data's page). Other days: ${other}` : other;
+  };
   const channels: BiChannel[] = [
-    toChannel("amazon", "Amazon", "Order item price × units, cancelled excluded (as the Amazon Overview)", true, dates, am?.daily ?? empty, am?.dataThrough ?? null),
-    toChannel("flipkart", "Flipkart", "Listing price × units — computed, not settled revenue (as the Flipkart Overview)", true, dates, fk?.daily ?? empty, fk?.dataThrough ?? null),
-    toChannel("meesho", "Meesho", "Quantity × supplier listed price, before returns (as the Meesho Overview)", true, dates, ms?.daily ?? empty, ms?.dataThrough ?? null),
+    toChannel("amazon", "Amazon", erp("amazon", "order item price × units, cancelled excluded (as the Amazon Overview)"), true, dates, am?.daily ?? empty, am?.dataThrough ?? null),
+    toChannel("flipkart", "Flipkart", erp("flipkart", "listing price × units, computed (as the Flipkart Overview)"), true, dates, fk?.daily ?? empty, fk?.dataThrough ?? null),
+    toChannel("meesho", "Meesho", erp("meesho", "quantity × supplier listed price, before returns (as the Meesho Overview)"), true, dates, ms?.daily ?? empty, ms?.dataThrough ?? null),
     toChannel("shopify", "Shopify", "Order totals of non-cancelled orders, incl. shipping and tax", false, dates, sh?.daily ?? empty, null),
     // still active: offline orders keep coming after the website moved to Shopify
     toChannel("barm", "B-ARM website & offline", "Old website (WooCommerce) order totals of Received orders, plus offline orders (units only — no prices on file)", true, dates, web?.daily ?? empty, web?.dataThrough ?? null),
@@ -422,6 +471,6 @@ export async function buildBiDataset(previous?: BiDataset | null): Promise<BiDat
 
   return {
     generatedAt: new Date().toISOString(), asOf, dates, channels, productDates, products, ads,
-    campaignWindow, campaigns, timings, buildKind: inc ? "incremental" : "full", fullBuiltAt: inc ? inc.fullBuiltAt : new Date().toISOString(), stock, warehouse: wh ?? [], intervals: iv ?? null, gstMultiplier: DEFAULT_GST_MULTIPLIER, errors, notes,
+    misCoverage: misCov, campaignWindow, campaigns, timings, buildKind: inc ? "incremental" : "full", fullBuiltAt: inc ? inc.fullBuiltAt : new Date().toISOString(), stock, warehouse: wh ?? [], intervals: iv ?? null, gstMultiplier: DEFAULT_GST_MULTIPLIER, errors, notes,
   };
 }

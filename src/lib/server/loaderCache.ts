@@ -89,8 +89,8 @@ function load(key: string, run: () => Promise<unknown>, entry: Entry | undefined
 }
 
 /** Bump when a loader's figures change meaning, so stored copies from before are not served.
- *  v3 (12 Nov 2026): Amazon / Flipkart / Meesho summaries use the B-ARM ERP's invoice figures. */
-const CACHE_VERSION = "v3";
+ *  v4 (12 Nov 2026): Amazon / Flipkart / Meesho summaries use the B-ARM ERP invoice figures (with returns value and cancellations). */
+const CACHE_VERSION = "v5";
 const keyOf = (name: string, args: string[]) => `${CACHE_VERSION}|${name}|${args.join("|")}`;
 function lookup(key: string): Entry | undefined {
   let entry = cache.get(key);

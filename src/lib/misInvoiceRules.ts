@@ -34,6 +34,8 @@ export interface MisPeriodTotals {
   orders: number;
   allReturns: number;
   netOrders: number;
+  /** Invoice lines (sales and returns), the ERP's "Lines" column. */
+  lines: number;
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -61,28 +63,39 @@ export function effectiveDate(line: Pick<MisLine, "invoice_date" | "invoice_mont
 
 /** Totals for the lines that count inside [start, end]. */
 export function summarizeMisLines(lines: MisLine[], start: string, end: string): MisPeriodTotals {
-  let sales = 0, returnsValue = 0, units = 0, allReturns = 0;
+  let sales = 0, returnsValue = 0, units = 0, allReturns = 0, count = 0;
   const orders = new Set<string>();
   for (const l of lines) {
     const d = effectiveDate(l);
     if (!d || d < start || d > end) continue;
+    count++;
     const q = Number(l.quantity) || 0;
     sales += Number(l.sales_with_tax) || 0;
     returnsValue += Number(l.returns_with_tax) || 0;
     if (q > 0) { units += q; if (l.order_id) orders.add(String(l.order_id)); }
     else if (q < 0) allReturns += -q;
   }
-  return { sales, returnsValue, units, orders: orders.size, allReturns, netOrders: units - allReturns };
+  return { sales, returnsValue, units, orders: orders.size, allReturns, netOrders: units - allReturns, lines: count };
 }
 
-/** How a period splits around the last day the invoice reports cover (`misEnd`). */
-export function splitPeriod(start: string, end: string, misEnd: string | null): { mis: { start: string; end: string } | null; orders: { start: string; end: string } | null } {
-  if (!misEnd || start > misEnd) return { mis: null, orders: { start, end } };
-  if (end <= misEnd) return { mis: { start, end }, orders: null };
-  const d = new Date(`${misEnd}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + 1);
-  const after = `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
-  return { mis: { start, end: misEnd }, orders: { start: after, end } };
+export interface MisCoverage { start: string; end: string }
+type Range = { start: string; end: string };
+
+const shift = (day: string, n: number) => {
+  const d = new Date(`${day}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+};
+
+/** How a period splits around the days the invoice reports cover: order-report days before them,
+ *  invoice days, and order-report days after them. */
+export function splitPeriod(start: string, end: string, cov: MisCoverage | null): { before: Range | null; mis: Range | null; after: Range | null } {
+  if (!cov || end < cov.start || start > cov.end) return { before: null, mis: null, after: { start, end } };
+  return {
+    before: start < cov.start ? { start, end: shift(cov.start, -1) } : null,
+    mis: { start: start < cov.start ? cov.start : start, end: end > cov.end ? cov.end : end },
+    after: end > cov.end ? { start: shift(cov.end, 1), end } : null,
+  };
 }
 
 /** "30 Sep 2026" */

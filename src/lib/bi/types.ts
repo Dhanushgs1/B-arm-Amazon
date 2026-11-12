@@ -89,6 +89,9 @@ export interface BiDataset {
   /** When the last full re-read of all history happened. Builds in between re-read only recent
    *  weeks (see bi/dataset.ts) and carry this forward. */
   fullBuiltAt?: string;
+  /** Per marketplace, the ERP invoice-report days this build used (misInvoiceData.ts); absent on
+   *  builds from before the ERP figures, which forces one full rebuild. */
+  misCoverage?: Partial<Record<"amazon" | "flipkart" | "meesho", { start: string; end: string } | null>>;
   /** "full" or "recent weeks only" — how this copy was built. */
   buildKind?: "full" | "incremental";
   /** Seconds each source took to load in the last build (for diagnosing slow loads). */

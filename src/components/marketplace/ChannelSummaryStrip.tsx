@@ -67,7 +67,7 @@ export function ChannelSummaryStrip({
             <KPICard
               title="Orders"
               value={num(data.current.units)}
-              subtitle={`units · ${num(data.current.orders)} orders`}
+              subtitle={`units · ${num(data.current.orders)} orders${data.current.invoiceLines !== undefined ? ` · ${num(data.current.invoiceLines)} ERP lines` : ""}`}
               trend={growth(data.current.units, data.previous.units)}
               accent="blue"
             />
@@ -77,7 +77,7 @@ export function ChannelSummaryStrip({
               <KPICard
                 title="Returns"
                 value={num(data.current.allReturns)}
-                subtitle={`${num(data.current.customerReturns)} customer returns`}
+                subtitle={data.current.returnsValue !== undefined ? `${cur(data.current.returnsValue)} returned${data.current.sales ? ` · ${(Math.round((data.current.returnsValue / data.current.sales) * 1000) / 10).toFixed(1)}% of sales` : ""}` : `${num(data.current.customerReturns)} customer returns`}
                 trend={growth(data.current.allReturns, data.previous.allReturns)}
                 inverseTrend
                 accent="orange"
