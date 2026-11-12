@@ -1,59 +1,11 @@
-// GET /api/bi/dataset — the executive dashboard's data (see src/lib/bi/dataset.ts).
-//
-// Building it reads seven months of orders, ads and stock, so it is built once and shared by every
-// signed-in viewer for 20 minutes. After that the old copy is still served instantly while a fresh
-// one is built in the background. ?refresh=1 asks for a fresh build (rate limited).
+// GET /api/bi/dataset — the executive dashboard's data (see src/lib/bi/dataset.ts). The cache, the
+// disk copy and the rebuild rules live in src/lib/server/biCache.ts (shared with the background
+// pre-load). ?refresh=1 asks for a fresh build (rate limited).
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import { checkSession, clientIp, guard } from "@/lib/apiAuth";
 import { rateLimit } from "@/lib/rateLimit";
-import { BI_VERSION, buildBiDataset } from "@/lib/bi/dataset";
-import type { BiDataset } from "@/lib/bi/types";
-import fs from "node:fs";
-import path from "node:path";
-
-const TTL_MS = 20 * 60_000;
-const store = globalThis as typeof globalThis & { __m360Bi?: { at: number; data: BiDataset | null; building: Promise<BiDataset> | null } };
-const cache = (store.__m360Bi ??= { at: 0, data: null, building: null });
-
-// The last complete copy is also saved on this server's disk, so after a restart or deploy the page
-// opens at once with it (marked as refreshing) instead of every viewer waiting for a rebuild.
-const DISK = path.join(process.cwd(), ".cache", "bi-dataset.json");
-function loadFromDisk() {
-  try {
-    const saved = JSON.parse(fs.readFileSync(DISK, "utf8")) as { savedAt: number; data: BiDataset };
-    if (saved?.data?.dates?.length) { cache.data = saved.data; cache.at = saved.savedAt; }
-  } catch { /* no saved copy yet */ }
-}
-function saveToDisk(d: BiDataset) {
-  try {
-    fs.mkdirSync(path.dirname(DISK), { recursive: true });
-    const tmp = `${DISK}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ savedAt: Date.now(), data: d }));
-    fs.renameSync(tmp, DISK); // atomic: a reader never sees half a file
-  } catch (e) { console.error("[bi] could not save the dataset to disk:", e); }
-}
-if (!cache.data) loadFromDisk();
-
-function rebuild(): Promise<BiDataset> {
-  if (!cache.building) {
-    cache.building = buildBiDataset(cache.data)
-      .then((d) => {
-        // A rebuild where a source failed must not replace a complete dataset: keep serving the
-        // complete one and try again in two minutes instead of twenty.
-        if (d.errors.length && cache.data && cache.data.errors.length === 0) {
-          console.error("[bi] rebuild had failed sources, keeping the previous dataset:", d.errors);
-          cache.at = Date.now() - TTL_MS + 2 * 60_000;
-          return cache.data;
-        }
-        cache.data = d; cache.at = Date.now();
-        if (!d.errors.length) saveToDisk(d);
-        return d;
-      })
-      .finally(() => { cache.building = null; });
-  }
-  return cache.building;
-}
+import { biCached, rebuildBi } from "@/lib/server/biCache";
 
 export const config = { api: { responseLimit: "16mb" } };
 
@@ -67,15 +19,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const r = rateLimit(`bi-refresh:${clientIp(req.headers)}`, 3, 10 * 60_000);
       if (!r.ok) return res.status(429).json({ error: "Refreshed recently — try again in a few minutes." });
     }
-    const stale = !cache.data || Date.now() - cache.at > TTL_MS;
-    // a copy built by older code (different layout / rules) is never shown: wait for the rebuild
-    const outdated = !!cache.data && cache.data.version !== BI_VERSION;
-    if (cache.data && !wantFresh && !outdated) {
-      if (stale) rebuild().catch((e) => console.error("[bi] background rebuild failed:", e));
-      return res.status(200).json({ ...cache.data, cacheAgeSeconds: Math.round((Date.now() - cache.at) / 1000), refreshing: stale });
+    const { data, ageMs, stale } = biCached();
+    if (data && !wantFresh) {
+      if (stale) rebuildBi().catch((e) => console.error("[bi] background rebuild failed:", e));
+      return res.status(200).json({ ...data, cacheAgeSeconds: Math.round(ageMs / 1000), refreshing: stale });
     }
-    const data = await rebuild();
-    return res.status(200).json({ ...data, cacheAgeSeconds: 0, refreshing: false });
+    const fresh = await rebuildBi();
+    return res.status(200).json({ ...fresh, cacheAgeSeconds: 0, refreshing: false });
   } catch (err) {
     console.error("[bi] dataset build failed:", err);
     return res.status(500).json({ error: "The business overview could not be built. Try again shortly." });

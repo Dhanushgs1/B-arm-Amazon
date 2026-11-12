@@ -15,7 +15,7 @@ import { ensureCached, getCached } from "@/lib/server/loaderCache";
 export const PRELOAD_EVERY_MS = 30 * 60_000;
 export const PRELOAD_MAX_AGE_MS = 3 * 3_600_000;
 const LAST_DATE_MAX_AGE_MS = 25 * 60_000;
-const FIRST_RUN_DELAY_MS = 60_000;
+const FIRST_RUN_DELAY_MS = 10_000;
 const PAUSE_BETWEEN_LOADS_MS = 2_000;
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -57,6 +57,13 @@ export function startOverallPreload() {
     running = true;
     const t0 = Date.now();
     try {
+      // Business overview / Home / chat data first: one shared build, the slowest thing to wait for
+      const tb = Date.now();
+      try {
+        const { warmBi } = await import("@/lib/server/biCache");
+        const did = await warmBi();
+        console.log(`[preload] Business overview data: ${did} (${Math.round((Date.now() - tb) / 1000)} s)`);
+      } catch (e) { console.error("[preload] Business overview data failed:", e instanceof Error ? e.message : e); }
       const r = await preloadOverallOnce();
       console.log(`[preload] Overall page: last data date ${r.lastDate ?? "unknown"} — ${r.loaded} loaded, ${r.cached} already cached, ${r.failed} failed (${Math.round((Date.now() - t0) / 1000)} s)`);
     } catch (e) {
