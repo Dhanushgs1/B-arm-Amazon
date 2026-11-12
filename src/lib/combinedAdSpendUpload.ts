@@ -4,6 +4,7 @@ import { toDate as parseFlexibleDate } from "@/lib/meeshoReportUpload";
 import { amazonPurchaseIstDate, chunk, planReplaceByKey } from "@/lib/amazonOrderUploadRules";
 import { collectSkuLessSpend, spCampaignDays, isSplitCoveredCampaignRow, type AmAdsSpendRow, type SkuLessCampaignDay } from "@/lib/amazonSpendRules";
 import { isCampaignCardRow } from "@/lib/amazonAdSourceRules";
+import { daysBetween, retryOnTimeout } from "@/lib/statementTimeoutRetry";
 
 // Ingests the seller's own hand-assembled "Last 7 days - DD-MM-YYYY.xlsx"
 // workbook in one shot. Writes each sheet's raw rows into its own dedicated
@@ -99,9 +100,34 @@ interface DailyMirrorSpec {
 
 // Deletes every row of `table` whose `column` is one of `values`, chunked so the IN-list stays
 // well inside PostgREST's URL limit.
+//
+// Every write below is kept small and retried on a statement timeout: the anon role these run as
+// is cancelled after 3 seconds per statement — see statementTimeoutRetry.ts.
 async function deleteWhereIn(table: string, column: string, values: string[]): Promise<string | null> {
-  for (const part of chunk(values, 200)) {
-    const { error } = await supabasePublic.from(table).delete().in(column, part);
+  for (const part of chunk(values, 50)) {
+    const { error } = await retryOnTimeout(() => supabasePublic.from(table).delete().in(column, part));
+    if (error) return error.message;
+  }
+  return null;
+}
+
+// Clears `from`..`to` (inclusive) one day per statement.
+async function clearDateRange(table: string, column: string, from: string, to: string): Promise<string | null> {
+  const days = daysBetween(from, to);
+  if (!days) {
+    const { error } = await retryOnTimeout(() => supabasePublic.from(table).delete().gte(column, from).lte(column, to));
+    return error?.message ?? null;
+  }
+  for (const day of days) {
+    const { error } = await retryOnTimeout(() => supabasePublic.from(table).delete().eq(column, day));
+    if (error) return error.message;
+  }
+  return null;
+}
+
+async function insertChunked(table: string, rows: Record<string, unknown>[]): Promise<string | null> {
+  for (const part of chunk(rows, 100)) {
+    const { error } = await retryOnTimeout(() => supabasePublic.from(table).insert(part));
     if (error) return error.message;
   }
   return null;
@@ -130,22 +156,15 @@ async function mirrorSheetToDailyTable(ws: XLSX.WorkSheet, spec: DailyMirrorSpec
   }
   const dates = spec.replaceBy ? [] : mapped.map((r) => r.report_date as string | null).filter((d): d is string => !!d).sort();
   if (dates.length) {
-    const { error: delErr } = await supabasePublic
-      .from(spec.table)
-      .delete()
-      .gte("report_date", dates[0])
-      .lte("report_date", dates[dates.length - 1]);
+    const delErr = await clearDateRange(spec.table, "report_date", dates[0], dates[dates.length - 1]);
     if (delErr) {
-      return { table: spec.table, status: "error", detail: `Clearing ${dates[0]}..${dates[dates.length - 1]} failed: ${delErr.message}` };
+      return { table: spec.table, status: "error", detail: `Clearing ${dates[0]}..${dates[dates.length - 1]} failed: ${delErr}` };
     }
   }
 
-  const chunkSize = 300;
-  for (let i = 0; i < mapped.length; i += chunkSize) {
-    const { error } = await supabasePublic.from(spec.table).insert(mapped.slice(i, i + chunkSize));
-    if (error) {
-      return { table: spec.table, status: "error", detail: `Insert failed: ${error.message}` };
-    }
+  const insErr = await insertChunked(spec.table, mapped);
+  if (insErr) {
+    return { table: spec.table, status: "error", detail: `Insert failed: ${insErr}` };
   }
 
   return { table: spec.table, status: "ok", detail: `${mapped.length} rows mirrored to ${spec.table}.` };
@@ -508,9 +527,8 @@ const REPORT_TARGETS: Record<string, ReportTableSpec> = {
 };
 
 async function upsertRows(table: string, rows: Record<string, unknown>[], onConflict: string): Promise<string> {
-  const chunkSize = 300;
-  for (let i = 0; i < rows.length; i += chunkSize) {
-    const { error } = await supabasePublic.from(table).upsert(rows.slice(i, i + chunkSize), { onConflict });
+  for (const part of chunk(rows, 100)) {
+    const { error } = await retryOnTimeout(() => supabasePublic.from(table).upsert(part, { onConflict }));
     if (error) throw new Error(`Upsert into ${table} failed: ${error.message}`);
   }
   return `${rows.length} rows -> ${table}`;
@@ -529,14 +547,11 @@ async function replaceRangeRows(table: string, dateCol: string, rows: Record<str
   const deduped = dedupeExactRows(rows);
   const dates = deduped.map((r) => r[dateCol] as string | null).filter((d): d is string => !!d).sort();
   if (dates.length) {
-    const { error: delErr } = await supabasePublic.from(table).delete().gte(dateCol, dates[0]).lte(dateCol, dates[dates.length - 1]);
-    if (delErr) throw new Error(`Clearing ${table} failed: ${delErr.message}`);
+    const delErr = await clearDateRange(table, dateCol, dates[0], dates[dates.length - 1]);
+    if (delErr) throw new Error(`Clearing ${table} failed: ${delErr}`);
   }
-  const chunkSize = 300;
-  for (let i = 0; i < deduped.length; i += chunkSize) {
-    const { error } = await supabasePublic.from(table).insert(deduped.slice(i, i + chunkSize));
-    if (error) throw new Error(`Insert into ${table} failed: ${error.message}`);
-  }
+  const insErr = await insertChunked(table, deduped);
+  if (insErr) throw new Error(`Insert into ${table} failed: ${insErr}`);
   return `${deduped.length} rows -> ${table}`;
 }
 
@@ -545,10 +560,8 @@ async function replaceKeyRows(table: string, keyCol: string, rows: Record<string
   const { deleteKeys, insertRows } = planReplaceByKey(dedupeExactRows(rows), keyCol, (r) => str(r.order_item_id));
   const delErr = await deleteWhereIn(table, keyCol, deleteKeys);
   if (delErr) throw new Error(`Replacing ${table} rows by ${keyCol} failed: ${delErr}`);
-  for (const part of chunk(insertRows, 300)) {
-    const { error } = await supabasePublic.from(table).insert(part);
-    if (error) throw new Error(`Insert into ${table} failed: ${error.message}`);
-  }
+  const insErr = await insertChunked(table, insertRows);
+  if (insErr) throw new Error(`Insert into ${table} failed: ${insErr}`);
   return `${insertRows.length} rows -> ${table}`;
 }
 

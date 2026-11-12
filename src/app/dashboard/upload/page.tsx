@@ -265,6 +265,9 @@ function CombinedAdSpendUploadCard({ onUploaded, dataInfo, keySlot }: { onUpload
   const job = useUploadJob("amazon:combined");
 
   const handleFile = async (file: File) => {
+    // Two copies of this upload running together delete and re-insert the same rows against each
+    // other (12 Nov 2026: Flipkart orders ended up half-written). One at a time.
+    if (job?.status === "running") return;
     setState({ status: "parsing", fileName: file.name });
     try {
       const { results, spAdsRows } = await trackUpload(
