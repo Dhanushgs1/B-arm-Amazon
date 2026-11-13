@@ -78,9 +78,12 @@ async function uploadRunning(): Promise<boolean> {
   const since = new Date(Date.now() - DIGEST_SETTLE_MINUTES * 60_000).toISOString();
   const tables = [...MARKETS.flatMap((m) => [m.orders, m.ads]), ...PAID.map((p) => p.table)];
   const hits = await Promise.all(tables.map(async (t) => {
-    const { data, error } = await supabasePublic.from(t).select("created_at").gt("created_at", since).limit(1);
+    // Newest row by id (indexed): created_at has no index, and filtering on it scanned the whole
+    // table and hit the database's statement timeout on the first live send (13 Nov 2026).
+    const { data, error } = await supabasePublic.from(t).select("created_at").order("id", { ascending: false }).limit(1);
     if (error) throw new Error(`upload check failed (${t}): ${error.message}`);
-    return (data || []).length > 0;
+    const last = (data?.[0] as { created_at?: string } | undefined)?.created_at;
+    return !!last && last > since;
   }));
   return hits.some(Boolean);
 }
