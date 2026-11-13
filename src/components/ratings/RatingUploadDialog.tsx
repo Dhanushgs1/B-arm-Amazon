@@ -66,8 +66,9 @@ export function RatingUploadDialog({
       const res = await uploadRatingSnapshot(parsed.rows, date);
       setDone({ rows: res.rows, date: res.snapshot_date });
       onUploaded();
-      // A Monday upload releases that week's "dropped below 4★" email (rating-drop-alert.ts — once per
-      // snapshot, recipients from Settings); on other days the next Monday 9 AM run sends it.
+      // Asks for that week's "dropped below 4★" email (rating-drop-alert.ts — once per snapshot,
+      // recipients from Settings). Rows just written are not settled yet, so the Supabase 30-minute
+      // tick sends it about an hour later.
       setMailNote("Checking listings that dropped below 4★…");
       fetch("/api/rating-drop-alert", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keySlot }) })
         .then(async (r) => {

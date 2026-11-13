@@ -797,6 +797,23 @@ export default function UploadReportsPage() {
   }, []);
 
   const [combinedDataInfo, setCombinedDataInfo] = useState<ReportDataInfo | undefined>(undefined);
+  // The daily digest (src/pages/api/upload-digest.ts) goes out once yesterday's data is in from all
+  // three daily uploads — the Last 7 days workbook, Google Ads and Meta ads — at most once a day,
+  // recipients from Settings. Each of those uploads asks; the route answers what it still waits for.
+  const [digestNote, setDigestNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const askDigest = useCallback(() => {
+    setDigestNote({ ok: true, text: "Daily digest: checking whether all three uploads are in…" });
+    fetch("/api/upload-digest", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keySlot }) })
+      .then(async (r) => {
+        const a = await r.json().catch(() => ({}));
+        setDigestNote(!r.ok ? { ok: false, text: `Daily digest email failed: ${a.error || r.status}` }
+          : a.skipped ? { ok: true, text: `Daily digest email: ${a.skipped}.` }
+          : a.emailed ? { ok: true, text: `Daily digest email sent for ${a.day}.` }
+          : { ok: false, text: `Daily digest email not sent: ${a.emailError || "unknown error"}` });
+      })
+      .catch((e) => setDigestNote({ ok: false, text: `Daily digest email failed: ${e instanceof Error ? e.message : String(e)}` }));
+  }, [keySlot]);
+
   const refreshCombinedMeta = useCallback(async () => {
     const info = await fetchDailyTablesDataInfo();
     setCombinedDataInfo(info);
@@ -888,11 +905,17 @@ export default function UploadReportsPage() {
         </p>
       </div>
 
-      <CombinedAdSpendUploadCard onUploaded={refreshCombinedMeta} dataInfo={combinedDataInfo} keySlot={keySlot} />
+      <CombinedAdSpendUploadCard onUploaded={() => { refreshCombinedMeta(); askDigest(); }} dataInfo={combinedDataInfo} keySlot={keySlot} />
+      {digestNote && (
+        <div className={`flex items-start gap-1.5 text-sm ${digestNote.ok ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
+          {digestNote.ok ? <CheckCircle2 size={14} className="mt-0.5 shrink-0" /> : <XCircle size={14} className="mt-0.5 shrink-0" />}
+          <span className="font-semibold">{digestNote.text}</span>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-        <GoogleOrdersUploadCard onUploaded={refreshGoogleMeta} dataInfo={googleDataInfo} spendInfo={googleSpendInfo} shopifyInfo={shopifyDataInfo} />
-        <SocialMediaUploadCard onUploaded={refreshSocialMediaMeta} dataInfo={socialMediaDataInfo} />
+        <GoogleOrdersUploadCard onUploaded={() => { refreshGoogleMeta(); askDigest(); }} dataInfo={googleDataInfo} spendInfo={googleSpendInfo} shopifyInfo={shopifyDataInfo} />
+        <SocialMediaUploadCard onUploaded={() => { refreshSocialMediaMeta(); askDigest(); }} dataInfo={socialMediaDataInfo} />
       </div>
 
       <ProductMarketingUploadCard onUploaded={refreshProductMarketingMeta} dataInfo={productMarketingDataInfo} />

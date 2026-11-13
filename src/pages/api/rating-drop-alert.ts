@@ -2,25 +2,29 @@
 // the previous ratings snapshot and are below 4★ in the latest, at any review count. Each product name
 // links to its Amazon (ASIN) or Flipkart (FSN) page. No mail when nothing crossed (user, 2026-10-12).
 //
-// Monday mail, sent only once that week's ratings upload is in (snapshot ≤ 7 days old), at most once
+// Sent as soon as a new week's ratings are in Supabase and settled (user, 2026-11-13): the ratings
+// collector writes straight to Supabase — there is no dashboard upload — so a snapshot is ready once it
+// is at most 7 days old and no row of it was written in the last 60 minutes (isSettled). At most once
 // per CHANNEL snapshot (state in barm_alert_state, alert_type "ratingDropWeekly", entity_id =
-// "Platform|snapshot date"; plain-date rows are from before 2026-10-25 — see platformsToMail):
-//   - the 9:00 AM IST Monday cron (scheduled-reports.ts), if the upload was already done;
-//   - the Ratings & Reviews page, right after "Upload weekly data" (signed-in browser session;
-//     account and recipients come from that slot's saved Settings, never from the request).
+// "Platform|snapshot date"; plain-date rows are from before 2026-10-25 — see platformsToMail). Callers:
+//   - Supabase pg_cron rating_drop_mail_tick(), every 30 minutes, when an unmailed snapshot has settled
+//     (supabase/migrations/20261113120000_rating_drop_mail_tick.sql) — the main trigger;
+//   - the 9:00 AM IST Monday cron (scheduled-reports.ts) and the Ratings & Reviews "Upload weekly data"
+//     dialog (signed-in browser session; account and recipients come from that slot's saved Settings,
+//     never from the request) — both simply ask the same question.
 //
 // POST body (signed server calls): { slot?, amazon_account_id, workspace_id, to, cc?, dryRun?, preview?, force? }
 // POST body (browser session):      { keySlot }
 //   dryRun: compute and return the rows, send nothing (skips the freshness/once-per-snapshot checks)
 //   preview: render the email and return its HTML (send-email preview), send nothing
-//   force:   signed server calls only — resend a snapshot already mailed (Monday/freshness checks still apply)
+//   force:   signed server calls only — resend a snapshot already mailed (freshness/settled checks still apply)
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import { resolveSellerMateKey } from "@/lib/adAlerts";
 import { supabasePublic } from "@/lib/amazonReportUpload";
 import { readEmailSettings } from "@/lib/emailSettingsStore";
 import { fetchRatingMetrics, groupListings } from "@/lib/productRatingMetrics";
-import { findRatingDrops, toRatingDrop, bareSku, platformsToMail, platformSnapshotKey, RATING_DROP_LIMIT, RATING_DROP_MIN_REVIEWS } from "@/lib/ratingDropAlert";
+import { findRatingDrops, toRatingDrop, bareSku, platformsToMail, platformSnapshotKey, isSettled, RATING_DROP_LIMIT, RATING_DROP_MIN_REVIEWS, RATING_SNAPSHOT_SETTLE_MINUTES } from "@/lib/ratingDropAlert";
 import { internalFetch, internalOrigin } from "@/lib/internalFetch";
 import { checkSessionOrInternal, guard, isInternalRequest } from "@/lib/apiAuth";
 
@@ -71,6 +75,16 @@ async function sentSnapshots(slot: string): Promise<string[]> {
   return (data || []).map((r) => String(r.entity_id));
 }
 
+/** When the newest row of one channel's snapshot was written (null if unknown). */
+async function lastWriteAt(platform: string, snapshotDate: string): Promise<string | null> {
+  const { data, error } = await supabasePublic
+    .from("product_rating_review_history").select("captured_at")
+    .eq("platform", platform).eq("snapshot_date", snapshotDate).not("captured_at", "is", null)
+    .order("captured_at", { ascending: false }).limit(1);
+  if (error) throw new Error(`ratings write-time read failed: ${error.message}`);
+  return (data?.[0]?.captured_at as string | undefined) ?? null;
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   if (!guard(req, res, checkSessionOrInternal)) return;
@@ -101,12 +115,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // dryRun / preview show every channel; force ignores what was already mailed.
     const pending = platformsToMail(m.platformDates, force ? [] : await sentSnapshots(slot), istToday());
     if (sending) {
-      // Mondays only (user, 2026-10-12): an upload on another day is mailed by the next Monday's 9 AM run.
-      if (new Date(istToday() + "T00:00:00Z").getUTCDay() !== 1) {
-        return res.status(200).json({ emailed: false, skipped: "goes out on Monday — the next Monday 9 AM run will send it" });
-      }
       if (!pending.length) {
-        return res.status(200).json({ emailed: false, skipped: `no new ratings upload this week to mail (latest is ${m.snapshotDate})` });
+        return res.status(200).json({ emailed: false, skipped: `no new ratings data this week to mail (latest is ${m.snapshotDate})` });
+      }
+      // Wait until every one of them has stopped changing, so one mail carries the whole week.
+      const writes = await Promise.all(pending.map((x) => lastWriteAt(x.platform, x.current)));
+      const arriving = pending.filter((_, i) => !isSettled(writes[i], Date.now())).map((x) => x.platform);
+      if (arriving.length) {
+        return res.status(200).json({ emailed: false, skipped: `ratings still arriving for ${arriving.join(", ")} — sends once no new rows for ${RATING_SNAPSHOT_SETTLE_MINUTES} minutes` });
       }
     }
     const mailPlatforms = new Set(pending.map((x) => x.platform));

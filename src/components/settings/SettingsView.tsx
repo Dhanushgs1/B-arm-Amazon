@@ -291,8 +291,7 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
       const activeAlerts = [
         roasAlerts && "ROAS / ACOS Alerts",
         inventoryAlerts && "Inventory Alerts",
-        dailySummary && "Daily Digest (9:00 AM IST)",
-        liveAlerts && `Things Need Attention (conversion drops, running out within ${stockoutWarnDays} days, spend spikes, buy box — daily 9:00 AM IST)`,
+        dailySummary && "Daily Digest (after the day's uploads: Amazon, Flipkart, Meesho, Shopify, Google Ads, Meta Ads)",
         fbaWarehouseAlerts && "FBA Stock (products under 8 warehouses stocked or any at ≤20 units, with every product's warehouse stock attached — daily 9:00 AM IST)",
         campaignPauseEmails && "Campaign Paused (within 30 minutes of a campaign pausing)",
         highAcosDaily && `High ACOS (Amazon, Flipkart and Meesho campaigns above ${highAcosThreshold}% ACOS, day by day for 7 days, from the uploaded ads reports — daily, once the Last 7 days report is uploaded)`,
@@ -738,13 +737,8 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
                   </SettingRow>
                 )}
                 {all && (
-                  <SettingRow tags={["Amazon"]} title="Daily Digest" desc="One morning email: KPIs, out-of-stock ad spend, bleeding campaigns and wasted search terms.">
+                  <SettingRow tags={["Amazon", "Flipkart", "Meesho"]} title="Daily Digest" desc="One email a day from the uploaded data: yesterday's sales, orders, ad spend, ROAS and ACOS for Amazon, Flipkart, Meesho, Shopify, Google Ads and Meta Ads, what needs attention, and the best and losing campaigns. Sent once the day's Last 7 days workbook, Google Ads and Meta ads uploads are all in.">
                     <Toggle checked={dailySummary} onChange={setDailySummary} />
-                  </SettingRow>
-                )}
-                {all && (
-                  <SettingRow tags={["Amazon"]} title="Things Need Attention" desc="Daily 9:00 AM IST: conversion drops, products running out within the days set below, spend spikes and buy box losses. Sent only on days when something fires; new items are marked NEW.">
-                    <Toggle checked={liveAlerts} onChange={setLiveAlerts} />
                   </SettingRow>
                 )}
                 {all && (
@@ -778,14 +772,14 @@ export function SettingsView({ scope = "all" }: { scope?: SettingsScope }) {
                     <Toggle checked={searchTermMonthly} onChange={setSearchTermMonthly} />
                   </SettingRow>
                 )}
-                {(dailySummary || liveAlerts || fbaWarehouseAlerts || highAcosDaily || ratingDropAlerts || weeklySummary || monthlySummary || searchTermMonthly) && (
+                {(dailySummary || fbaWarehouseAlerts || highAcosDaily || ratingDropAlerts || weeklySummary || monthlySummary || searchTermMonthly) && (
                   <div className="mt-1 mb-2 px-3 py-2.5 bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800 rounded-xl">
                     <p className="text-[11px] font-extrabold text-indigo-600 dark:text-indigo-400 flex items-center gap-1.5">
                       <span>📬</span> Reports will be sent to: <span className="font-black">{notifEmail || "—"}</span>
                       {ccEmail && <span className="font-semibold">(cc: {ccEmail})</span>}
                     </p>
                     <p className="text-[10px] text-indigo-500/80 font-semibold mt-0.5">
-                      {[dailySummary && "Daily digest 9AM", liveAlerts && "Things need attention 9AM", fbaWarehouseAlerts && "FBA stock 9AM", highAcosDaily && "High ACOS after upload", ratingDropAlerts && "Rating drop Monday", weeklySummary && "Weekly Monday", monthlySummary && "Monthly 1st", searchTermMonthly && "Search terms month-end"].filter(Boolean).join(" · ")}
+                      {[dailySummary && "Daily digest after uploads", fbaWarehouseAlerts && "FBA stock 9AM", highAcosDaily && "High ACOS after upload", ratingDropAlerts && "Rating drop Monday", weeklySummary && "Weekly Monday", monthlySummary && "Monthly 1st", searchTermMonthly && "Search terms month-end"].filter(Boolean).join(" · ")}
                     </p>
                   </div>
                 )}

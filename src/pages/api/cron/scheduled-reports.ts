@@ -68,7 +68,7 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
     return {
       dryRun: true,
       wouldSend: {
-        dailyDigest: !!s.dailySummary,
+        dailyDigest: !!s.dailySummary && slot === "B",
         liveAlerts: !!s.liveAlerts,
         fbaWarehouseLow: !!(s.fbaWarehouseAlerts ?? slot === "B"),
         highAcosTrend: !!s.highAcosDaily,
@@ -103,30 +103,19 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
     `[${slot}] Campaign history snapshot`
   );
 
-  // `dailySummary` now means the combined digest. The separate daily report was deleted — it
-  // showed only counts of the stockout / bleeding / wasted-term findings (computed by a different
-  // one-day heuristic, so its numbers disagreed with the alert emails' 7-day detectors), and the
-  // digest carries the same KPIs plus the actual rows behind each count. /api/stockout-alert and
-  // /api/ad-alerts still exist for manual one-off sends; the digest calls the same detectors.
-  if (s.dailySummary) {
-    // Always sends, including on a quiet day — a digest that goes missing is indistinguishable
-    // from a cron that stopped.
-    results.dailyDigest = await callReportEndpoint(
-      req,
-      "/api/daily-digest",
-      { ...acct, acosThreshold: s.acosThreshold || 40, minSpend: 500, lookbackDays: 7, lowStockThreshold: s.lowStockThreshold || 5 },
-      `[${slot}] Daily digest`
-    );
+  // `dailySummary` is the daily digest built from the uploaded data (user, 2026-11-13): Amazon,
+  // Flipkart, Meesho, Shopify, Google Ads and Meta Ads for yesterday in one mail, sent once that day's
+  // three uploads are in (upload-digest.ts — at most once per day). The Upload page triggers it right
+  // after the uploads and the 30-minute monitor is the backup; at 9 AM the uploads are normally not
+  // in yet, so this call usually just reports what it is waiting for. The older SellerMate digest
+  // (/api/daily-digest) is no longer scheduled.
+  if (s.dailySummary && slot === "B") {
+    results.dailyDigest = await callReportEndpoint(req, "/api/upload-digest", { slot, to: acct.to, cc: acct.cc }, `[${slot}] Daily digest`);
   }
   // The four emails below are the client's daily list (sheet "Mail to be triggered", 2026-10-11):
   // each goes out on any day it has something to report — never as an empty mail (user, 2026-10-11).
-  if (s.liveAlerts) {
-    // "Things need attention": everything firing today (conversion drops and products running out
-    // within stockoutWarnDays first), new items marked NEW.
-    results.liveAlerts = await callReportEndpoint(
-      req, "/api/live-alerts", { ...acct, daily: true, warnDays: Number(s.stockoutWarnDays) || 10 }, `[${slot}] Things need attention`
-    );
-  }
+  // "Things need attention" (/api/live-alerts) was switched off for good (user, 2026-11-13) and is no
+  // longer scheduled, whatever the saved liveAlerts setting says.
   // FBA stock — every SKU failing the 24-FC rule (under 8 FCs stocked, or a stocked FC at 20 units or
   // less), newly failing ones marked NEW, plus every SKU's stock per FC as a CSV. On by default for
   // B-ARM only (the account the FC list was made for); Settings can switch it either way.
@@ -142,8 +131,9 @@ async function runForSlot(req: NextApiRequest, slot: string, isMonday: boolean, 
     );
   }
   // Rating drop — listings that fell from 4★+ to below 4★ since the last ratings snapshot.
-  // Mondays, only if this week's ratings upload is already in and not yet mailed; otherwise the
-  // Ratings & Reviews upload sends it (see rating-drop-alert.ts). On by default for B-ARM.
+  // The main trigger is Supabase's rating_drop_mail_tick() (every 30 minutes, once new ratings have
+  // settled — see rating-drop-alert.ts); this Monday call is a second chance that asks the same
+  // question and can never send a snapshot twice. On by default for B-ARM.
   if (isMonday && (s.ratingDropAlerts ?? slot === "B")) {
     results.ratingDrop = await callReportEndpoint(req, "/api/rating-drop-alert", acct, `[${slot}] Rating drop`);
   }

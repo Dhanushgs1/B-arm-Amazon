@@ -67,7 +67,25 @@ async function checkSlot(req: NextApiRequest, slot: string) {
         highAcos = { ok: false, error: err?.message || String(err) };
       }
     }
-    return { ok: r.ok, result: j, highAcos };
+    // Daily digest from the uploaded data: goes out once yesterday's three uploads are in
+    // (upload-digest.ts sends at most once per date). The Upload page triggers it right after each
+    // upload; this is the backup in case that call did not finish or the page was closed.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let digest: any;
+    if (slot === "B" && s.emailAlerts && s.dailySummary && s.notifEmail && new Date(Date.now() + 5.5 * 3_600_000).getUTCHours() >= 9) {
+      try {
+        const dr = await internalFetch(`${internalOrigin()}/api/upload-digest`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ slot, to: s.notifEmail, cc: s.ccEmail || undefined }),
+        });
+        const dj = await dr.json().catch(() => ({}));
+        digest = { ok: dr.ok, emailed: dj.emailed, skipped: dj.skipped, error: dj.error || dj.emailError };
+      } catch (err: any) {
+        digest = { ok: false, error: err?.message || String(err) };
+      }
+    }
+    return { ok: r.ok, result: j, highAcos, digest };
   } catch (err: any) {
     console.error(`[Marketplace360 Cron] ❌ [${slot}] Campaign monitor (30min) failed:`, err);
     return { ok: false, error: err?.message || String(err) };

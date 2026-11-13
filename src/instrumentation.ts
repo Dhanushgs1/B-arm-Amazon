@@ -92,18 +92,11 @@ export async function register() {
 
         // Mirrors src/pages/api/cron/scheduled-reports.ts, which is what actually runs in
         // production — keep the two in step, or local testing proves nothing about the deploy.
-        if (s.dailySummary) {
-          console.log(`[Marketplace360] [${slot}] Sending daily digest (combined)...`);
-          await runAlertEndpoint(
-            "/api/daily-digest",
-            { ...acct, acosThreshold: s.acosThreshold || 40, minSpend: 500, lookbackDays: 7, lowStockThreshold: s.lowStockThreshold || 5 },
-            `[${slot}] Daily digest`
-          );
+        if (s.dailySummary && slot === "B") {
+          console.log(`[Marketplace360] [${slot}] Daily digest from uploads (sends once all three uploads are in)...`);
+          await runAlertEndpoint("/api/upload-digest", { slot, to: acct.to, cc: acct.cc }, `[${slot}] Daily digest`);
         }
-        if (s.liveAlerts) {
-          console.log(`[Marketplace360] [${slot}] Running things need attention...`);
-          await runAlertEndpoint("/api/live-alerts", { ...acct, daily: true, warnDays: Number(s.stockoutWarnDays) || 10 }, `[${slot}] Things need attention`);
-        }
+        // "Things need attention" (/api/live-alerts) is no longer scheduled (user, 2026-11-13).
         if (s.fbaWarehouseAlerts ?? slot === "B") {
           await runAlertEndpoint("/api/fba-warehouse-alerts", { ...acct, daily: true }, `[${slot}] FBA stock`);
         }

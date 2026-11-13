@@ -45,8 +45,16 @@ test("builds Amazon and Flipkart product links", () => {
   assert.equal(productUrl("Meesho", "X"), null);
 });
 
-test("a snapshot up to 7 days old is still mailed (last Monday's after-9AM upload)", () => {
-  assert.equal(isThisWeeksSnapshot("2026-10-12", "2026-10-12"), false); // dated today: may still be collecting
+test("a snapshot is settled once nothing was written for 60 minutes", async () => {
+  const { isSettled } = await import("./ratingDropAlert.ts");
+  const now = Date.parse("2026-11-16T05:00:00Z");
+  assert.equal(isSettled("2026-11-16T04:30:00Z", now), false); // rows still arriving
+  assert.equal(isSettled("2026-11-16T04:00:00Z", now), true);
+  assert.equal(isSettled(null, now), true); // no write time recorded
+});
+
+test("a snapshot up to 7 days old is still mailed, from the day it is dated", () => {
+  assert.equal(isThisWeeksSnapshot("2026-10-12", "2026-10-12"), true); // dated today: isSettled decides if it is complete
   assert.equal(isThisWeeksSnapshot("2026-10-12", "2026-10-13"), true);
   assert.equal(isThisWeeksSnapshot("2026-10-19", "2026-10-26"), true);
   assert.equal(isThisWeeksSnapshot("2026-10-18", "2026-10-26"), false);

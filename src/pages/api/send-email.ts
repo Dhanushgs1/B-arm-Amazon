@@ -1074,6 +1074,131 @@ export function buildHtml(type: string, data: Record<string, any>, toEmail: stri
       </table>`, multi ? null : data.channel || "amazon");
   }
 
+  // Daily digest from the uploaded data (src/pages/api/upload-digest.ts, src/lib/uploadDigestRules.ts):
+  // one row per channel for yesterday, what is going well / needs attention, best and losing campaigns.
+  if (type === "uploadDigest") {
+    const money = (v: number) => "&#8377;" + new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(v || 0));
+    const count = (v: number) => new Intl.NumberFormat("en-IN").format(Math.round(v || 0));
+    const one = (v: number) => (Math.round(v * 10) / 10).toFixed(1);
+    const dash = `<span style="color:#9ca3af;">&#8212;</span>`;
+    const dayLabel = (d: string, year = false) => (d ? new Date(d + "T00:00:00Z").toLocaleDateString("en-IN", { weekday: year ? "short" : undefined, day: "numeric", month: "short", year: year ? "numeric" : undefined, timeZone: "UTC" }) : "");
+    const growth = (g: number | null) => (g === null || g === undefined ? ""
+      : `<br><span style="font-size:10px;font-weight:800;color:${Math.abs(g) < 0.05 ? "#6b7280" : g > 0 ? "#059669" : "#dc2626"};">${g > 0 ? "&#9650; +" : g < 0 ? "&#9660; " : ""}${one(g)}%</span>`);
+    const COLORS: Record<string, string> = { amazon: "#c2410c", flipkart: "#1d4ed8", meesho: "#9F2089", shopify: "#3f6b22", google: "#1a56db", meta: "#0866FF" };
+    const head = "padding:7px 6px;border:1px solid #e5e7eb;background:#f3f4f6;font-size:10px;text-transform:uppercase;text-align:right;";
+    const cell = "padding:8px 6px;border:1px solid #e5e7eb;font-size:12px;text-align:right;white-space:nowrap;color:#111;";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows: any[] = data.rows || [];
+    const t = data.total || {};
+    const val = (v: number | null, f: (x: number) => string) => (v === null || v === undefined ? dash : f(v));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rowHtml = (r: any) => `<tr>
+        <td style="${cell}text-align:left;font-weight:800;color:${COLORS[r.key] || "#111"};">${r.label}${r.late && r.day ? `<br><span style="color:#b45309;font-size:10px;font-weight:700;">data of ${dayLabel(r.day)}</span>` : ""}${!r.day ? `<br><span style="color:#b45309;font-size:10px;font-weight:700;">no recent data</span>` : ""}</td>
+        <td style="${cell}font-weight:700;">${val(r.sales, money)}${growth(r.salesGrowth)}</td>
+        <td style="${cell}">${val(r.orders, count)}</td>
+        <td style="${cell}">${val(r.adSpend, money)}</td>
+        <td style="${cell}">${val(r.adSales, money)}</td>
+        <td style="${cell}">${val(r.roas, (x) => one(x) + "x")}</td>
+        <td style="${cell}">${val(r.acos, (x) => one(x) + "%")}</td>
+      </tr>`;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const note = (i: any, color: string) => `<p style="margin:0 0 6px;font-size:12px;line-height:1.5;color:#111;"><strong style="color:${color};">${i.platform}:</strong> ${i.text}</p>`;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const good: any[] = data.good || [], watch: any[] = data.watch || [];
+    const sub = "padding:5px 6px;border:1px solid #e5e7eb;font-size:11px;text-align:right;white-space:nowrap;color:#111;";
+    const subHead = "padding:5px 6px;border:1px solid #e5e7eb;background:#f9fafb;font-size:9px;text-transform:uppercase;text-align:right;color:#6b7280;";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const campRows = (list: any[], spendOnly: boolean) => list.map((c) => `<tr>
+        <td style="${sub}text-align:left;white-space:normal;font-weight:700;">${c.name}</td>
+        <td style="${sub}">${money(c.spend)}</td>
+        ${spendOnly ? `<td style="${sub}">${val(c.clicks, count)}</td>` : `<td style="${sub}">${money(c.sales || 0)}</td><td style="${sub}">${val(c.acos, (x) => one(x) + "%")}</td>`}
+      </tr>`).join("");
+    const campTable = (title: string, color: string, list: unknown[], spendOnly: boolean) => (list.length ? `
+        <p style="margin:8px 0 4px;font-size:11px;font-weight:800;color:${color};">${title}</p>
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+          <tr><th style="${subHead}text-align:left;">Campaign</th><th style="${subHead}">Spend</th>${spendOnly ? `<th style="${subHead}">Clicks</th>` : `<th style="${subHead}">Ad sales</th><th style="${subHead}">ACOS</th>`}</tr>
+          ${campRows(list as unknown[], spendOnly)}
+        </table>` : "");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const campaigns = ((data.campaigns || []) as any[]).map((c) => `
+      <tr><td style="padding-top:16px;">
+        <p style="margin:0;font-size:13px;font-weight:800;color:${COLORS[c.key] || "#111"};">${c.label}${c.day !== data.day ? ` <span style="color:#b45309;font-size:10px;">(${dayLabel(c.day)})</span>` : ""}</p>
+        ${c.spendOnly
+          ? campTable("Biggest spend", "#374151", c.top || [], true)
+          : campTable("&#127942; Best campaigns", "#059669", c.best || [], false) + campTable("&#9888;&#65039; Losing campaigns", "#dc2626", c.losing || [], false)}
+      </td></tr>`).join("");
+    const lateNotes: string[] = data.lateNotes || [];
+    return wrap(`
+      <table width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr><td style="padding-bottom:14px;">
+          <h2 style="margin:0;color:#111;font-size:20px;font-weight:800;">&#128202; Daily Digest &#8212; ${dayLabel(data.day, true)}</h2>
+          <p style="margin:4px 0 0;color:#6b7280;font-size:12px;font-weight:600;">${data.accountName || "B-ARM"} &nbsp;&#183;&nbsp; from the uploaded reports and Shopify orders &nbsp;&#183;&nbsp; change is vs the day before</p>
+        </td></tr>
+        <tr><td style="padding-bottom:16px;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+            <td style="padding:12px;border:1px solid #e5e7eb;border-radius:10px;width:33%;vertical-align:top;">
+              <p style="margin:0;color:#6b7280;font-size:10px;font-weight:800;text-transform:uppercase;">Total sales</p>
+              <p style="margin:4px 0 0;color:#111;font-size:18px;font-weight:800;">${money(t.sales)}${growth(t.salesGrowth)}</p>
+              <p style="margin:2px 0 0;color:#6b7280;font-size:11px;">${count(t.orders)} orders</p>
+            </td>
+            <td style="width:8px;"></td>
+            <td style="padding:12px;border:1px solid #e5e7eb;border-radius:10px;width:33%;vertical-align:top;">
+              <p style="margin:0;color:#6b7280;font-size:10px;font-weight:800;text-transform:uppercase;">Ad spend</p>
+              <p style="margin:4px 0 0;color:#111;font-size:18px;font-weight:800;">${money(t.adSpend)}</p>
+              <p style="margin:2px 0 0;color:#6b7280;font-size:11px;">${money(t.adSpendGst)} incl. 18% GST</p>
+            </td>
+            <td style="width:8px;"></td>
+            <td style="padding:12px;border:1px solid #e5e7eb;border-radius:10px;width:33%;vertical-align:top;">
+              <p style="margin:0;color:#6b7280;font-size:10px;font-weight:800;text-transform:uppercase;">ROAS &nbsp;/&nbsp; TACOS</p>
+              <p style="margin:4px 0 0;color:#111;font-size:18px;font-weight:800;">${val(t.roas, (x) => one(x) + "x")} &nbsp;/&nbsp; ${val(t.tacos, (x) => one(x) + "%")}</p>
+              <p style="margin:2px 0 0;color:#6b7280;font-size:11px;">${money(t.adSales)} ad sales</p>
+            </td>
+          </tr></table>
+        </td></tr>
+        <tr><td style="overflow-x:auto;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+            <tr>
+              <th style="${head}text-align:left;">Channel</th><th style="${head}">Sales</th><th style="${head}">Orders</th>
+              <th style="${head}">Ad spend</th><th style="${head}">Ad sales</th><th style="${head}">ROAS</th><th style="${head}">ACOS</th>
+            </tr>
+            ${rows.map(rowHtml).join("")}
+            <tr style="background:#f9fafb;">
+              <td style="${cell}text-align:left;font-weight:800;">Total</td>
+              <td style="${cell}font-weight:800;">${money(t.sales)}</td>
+              <td style="${cell}font-weight:800;">${count(t.orders)}</td>
+              <td style="${cell}font-weight:800;">${money(t.adSpend)}</td>
+              <td style="${cell}font-weight:800;">${money(t.adSales)}</td>
+              <td style="${cell}font-weight:800;">${val(t.roas, (x) => one(x) + "x")}</td>
+              <td style="${cell}font-weight:800;">${t.adSales > 0 ? one((t.adSpend / t.adSales) * 100) + "%" : dash}</td>
+            </tr>
+          </table>
+          ${lateNotes.map((n) => `<p style="margin:6px 0 0;color:#b45309;font-size:11px;font-weight:700;">&#9888;&#65039; ${n}</p>`).join("")}
+        </td></tr>
+        ${good.length ? `<tr><td style="padding-top:18px;">
+          <div style="padding:12px 14px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;">
+            <p style="margin:0 0 8px;color:#166534;font-size:13px;font-weight:800;">&#128077; Going well</p>
+            ${good.map((i) => note(i, "#166534")).join("")}
+          </div></td></tr>` : ""}
+        ${watch.length ? `<tr><td style="padding-top:12px;">
+          <div style="padding:12px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;">
+            <p style="margin:0 0 8px;color:#991b1b;font-size:13px;font-weight:800;">&#9888;&#65039; Needs attention</p>
+            ${watch.map((i) => note(i, "#991b1b")).join("")}
+          </div></td></tr>` : ""}
+        ${campaigns ? `<tr><td style="padding-top:20px;"><h3 style="margin:0;color:#111;font-size:15px;font-weight:800;">Campaigns</h3></td></tr>${campaigns}` : ""}
+        <tr><td align="center" style="padding-top:22px;">
+          <a href="${SITE_URL}/dashboard/compare" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open the Overall page &#8594;</a>
+        </td></tr>
+        <tr><td style="padding-top:16px;">
+          <p style="margin:0;color:#9ca3af;font-size:11px;line-height:1.6;">
+            Sales: Amazon, Flipkart and Meesho gross sales from the uploaded order reports; Shopify is the order total of non-cancelled website orders. Google Ads and Meta Ads sales are the Shopify orders that came from those ads, so they are already inside Shopify and not added again.
+            Ad spend is as each ad console shows it (no GST); ad sales are what each ads report credits to its ads. TACOS = ad spend incl. GST &#247; total sales.
+            Best campaigns: ACOS 13% or lower. Losing: ACOS above 40%, or spend with no sales. Campaigns under &#8377;200 spend in the day (Meesho &#8377;50) are not judged.
+            Sent once the day's Last 7 days workbook, Google Ads and Meta ads uploads are all in.
+          </p>
+        </td></tr>
+      </table>`, null);
+  }
+
   // Weekly rating drop (src/pages/api/rating-drop-alert.ts): listings that were 4★+ last snapshot and
   // are below 4★ now. Each product name links to its Amazon / Flipkart page. Only sent when non-empty.
   if (type === "ratingDrop") {
@@ -1496,6 +1621,7 @@ const SUBJECTS: Record<string, string> = {
   liveAlerts: "⚡ Marketplace360 - Things Need Attention",
   fbaWarehouseLow: "📦 Marketplace360 - FBA Stock",
   highAcosTrend: "📈 Marketplace360 - High ACOS (last 7 days)",
+  uploadDigest: "📊 Marketplace360 - Daily Digest",
   ratingDrop: "⭐ Marketplace360 - Listings dropped below 4★",
   weeklyReport: "📈 Marketplace360 - Weekly Performance Report",
   adSpendDaily: "📈 Ad spend Report",

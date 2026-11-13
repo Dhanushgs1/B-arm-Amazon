@@ -1,6 +1,7 @@
 // Weekly "rating dropped below 4★" email (user, 2026-10-12): listings rated 4★ or higher in the
 // previous weekly ratings snapshot and below 4★ in the latest one, at any review count (the 5-review
-// floor was dropped on 2026-10-12 so a Flipkart listing with 1 review still shows). Sent on Mondays once that week's ratings upload is in — see
+// floor was dropped on 2026-10-12 so a Flipkart listing with 1 review still shows). Sent as soon as a
+// new week's ratings have landed in Supabase and stopped changing (user, 2026-11-13) — see
 // src/pages/api/rating-drop-alert.ts. Pure helpers only; the route does the I/O.
 
 import type { Listing } from "@/lib/productRatingMetrics";
@@ -51,13 +52,21 @@ export function daysBetween(a: string, b: string): number {
   return Math.round((Date.parse(b + "T00:00:00Z") - Date.parse(a + "T00:00:00Z")) / 86_400_000);
 }
 
-/** Is the snapshot ready to mail? Ratings reach Supabase from the weekly collection, which is dated the
- *  Monday it starts and fills in over the next days (19 Oct 2026: collected 19–21 Oct) — so a snapshot
- *  dated today may still be half-collected and is left for next Monday's run. Ready = 1 to
- *  RATING_SNAPSHOT_MAX_AGE_DAYS days old (IST). */
+/** Is the snapshot this week's data? 0 to RATING_SNAPSHOT_MAX_AGE_DAYS days old (IST). Whether it has
+ *  finished arriving is a separate check — see isSettled. */
 export function isThisWeeksSnapshot(snapshotDate: string, todayIst: string): boolean {
   const age = daysBetween(snapshotDate, todayIst);
-  return age >= 1 && age <= RATING_SNAPSHOT_MAX_AGE_DAYS;
+  return age >= 0 && age <= RATING_SNAPSHOT_MAX_AGE_DAYS;
+}
+
+/** The ratings collector writes a week's rows to Supabase over minutes to hours (26 Oct 2026: 09:38,
+ *  then corrections at 13:56). A snapshot is mailed once nothing new has been written for this long. */
+export const RATING_SNAPSHOT_SETTLE_MINUTES = 60;
+
+/** Has the snapshot stopped changing? `lastWriteIso` is its newest row's write time; unknown counts as settled. */
+export function isSettled(lastWriteIso: string | null | undefined, nowMs: number): boolean {
+  const t = lastWriteIso ? Date.parse(lastWriteIso) : NaN;
+  return !Number.isFinite(t) || nowMs - t >= RATING_SNAPSHOT_SETTLE_MINUTES * 60_000;
 }
 
 export function toRatingDrop(l: Listing, idBySku: Map<string, string>): RatingDrop {
