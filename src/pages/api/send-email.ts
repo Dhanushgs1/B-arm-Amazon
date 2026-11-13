@@ -1186,7 +1186,7 @@ export function buildHtml(type: string, data: Record<string, any>, toEmail: stri
           </div></td></tr>` : ""}
         ${campaigns ? `<tr><td style="padding-top:20px;"><h3 style="margin:0;color:#111;font-size:15px;font-weight:800;">Campaigns</h3></td></tr>${campaigns}` : ""}
         <tr><td align="center" style="padding-top:22px;">
-          <a href="${SITE_URL}/dashboard/compare" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open the Overall page &#8594;</a>
+          <a href="https://mna.b-arm.org/dashboard/compare" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open the Overall page &#8594;</a>
         </td></tr>
         <tr><td style="padding-top:16px;">
           <p style="margin:0;color:#9ca3af;font-size:11px;line-height:1.6;">
