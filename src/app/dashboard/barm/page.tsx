@@ -18,7 +18,7 @@ export default function BarmOverviewPage() {
       title="B-ARM Website Overview"
       subtitle={`B-ARM website orders before the move to Shopify (WooCommerce export${info?.maxDate ? `, up to ${info.maxDate}` : ""}) · newer website orders are on the Shopify tab`}
       downloadHref="/dashboard/barm/reports"
-      summary={<ChannelSummaryStrip channel="B-ARM Website" fetcher={fetchBarmSummary} />}
+      summary={<ChannelSummaryStrip channel="B-ARM Website" fetcher={fetchBarmSummary} source="barm" />}
       dataOnFile={[
         {
           label: "B-ARM Website orders — WooCommerce (barm_online_orders)",

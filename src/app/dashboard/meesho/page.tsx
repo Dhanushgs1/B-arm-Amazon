@@ -28,7 +28,7 @@ export default function MeeshoOverviewPage() {
       downloadHref="/dashboard/meesho/reports"
       summary={
         <>
-          <ChannelSummaryStrip channel="Meesho" fetcher={fetchMeeshoSummary} />
+          <ChannelSummaryStrip channel="Meesho" fetcher={fetchMeeshoSummary} source="meesho" />
           <MeeshoBreakdowns />
         </>
       }

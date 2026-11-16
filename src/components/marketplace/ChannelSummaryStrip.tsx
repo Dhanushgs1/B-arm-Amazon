@@ -1,11 +1,14 @@
 "use client";
 
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { useDashboard } from "@/lib/DashboardContext";
 import { KPICard } from "@/components/KPICard";
 import type { ChannelSummary } from "@/lib/channelSummary";
 import { DEFAULT_GST_MULTIPLIER } from "@/lib/masterProductSkuid";
+import { SourceBox } from "@/components/SourceBox";
+import { OVERALL_SOURCES, type SourceBoxData, type SourceChannel, type SourceMetric, type SourcePart } from "@/lib/dataSources";
 
 const cur = (v: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(v || 0))}`;
 const num = (v: number) => new Intl.NumberFormat("en-IN").format(Math.round(v || 0));
@@ -20,7 +23,10 @@ export function ChannelSummaryStrip({
   fetcher,
   title = "Summary",
   adSpendBeforeGst = false,
+  source,
 }: {
+  /** Which channel's entries in dataSources.ts describe these cards; with it, a card opens the "where is this from" box. */
+  source?: SourceChannel;
   channel: string;
   fetcher: (start: string, end: string) => Promise<ChannelSummary>;
   title?: string;
@@ -34,8 +40,23 @@ export function ChannelSummaryStrip({
     enabled: !!startDate && !!endDate,
   });
 
+  // "Where is this from": one part per figure the card is built from. The loader's own note for the
+  // selected dates (which days are ERP figures) is shown inside the box only, not on the page.
+  const [sourceBox, setSourceBox] = useState<SourceBoxData | null>(null);
+  const opener = (title: string, value: string, metrics: [SourceMetric, string, string?][], formula?: string) => {
+    if (!source || !data) return undefined;
+    const parts: SourcePart[] = metrics.flatMap(([metric, label, v]) => {
+      const info = OVERALL_SOURCES[source][metric];
+      const fromOrders = metric !== "adSpend" && metric !== "adSales";
+      return info ? [{ label, value: v, info, dataThrough: fromOrders ? data.dataThrough : undefined, note: fromOrders ? data.note : undefined }] : [];
+    });
+    if (!parts.length) return undefined;
+    return () => setSourceBox({ title: `${channel} · ${title}`, value, formula, parts, start: data.currentRange.start, end: data.currentRange.end });
+  };
+
   return (
     <div className="glass rounded-2xl border border-border p-5 shadow-sm space-y-4">
+      <SourceBox data={sourceBox} onClose={() => setSourceBox(null)} />
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h3 className="text-xs font-black uppercase tracking-widest text-muted-foreground">{title}</h3>
         {data && (
@@ -66,6 +87,7 @@ export function ChannelSummaryStrip({
                 subtitle={`Last period ${cur(data.previous.sales || 0)}`}
                 trend={growth(data.current.sales, data.previous.sales || 0)}
                 accent="green"
+                onClick={opener(data.salesLabel ?? "Sales", cur(data.current.sales), [["sales", "Sales"]])}
               />
             )}
             <KPICard
@@ -74,6 +96,7 @@ export function ChannelSummaryStrip({
               subtitle={`units · ${num(data.current.orders)} orders`}
               trend={growth(data.current.units, data.previous.units)}
               accent="blue"
+              onClick={opener("Orders", `${num(data.current.units)} units · ${num(data.current.orders)} orders`, [["orders", "Orders"]])}
             />
             {data.returnsTracked === false ? (
               <KPICard title="Returns" value="Not tracked" subtitle="No returns data for this channel" accent="orange" />
@@ -85,6 +108,7 @@ export function ChannelSummaryStrip({
                 trend={growth(data.current.allReturns, data.previous.allReturns)}
                 inverseTrend
                 accent="orange"
+                onClick={opener("Returns", `${num(data.current.allReturns)} units`, [["returns", "Returns"]])}
               />
             )}
             <KPICard
@@ -93,6 +117,7 @@ export function ChannelSummaryStrip({
               subtitle={data.returnsTracked === false ? "Same as Orders (returns not tracked)" : "Orders − Returns"}
               trend={growth(data.current.netOrders, data.previous.netOrders)}
               accent="cyan"
+              onClick={opener("Net Orders", num(data.current.netOrders), [["netOrders", "Net orders"]])}
             />
             {data.current.adSpendTax !== null ? (
               <KPICard
@@ -102,6 +127,7 @@ export function ChannelSummaryStrip({
                 trend={data.adSpendComparable === false ? undefined : growth(data.current.adSpendTax, data.previous.adSpendTax || 0)}
                 inverseTrend
                 accent="pink"
+                onClick={opener(adSpendBeforeGst ? "Ad Spend (before GST)" : "Ad Spend", cur(adSpendBeforeGst ? data.current.adSpendTax / DEFAULT_GST_MULTIPLIER : data.current.adSpendTax), [["adSpend", "Ad spend"]], adSpendBeforeGst ? "This card shows the spend before GST (the × 1.18 is not applied here)." : undefined)}
               />
             ) : data.current.sales !== null ? (
               <KPICard
@@ -109,6 +135,7 @@ export function ChannelSummaryStrip({
                 value={cur(data.current.orders ? data.current.sales / data.current.orders : 0)}
                 subtitle="Sales ÷ orders"
                 accent="purple"
+                onClick={opener("Avg Order Value", cur(data.current.orders ? data.current.sales / data.current.orders : 0), [["sales", "Sales", cur(data.current.sales)], ["orders", "Orders", num(data.current.orders)]], "Sales ÷ orders.")}
               />
             ) : (
               <KPICard

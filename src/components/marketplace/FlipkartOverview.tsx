@@ -35,7 +35,7 @@ export function FlipkartOverview() {
         </button>
       </div>
 
-      <ChannelSummaryStrip channel="Flipkart" fetcher={fetchFlipkartOrderSummary} title="Sales, Orders & Returns" />
+      <ChannelSummaryStrip channel="Flipkart" fetcher={fetchFlipkartOrderSummary} title="Sales, Orders & Returns" source="flipkart" />
 
       <FlipkartAdvertising />
 

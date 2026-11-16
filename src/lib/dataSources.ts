@@ -11,7 +11,7 @@ export interface SourceInfo {
   how: string;
 }
 
-export type SourceChannel = "amazon" | "flipkart" | "meesho" | "shopify" | "google" | "meta";
+export type SourceChannel = "amazon" | "flipkart" | "meesho" | "shopify" | "google" | "meta" | "barm";
 export type SourceMetric = "sales" | "orders" | "returns" | "cancelled" | "netOrders" | "adSpend" | "adSales";
 
 // Amazon, Flipkart and Meesho: every day the B-ARM ERP's monthly invoice reports cover uses the ERP's
@@ -224,10 +224,33 @@ export const OVERALL_SOURCES: Record<SourceChannel, Partial<Record<SourceMetric,
       how: "Sales of those orders on the days Meta spend is known.",
     },
   },
+  // The old B-ARM website (WooCommerce), before Shopify took over on 21 Sep 2026: barmSkuPeriodData.ts.
+  barm: {
+    sales: {
+      source: "B-ARM website orders (WooCommerce export, history up to 21 Sep 2026)",
+      tables: ["barm_online_orders"],
+      how: "Order Total Amount counted once per order (includes shipping).",
+    },
+    orders: {
+      source: "B-ARM website orders (WooCommerce export, history up to 21 Sep 2026)",
+      tables: ["barm_online_orders"],
+      how: "Orders = different order numbers; units = item quantities added up.",
+    },
+    returns: {
+      source: "Not tracked",
+      tables: [],
+      how: "The website export has no returns data.",
+    },
+    netOrders: {
+      source: "B-ARM website orders (WooCommerce export, history up to 21 Sep 2026)",
+      tables: ["barm_online_orders"],
+      how: "Same as units — there is no returns data to take off.",
+    },
+  },
 };
 
 export const SOURCE_CHANNEL_LABEL: Record<SourceChannel, string> = {
-  amazon: "Amazon", flipkart: "Flipkart", meesho: "Meesho", shopify: "Shopify", google: "Google Ads", meta: "Meta Ads",
+  amazon: "Amazon", flipkart: "Flipkart", meesho: "Meesho", shopify: "Shopify", google: "Google Ads", meta: "Meta Ads", barm: "B-ARM Website",
 };
 
 /** One line of the box: a channel's share of the number and where that share comes from. */
@@ -253,12 +276,12 @@ export interface SourceBoxData {
 }
 
 /** Parts for a metric across several channels; channels with no entry for it are skipped. */
-export function sourceParts(
+export function sourceParts<C extends SourceChannel>(
   metric: SourceMetric,
-  channels: SourceChannel[],
-  valueOf?: (c: SourceChannel) => string | undefined,
-  dataThroughOf?: (c: SourceChannel) => string | null | undefined,
-  noteOf?: (c: SourceChannel) => string | undefined,
+  channels: C[],
+  valueOf?: (c: C) => string | undefined,
+  dataThroughOf?: (c: C) => string | null | undefined,
+  noteOf?: (c: C) => string | undefined,
 ): SourcePart[] {
   return channels.flatMap((c) => {
     const info = OVERALL_SOURCES[c][metric];

@@ -1,6 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { SourceBox } from "@/components/SourceBox";
+import { OVERALL_SOURCES, type SourceBoxData, type SourceMetric } from "@/lib/dataSources";
 import { Megaphone } from "lucide-react";
 import { useDashboard } from "@/lib/DashboardContext";
 import { KPICard } from "@/components/KPICard";
@@ -73,10 +76,19 @@ export function AmazonUploadedOverview() {
   const trendOf = (a: number | null, b: number | null) => (comparable ? growth(a, b) : undefined);
   const trendBasis = comparable ? basis : undefined;
 
+  // "Where is this from" for the four advertising cards (the ads card reports, dataSources.ts)
+  const [sourceBox, setSourceBox] = useState<SourceBoxData | null>(null);
+  const adBox = (title: string, value: string, metrics: [SourceMetric, string, string?][], formula?: string) => () =>
+    setSourceBox({
+      title: `Amazon · ${title}`, value, formula, start: startDate, end: endDate,
+      parts: metrics.flatMap(([m, label, v]) => { const info = OVERALL_SOURCES.amazon[m]; return info ? [{ label, value: v, info, dataThrough: now?.through }] : []; }),
+    });
+
   const summary = (
     <div className="space-y-6">
+      <SourceBox data={sourceBox} onClose={() => setSourceBox(null)} />
       {/* ad spend before GST here; the Advertising section below shows it incl. 18% GST */}
-      <ChannelSummaryStrip channel="Amazon" fetcher={fetchAmazonSummary} title="Sales, orders and returns" adSpendBeforeGst />
+      <ChannelSummaryStrip channel="Amazon" fetcher={fetchAmazonSummary} title="Sales, orders and returns" adSpendBeforeGst source="amazon" />
 
       <div className="glass rounded-2xl border border-border p-5 shadow-sm space-y-4">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -114,10 +126,14 @@ export function AmazonUploadedOverview() {
                 </div>
               )}
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                <KPICard title="Ad Spend (incl. 18% GST)" value={cur(now.spend * DEFAULT_GST_MULTIPLIER)} subtitle={`${cur(now.spend)} before GST · ROAS and ACOS use that`} trend={trendOf(now.spend, before.spend)} trendBasis={trendBasis} inverseTrend accent="orange" />
-                <KPICard title="Ad Sales" value={cur(now.sales)} subtitle={`${num(now.orders)} ad orders`} trend={trendOf(now.sales, before.sales)} trendBasis={trendBasis} accent="green" />
-                <KPICard title="ROAS" value={roas === null ? "—" : `${one(roas)}x`} subtitle={roas === null ? "No ad spend in this period" : "Ad sales ÷ ad spend"} trend={trendOf(roas, pRoas)} trendBasis={trendBasis} accent="purple" />
-                <KPICard title="ACOS" value={acos === null ? "—" : `${one(acos)}%`} subtitle={acos === null ? "No ad sales in this period" : "Ad spend ÷ ad sales"} trend={trendOf(acos, pAcos)} trendBasis={trendBasis} inverseTrend accent="pink" />
+                <KPICard title="Ad Spend (incl. 18% GST)" value={cur(now.spend * DEFAULT_GST_MULTIPLIER)} subtitle={`${cur(now.spend)} before GST · ROAS and ACOS use that`} trend={trendOf(now.spend, before.spend)} trendBasis={trendBasis} inverseTrend accent="orange"
+                  onClick={adBox("Ad Spend (incl. 18% GST)", cur(now.spend * DEFAULT_GST_MULTIPLIER), [["adSpend", "Ad spend"]])} />
+                <KPICard title="Ad Sales" value={cur(now.sales)} subtitle={`${num(now.orders)} ad orders`} trend={trendOf(now.sales, before.sales)} trendBasis={trendBasis} accent="green"
+                  onClick={adBox("Ad Sales", `${cur(now.sales)} · ${num(now.orders)} ad orders`, [["adSales", "Ad sales"]])} />
+                <KPICard title="ROAS" value={roas === null ? "—" : `${one(roas)}x`} subtitle={roas === null ? "No ad spend in this period" : "Ad sales ÷ ad spend"} trend={trendOf(roas, pRoas)} trendBasis={trendBasis} accent="purple"
+                  onClick={roas === null ? undefined : adBox("ROAS", `${one(roas)}x`, [["adSales", "Ad sales", cur(now.sales)], ["adSpend", "Ad spend", `${cur(now.spend)} before GST`]], "Ad sales ÷ ad spend. GST is not added to the spend here.")} />
+                <KPICard title="ACOS" value={acos === null ? "—" : `${one(acos)}%`} subtitle={acos === null ? "No ad sales in this period" : "Ad spend ÷ ad sales"} trend={trendOf(acos, pAcos)} trendBasis={trendBasis} inverseTrend accent="pink"
+                  onClick={acos === null ? undefined : adBox("ACOS", `${one(acos)}%`, [["adSpend", "Ad spend", `${cur(now.spend)} before GST`], ["adSales", "Ad sales", cur(now.sales)]], "Ad spend ÷ ad sales × 100. GST is not added to the spend here.")} />
               </div>
 
               <div className="h-[420px]">
