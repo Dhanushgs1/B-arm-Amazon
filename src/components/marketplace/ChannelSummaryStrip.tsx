@@ -48,7 +48,7 @@ export function ChannelSummaryStrip({
     const parts: SourcePart[] = metrics.flatMap(([metric, label, v]) => {
       const info = OVERALL_SOURCES[source][metric];
       const fromOrders = metric !== "adSpend" && metric !== "adSales";
-      return info ? [{ label, value: v, info, dataThrough: fromOrders ? data.dataThrough : undefined, note: fromOrders ? data.note : undefined }] : [];
+      return info ? [{ label, value: v, info, channel: source, dataThrough: fromOrders ? data.dataThrough : undefined, note: fromOrders ? data.note : undefined }] : [];
     });
     if (!parts.length) return undefined;
     return () => setSourceBox({ title: `${channel} · ${title}`, value, formula, parts, start: data.currentRange.start, end: data.currentRange.end });

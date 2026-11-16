@@ -123,7 +123,7 @@ function PlatformCard({ p, snap, loading, insights, note, summary, range }: { p:
   const part = (metric: SourceMetric, label: string, value?: string): SourcePart | null => {
     const i = info[metric];
     const fromOrders = metric === "sales" || metric === "orders";
-    return i ? { label, value, info: i, dataThrough: fromOrders ? snap.dataThrough : undefined, note: fromOrders ? summary?.note : undefined } : null;
+    return i ? { label, value, info: i, channel: p.key, dataThrough: fromOrders ? snap.dataThrough : undefined, note: fromOrders ? summary?.note : undefined } : null;
   };
   const spendNoGst = snap.adSpend === null ? undefined : `${cur(snap.adSpend)} before GST`;
   const spendGst = snap.adSpend === null ? "" : cur(snap.adSpend * GST_MULTIPLIER);

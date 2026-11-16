@@ -261,6 +261,8 @@ export interface SourcePart {
   info: SourceInfo;
   /** Last day this part's data reaches (yyyy-mm-dd), when known. */
   dataThrough?: string | null;
+  /** Whose figure this part is; picks the ERP coverage for mis_datas_mv in the last-date lookup. */
+  channel?: SourceChannel;
   /** The loader's own note for the selected dates (e.g. which days are ERP figures), when it gives one. */
   note?: string;
 }
@@ -285,6 +287,6 @@ export function sourceParts<C extends SourceChannel>(
 ): SourcePart[] {
   return channels.flatMap((c) => {
     const info = OVERALL_SOURCES[c][metric];
-    return info ? [{ label: SOURCE_CHANNEL_LABEL[c], value: valueOf?.(c), info, dataThrough: dataThroughOf?.(c), note: noteOf?.(c) }] : [];
+    return info ? [{ label: SOURCE_CHANNEL_LABEL[c], channel: c, value: valueOf?.(c), info, dataThrough: dataThroughOf?.(c), note: noteOf?.(c) }] : [];
   });
 }

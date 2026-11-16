@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { useQueries } from "@tanstack/react-query";
 import { Database, X } from "lucide-react";
+import { fetchTableLastDate, lastDateKey } from "@/lib/tableLastDates";
 import type { SourceBoxData } from "@/lib/dataSources";
 import { cn } from "@/lib/utils";
 
@@ -16,6 +18,14 @@ export function SourceBox({ data, onClose }: { data: SourceBoxData | null; onClo
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [data, onClose]);
+
+  // Last day of data on file for each table in the open box (tableLastDates.ts); read once and kept
+  // for five minutes. A table with no lookup, or whose read fails, simply shows no date.
+  const keys = [...new Set((data?.parts ?? []).flatMap((p) => p.info.tables.map((t) => lastDateKey(t, p.channel)).filter((k): k is string => !!k)))];
+  const lastQ = useQueries({
+    queries: keys.map((k) => ({ queryKey: ["table-last-date", k], queryFn: () => fetchTableLastDate(k), staleTime: 5 * 60_000, retry: 1 })),
+  });
+  const lastOf = (key: string | null) => (key ? lastQ[keys.indexOf(key)] : undefined);
 
   if (!data || typeof document === "undefined") return null;
   const single = data.parts.length === 1;
@@ -60,10 +70,19 @@ export function SourceBox({ data, onClose }: { data: SourceBoxData | null; onClo
                   <dt className="text-muted-foreground font-bold">Source</dt>
                   <dd>{p.info.source}</dd>
                   <dt className="text-muted-foreground font-bold">{p.info.tables.length === 1 ? "Table" : "Tables"}</dt>
-                  <dd className="flex flex-wrap gap-1">
-                    {p.info.tables.length === 0 ? "—" : p.info.tables.map((t) => (
-                      <code key={t} className="px-1.5 py-0.5 rounded-md bg-muted text-[11px] font-mono">{t}</code>
-                    ))}
+                  <dd className="space-y-1">
+                    {p.info.tables.length === 0 ? "—" : p.info.tables.map((t) => {
+                      const q = lastOf(lastDateKey(t, p.channel));
+                      const late = !!q?.data && q.data < data.end;
+                      return (
+                        <div key={t} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                          <code className="px-1.5 py-0.5 rounded-md bg-muted text-[11px] font-mono">{t}</code>
+                          {q?.isLoading && <span className="text-[11px] text-muted-foreground">checking last date…</span>}
+                          {q?.data && <span className={cn("text-[11px]", late ? "text-amber-600 dark:text-amber-400 font-bold" : "text-muted-foreground")}>data up to {dot(q.data)}</span>}
+                          {q && q.isSuccess && !q.data && <span className="text-[11px] text-muted-foreground">no data on file</span>}
+                        </div>
+                      );
+                    })}
                   </dd>
                   <dt className="text-muted-foreground font-bold">How</dt>
                   <dd>{p.info.how}</dd>

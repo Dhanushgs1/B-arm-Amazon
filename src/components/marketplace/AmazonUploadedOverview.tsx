@@ -81,7 +81,7 @@ export function AmazonUploadedOverview() {
   const adBox = (title: string, value: string, metrics: [SourceMetric, string, string?][], formula?: string) => () =>
     setSourceBox({
       title: `Amazon · ${title}`, value, formula, start: startDate, end: endDate,
-      parts: metrics.flatMap(([m, label, v]) => { const info = OVERALL_SOURCES.amazon[m]; return info ? [{ label, value: v, info, dataThrough: now?.through }] : []; }),
+      parts: metrics.flatMap(([m, label, v]) => { const info = OVERALL_SOURCES.amazon[m]; return info ? [{ label, value: v, info, channel: "amazon" as const, dataThrough: now?.through }] : []; }),
     });
 
   const summary = (
