@@ -19,6 +19,8 @@ import {
   platformInsights, platformMetrics, platformStatus, CAMPAIGN_MIN_SPEND, GST_MULTIPLIER, GOOD_ACOS, BAD_ACOS,
   type AdPlatform, type CampaignStat, type Insight, type PlatformSnapshot, type PlatformStatus,
 } from "@/lib/overallRules";
+import { SourceBox, SourceValue } from "@/components/SourceBox";
+import { OVERALL_SOURCES, sourceParts, type SourceBoxData, type SourceChannel, type SourceMetric, type SourcePart } from "@/lib/dataSources";
 import { cn } from "@/lib/utils";
 
 const cur = (v: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(v || 0))}`;
@@ -74,41 +76,57 @@ const STATUS: Record<PlatformStatus, { label: string; cls: string }> = {
 };
 
 /** Orders, returns and cancellations for a marketplace card (Google/Meta have none of their own). */
-function OrderStats({ s }: { s: ChannelSummary }) {
+function OrderStats({ s, channel, label }: { s: ChannelSummary; channel: SourceChannel; label: string }) {
   const c = s.current;
+  const src = (metric: SourceMetric, title: string, value: string): SourceBoxData | null => {
+    const parts = sourceParts(metric, [channel], undefined, () => s.dataThrough, () => s.note);
+    return parts.length ? { title: `${label} · ${title}`, value, parts, start: s.currentRange.start, end: s.currentRange.end } : null;
+  };
   const tracked = s.returnsTracked !== false;
   const rate = tracked && c.units > 0 ? (c.allReturns / c.units) * 100 : null;
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs border-t border-border/60 pt-2.5">
       <div>
         <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Orders</p>
-        <p className="font-black">{num(c.orders)}</p>
+        <p className="font-black"><SourceValue data={src("orders", "Orders", `${num(c.orders)} orders · ${num(c.units)} units`)}>{num(c.orders)}</SourceValue></p>
         <p className="text-[10px] text-muted-foreground">{num(c.units)} units</p>
       </div>
       <div>
         <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Returns</p>
-        <p className="font-black">{tracked ? num(c.allReturns) : "—"}</p>
+        <p className="font-black">{tracked ? <SourceValue data={src("returns", "Returns", `${num(c.allReturns)} units${c.returnsValue !== undefined ? ` · ${cur(c.returnsValue)}` : ` · ${num(c.customerReturns)} customer`}`)}>{num(c.allReturns)}</SourceValue> : "—"}</p>
         <p className="text-[10px] text-muted-foreground">{!tracked ? "Not tracked"
           : c.returnsValue !== undefined ? `${cur(c.returnsValue)}${c.sales ? ` · ${one((c.returnsValue / c.sales) * 100)}% of sales` : ""}`
           : `${rate === null ? "—" : one(rate) + "%"} of units · ${num(c.customerReturns)} customer`}</p>
       </div>
       <div>
         <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Net Orders</p>
-        <p className="font-black flex items-center gap-1.5 flex-wrap">{num(c.netOrders)} <Growth v={s.previous.netOrders > 0 ? ((c.netOrders - s.previous.netOrders) / s.previous.netOrders) * 100 : null} /></p>
+        <p className="font-black flex items-center gap-1.5 flex-wrap"><SourceValue data={src("netOrders", "Net orders", num(c.netOrders))}>{num(c.netOrders)}</SourceValue> <Growth v={s.previous.netOrders > 0 ? ((c.netOrders - s.previous.netOrders) / s.previous.netOrders) * 100 : null} /></p>
         <p className="text-[10px] text-muted-foreground">{tracked ? "Orders − Returns" : "Same as units (returns not tracked)"}</p>
       </div>
       <div>
         <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Cancelled</p>
-        <p className="font-black">{c.cancelledOrders === undefined ? "—" : num(c.cancelledOrders)}</p>
+        <p className="font-black">{c.cancelledOrders === undefined ? "—" : <SourceValue data={src("cancelled", "Cancelled orders", num(c.cancelledOrders))}>{num(c.cancelledOrders)}</SourceValue>}</p>
         <p className="text-[10px] text-muted-foreground">{c.cancelledOrders === undefined ? "Not tracked" : `last period ${num(s.previous.cancelledOrders ?? 0)}`}</p>
       </div>
     </div>
   );
 }
 
-function PlatformCard({ p, snap, loading, insights, note, summary }: { p: (typeof PLATFORMS)[number]; snap: PlatformSnapshot; loading: boolean; insights: Insight[]; note?: string; summary?: ChannelSummary }) {
+function PlatformCard({ p, snap, loading, insights, note, summary, range }: { p: (typeof PLATFORMS)[number]; snap: PlatformSnapshot; loading: boolean; insights: Insight[]; note?: string; summary?: ChannelSummary; range: { start: string; end: string } }) {
   const m = platformMetrics(snap);
   const status = platformStatus(insights);
+  const info = OVERALL_SOURCES[p.key];
+  const box = (title: string, value: string, parts: (SourcePart | null)[], formula?: string): SourceBoxData | null => {
+    const ready = parts.filter((x): x is SourcePart => !!x);
+    return ready.length ? { title: `${p.label} · ${title}`, value, formula, parts: ready, start: range.start, end: range.end } : null;
+  };
+  const part = (metric: SourceMetric, label: string, value?: string): SourcePart | null => {
+    const i = info[metric];
+    const fromOrders = metric === "sales" || metric === "orders";
+    return i ? { label, value, info: i, dataThrough: fromOrders ? snap.dataThrough : undefined, note: fromOrders ? summary?.note : undefined } : null;
+  };
+  const spendNoGst = snap.adSpend === null ? undefined : `${cur(snap.adSpend)} before GST`;
+  const spendGst = snap.adSpend === null ? "" : cur(snap.adSpend * GST_MULTIPLIER);
   return (
     <Link href={p.href} className="group glass rounded-2xl border border-border p-4 shadow-sm space-y-3 min-w-0 hover:border-emerald-500/40 transition-colors">
       <div className="flex items-center justify-between gap-2">
@@ -122,28 +140,30 @@ function PlatformCard({ p, snap, loading, insights, note, summary }: { p: (typeo
       <div>
         <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">{p.salesNote}</p>
         <div className="flex items-baseline gap-2 flex-wrap">
-          <span className="text-2xl font-black tracking-tight">{snap.sales === null ? "…" : cur(snap.sales)}</span>
+          <span className="text-2xl font-black tracking-tight">{snap.sales === null ? "…" : <SourceValue data={box(p.salesNote, cur(snap.sales), [part("sales", "Sales")])}>{cur(snap.sales)}</SourceValue>}</span>
           <Growth v={m.salesGrowth} />
         </div>
         {snap.salesPrev !== null && <p className="text-[11px] text-muted-foreground">{snap.attributed && snap.orders !== null ? `${num(snap.orders)} orders · ` : ""}last period {cur(snap.salesPrev)}</p>}
       </div>
-      {summary && <OrderStats s={summary} />}
+      {summary && <OrderStats s={summary} channel={p.key} label={p.label} />}
       <div className="grid grid-cols-3 gap-2 text-xs border-t border-border/60 pt-2.5">
         <div>
           <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">Ad spend</p>
-          <p className="font-black">{snap.adSpend === null ? (loading ? "…" : "No ads") : cur(snap.adSpend * GST_MULTIPLIER)}</p>
+          <p className="font-black">{snap.adSpend === null ? (loading ? "…" : "No ads") : <SourceValue data={box("Ad spend", `${spendGst} incl. 18% GST`, [part("adSpend", "Ad spend")])}>{spendGst}</SourceValue>}</p>
           <Growth v={m.spendGrowth} inverse />
         </div>
         <div>
           <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">ROAS</p>
-          <p className="font-black">{m.roas === null ? "—" : `${one(m.roas)}x`}</p>
+          <p className="font-black">{m.roas === null ? "—" : <SourceValue data={box("ROAS", `${one(m.roas)}x`, [part("adSales", "Ad sales", cur(snap.adSales ?? 0)), part("adSpend", "Ad spend", spendNoGst)], "Ad sales ÷ ad spend. GST is not added to the spend here.")}>{`${one(m.roas)}x`}</SourceValue>}</p>
         </div>
         <div>
           <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">{snap.attributed ? "Cost / order" : "TACOS"}</p>
           <p className="font-black">
             {snap.attributed
-              ? snap.adSpend && snap.orders ? cur(snap.adSpend / snap.orders) : "—"
-              : m.tacos === null ? "—" : `${one(m.tacos)}%`}
+              ? snap.adSpend && snap.orders
+                ? <SourceValue data={box("Cost per order", cur(snap.adSpend / snap.orders), [part("adSpend", "Ad spend", spendNoGst), part("orders", "Orders", num(snap.orders))], "Ad spend ÷ orders. GST is not added to the spend here.")}>{cur(snap.adSpend / snap.orders)}</SourceValue>
+                : "—"
+              : m.tacos === null ? "—" : <SourceValue data={box("TACOS", `${one(m.tacos)}%`, [part("adSpend", "Ad spend", `${spendGst} incl. GST`), part("sales", "Sales", cur(snap.sales ?? 0))], "Ad spend incl. 18% GST ÷ sales × 100.")}>{`${one(m.tacos)}%`}</SourceValue>}
           </p>
         </div>
       </div>
@@ -308,6 +328,7 @@ export function OverallDashboard() {
     queries: (["google", "meta"] as const).map((k) => ({ queryKey: ["overall-spend", k, prev.start, end], queryFn: () => loadSpendWindows(k, prev.start, end), enabled })),
   });
   const ordersQ = useQuery({ queryKey: ["shopify-orders-all"], queryFn: fetchShopifyOrders });
+  const [sourceBox, setSourceBox] = useState<SourceBoxData | null>(null);
 
   const sales = Object.fromEntries(SALES.map((c, i) => [c.id, salesQ[i].data as ChannelSummary | undefined]));
   const salesErr = Object.fromEntries(SALES.map((c, i) => [c.id, salesQ[i].error]));
@@ -412,15 +433,31 @@ export function OverallDashboard() {
 
   if (!enabled) return null;
 
+  // "Where is this from" boxes for the six total cards: each platform's share and its source.
+  const through = (k: SourceChannel) => (k in sales ? sales[k]?.dataThrough : undefined);
+  const noteOf = (k: SourceChannel) => (k in sales ? sales[k]?.note : undefined);
+  const openBox = (title: string, value: string, parts: SourcePart[], formula: string) => setSourceBox({ title, value, parts, formula, start, end });
+  const suffix = (parts: SourcePart[], word: string) => parts.map((x) => ({ ...x, label: `${x.label} ${word}` }));
+
   return (
     <div className="space-y-5">
+      <SourceBox data={sourceBox} onClose={() => setSourceBox(null)} />
       <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-        <KPICard title="Total Sales" value={cur(tot.sales)} subtitle={`Last period ${cur(tot.salesPrev)}${partial(salesReady.length, salesKeys.length)}`} trend={allSales ? g(tot.sales, tot.salesPrev) : undefined} accent="green" />
-        <KPICard title="Orders" value={num(tot.orders)} subtitle={`${num(tot.units)} units · all 4 sales channels${partial(salesReady.length, salesKeys.length)}`} accent="blue" />
-        <KPICard title="Returns" value={num(tot.returns)} subtitle={`${tot.units > 0 ? one((tot.returns / tot.units) * 100) + "% of units" : ""} · Shopify not tracked${partial(salesReady.length, salesKeys.length)}`} trend={allSales ? g(tot.returns, tot.returnsPrev) : undefined} inverseTrend accent="orange" />
-        <KPICard title="Cancelled Orders" value={num(tot.cancelled)} subtitle={`Last period ${num(tot.cancelledPrev)}${partial(salesReady.length, salesKeys.length)}`} trend={allSales ? g(tot.cancelled, tot.cancelledPrev) : undefined} inverseTrend accent="purple" />
-        <KPICard title="Total Ad Spend" value={cur(tot.spend)} subtitle={`incl. 18% GST · all 5 ad platforms${partial(spendReady.length, spendKeys.length)}`} trend={allSpend ? g(tot.spend, tot.spendPrev) : undefined} inverseTrend accent="pink" />
-        <KPICard title="TACOS" value={tacos === null ? "…" : `${one(tacos)}%`} subtitle={`Ad spend incl. GST ÷ sales${tacosKeys.length < salesKeys.length ? ` · without ${salesKeys.filter((k) => !tacosKeys.includes(k)).map((k) => PLATFORMS.find((p) => p.key === k)!.label).join(", ")} (loading)` : ""}`} accent="orange" />
+        <KPICard title="Total Sales" value={cur(tot.sales)} subtitle={`Last period ${cur(tot.salesPrev)}${partial(salesReady.length, salesKeys.length)}`} trend={allSales ? g(tot.sales, tot.salesPrev) : undefined} accent="green"
+          onClick={() => openBox("Total Sales", cur(tot.sales), sourceParts("sales", salesReady, (k) => cur(snaps[k].sales ?? 0), through, noteOf), "Amazon + Flipkart + Meesho + Shopify. Google Ads and Meta Ads sales are Shopify orders, so they are already inside Shopify and not added again.")} />
+        <KPICard title="Orders" value={num(tot.orders)} subtitle={`${num(tot.units)} units · all 4 sales channels${partial(salesReady.length, salesKeys.length)}`} accent="blue"
+          onClick={() => openBox("Orders", `${num(tot.orders)} orders · ${num(tot.units)} units`, sourceParts("orders", salesReady, (k) => `${num(snaps[k].orders ?? 0)} orders · ${num(sales[k]?.current.units ?? 0)} units`, through, noteOf), "Orders of Amazon + Flipkart + Meesho + Shopify added up.")} />
+        <KPICard title="Returns" value={num(tot.returns)} subtitle={`${tot.units > 0 ? one((tot.returns / tot.units) * 100) + "% of units" : ""} · Shopify not tracked${partial(salesReady.length, salesKeys.length)}`} trend={allSales ? g(tot.returns, tot.returnsPrev) : undefined} inverseTrend accent="orange"
+          onClick={() => openBox("Returns", `${num(tot.returns)} units`, sourceParts("returns", salesReady, (k) => (sales[k]?.returnsTracked === false ? "Not tracked" : num(sales[k]?.current.allReturns ?? 0)), undefined, noteOf), "Returned units of Amazon + Flipkart + Meesho added up. Shopify returns are not tracked.")} />
+        <KPICard title="Cancelled Orders" value={num(tot.cancelled)} subtitle={`Last period ${num(tot.cancelledPrev)}${partial(salesReady.length, salesKeys.length)}`} trend={allSales ? g(tot.cancelled, tot.cancelledPrev) : undefined} inverseTrend accent="purple"
+          onClick={() => openBox("Cancelled Orders", num(tot.cancelled), sourceParts("cancelled", salesReady, (k) => num(sales[k]?.current.cancelledOrders ?? 0), through, noteOf), "Cancelled orders of Amazon + Flipkart + Meesho + Shopify added up.")} />
+        <KPICard title="Total Ad Spend" value={cur(tot.spend)} subtitle={`incl. 18% GST · all 5 ad platforms${partial(spendReady.length, spendKeys.length)}`} trend={allSpend ? g(tot.spend, tot.spendPrev) : undefined} inverseTrend accent="pink"
+          onClick={() => openBox("Total Ad Spend", `${cur(tot.spend)} incl. 18% GST`, sourceParts("adSpend", spendReady, (k) => `${cur((snaps[k].adSpend ?? 0) * GST_MULTIPLIER)} incl. GST`), "Amazon + Flipkart + Meesho + Google Ads + Meta Ads spend, each × 1.18 for GST.")} />
+        <KPICard title="TACOS" value={tacos === null ? "…" : `${one(tacos)}%`} subtitle={`Ad spend incl. GST ÷ sales${tacosKeys.length < salesKeys.length ? ` · without ${salesKeys.filter((k) => !tacosKeys.includes(k)).map((k) => PLATFORMS.find((p) => p.key === k)!.label).join(", ")} (loading)` : ""}`} accent="orange"
+          onClick={tacos === null ? undefined : () => openBox("TACOS", `${one(tacos)}%`, [
+            ...suffix(sourceParts("adSpend", tacosKeys, (k) => `${cur(spendFor(k) * GST_MULTIPLIER)} incl. GST`), "ad spend"),
+            ...suffix(sourceParts("sales", tacosKeys, (k) => cur(snaps[k].sales ?? 0), through, noteOf), "sales"),
+          ], "Total ad spend incl. 18% GST ÷ total sales × 100. Shopify's ad spend is Google Ads + Meta Ads.")} />
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -432,6 +469,7 @@ export function OverallDashboard() {
               loading={loading[p.key]}
               insights={insights[p.key]}
               summary={p.key in sales ? sales[p.key] : undefined}
+              range={{ start, end }}
               note={p.key === "google" ? coverageNote(google) : p.key === "meta" ? coverageNote(meta) : p.key in salesErr && salesErr[p.key] ? "Sales couldn't load — reload the page to retry." : undefined}
             />
           </div>

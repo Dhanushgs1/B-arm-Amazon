@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { Loader2, TrendingUp, TrendingDown, Minus, Sparkles } from "lucide-react";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from "recharts";
@@ -13,6 +14,8 @@ import {
   type ChannelSummary,
 } from "@/lib/channelSummary";
 import { fetchShopifyAllSummary } from "@/lib/shopifyOrders";
+import { SourceBox, SourceValue } from "@/components/SourceBox";
+import { sourceParts, type SourceBoxData, type SourceChannel, type SourceMetric } from "@/lib/dataSources";
 
 const cur = (v: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(Math.round(v || 0))}`;
 const num = (v: number) => new Intl.NumberFormat("en-IN").format(Math.round(v || 0));
@@ -98,8 +101,25 @@ export function AllMarketplacesSummary() {
     ? rows.map((r) => ({ name: r.label, "This period": Math.round(r.s!.current.sales || 0), "Previous period": Math.round(r.s!.previous.sales || 0) }))
     : [];
 
+  // "Where is this from" boxes: one channel's cell, or a total with every channel's share.
+  const [sourceBox, setSourceBox] = useState<SourceBoxData | null>(null);
+  const cell = (id: SourceChannel, label: string, metric: SourceMetric, title: string, value: string): SourceBoxData | null => {
+    const s = rows.find((r) => r.id === id)?.s;
+    const parts = sourceParts(metric, [id], undefined, () => (metric === "adSpend" ? undefined : s?.dataThrough), () => (metric === "adSpend" ? undefined : s?.note));
+    return parts.length ? { title: `${label} · ${title}`, value, parts, start: startDate, end: endDate } : null;
+  };
+  const openTotal = (metric: SourceMetric, title: string, value: string, formula: string, valueOf: (s: ChannelSummary["current"]) => string | undefined) => {
+    const byId = (id: SourceChannel) => loaded.find((r) => r.id === id)?.s;
+    const ids = loaded.map((r) => r.id as SourceChannel).filter((id) => valueOf(byId(id)!.current) !== undefined);
+    setSourceBox({
+      title, value, formula, start: startDate, end: endDate,
+      parts: sourceParts(metric, ids, (id) => valueOf(byId(id)!.current), (id) => (metric === "adSpend" ? undefined : byId(id)?.dataThrough), (id) => (metric === "adSpend" ? undefined : byId(id)?.note)),
+    });
+  };
+
   return (
     <div className="glass rounded-2xl border border-border p-5 shadow-sm space-y-5">
+      <SourceBox data={sourceBox} onClose={() => setSourceBox(null)} />
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
           <h3 className="text-sm font-black tracking-tight">All Marketplaces — Amazon · Flipkart · Meesho · Shopify</h3>
@@ -133,11 +153,16 @@ export function AllMarketplacesSummary() {
 
       {allLoaded && (
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
-          <KPICard title="Total Gross Sales" value={cur(totals.sales)} subtitle={`Last period ${cur(totals.salesPrev)}`} trend={growth(totals.sales, totals.salesPrev)} accent="green" />
-          <KPICard title="Orders" value={num(totals.units)} subtitle={`units · ${num(totals.orders)} orders`} trend={growth(totals.units, totals.unitsPrev)} accent="blue" />
-          <KPICard title="Returns" value={num(totals.returns)} subtitle="Shopify not tracked" trend={growth(totals.returns, totals.returnsPrev)} inverseTrend accent="orange" />
-          <KPICard title="Net Orders" value={num(totals.net)} subtitle="Orders − Returns" trend={growth(totals.net, totals.netPrev)} accent="cyan" />
-          <KPICard title="Ad Spend" value={cur(totals.spend)} subtitle={totals.sales > 0 ? `${((totals.spend / totals.sales) * 100).toFixed(1)}% of gross sales (TACOS)` : "incl. 18% GST"} trend={growth(totals.spend, totals.spendPrev)} inverseTrend accent="pink" />
+          <KPICard title="Total Gross Sales" value={cur(totals.sales)} subtitle={`Last period ${cur(totals.salesPrev)}`} trend={growth(totals.sales, totals.salesPrev)} accent="green"
+            onClick={() => openTotal("sales", "Total Gross Sales", cur(totals.sales), "Gross sales of Amazon + Flipkart + Meesho + Shopify added up.", (c) => cur(c.sales || 0))} />
+          <KPICard title="Orders" value={num(totals.units)} subtitle={`units · ${num(totals.orders)} orders`} trend={growth(totals.units, totals.unitsPrev)} accent="blue"
+            onClick={() => openTotal("orders", "Orders", `${num(totals.units)} units · ${num(totals.orders)} orders`, "Units and orders of Amazon + Flipkart + Meesho + Shopify added up.", (c) => `${num(c.units)} units · ${num(c.orders)} orders`)} />
+          <KPICard title="Returns" value={num(totals.returns)} subtitle="Shopify not tracked" trend={growth(totals.returns, totals.returnsPrev)} inverseTrend accent="orange"
+            onClick={() => openTotal("returns", "Returns", `${num(totals.returns)} units`, "Returned units of Amazon + Flipkart + Meesho added up. Shopify returns are not tracked.", (c) => num(c.allReturns))} />
+          <KPICard title="Net Orders" value={num(totals.net)} subtitle="Orders − Returns" trend={growth(totals.net, totals.netPrev)} accent="cyan"
+            onClick={() => openTotal("netOrders", "Net Orders", num(totals.net), "Units − returned units, for each marketplace, added up.", (c) => num(c.netOrders))} />
+          <KPICard title="Ad Spend" value={cur(totals.spend)} subtitle={totals.sales > 0 ? `${((totals.spend / totals.sales) * 100).toFixed(1)}% of gross sales (TACOS)` : "incl. 18% GST"} trend={growth(totals.spend, totals.spendPrev)} inverseTrend accent="pink"
+            onClick={() => openTotal("adSpend", "Ad Spend", `${cur(totals.spend)} incl. 18% GST`, "Amazon + Flipkart + Meesho ad spend, each × 1.18 for GST. Google Ads and Meta Ads spend is not in this total — it is in Total Ad Spend at the top of the page.", (c) => (c.adSpendTax === null ? undefined : `${cur(c.adSpendTax)} incl. GST`))} />
         </div>
       )}
 
@@ -176,7 +201,7 @@ export function AllMarketplacesSummary() {
                     </td>
                   ) : (
                     <>
-                      <td className="py-2.5 pr-3 text-right font-bold">{cur(s.current.sales || 0)}</td>
+                      <td className="py-2.5 pr-3 text-right font-bold"><SourceValue data={cell(r.id, r.label, "sales", "Gross sales", cur(s.current.sales || 0))}>{cur(s.current.sales || 0)}</SourceValue></td>
                       <td className="py-2.5 pr-3 text-right"><Growth v={growth(s.current.sales || 0, s.previous.sales || 0)} /></td>
                       <td className="py-2.5 pr-3">
                         <div className="flex items-center gap-2">
@@ -186,17 +211,17 @@ export function AllMarketplacesSummary() {
                           <span className="w-8 text-right text-muted-foreground">{share > 0 && share < 0.01 ? "<1" : Math.round(share * 100)}%</span>
                         </div>
                       </td>
-                      <td className="py-2.5 pr-3 text-right">{num(s.current.units)} <span className="text-muted-foreground">({num(s.current.orders)})</span></td>
+                      <td className="py-2.5 pr-3 text-right"><SourceValue data={cell(r.id, r.label, "orders", "Orders", `${num(s.current.units)} units · ${num(s.current.orders)} orders`)}>{num(s.current.units)}</SourceValue> <span className="text-muted-foreground">({num(s.current.orders)})</span></td>
                       <td className="py-2.5 pr-3 text-right">
                         {s.returnsTracked === false ? (
                           <span className="text-muted-foreground">Not tracked</span>
                         ) : (
-                          <>{num(s.current.allReturns)} <span className="text-muted-foreground">({num(s.current.customerReturns)} cust.)</span></>
+                          <><SourceValue data={cell(r.id, r.label, "returns", "Returns", `${num(s.current.allReturns)} units · ${num(s.current.customerReturns)} customer`)}>{num(s.current.allReturns)}</SourceValue> <span className="text-muted-foreground">({num(s.current.customerReturns)} cust.)</span></>
                         )}
                       </td>
-                      <td className="py-2.5 pr-3 text-right">{s.current.cancelledOrders === undefined ? <span className="text-muted-foreground">Not tracked</span> : num(s.current.cancelledOrders)}</td>
-                      <td className="py-2.5 pr-3 text-right">{num(s.current.netOrders)}</td>
-                      <td className="py-2.5 pr-3 text-right">{s.current.adSpendTax === null ? <span className="text-muted-foreground">No ads</span> : cur(s.current.adSpendTax)}</td>
+                      <td className="py-2.5 pr-3 text-right">{s.current.cancelledOrders === undefined ? <span className="text-muted-foreground">Not tracked</span> : <SourceValue data={cell(r.id, r.label, "cancelled", "Cancelled orders", num(s.current.cancelledOrders))}>{num(s.current.cancelledOrders)}</SourceValue>}</td>
+                      <td className="py-2.5 pr-3 text-right"><SourceValue data={cell(r.id, r.label, "netOrders", "Net orders", num(s.current.netOrders))}>{num(s.current.netOrders)}</SourceValue></td>
+                      <td className="py-2.5 pr-3 text-right">{s.current.adSpendTax === null ? <span className="text-muted-foreground">No ads</span> : <SourceValue data={cell(r.id, r.label, "adSpend", "Ad spend", `${cur(s.current.adSpendTax)} incl. 18% GST`)}>{cur(s.current.adSpendTax)}</SourceValue>}</td>
                       <td className={`py-2.5 pr-3 text-right ${s.dataThrough && s.dataThrough < s.currentRange.end ? "text-amber-600 dark:text-amber-400 font-bold" : "text-muted-foreground"}`}>
                         {s.dataThrough ? dot(s.dataThrough) : "—"}
                       </td>
