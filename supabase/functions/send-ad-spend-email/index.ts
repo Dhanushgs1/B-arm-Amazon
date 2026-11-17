@@ -137,13 +137,23 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
   // extra row appended after the real platform rows below — same column shape as a one-product
   // platform block, just built from a differently-shaped object (no topProducts/allProducts list,
   // since there's only ever the one product).
-  // Orders/CPC/ACOS render as "-": Meta's export has spend only, and borrowing the promoted
+  // Orders/CPC render as "-" (ACOS: see metaAcosCell below): Meta's export has spend only, and borrowing the promoted
   // product's Amazon orders double-credited them to two channels (seller's explicit instruction).
   // One row per promoted product (Meta campaigns grouped by product), the channel's day totals
   // spanning them — same shape as a multi-product platform block.
   const socialMedia = data.socialMediaSummary;
   const socialProducts = socialMedia ? (socialMedia.products?.length ? socialMedia.products : [socialMedia]) : [];
   const socialSpan = socialProducts.length > 1 ? ` rowspan="${socialProducts.length}"` : "";
+  // Meta channel ACOS (Spend ÷ Shopify sales from a Meta ad click — see SocialMediaEmailSummary),
+  // one cell on the first row spanning the products; "N/A" when unverified. A summary without the
+  // field (built before Meta ACOS existed) renders "-" on every row, exactly as before.
+  const metaAcosKnown = socialMedia != null && socialMedia.dayAcos !== undefined;
+  const metaAcosCell = (v: number | null | undefined, i: number) =>
+    !metaAcosKnown
+      ? `<td ${td}>-</td>`
+      : i === 0
+        ? `<td class="aspd-td ${acosClass(v ?? null)}"${socialSpan}>${v == null ? "N/A" : acosPct(v)}</td>`
+        : "";
   const socialMediaRowHtml = socialMedia
     ? socialProducts.map((p, i) => `
         <tr>
@@ -156,12 +166,12 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
           <td ${td}>${money(p.day.spendTax)}</td>
           <td ${td}>-</td>
           <td ${td}>-</td>
-          <td ${td}>-</td>
+          ${metaAcosCell(socialMedia.dayAcos, i)}
           <td ${td}>${money(p.range.spend)}</td>
           <td ${td}>${money(p.range.spendTax)}</td>
           <td ${td}>-</td>
           <td ${td}>-</td>
-          <td ${td}>-</td>
+          ${metaAcosCell(socialMedia.rangeAcos, i)}
           ${i === 0 ? `<td ${td}${socialSpan}>-</td>
           <td ${td}${socialSpan}>-</td>` : ""}
         </tr>`).join("")

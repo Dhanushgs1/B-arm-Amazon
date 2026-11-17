@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { googleAdsRatios, mergeGoogleWebsiteOrders, type GoogleCardRow, type ShopifyReportOrder } from "./googleWebsiteOrders.ts";
+import { googleAdsRatios, mergeGoogleWebsiteOrders, metaAdsAttributedSales, type GoogleCardRow, type ShopifyReportOrder } from "./googleWebsiteOrders.ts";
 
 const card = (id: number, order_date: string, invoice: string, product_name: string, quantity: number, price: number): GoogleCardRow => ({ id, order_date, invoice, product_name, quantity, price: String(price) });
 const order = (order_name: string, order_date: string, title: string, price: number, ad_channel: string, opts: { cancelled?: boolean; qty?: number } = {}): ShopifyReportOrder => ({
@@ -116,4 +116,19 @@ test("ratios", () => {
   assert.deepEqual(googleAdsRatios(355.62, 0), { acos: null, roas: 0 });
   // 24 Oct case: Shopify Ad Sales exist but no Google Ads spend file yet — not a 0% ACOS.
   assert.deepEqual(googleAdsRatios(0, 599), { acos: null, roas: null });
+});
+
+test("metaAdsAttributedSales: only non-cancelled fbclid (meta_ads) orders inside the window, never Google's", () => {
+  const orders: ShopifyReportOrder[] = [
+    order("#2001", "2026-11-10", "Kit", 1099, "meta_ads"),
+    order("#2002", "2026-11-12", "Kit", 599, "meta_ads", { qty: 2 }),
+    order("#2003", "2026-11-12", "Kit", 999, "meta_ads", { cancelled: true }),
+    order("#2004", "2026-11-12", "Kit", 777, "google_ads"),
+    order("#2005", "2026-11-12", "Kit", 555, "direct"),
+    order("#2006", "2026-11-17", "Kit", 349, "meta_ads"),
+  ];
+  assert.deepEqual(metaAdsAttributedSales(orders, "2026-11-10", "2026-11-16"), { value: 2297, orders: 2 });
+  assert.deepEqual(metaAdsAttributedSales(orders, "2026-11-12", "2026-11-12"), { value: 1198, orders: 1 });
+  assert.deepEqual(metaAdsAttributedSales(orders, "2026-11-13", "2026-11-16"), { value: 0, orders: 0 });
+  assert.deepEqual(metaAdsAttributedSales([], "2026-11-10", "2026-11-16"), { value: 0, orders: 0 });
 });
