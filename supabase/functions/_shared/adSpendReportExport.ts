@@ -2630,6 +2630,9 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const metaRangeAcos = metaAcos(metaRangeVerified, socialMedia.rangeSpend, googleOrders.metaAdRangeValue);
   const metaDayAdSales = metaDayVerified ? round2(googleOrders.metaAdDayValue) : null;
   const metaRangeAdSales = metaRangeVerified ? round2(googleOrders.metaAdRangeValue) : null;
+  // Meta-attributed orders (same orders as the Ad Sales above); null (shown "N/A") when unverified.
+  const metaDayOrders = metaDayVerified ? googleOrders.metaAdDayOrders : null;
+  const metaRangeOrders = metaRangeVerified ? googleOrders.metaAdRangeOrders : null;
   const socialMediaProducts: { product: string; campaigns: string[]; price: number; dayAgg: WindowAgg; rangeAgg: WindowAgg }[] = [];
   if (socialMedia.daySpend > 0 || socialMedia.rangeSpend > 0) {
     const amazonRowsForSocial = groupProductsByName([...amz.products.values()], undefined, skuToMasterSkuidName);
@@ -2664,21 +2667,21 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     const socialSummaryProducts = socialMedia.daySpend > 0 ? socialMediaProducts.filter((p) => p.dayAgg.spend > 0) : socialMediaProducts;
     const dayTotalAgg: WindowAgg = { spend: socialMedia.daySpend, units: 0 };
     socialMediaRow = sumAoa.length;
-    // Total Sales, Total Orders and CPC stay blank (both blocks) — Meta's export carries spend only
-    // (see the orders note above). ACOS / Ad Sales are the Meta channel's own (metaDayAcos etc.
+    // Total Sales and CPC stay blank (both blocks) — Meta's export carries spend only
+    // (see the orders note above). Total Orders / ACOS / Ad Sales are the Meta channel's own (metaDayAcos etc.
     // above), on the first row and merged down like the channel spend.
     socialSummaryProducts.forEach((p, i) => sumAoa.push([
       i === 0 ? "Social Media" : "",
       i === 0 ? round2(socialMedia.daySpend) : "", i === 0 ? round2(spendTax(dayTotalAgg)) : "",
       p.product, p.price || "",
-      round2(p.dayAgg.spend), round2(spendTax(p.dayAgg)), "", "", "",
+      round2(p.dayAgg.spend), round2(spendTax(p.dayAgg)), i === 0 ? metaDayOrders ?? "N/A" : "", "", "",
       i === 0 ? metaDayAcos ?? "N/A" : "", i === 0 ? metaDayAdSales ?? "N/A" : null,
-      round2(p.rangeAgg.spend), round2(spendTax(p.rangeAgg)), "", "", "",
+      round2(p.rangeAgg.spend), round2(spendTax(p.rangeAgg)), i === 0 ? metaRangeOrders ?? "N/A" : "", "", "",
       i === 0 ? metaRangeAcos ?? "N/A" : "", i === 0 ? metaRangeAdSales ?? "N/A" : null,
       "", "",
     ]));
     if (socialSummaryProducts.length > 1) {
-      [0, 1, 2, 10, 11, 17, 18, 19, 20].forEach((c) => sumMerges.push({ s: { r: socialMediaRow!, c }, e: { r: socialMediaRow! + socialSummaryProducts.length - 1, c } }));
+      [0, 1, 2, 7, 10, 11, 14, 17, 18, 19, 20].forEach((c) => sumMerges.push({ s: { r: socialMediaRow!, c }, e: { r: socialMediaRow! + socialSummaryProducts.length - 1, c } }));
     }
     // Same figures as the Summary-sheet rows above, reshaped for the emailed daily digest (see
     // buildAdSpendDailyHtml in supabase/functions/send-ad-spend-email/index.ts), which renders
@@ -2868,7 +2871,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
 
   // Social Media (Meta Ads) — same column layout as the platform blocks above, one row per product
   // (same rows as the Summary sheet), with the Meta campaign name(s) in the first column instead of
-  // SKUs. Orders/CPC stay blank: Meta's export carries spend only. ACOS is the Meta channel's own
+  // SKUs. CPC stays blank: Meta's export carries spend only. Orders and ACOS are the Meta channel's own
   // (same figure as the Summary sheet), on the first row and merged down.
   let socialDetailLabelRow: number | null = null;
   if (socialMediaProducts.length) {
@@ -2889,11 +2892,11 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     const firstProductRow = detailAoa.length;
     socialMediaProducts.forEach((p, i) => detailAoa.push([
       p.campaigns.join(", "), p.product, p.price || "",
-      round2(p.dayAgg.spend), round2(spendTax(p.dayAgg)), "", "", i === 0 ? metaDayAcos ?? "N/A" : "",
-      round2(p.rangeAgg.spend), round2(spendTax(p.rangeAgg)), "", "", i === 0 ? metaRangeAcos ?? "N/A" : "",
+      round2(p.dayAgg.spend), round2(spendTax(p.dayAgg)), i === 0 ? metaDayOrders ?? "N/A" : "", "", i === 0 ? metaDayAcos ?? "N/A" : "",
+      round2(p.rangeAgg.spend), round2(spendTax(p.rangeAgg)), i === 0 ? metaRangeOrders ?? "N/A" : "", "", i === 0 ? metaRangeAcos ?? "N/A" : "",
     ]));
     if (socialMediaProducts.length > 1) {
-      [7, 12].forEach((c) => detailMerges.push({ s: { r: firstProductRow, c }, e: { r: firstProductRow + socialMediaProducts.length - 1, c } }));
+      [5, 7, 10, 12].forEach((c) => detailMerges.push({ s: { r: firstProductRow, c }, e: { r: firstProductRow + socialMediaProducts.length - 1, c } }));
     }
     detailAoa.push([]);
   }
@@ -3211,7 +3214,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     ["Flipkart: FSN report spend is per-SKU for every campaign type, so no apportioning is needed. Price comes from the SKU's own FK Orders Invoice Amount for the window (summed Invoice Amount / summed quantity, non-cancelled rows); only a SKU with no real order in the window falls back to the Listings snapshot (then the Earn more report's realised price)."],
     ["Meesho: Ads report spend is per-SKU. Overall sales Value / Total Sales = Quantity x each order row's own Supplier Listed Price (Incl. GST + Commission), from the Orders report only. meesho_price_marketing (the live scraped listing price) is used only for the displayed Price and as the Price in the ACOS CPC / Price fallback. Column names come from the seller's own workbook, not a native Meesho export seen directly — see src/lib/meeshoReportUpload.ts if a real export's headers turn out to differ."],
     ["Social-media (Meta) spend appears as its own Summary-sheet block when uploaded, separate from the three marketplace platforms: one row per promoted product (Meta campaigns are matched to products by campaign name), with each campaign listed in the Ad spend report sheet's Social Media section. Google Ads spend (the Google Ads \"Campaign report\" uploaded on the Upload page's Google card) fills the Google row's Ad spend columns: the day block from that day's own export, the range block from an export covering exactly the range, else the daily exports inside it. ₹0 there means no Google Ads report is on file for that window, not ₹0 spent." +
-      " Social Media ACOS / Ad Sales are the Meta channel's own (first row, merged): Ad Sales = only the Shopify orders whose visit came from a Meta ad click (fbclid on the landing URL), cancelled orders excluded; ACOS = Meta Spend (without tax) / Ad Sales. N/A when it can't be verified — Shopify orders not on file for the whole window, no Meta spend, or no attributed sales. Per-product Orders/CPC stay blank." +
+      " Social Media Orders / Ad Sales / ACOS are the Meta channel's own (first row, merged): Orders and Ad Sales = only the Shopify orders whose visit came from a Meta ad click (fbclid on the landing URL), cancelled orders excluded; ACOS = Meta Spend (without tax) / Ad Sales. N/A when it can't be verified — Shopify orders not on file for the whole window, no Meta spend, or no attributed sales. CPC and Total Sales stay blank." +
       (googleAttributed
         ? " The Google row's Orders/Sales are the website orders: the Google card's B-Arm orders plus the Shopify orders received by webhook, cancelled and test orders excluded. From the first day Shopify orders are on file, Google card rows from a Shopify \"Total sales by product\" export, and B-Arm lines that are the same sale as a Shopify order (same date, unit price and quantity), are left out so nothing is counted twice; no row is deleted. Google Ads Ad Sales = only the Shopify orders whose visit came from a Google Ads click (gclid / gbraid / wbraid / gad_* on the landing URL) — Google Ads' own export reports 0 conversions. ACOS = Spend (without tax) / Ad Sales, blank when there are no Ad Sales or no Google Ads report; ROAS = Ad Sales / Spend (without tax). CPC stays blank."
         : " The Google row's Orders/Sales are the B-Arm orders; its CPC/ACOS stay blank since those orders are not attributed to the ads.")],
