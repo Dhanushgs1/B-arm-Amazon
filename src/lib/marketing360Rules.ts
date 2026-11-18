@@ -233,3 +233,22 @@ export function tamSuggestion(buyers: number | null | undefined, price: number |
   if (!buyers || !price || buyers <= 0 || price <= 0) return null;
   return Math.round(buyers * price);
 }
+
+// ── competitor ratings ──────────────────────────────────────────────────────────────────────────
+// competitor_analysis_wide keys rows by our PARENT SKU (A001), while listings carry child SKUs
+// (A001-5). A row belongs to the product when any listing SKU's parent equals it.
+export const parentSku = (sku: string) => sku.replace(/\((AM|FK|Meesho)\)$/i, "").trim().replace(/-\d+$/, "").toUpperCase();
+export function ratingRowMatches(ourSku: string | null | undefined, skus: string[]): boolean {
+  if (!ourSku) return false;
+  const parents = new Set(skus.flatMap((s) => [parentSku(s), s.trim().toUpperCase()]));
+  return ourSku.split("|").some((s) => parents.has(parentSku(s)) || parents.has(s.trim().toUpperCase()));
+}
+export type CompRating = { marketplace: string; product_name: string | null; url: string | null; rating: number | null; reviews: number | null; match_status: string | null };
+/** The competitor to compare against: the most-reviewed same-product one (exact / close), else the most-reviewed
+ *  related one, flagged so it is never shown as a like-for-like comparison. */
+export function topCompetitorRating(rows: CompRating[]): (CompRating & { same: boolean }) | null {
+  const by = (xs: CompRating[]) => [...xs].sort((a, b) => (Number(b.reviews) || 0) - (Number(a.reviews) || 0))[0];
+  const same = rows.filter((r) => /^(EXACT MATCH|CLOSE EQUIVALENT)$/i.test(r.match_status ?? ""));
+  if (same.length) return { ...by(same), same: true };
+  return rows.length ? { ...by(rows), same: false } : null;
+}

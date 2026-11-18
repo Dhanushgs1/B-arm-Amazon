@@ -290,9 +290,9 @@ function ProductCard({ data, reload }: { data: any; reload: () => void }) {
           )}
           {data.competitors.ratings.length === 0 ? <p className="text-xs text-muted-foreground">{data.competitors.blocked ? "Competitor ratings: not readable by the dashboard (same permission as above)." : "No competitor ratings stored for this product yet."}</p> : (
             <table className="w-full text-xs">
-              <thead><tr className="border-b border-border"><th className={th}>Competitor</th><th className={th}>Marketplace</th><th className={th}>Rating</th><th className={th}>Reviews</th></tr></thead>
+              <thead><tr className="border-b border-border"><th className={th}>Competitor</th><th className={th}>Marketplace</th><th className={th}>Rating</th><th className={th}>Reviews</th><th className={th}>Match</th></tr></thead>
               <tbody>{data.competitors.ratings.map((c: any, i: number) => (
-                <tr key={i} className="border-b border-border/60"><td className={td}>{c.url ? <a href={c.url} target="_blank" rel="noreferrer" className="text-emerald-700 underline dark:text-emerald-300">{c.name ?? "Competitor"}</a> : c.name ?? "—"}</td><td className={td}>{c.marketplace}</td><td className={td}>{c.rating ?? "—"}</td><td className={td}>{fmt(c.reviews)}</td></tr>
+                <tr key={i} className="border-b border-border/60"><td className={td}>{c.url ? <a href={c.url} target="_blank" rel="noreferrer" className="text-emerald-700 underline dark:text-emerald-300">{c.name ?? "Competitor"}</a> : c.name ?? "—"}</td><td className={td}>{c.marketplace}</td><td className={td}>{c.rating ?? "—"}</td><td className={td}>{fmt(c.reviews)}</td><td className={td}><Pill text={c.same ? "Same product" : "Related"} cls={c.same ? STATE_CLS.On : STATE_CLS["No data"]} /></td></tr>
               ))}</tbody>
             </table>
           )}
@@ -567,7 +567,7 @@ const SHEET_COLS: SheetCol[] = [
   { group: "Market", label: "Secondary audience", get: (r) => r.secondary, w: 220, edit: { kind: "text", field: "secondary_audience" } },
   { group: "Rating & reviews — ours", label: "Star", get: (r) => r.star, render: (r) => (r.star ? `${r.star}★` : "—") },
   { group: "Rating & reviews — ours", label: "Ratings", get: (r) => r.ratings, render: (r) => (r.ratings === null ? "—" : `${fmt(r.ratings)}${r.ratings_change ? ` (${r.ratings_change > 0 ? "+" : ""}${r.ratings_change})` : ""}`) },
-  { group: "Rating & reviews — competitor", label: "Star", get: (r) => r.comp_star },
+  { group: "Rating & reviews — competitor", label: "Star", get: (r) => r.comp_star, w: 170, render: (r) => (r.comp_star === null ? <span className="text-muted-foreground">—</span> : <span title={`${r.comp_rating_name ?? ""}${r.comp_rating_same ? " (same product)" : " (related product, not a like-for-like match)"}`}><b>{r.comp_star}★</b>{r.comp_rating_same ? null : <span className="ml-1 rounded border border-border px-1 text-[10px] text-muted-foreground">related</span>}</span>) },
   { group: "Rating & reviews — competitor", label: "Reviews", get: (r) => r.comp_reviews, render: (r) => fmt(r.comp_reviews) },
   { group: "Price", label: "Our price", get: (r) => r.price, render: (r) => (r.price === null ? <span className="text-muted-foreground">—</span> : <a href={r.link} target="_blank" rel="noreferrer" className="font-bold text-emerald-700 underline dark:text-emerald-300" title={`Selling price from the ${r.price_source}; opens our Amazon listing`}>{inr(r.price)}</a>) },
   { group: "Price", label: "M.R.P.", get: (r) => r.mrp, render: (r) => <span className="text-muted-foreground">{inr(r.mrp)}</span> },

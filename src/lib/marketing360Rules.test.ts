@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { latestByPincode, deliveryTone, fcTable, adState, campaignKeywords, profileEdit, zoneVerdict, STATE_ZONE, zoneLabel, ourProduct, adsSuggestion, ourSellingPrice, tamGroup, tamSuggestion } from "./marketing360Rules.ts";
+import { latestByPincode, deliveryTone, fcTable, adState, campaignKeywords, profileEdit, zoneVerdict, STATE_ZONE, zoneLabel, ourProduct, adsSuggestion, ourSellingPrice, tamGroup, tamSuggestion, parentSku, ratingRowMatches, topCompetitorRating } from "./marketing360Rules.ts";
 import { pincodeState, pos, toIsoDate, dateFromName } from "./marketing360Import.ts";
 
 const chk = (pincode: string, week: string, scraped_date: string, days: number | null, status = "Confirmed Estimate") =>
@@ -156,4 +156,19 @@ test("TAM: every product line maps to its audience group; unknown stays null", (
   for (const [name, group] of cases) assert.equal(tamGroup(name), group, name);
   assert.equal(tamSuggestion(14_300_000, 2699), 38_595_700_000);
   assert.equal(tamSuggestion(null, 363), null);
+});
+
+test("competitor ratings: parent SKU match, same-product preferred over more-reviewed related", () => {
+  assert.equal(parentSku("A001-5"), "A001");
+  assert.equal(parentSku("B-INSEM-KIT-PK2-1(AM)"), "B-INSEM-KIT-PK2");
+  assert.ok(ratingRowMatches("A001", ["A001-4", "A001-5"]));
+  assert.ok(ratingRowMatches("B-CT-B|B-CT-B-3", ["B-CT-B-1"]));
+  assert.ok(!ratingRowMatches("A0011", ["A001-4"]));
+  const rows = [
+    { marketplace: "Amazon", product_name: "Pads", url: null, rating: 4.4, reviews: 3900, match_status: "NEEDS MANUAL REVIEW" },
+    { marketplace: "Amazon", product_name: "Same kit", url: null, rating: 4.1, reviews: 120, match_status: "CLOSE EQUIVALENT" },
+  ];
+  assert.deepEqual([topCompetitorRating(rows)?.product_name, topCompetitorRating(rows)?.same], ["Same kit", true]);
+  assert.deepEqual([topCompetitorRating([rows[0]])?.product_name, topCompetitorRating([rows[0]])?.same], ["Pads", false]);
+  assert.equal(topCompetitorRating([]), null);
 });

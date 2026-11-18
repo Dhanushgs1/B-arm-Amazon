@@ -110,3 +110,32 @@ create table if not exists public.mkt_tam_research (
   researched_at    timestamptz not null default now()
 );
 grant select on public.mkt_tam_research to anon;
+
+-- User approved 2026-11-18: the dashboard may read competitor ratings and review counts.
+-- competitor_analysis_wide stays RLS-limited to signed-in Supabase users; this exposes only the latest
+-- week's competitor name, link, rating, reviews and match status, one row per competitor.
+-- our_sku is the parent SKU (e.g. A001), matched by the caller to listing SKUs like A001-5.
+create or replace function public.mkt_competitor_ratings()
+returns table (our_sku text, marketplace text, week_tag text, slot int, product_name text, url text,
+               rating numeric, reviews numeric, match_status text)
+language sql stable security definer set search_path = public as $$
+  with latest as (select max(week_tag) w from public.competitor_analysis_wide)
+  select w.our_sku, w.competitor_marketplace, w.week_tag, s.slot, s.name, s.url, s.rating, s.reviews, s.match_status
+  from public.competitor_analysis_wide w
+  cross join latest
+  cross join lateral (values
+    (1, w.competitor_1_product_name, w.competitor_1_url, w.competitor_1_rating::numeric, w.competitor_1_reviews::numeric, w.competitor_1_match_status),
+    (2, w.competitor_2_product_name, w.competitor_2_url, w.competitor_2_rating::numeric, w.competitor_2_reviews::numeric, w.competitor_2_match_status),
+    (3, w.competitor_3_product_name, w.competitor_3_url, w.competitor_3_rating::numeric, w.competitor_3_reviews::numeric, w.competitor_3_match_status),
+    (4, w.competitor_4_product_name, w.competitor_4_url, w.competitor_4_rating::numeric, w.competitor_4_reviews::numeric, w.competitor_4_match_status),
+    (5, w.competitor_5_product_name, w.competitor_5_url, w.competitor_5_rating::numeric, w.competitor_5_reviews::numeric, w.competitor_5_match_status),
+    (6, w.competitor_6_product_name, w.competitor_6_url, w.competitor_6_rating::numeric, w.competitor_6_reviews::numeric, w.competitor_6_match_status),
+    (7, w.competitor_7_product_name, w.competitor_7_url, w.competitor_7_rating::numeric, w.competitor_7_reviews::numeric, w.competitor_7_match_status),
+    (8, w.competitor_8_product_name, w.competitor_8_url, w.competitor_8_rating::numeric, w.competitor_8_reviews::numeric, w.competitor_8_match_status),
+    (9, w.competitor_9_product_name, w.competitor_9_url, w.competitor_9_rating::numeric, w.competitor_9_reviews::numeric, w.competitor_9_match_status),
+    (10, w.competitor_10_product_name, w.competitor_10_url, w.competitor_10_rating::numeric, w.competitor_10_reviews::numeric, w.competitor_10_match_status)
+  ) as s(slot, name, url, rating, reviews, match_status)
+  where w.week_tag = latest.w and s.rating is not null
+$$;
+revoke all on function public.mkt_competitor_ratings() from public;
+grant execute on function public.mkt_competitor_ratings() to anon, authenticated;
