@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { latestByPincode, deliveryTone, fcTable, adState, campaignKeywords, profileEdit, zoneVerdict, STATE_ZONE, zoneLabel, ourProduct, adsSuggestion, ourSellingPrice } from "./marketing360Rules.ts";
+import { latestByPincode, deliveryTone, fcTable, adState, campaignKeywords, profileEdit, zoneVerdict, STATE_ZONE, zoneLabel, ourProduct, adsSuggestion, ourSellingPrice, tamGroup, tamSuggestion } from "./marketing360Rules.ts";
 import { pincodeState, pos, toIsoDate, dateFromName } from "./marketing360Import.ts";
 
 const chk = (pincode: string, week: string, scraped_date: string, days: number | null, status = "Confirmed Estimate") =>
@@ -132,4 +132,28 @@ test("our price is the selling price, never the M.R.P. from the listing upload",
   assert.deepEqual(ourSellingPrice("363.00", 363, 750), { price: 363, source: "rating bot (Amazon page)", mrp: 750 });
   assert.deepEqual(ourSellingPrice(null, "363", "750"), { price: 363, source: "FBA inventory report", mrp: 750 });
   assert.deepEqual(ourSellingPrice(0, null, 750), { price: null, source: null, mrp: 750 });
+});
+
+test("TAM: every product line maps to its audience group; unknown stays null", () => {
+  const cases: [string, string | null][] = [
+    ["Postpartum Recovery Essentials care kit (10 pcs kit)", "postpartum"], ["C-Section Recovery kit- 15 pcs", "postpartum"],
+    ["Perineal Massage Wand- White", "postpartum"], ["Breast Shell (New Model)", "breastfeeding"], ["Cracked Nipple Spray", "breastfeeding"],
+    ["Insemination kit (Pack of 2)", "fertility_home_insemination"], ["Bulb Syringe IUI applicator (10.5 cm)(Pack of 5)", "fertility_home_insemination"],
+    ["Ovulation thermometer", "trying_to_conceive_testing"], ["Pregnancy kit combo with Ovulation thermometer", "trying_to_conceive_testing"],
+    ["Menopause test Cassette pack of 3", "menopause"], ["Soft Vaginal Dilator", "vaginal_dilator"], ["Soft and Plastic VD combo", "vaginal_dilator"], ["Period Pain Relief Device (TENS)", "dysmenorrhea"],
+    ["UTI Test Strips (Pack of 4)", "uti_women"], ["Cradle Comb (Blue-Bear)", "cradle_cap"], ["Eye patch Skin color- Pack of 10", "amblyopia_eye_patch"],
+    ["Electric baby nasal aspirator- Blue", "infant_nasal_aspirator"], ["Nasal syringe aspirator pack of 2", "infant_nasal_aspirator"],
+    ["Mesh nebulizer - 3 modes", "nebulizer"], ["Sonmol Peak Flow meter (without BLE)", "peak_flow_meter"], ["RMT Black pack of 2", "respiratory_muscle_trainer"],
+    ["Nascool nasal power suction irrigation system", "nasal_irrigation"], ["Nasal suction irrigator- Rechargeable", "nasal_irrigation"], ["MRD Grey", "mucus_removal_device"],
+    ["gluco spark Meter With 10 Strips & 10 lancets", "diabetes_self_monitoring"], ["BP Monitor ( without ble & with voice )", "hypertension_bp_monitor"],
+    ["Lactospark Strips (Pack of 50)", "lactate_meter"], ["Silk 19mm Suture Thread", "medical_students_suturing"], ["Digital stethescope", "healthcare_professionals_stethoscope"],
+    ["Headache Relief tool pack of 2", "migraine_headache"], ["Nail fungus cleaning device (new)", "onychomycosis"], ["Self Hook therapy stick Blue", "chronic_back_neck_pain"],
+    ["IR therpy lamp and holder", "chronic_back_neck_pain"], ["Meditubes Winset IV set pack of 25", "clinics_iv_sets"], ["Chewy tube (Blue) - Spiral model", "speech_oral_motor_therapy"],
+    ["Jaw grading bite blocks (Pack of 1)", "speech_oral_motor_therapy"], ["IQ puzzles (Autism)", "sensory_fidget_iq_puzzles"], ["Anti choking device- Red & Black", "choking_rescue_device"],
+    ["Refrigerator thermometer", "household_thermometer_ir"], ["IR thermometer White", "household_thermometer_ir"], ["Epsom salt - 400 grams", "epsom_salt_bath"],
+    ["B-Arm Muscle Exerciser for Adults – Adjustable Resistance", "adult_fitness_muscle_exerciser"], ["Something new", null],
+  ];
+  for (const [name, group] of cases) assert.equal(tamGroup(name), group, name);
+  assert.equal(tamSuggestion(14_300_000, 2699), 38_595_700_000);
+  assert.equal(tamSuggestion(null, 363), null);
 });

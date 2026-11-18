@@ -186,3 +186,50 @@ export function ourSellingPrice(botPrice: unknown, fbaPrice: unknown, listingPri
   if (n(fbaPrice) !== null) return { price: n(fbaPrice), source: "FBA inventory report", mrp };
   return { price: null, source: null, mrp };
 }
+
+// ── TAM suggestions ─────────────────────────────────────────────────────────────────────────────
+// TAM = potential buyers in India × our selling price, the template's own formula (Postpartum kit:
+// 1,43,00,000 × ₹2,699). Buyers come from researched public figures stored per audience group in
+// mkt_tam_research (with sources); this maps a product to its group. A suggestion only — the team
+// accepts it into mkt_product_profile.tam_value. Order matters: specific before general.
+const TAM_RULES: [RegExp, string][] = [
+  [/insemination|iui|conception cup|male fertility/i, "fertility_home_insemination"],
+  [/ovulation|pregnancy kit/i, "trying_to_conceive_testing"],
+  [/menopause/i, "menopause"],
+  [/c-?\s?section|postpartum|perineal|ice maxi|sitz|bidet|pregnancy soak/i, "postpartum"],
+  [/breast|nipple|flange|lactation|nursing cup/i, "breastfeeding"],
+  [/dilator|\bvd combo/i, "vaginal_dilator"],
+  [/period pain|tens\b/i, "dysmenorrhea"],
+  [/\buti\b/i, "uti_women"],
+  [/cradle|neem wood comb/i, "cradle_cap"],
+  [/eye patch/i, "amblyopia_eye_patch"],
+  [/nasal (syringe )?aspirator/i, "infant_nasal_aspirator"],
+  [/nebuli/i, "nebulizer"],
+  [/peak\s?flow/i, "peak_flow_meter"],
+  [/\brmt\b|respiratory muscle/i, "respiratory_muscle_trainer"],
+  [/nasal (suction )?(power )?(suction )?irrigat|nascool/i, "nasal_irrigation"],
+  [/\bmrd\b|mucus/i, "mucus_removal_device"],
+  [/gluco/i, "diabetes_self_monitoring"],
+  [/\bbp monitor/i, "hypertension_bp_monitor"],
+  [/lacto\s?spark|lactate/i, "lactate_meter"],
+  [/suture|anatomy/i, "medical_students_suturing"],
+  [/stethe?o?scope|stethescope/i, "healthcare_professionals_stethoscope"],
+  [/headache/i, "migraine_headache"],
+  [/nail fungus/i, "onychomycosis"],
+  [/hook therapy|therapy stick|ir ther(a)?py lamp/i, "chronic_back_neck_pain"],
+  [/iv set|winset/i, "clinics_iv_sets"],
+  [/chewy|teething|oral muscle|articulation|jaw|lip muscle|tongue|speech therapy|sensory brush|therapressure/i, "speech_oral_motor_therapy"],
+  [/fidget|iq puzzle/i, "sensory_fidget_iq_puzzles"],
+  [/chok/i, "choking_rescue_device"],
+  [/thermometer|insect bite|cutlery/i, "household_thermometer_ir"],
+  [/epsom/i, "epsom_salt_bath"],
+  [/muscle exerciser|resistance/i, "adult_fitness_muscle_exerciser"],
+];
+export function tamGroup(productName: string | null | undefined): string | null {
+  const n = productName ?? "";
+  return TAM_RULES.find(([re]) => re.test(n))?.[1] ?? null;
+}
+export function tamSuggestion(buyers: number | null | undefined, price: number | null | undefined): number | null {
+  if (!buyers || !price || buyers <= 0 || price <= 0) return null;
+  return Math.round(buyers * price);
+}

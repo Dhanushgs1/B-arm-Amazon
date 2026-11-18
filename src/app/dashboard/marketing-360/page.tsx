@@ -24,6 +24,8 @@ const LANGUAGES = ["Hindi", "English", "Bengali", "Marathi", "Telugu", "Tamil", 
 
 const fmt = (n: number | null | undefined, d = 0) => (n === null || n === undefined || Number.isNaN(Number(n)) ? "—" : Number(n).toLocaleString("en-IN", { maximumFractionDigits: d }));
 const inr = (n: number | null | undefined) => (n === null || n === undefined ? "—" : `₹${fmt(n)}`);
+const crore = (n: number | null | undefined) => (n === null || n === undefined ? "—" : n >= 1e7 ? `₹${(n / 1e7).toLocaleString("en-IN", { maximumFractionDigits: 1 })} Cr` : n >= 1e5 ? `₹${(n / 1e5).toLocaleString("en-IN", { maximumFractionDigits: 1 })} L` : inr(n));
+const buyersText = (n: number | null | undefined) => (n === null || n === undefined ? "—" : n >= 1e7 ? `${(n / 1e7).toLocaleString("en-IN", { maximumFractionDigits: 2 })} crore` : n >= 1e5 ? `${(n / 1e5).toLocaleString("en-IN", { maximumFractionDigits: 1 })} lakh` : fmt(n));
 const dateLabel = (d: string | null | undefined) => (d ? new Date(`${d.slice(0, 10)}T00:00:00Z`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }) : "—");
 
 function Section({ icon: Icon, title, source, children, right }: { icon: typeof Star; title: string; source?: string; children: React.ReactNode; right?: React.ReactNode }) {
@@ -404,6 +406,12 @@ function ProductCard({ data, reload }: { data: any; reload: () => void }) {
       </Section>
 
       <Section icon={Users} title="Audience, TAM, retargeting & content" source="Typed in by the marketing team">
+        {data.tamSuggest && (
+          <div className="mb-3 rounded-lg border border-border/70 bg-background p-3">
+            <p className="mb-1 text-xs font-extrabold">Suggested TAM from research — {data.tamSuggest.group.replace(/_/g, " ")}</p>
+            <TamSuggest asin={data.asin} s={data.tamSuggest} current={data.profile?.tam_value === undefined || data.profile?.tam_value === null ? null : Number(data.profile.tam_value)} onSaved={() => reload()} full />
+          </div>
+        )}
         <ProfileEditor key={JSON.stringify(data.profile)} asin={data.asin} profile={data.profile} onSaved={reload} />
       </Section>
 
@@ -492,6 +500,46 @@ function ChannelNotes({ products }: { products: Product[] }) {
   );
 }
 
+// The researched TAM suggestion (buyers × our selling price) with its sources; Accept copies it into
+// the product's TAM (mkt_product_profile.tam_value, only that column).
+const CONF_CLS: Record<string, string> = {
+  high: STATE_CLS.On, medium: "bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-800", low: STATE_CLS.Off,
+};
+function TamSuggest({ asin, s, current, onSaved, full }: { asin: string; s: any; current: number | null; onSaved: (tam: number) => void; full?: boolean }) {
+  const [state, setState] = useState<{ busy?: boolean; error?: string; done?: boolean }>({});
+  if (!s) return <span className="text-muted-foreground">—</span>;
+  if (!s.researched) return <span className="text-[11px] text-muted-foreground">Research pending</span>;
+  if (s.value === null) return <span className="text-[11px] text-muted-foreground" title={s.note ?? ""}>{s.buyers === null ? "No sourced buyer figure" : "No selling price"}</span>;
+  const accept = async () => {
+    setState({ busy: true });
+    const { error } = await db.from("mkt_product_profile").upsert({ asin, tam_value: s.value, updated_at: new Date().toISOString() }, { onConflict: "asin" });
+    if (error) return setState({ error: error.message });
+    setState({ done: true });
+    onSaved(s.value);
+  };
+  const title = [`${buyersText(s.buyers)} × ${inr(s.price)} = ${crore(s.value)}`, s.definition, s.derivation, ...(s.sources ?? []).map((x: any) => `${x.url} (${x.year}): “${x.quote}”`), s.note].filter(Boolean).join("\n");
+  return (
+    <div className="space-y-1" title={full ? undefined : title}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <b>{crore(s.value)}</b>
+        {s.confidence && <span className={`rounded-md border px-1 py-0.5 text-[10px] font-bold ${CONF_CLS[s.confidence] ?? STATE_CLS["No data"]}`}>{s.confidence}</span>}
+        {current === s.value || state.done ? <span className="text-[10px] font-bold text-green-700 dark:text-green-400">in use</span>
+          : <button type="button" className="rounded-md border border-indigo-300 px-1.5 py-0.5 text-[10px] font-bold text-indigo-700 hover:bg-indigo-50 disabled:opacity-60 dark:border-indigo-700 dark:text-indigo-300" disabled={state.busy} onClick={accept}>{state.busy ? "Saving…" : current ? "Replace TAM" : "Accept"}</button>}
+      </div>
+      <p className="text-[10px] text-muted-foreground">{buyersText(s.buyers)} buyers × {inr(s.price)}</p>
+      {full && (
+        <div className="space-y-1 text-[11px] text-muted-foreground">
+          <p><b className="text-foreground">Who:</b> {s.definition}</p>
+          <p><b className="text-foreground">How:</b> {s.derivation}</p>
+          <ul className="list-disc pl-4">{(s.sources ?? []).map((x: any, i: number) => <li key={i}><a href={x.url} target="_blank" rel="noreferrer" className="text-indigo-700 underline dark:text-indigo-300">{new URL(x.url).hostname}</a> ({x.year}): “{x.quote}”</li>)}</ul>
+          {s.note && <p><b className="text-foreground">Caveat:</b> {s.note}</p>}
+        </div>
+      )}
+      {state.error && <p className="text-[10px] font-semibold text-red-700 dark:text-red-400">{state.error}</p>}
+    </div>
+  );
+}
+
 // The ads on/off suggestion: the action, then the reasons it rests on.
 const ADS_CLS: Record<string, string> = {
   good: STATE_CLS.On, critical: STATE_CLS.Off, none: STATE_CLS["No data"],
@@ -514,6 +562,7 @@ const SHEET_COLS: SheetCol[] = [
   { group: "Product", label: "SKU ID", get: (r) => r.skus.join(", "), w: 140 },
   { group: "Product", label: "Category", get: (r) => r.category },
   { group: "Market", label: "TAM value", get: (r) => r.tam, render: (r) => inr(r.tam), edit: { kind: "number", field: "tam_value" } },
+{ group: "Market", label: "Suggested TAM (research)", w: 190, get: (r) => r.tam_suggest?.value ?? null },
   { group: "Market", label: "Primary audience", get: (r) => r.primary, w: 220, edit: { kind: "text", field: "primary_audience" } },
   { group: "Market", label: "Secondary audience", get: (r) => r.secondary, w: 220, edit: { kind: "text", field: "secondary_audience" } },
   { group: "Rating & reviews — ours", label: "Star", get: (r) => r.star, render: (r) => (r.star ? `${r.star}★` : "—") },
@@ -813,6 +862,7 @@ function FullSheet({ onOpen }: { onOpen: (asin: string) => void }) {
                   return (
                     <td key={i} className={`${td} border-r border-border/40 ${c.edit ? "bg-emerald-50/30 dark:bg-emerald-950/10" : ""}`} style={c.w ? { minWidth: c.w, maxWidth: c.w + 80 } : undefined}>
                       {c.edit ? <EditCell row={r} col={c} onSaved={onSaved} />
+                        : c.label === "Suggested TAM (research)" ? <TamSuggest asin={r.asin} s={r.tam_suggest} current={r.tam} onSaved={(tam) => onSaved(r.asin, { tam })} />
                         : c.group === "Delivery date" && r.delivery ? (
                           <button type="button" className="font-semibold text-emerald-700 underline decoration-dotted hover:decoration-solid dark:text-emerald-300" title="Show the pincodes" onClick={() => setDetail({ kind: "delivery", asin: r.asin, name: r.name, focus: c.label })}>{v ?? "—"}</button>
                         )
