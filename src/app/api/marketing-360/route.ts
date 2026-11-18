@@ -3,7 +3,7 @@ import { checkSession } from "@/lib/apiAuth";
 import { rejectUnlessAllowed } from "@/lib/appRouteAuth";
 import { supabase } from "@/lib/supabaseClient";
 import { FBA_ALERT_FCS } from "@/lib/fbaWarehouseAlerts";
-import { latestByPincode, fcTable, adState, campaignKeywords, zoneVerdict, ourProduct, adsSuggestion, ADS_LOW_UNITS, ourSellingPrice, tamGroup, tamSuggestion, type DeliveryCheck, type ZoneFacts } from "@/lib/marketing360Rules";
+import { latestByPincode, fcTable, adState, campaignKeywords, zoneVerdict, ourProduct, ratingRowMatches, topCompetitorRating, adsSuggestion, ADS_LOW_UNITS, ourSellingPrice, tamGroup, tamSuggestion, type DeliveryCheck, type ZoneFacts } from "@/lib/marketing360Rules";
 
 // Product Marketing 360 — one product's marketing card, built from stored data only (Supabase).
 //   GET                -> product list (Amazon listings grouped by ASIN, with master name + category)
@@ -24,13 +24,6 @@ const rows = async (p: PromiseLike<Q>): Promise<any[]> => {
   }
   if (error) throw new Error(error.message);
   return data ?? [];
-};
-/** A source the anon key may not be allowed to read: rows, or the refusal message. */
-const optional = async (p: PromiseLike<Q>): Promise<{ rows: any[]; blocked: string | null }> => {
-  const { data, error } = await p;
-  if (error && /permission denied/i.test(error.message)) return { rows: [], blocked: error.message };
-  if (error) throw new Error(error.message);
-  return { rows: data ?? [], blocked: null };
 };
 /** All rows of a query, 1000 at a time (PostgREST caps a response). Needs a stable .order(). */
 async function allRows(make: (from: number, to: number) => PromiseLike<Q>): Promise<any[]> {
@@ -103,22 +96,20 @@ async function card(asin: string) {
   // a refusal is reported on the card instead of failing it ──────────────────────────────────
   const [cp, cw] = await Promise.all([
     optionalAll((a, b) => supabase.rpc("mkt_competitor_prices").order("our_sku").order("competitor_product_url").range(a, b) as any),
-    skus.length ? optional(supabase.from("competitor_analysis_wide").select("*").in("our_sku", skus).order("week_tag", { ascending: false }).limit(4) as any) : Promise.resolve({ rows: [], blocked: null }),
+    // competitor ratings via mkt_competitor_ratings() (latest week, one row per competitor; user approved 2026-11-18)
+    optionalAll((a, b) => supabase.rpc("mkt_competitor_ratings").order("our_sku").order("marketplace").order("slot").range(a, b) as any),
   ]);
   const SAME = /^(EXACT MATCH|CLOSE EQUIVALENT)$/i;
   // same-product competitors (mkt_competitor_prices only returns EXACT MATCH / CLOSE EQUIVALENT), matched on our ASIN or any of our SKUs
   const compPrice = cp.rows.filter((c: any) => SAME.test(c.match_status ?? "") && c.competitor_price !== null && ourProduct(c, asin, skus))
     .map((c: any) => ({ ...c, is_competitor_cheaper: c.our_price !== null ? Number(c.competitor_price) < Number(c.our_price) : null }))
-    .sort((a: any, b: any) => Number(a.competitor_price) - Number(b.competitor_price)), compWide = cw.rows;
+    .sort((a: any, b: any) => Number(a.competitor_price) - Number(b.competitor_price));
   const competitorBlocked = cp.blocked ?? cw.blocked;
-  const compRatings: any[] = [];
-  const latestWide = compWide[0]?.week_tag;
-  for (const w of compWide.filter((x) => x.week_tag === latestWide)) {
-    for (let i = 1; i <= 10; i++) {
-      if (!w[`competitor_${i}_url`] && !w[`competitor_${i}_product_name`]) continue;
-      compRatings.push({ marketplace: w.competitor_marketplace, name: w[`competitor_${i}_product_name`], url: w[`competitor_${i}_url`], rating: w[`competitor_${i}_rating`], reviews: w[`competitor_${i}_reviews`], week: w.week_tag });
-    }
-  }
+  // same-product competitors first, then the rest, each by review count
+  const compRatings: any[] = cw.rows.filter((r: any) => ratingRowMatches(r.our_sku, skus))
+    .map((r: any) => ({ marketplace: r.marketplace, name: r.product_name, url: r.url, rating: r.rating, reviews: r.reviews, week: r.week_tag, match_status: r.match_status, same: SAME.test(r.match_status ?? "") }))
+    .sort((a: any, b: any) => Number(b.same) - Number(a.same) || (Number(b.reviews) || 0) - (Number(a.reviews) || 0));
+  const latestWide = cw.rows[0]?.week_tag;
 
   // ── Amazon ads, last 7 report days ──────────────────────────────────────────────────────────
   const spMax = (await rows(supabase.from("barm_amazon_sp_advertised_product").select("report_date").order("report_date", { ascending: false }).limit(1) as any))[0]?.report_date ?? null;
@@ -321,7 +312,7 @@ async function sheetBase(deliveryDate: string | null) {
     deliveryDate ? rows(supabase.rpc("mkt_delivery_summary_on", { d: deliveryDate }) as any) : rows(supabase.from("mkt_delivery_summary_mv").select("*") as any),
     rows(supabase.from("am_display_ad_masters").select('"Display campaign name","ASIN"') as any),
     rows(supabase.from("brand_ads_master_sheet").select('"Campaign Name","ASIN"') as any),
-    optional(supabase.from("competitor_analysis_wide").select("*").order("week_tag", { ascending: false }).limit(2000) as any),
+    optionalAll((a, b) => supabase.rpc("mkt_competitor_ratings").order("our_sku").order("marketplace").order("slot").range(a, b) as any),
     optionalAll((a, b) => supabase.rpc("mkt_competitor_prices").order("our_sku").order("competitor_product_url").range(a, b) as any),
     deliveryDate
       ? allRows((a, b) => supabase.rpc("mkt_delivery_zone_summary", { d: deliveryDate }).order("asin").order("zone").range(a, b) as any)
@@ -360,8 +351,6 @@ async function fullSheet(deliveryDate: string | null) {
   const spendOf = (xs: any[]) => xs.reduce((a, x) => a + (Number(x.spend) || 0), 0);
   const byName = (xs: any[], names: string[] | null, words: string[]) =>
     xs.filter((x) => (names?.length ? names.includes(x.campaign_name) : words.some((w) => String(x.campaign_name).toLowerCase().includes(w.toLowerCase()))));
-  const latestWideWeek = compWide.rows[0]?.week_tag;
-  const wideBy = group(compWide.rows.filter((w: any) => w.week_tag === latestWideWeek), (w: any) => w.our_sku);
   const compRows: any[] = compPrices.rows;
   const zoneDelBy = group(zoneDelivery, (z: any) => z.asin);
 
@@ -387,8 +376,7 @@ async function fullSheet(deliveryDate: string | null) {
     const infl = infBy.get(p.asin) ?? [];
     const pl = planBy.get(p.asin) ?? [];
     const open = pl.filter((x: any) => x.status !== "Done");
-    const comp = p.skus.flatMap((s: string) => wideBy.get(s) ?? []).flatMap((w: any) => Array.from({ length: 10 }, (_, i) => ({ rating: w[`competitor_${i + 1}_rating`], reviews: w[`competitor_${i + 1}_reviews`] }))).filter((c: any) => c.rating !== null && c.rating !== undefined);
-    const topComp = comp.sort((a: any, b: any) => (Number(b.reviews) || 0) - (Number(a.reviews) || 0))[0];
+    const topComp = topCompetitorRating(compWide.rows.filter((c: any) => ratingRowMatches(c.our_sku, p.skus)).map((c: any) => ({ marketplace: c.marketplace, product_name: c.product_name, url: c.url, rating: c.rating === null ? null : Number(c.rating), reviews: c.reviews === null ? null : Number(c.reviews), match_status: c.match_status })));
     const orders30 = z.reduce((a: number, x: any) => a + (Number(x.orders_30d) || 0), 0);
     const d: any = delBy.get(p.asin);
     const zc = zoneCompare(zoneDelBy.get(p.asin) ?? [], z);
@@ -399,7 +387,7 @@ async function fullSheet(deliveryDate: string | null) {
       asin: p.asin, name: p.name, skus: p.skus, category: p.category, link: `https://www.amazon.in/dp/${p.asin}`,
       tam: prof?.tam_value ?? null, primary: prof?.primary_audience ?? null, secondary: prof?.secondary_audience ?? null,
       star: r?.this_star ?? null, ratings: r?.this_count ?? null, ratings_change: r && r.this_count !== null && r.last_count !== null ? r.this_count - r.last_count : null,
-      comp_star: topComp?.rating ?? null, comp_reviews: topComp?.reviews ?? null,
+      comp_star: topComp?.rating ?? null, comp_reviews: topComp?.reviews ?? null, comp_rating_same: topComp?.same ?? null, comp_rating_name: topComp?.product_name ?? null, comp_rating_url: topComp?.url ?? null,
       price: priceOf(p).price, price_source: priceOf(p).source, mrp: priceOf(p).mrp,
       comp_lowest: compPrices.blocked ? null : lowest ? { price: Number(lowest.competitor_price), name: lowest.competitor_product_name, seller: lowest.competitor_seller_name, marketplace: lowest.competitor_marketplace, url: lowest.competitor_product_url, match: lowest.match_status } : null,
       ads_suggestion: adsSuggestion({
