@@ -10,9 +10,9 @@ import { keptGodownName } from "./godownProductAliases.ts";
 // Recipients (user, 2026-10-16): arun.a is the FC sheet handler.
 export const FC_ALERT_TO = ["sharmilambarm@gmail.com", "arun.a@b-arm.com"];
 export const FC_ALERT_CC = [
-  "gokilabarm@gmail.com", "mathumithabarm@gmail.com", "deena@b-arm.com", "kavinilavan@b-arm.com", "chandru.m@b-arm.com",
+  "gokilabarm@gmail.com", "mathumithabarm@gmail.com", "deena@b-arm.com", "chandru.m@b-arm.com",
   "sruthisri@barmenterprises.com", "kaviyapriyabarm@gmail.com", "aravindh.l@b-arm.com", "harshineebarm@gmail.com",
-  "akshaya.v@b-arm.com", "manoj.j@b-arm.com", "prinesh@b-arm.com", "\"Prashanth B-Arm\" <prashanthbarm@gmail.com>",
+  "akshaya.v@b-arm.com", "prinesh@b-arm.com", "\"Prashanth B-Arm\" <prashanthbarm@gmail.com>",
   "nivetha@b-arm.com", "sriram@b-arm.com", "duvaraga@b-arm.com",
 ];
 
