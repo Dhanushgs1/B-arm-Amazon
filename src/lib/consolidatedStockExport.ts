@@ -7,6 +7,7 @@ import * as XS from "xlsx-js-style";
 import { runningOut, salesDropped, noSales, NO_SALES_MIN_STOCK, RUNNING_OUT_DAYS, CONSOLIDATED_DAYS, type ConsolidatedRow } from "./consolidatedStock.ts";
 import { NOT_LISTED_PRODUCTS } from "./notListedProducts.ts";
 import type { Coverage, ProductAnalytics } from "./godownAnalytics.ts";
+import type { MailCell, MailTable } from "./consolidatedMailHtml.ts";
 
 // xlsx-js-style is CommonJS: under plain Node (node --test) its API is on .default; bundlers give it directly.
 const XLSX = ((XS as unknown as { default?: typeof XS }).default ?? XS) as typeof XS;
@@ -362,7 +363,33 @@ function pickSheets(wb: XS.WorkBook, names: string[]): XS.WorkBook {
   return out;
 }
 
-/** The three mail attachments: kind, file name, .xlsx bytes, rows in it. */
+// Columns of the Consolidated sheet shown in its mail body: the full sheet is ~24 columns, too wide for a
+// mail, so the body keeps the decision columns and the attachment carries the rest.
+const CONSOLIDATED_MAIL_COLS = ["Product", "Average shipping per day", "Current stock", "Stock Intransit", "Order placed",
+  "Final Qty to be restocked", "Stock running out of stock in (days)"];
+
+/** One sheet as a mail table: shown text plus the sheet's fill / font colours; `cols` picks columns by header. */
+function sheetMailTable(ws: XS.WorkSheet, name: string, cols?: string[]): MailTable {
+  const range = XLSX.utils.decode_range(ws["!ref"] ?? "A1");
+  type Sty = { fill?: { fgColor?: { rgb?: string } }; font?: { color?: { rgb?: string } }; numFmt?: string };
+  const cell = (r: number, c: number): MailCell => {
+    const x = ws[XLSX.utils.encode_cell({ r, c })] as { v?: unknown; t?: string; s?: Sty } | undefined;
+    if (!x) return { v: "" };
+    const st = x.s ?? {};
+    const dec = st.numFmt === "0.00" ? 2 : st.numFmt === "0.0" ? 1 : 0;
+    // #DIV/0! (nothing sold, so "runs out in" has no value) reads as "No sales" in the mail; the sheet keeps #DIV/0!.
+    const v = x.t === "e" ? "No sales" : typeof x.v === "number" ? x.v.toLocaleString("en-IN", { minimumFractionDigits: dec, maximumFractionDigits: dec }) : String(x.v ?? "");
+    const bg = st.fill?.fgColor?.rgb, fg = st.font?.color?.rgb;
+    return { v, ...(bg && bg !== "C5E0B3" ? { bg } : {}), ...(fg && fg !== "000000" ? { fg } : {}) };
+  };
+  const allHead = Array.from({ length: range.e.c + 1 }, (_, c) => cell(0, c).v);
+  const idx = cols ? cols.map((h) => allHead.indexOf(h)).filter((i) => i >= 0) : allHead.map((_, i) => i);
+  const rows: MailCell[][] = [];
+  for (let r = 1; r <= range.e.r; r++) rows.push(idx.map((c) => cell(r, c)));
+  return { name, head: idx.map((i) => allHead[i]), rows };
+}
+
+/** The three mail attachments: kind, file name, .xlsx bytes, rows in it, and the tables for the mail body. */
 export function consolidatedMailFiles(data: ConsolidatedExportData) {
   const wb = buildConsolidatedWorkbook(data);
   const date = dmy(data.dates.at(-1) ?? data.snapshotDate ?? "");
@@ -373,6 +400,7 @@ export function consolidatedMailFiles(data: ConsolidatedExportData) {
   };
   return (Object.keys(MAIL_SHEETS) as ConsolidatedMailKind[]).map((kind) => {
     const names = MAIL_SHEETS[kind];
-    return { kind, date, rows: rows[kind], filename: `${CONSOLIDATED_MAIL_TITLE[kind]} -${date}.xlsx`, bytes: consolidatedWorkbookBytes(names ? pickSheets(wb, names) : wb) };
+    const tables = (names ?? []).map((n) => sheetMailTable(wb.Sheets[n], n, kind === "consolidated" ? CONSOLIDATED_MAIL_COLS : undefined));
+    return { kind, date, rows: rows[kind], filename: `${CONSOLIDATED_MAIL_TITLE[kind]} -${date}.xlsx`, bytes: consolidatedWorkbookBytes(names ? pickSheets(wb, names) : wb), tables };
   });
 }
