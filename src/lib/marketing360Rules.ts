@@ -140,3 +140,36 @@ export function ourProduct(c: { our_asin?: string | null; our_sku?: string | nul
   const mine = new Set(skus.map(norm));
   return c.our_sku.split("|").some((s) => mine.has(norm(s)));
 }
+
+// ── ads on / off suggestion ─────────────────────────────────────────────────────────────────────
+// Stock gate = the client's FBA ad-status rule (fbaWarehouseAlerts.ts, 2026-10-09): ads need stock in
+// 8+ of the "Yes" FCs; a stocked FC at 20 units or less is a warning. Then rating, then same-product
+// price. A rule, not a forecast: every suggestion carries its reasons, and missing data is said, not
+// assumed.
+export const ADS_MIN_FCS = 8;
+export const ADS_LOW_UNITS = 20;
+export const ADS_MIN_STAR = 3.5;
+export const ADS_PRICE_GAP = 1.5; // our price above 1.5x the cheapest same-product competitor
+export type AdsInput = {
+  fcKnown: boolean; fcStocked: number; fcOnboarded: number; fcLow: number;
+  star: number | null; ourPrice: number | null; compPrice: number | null; adOn: boolean;
+};
+export type AdsSuggestion = { action: "Turn ON" | "Keep ON" | "Turn OFF" | "Keep OFF" | "Review first" | "Check data"; tone: "good" | "critical" | "warning" | "none"; reasons: string[] };
+export function adsSuggestion(i: AdsInput): AdsSuggestion {
+  const off = (reason: string, extra: string[] = []): AdsSuggestion => ({ action: i.adOn ? "Turn OFF" : "Keep OFF", tone: "critical", reasons: [reason, ...extra] });
+  if (!i.fcKnown) return { action: "Check data", tone: "none", reasons: ["No FBA stock file imported — cannot judge"] };
+  if (i.fcStocked < ADS_MIN_FCS) {
+    return off(`Stock in only ${i.fcStocked} of ${i.fcOnboarded} FBA FCs (needs ${ADS_MIN_FCS}+) — buyers would get slow delivery`);
+  }
+  if (i.star !== null && i.star < ADS_MIN_STAR) return off(`Rating ${i.star}★ — fix reviews before paying for clicks`);
+  const reasons = [`Stock in ${i.fcStocked} of ${i.fcOnboarded} FCs`];
+  reasons.push(i.star === null ? "No rating on file" : `Rating ${i.star}★`);
+  if (i.fcLow > 0) reasons.push(`${i.fcLow} stocked FC${i.fcLow > 1 ? "s" : ""} at ≤${ADS_LOW_UNITS} units — restock soon`);
+  const gap = i.ourPrice !== null && i.compPrice !== null && i.compPrice > 0 && i.ourPrice > i.compPrice * ADS_PRICE_GAP;
+  if (gap) {
+    reasons.push(`Same product sells at ₹${i.compPrice} vs our ₹${i.ourPrice} — ads may not convert`);
+    return { action: i.adOn ? "Keep ON" : "Review first", tone: "warning", reasons: i.adOn ? [...reasons, "Watch ACOS closely"] : [...reasons, "Check price before turning ads on"] };
+  }
+  if (i.compPrice === null) reasons.push("No same-product competitor price on file");
+  return { action: i.adOn ? "Keep ON" : "Turn ON", tone: i.fcLow > 0 ? "warning" : "good", reasons };
+}
