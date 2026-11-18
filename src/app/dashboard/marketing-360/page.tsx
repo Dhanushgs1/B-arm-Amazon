@@ -524,14 +524,14 @@ function TamSuggest({ asin, s, current, onSaved, full }: { asin: string; s: any;
         <b>{crore(s.value)}</b>
         {s.confidence && <span className={`rounded-md border px-1 py-0.5 text-[10px] font-bold ${CONF_CLS[s.confidence] ?? STATE_CLS["No data"]}`}>{s.confidence}</span>}
         {current === s.value || state.done ? <span className="text-[10px] font-bold text-green-700 dark:text-green-400">in use</span>
-          : <button type="button" className="rounded-md border border-indigo-300 px-1.5 py-0.5 text-[10px] font-bold text-indigo-700 hover:bg-indigo-50 disabled:opacity-60 dark:border-indigo-700 dark:text-indigo-300" disabled={state.busy} onClick={accept}>{state.busy ? "Saving…" : current ? "Replace TAM" : "Accept"}</button>}
+          : <button type="button" className="rounded-md border border-emerald-300 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700 hover:bg-emerald-50 disabled:opacity-60 dark:border-emerald-700 dark:text-emerald-300" disabled={state.busy} onClick={accept}>{state.busy ? "Saving…" : current ? "Replace TAM" : "Accept"}</button>}
       </div>
       <p className="text-[10px] text-muted-foreground">{buyersText(s.buyers)} buyers × {inr(s.price)}</p>
       {full && (
         <div className="space-y-1 text-[11px] text-muted-foreground">
           <p><b className="text-foreground">Who:</b> {s.definition}</p>
           <p><b className="text-foreground">How:</b> {s.derivation}</p>
-          <ul className="list-disc pl-4">{(s.sources ?? []).map((x: any, i: number) => <li key={i}><a href={x.url} target="_blank" rel="noreferrer" className="text-indigo-700 underline dark:text-indigo-300">{new URL(x.url).hostname}</a> ({x.year}): “{x.quote}”</li>)}</ul>
+          <ul className="list-disc pl-4">{(s.sources ?? []).map((x: any, i: number) => <li key={i}><a href={x.url} target="_blank" rel="noreferrer" className="text-emerald-700 underline dark:text-emerald-300">{new URL(x.url).hostname}</a> ({x.year}): “{x.quote}”</li>)}</ul>
           {s.note && <p><b className="text-foreground">Caveat:</b> {s.note}</p>}
         </div>
       )}
