@@ -3,6 +3,7 @@ import { checkSession } from "@/lib/apiAuth";
 import { rejectUnlessAllowed } from "@/lib/appRouteAuth";
 import { supabase } from "@/lib/supabaseClient";
 import { FBA_ALERT_FCS } from "@/lib/fbaWarehouseAlerts";
+import { sourceRows, type SourceDates } from "@/lib/marketing360Sources";
 import { latestByPincode, fcTable, adState, campaignKeywords, zoneVerdict, ourProduct, ratingRowMatches, topCompetitorRating, adsSuggestion, ADS_LOW_UNITS, ourSellingPrice, tamGroup, tamSuggestion, type DeliveryCheck, type ZoneFacts } from "@/lib/marketing360Rules";
 
 // Product Marketing 360 — one product's marketing card, built from stored data only (Supabase).
@@ -438,6 +439,7 @@ export async function GET(req: Request) {
     const date = params.get("date");
     if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return NextResponse.json({ error: "date must be yyyy-mm-dd" }, { status: 400 });
     if (params.get("sheet")) return NextResponse.json(await fullSheet(date));
+    if (params.get("sources")) return NextResponse.json(await sources());
     const zonesAsin = params.get("zones");
     if (zonesAsin) {
       if (!ASIN.test(zonesAsin)) return NextResponse.json({ error: "zones must be a 10-character Amazon ASIN" }, { status: 400 });
@@ -466,4 +468,32 @@ function tamInfo(t: any, group: string | null, price: number | null) {
     buyers: t?.buyers ? Number(t.buyers) : null, definition: t?.buyer_definition ?? null, derivation: t?.derivation ?? null,
     sources: t?.sources ?? [], confidence: t?.confidence ?? null, note: t?.note ?? null, researched: !!t,
   };
+}
+
+/** "Where this data comes from": how far each source's stored copy runs (user, 2026-11-18). One small
+ *  query per source; a source the anon key cannot read shows as missing instead of failing the panel. */
+async function sources() {
+  const one = async (q: PromiseLike<Q>, col: string): Promise<string | null> => {
+    try { return (await rows(q))[0]?.[col] ?? null; } catch { return null; }
+  };
+  const latest = (table: string, col: string, f?: (q: any) => any) => {
+    let q: any = supabase.from(table).select(col);
+    if (f) q = f(q);
+    return one(q.order(col, { ascending: false }).limit(1), col);
+  };
+  const [rating, fc, forecast, positions, delivery, amazonAds, amazonDaily, google, meta, compPrices, compRatingsWeek, fbaReport, priceListing, botPrice] = await Promise.all([
+    latest("mkt_rating_weekly", "snapshot_date"), latest("mkt_fba_fc_stock", "report_date"), latest("mkt_fba_forecast_zone", "report_date"),
+    latest("mkt_keyword_positions", "week"),
+    // the latest check date from mkt_delivery_dates() (sorting the ~60k sweep rows directly is too slow for the anon key)
+    one(supabase.rpc("mkt_delivery_dates").select("scraped_date").order("scraped_date", { ascending: false }).limit(1) as any, "scraped_date"),
+    latest("barm_amazon_sp_advertised_product", "report_date"), latest("barm_daily_am_ads", "report_date"),
+    latest("barm_daily_google_ad_spend", "report_end"), latest("barm_daily_social_media", "report_end"),
+    one(supabase.rpc("mkt_competitor_prices").select("last_checked_at").order("last_checked_at", { ascending: false, nullsFirst: false }).limit(1) as any, "last_checked_at"),
+    one(supabase.rpc("mkt_competitor_ratings").select("week_tag").order("week_tag", { ascending: false }).limit(1) as any, "week_tag"),
+    latest("barm_amazon_fba_inventory", "created_at"), latest("barm_amazon_price_listing", "created_at"),
+    latest("product_rating_review_metrics", "updated_at", (q) => q.eq("platform", "Amazon")),
+  ]);
+  const dates: SourceDates = { rating, fc, forecast, positions, delivery, amazonAds, amazonDaily, google, meta, compPrices, compRatingsWeek, fbaReport, priceListing, botPrice };
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  return { today, dates, rows: sourceRows(dates, today) };
 }
