@@ -787,6 +787,7 @@ function FullSheet({ onOpen }: { onOpen: (asin: string) => void }) {
       <p className="text-[11px] text-muted-foreground">Shaded columns are editable — click a cell, Enter or click away to save, Esc to cancel. Click a delivery number to see its pincodes.</p>
       {detail?.kind === "delivery" && <DeliveryDetail asin={detail.asin} name={detail.name} focus={detail.focus} date={deliveryDate} onClose={() => setDetail(null)} />}
       {detail?.kind === "zones" && <ZoneDetail asin={detail.asin} name={detail.name} date={deliveryDate} onClose={() => setDetail(null)} />}
+      {resp.data.stale && <p className="text-[11px] font-semibold text-amber-700 dark:text-amber-400">The database is busy, so this shows the copy loaded at {new Date(resp.data.cachedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}. Reload in a minute for fresh numbers.</p>}
       {resp.data.competitorBlocked && <p className="text-[11px] font-semibold text-amber-700 dark:text-amber-400">Competitor rating columns are empty: the competitor tables are readable only by signed-in Supabase users, not by the dashboard.</p>}
       <div className="max-h-[75vh] overflow-auto rounded-xl border border-border">
         <table className="text-xs">

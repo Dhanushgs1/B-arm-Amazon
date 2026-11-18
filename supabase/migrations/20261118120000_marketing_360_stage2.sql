@@ -78,3 +78,21 @@ language sql stable security definer set search_path = public as $$
 $$;
 revoke all on function public.mkt_competitor_prices(text) from public;
 grant execute on function public.mkt_competitor_prices(text) to anon, authenticated;
+
+-- Delivery summaries only change when a sweep file is imported, so keep them precomputed (2026-11-18:
+-- the full sheet timed out when the database was busy). The live view/function stay for the date picker.
+create materialized view if not exists public.mkt_delivery_summary_mv as select * from public.mkt_delivery_summary_v;
+create unique index if not exists mkt_delivery_summary_mv_pk on public.mkt_delivery_summary_mv (asin);
+create materialized view if not exists public.mkt_delivery_zone_mv as select * from public.mkt_delivery_zone_summary();
+create unique index if not exists mkt_delivery_zone_mv_pk on public.mkt_delivery_zone_mv (asin, zone);
+grant select on public.mkt_delivery_summary_mv, public.mkt_delivery_zone_mv to anon;
+
+-- Called after a delivery import (importWorkbook); concurrent so readers never wait.
+create or replace function public.mkt_refresh_delivery()
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  refresh materialized view concurrently public.mkt_delivery_summary_mv;
+  refresh materialized view concurrently public.mkt_delivery_zone_mv;
+end $$;
+revoke all on function public.mkt_refresh_delivery() from public;
+grant execute on function public.mkt_refresh_delivery() to anon;

@@ -13,8 +13,15 @@ import { latestByPincode, fcTable, adState, campaignKeywords, zoneVerdict, ourPr
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Q = { data: any[] | null; error: { message: string } | null };
+const TIMEOUT = /statement timeout|canceling statement/i;
+/** Rows of a Supabase query. A statement timeout (the project's 10 s anon limit, hit when the database
+ *  is busy) is retried once after a short pause; awaiting the query builder again re-sends it. */
 const rows = async (p: PromiseLike<Q>): Promise<any[]> => {
-  const { data, error } = await p;
+  let { data, error } = await p;
+  if (error && TIMEOUT.test(error.message)) {
+    await new Promise((r) => setTimeout(r, 1500));
+    ({ data, error } = await p);
+  }
   if (error) throw new Error(error.message);
   return data ?? [];
 };
@@ -208,7 +215,7 @@ async function card(asin: string) {
       });
     })(),
     forecast: { report_date: fcDateZone, zones },
-    zoneCompare: { forecast_date: fcDateZone, rows: zoneCompare(await rows(supabase.rpc("mkt_delivery_zone_summary", { p_asin: asin }) as any), zones) },
+    zoneCompare: { forecast_date: fcDateZone, rows: zoneCompare(await rows(supabase.from("mkt_delivery_zone_mv").select("*").eq("asin", asin) as any), zones) },
     positions: { week: kwWeek, keywords, competitors: compPos },
     delivery: { checks: delivery.length, latest: deliveryLatest, weeks: [...new Set(delivery.map((d) => d.week))].sort() },
   };
@@ -244,7 +251,7 @@ async function zoneRows(asin: string, date: string | null) {
   const skus = [...new Set((await rows(supabase.from("barm_amazon_price_listing").select("seller_sku").eq("asin1", asin) as any)).map((l) => l.seller_sku).filter(Boolean))] as string[];
   const fDate = (await rows(supabase.from("mkt_fba_forecast_zone").select("report_date").order("report_date", { ascending: false }).limit(1) as any))[0]?.report_date ?? null;
   const forecast = fDate && skus.length ? await rows(supabase.from("mkt_fba_forecast_zone").select("sku,zone,orders_30d,current_stock,to_send").in("sku", skus).eq("report_date", fDate) as any) : [];
-  const delivery = await rows(supabase.rpc("mkt_delivery_zone_summary", date ? { d: date, p_asin: asin } : { p_asin: asin }) as any);
+  const delivery = await rows((date ? supabase.rpc("mkt_delivery_zone_summary", { d: date, p_asin: asin }) : supabase.from("mkt_delivery_zone_mv").select("*").eq("asin", asin)) as any);
   return { forecast_date: fDate, rows: zoneCompare(delivery, forecast) };
 }
 
@@ -260,7 +267,32 @@ async function deliveryRows(asin: string, date: string | null) {
 }
 
 // ── the full sheet: every product as one row, the template's column groups ──────────────────
-async function fullSheet(deliveryDate: string | null) {
+// The heavy, rarely-changing sources (ad reports, Drive imports, competitor prices, delivery) are
+// cached per delivery date for 10 minutes, and an expired copy is served if a reload fails (the
+// database is often busy). The team's own typed fields are always read fresh.
+const SHEET_TTL_MS = 10 * 60_000;
+const sheetCache = new Map<string, { at: number; data: any }>();
+const sheetInflight = new Map<string, Promise<any>>();
+async function sheetBaseCached(deliveryDate: string | null) {
+  const key = deliveryDate ?? "latest";
+  const hit = sheetCache.get(key);
+  if (hit && Date.now() - hit.at < SHEET_TTL_MS) return { ...hit.data, cachedAt: hit.at };
+  let job = sheetInflight.get(key);
+  if (!job) {
+    job = sheetBase(deliveryDate).finally(() => sheetInflight.delete(key));
+    sheetInflight.set(key, job);
+  }
+  try {
+    const data = await job;
+    sheetCache.set(key, { at: Date.now(), data });
+    return { ...data, cachedAt: Date.now() };
+  } catch (e) {
+    if (hit) return { ...hit.data, cachedAt: hit.at, stale: e instanceof Error ? e.message : String(e) };
+    throw e;
+  }
+}
+
+async function sheetBase(deliveryDate: string | null) {
   const products = (await productList()).filter((p: any) => p.active || p.has_profile);
   const latestOf = async (table: string, col: string) => (await rows(supabase.from(table).select(col).order(col, { ascending: false }).limit(1) as any))[0]?.[col] ?? null;
   const [ratingDate, fcDate, zoneDate, kwWeek, spMax, gMax, mMax] = await Promise.all([
@@ -269,7 +301,7 @@ async function fullSheet(deliveryDate: string | null) {
     latestOf("barm_daily_google_ad_spend", "report_end"), latestOf("barm_daily_social_media", "report_end"),
   ]);
   const since = spMax ? isoMinus(spMax, 6) : null;
-  const [ratings, fcStock, zones, keywords, sp, sd, sb, google, meta, inv, delivery, profiles, plan, influencers, notes, sdMaster, sbMaster, compWide, compPrices, zoneDelivery] = await Promise.all([
+  const [ratings, fcStock, zones, keywords, sp, sd, sb, google, meta, inv, delivery, sdMaster, sbMaster, compWide, compPrices, zoneDelivery, deliveryDates] = await Promise.all([
     ratingDate ? allRows((a, b) => supabase.from("mkt_rating_weekly").select("asin_fsn,sku_id,this_star,this_count,last_count").eq("snapshot_date", ratingDate).order("sku_id").order("asin_fsn").range(a, b) as any) : [],
     fcDate ? allRows((a, b) => supabase.from("mkt_fba_fc_stock").select("asin,fc,disposition,quantity").eq("report_date", fcDate).order("fc").order("msku").order("disposition").range(a, b) as any) : [],
     zoneDate ? allRows((a, b) => supabase.from("mkt_fba_forecast_zone").select("sku,zone,orders_30d,current_stock,booked,intransit,to_send,alert_35d").eq("report_date", zoneDate).order("sku").order("zone").range(a, b) as any) : [],
@@ -280,16 +312,29 @@ async function fullSheet(deliveryDate: string | null) {
     gMax ? allRows((a, b) => supabase.from("barm_daily_google_ad_spend").select("id,campaign_name,spend").gte("report_end", isoMinus(gMax, 6)).order("id").range(a, b) as any) : [],
     mMax ? allRows((a, b) => supabase.from("barm_daily_social_media").select("id,campaign_name,spend").gte("report_end", isoMinus(mMax, 6)).order("id").range(a, b) as any) : [],
     rows(supabase.from("barm_amazon_fba_inventory").select("asin,afn_fulfillable_quantity") as any),
-    deliveryDate ? rows(supabase.rpc("mkt_delivery_summary_on", { d: deliveryDate }) as any) : rows(supabase.from("mkt_delivery_summary_v").select("*") as any),
-    rows(supabase.from("mkt_product_profile").select("*") as any),
-    rows(supabase.from("mkt_action_plan").select("asin,task,status,plan_date").order("id") as any),
-    rows(supabase.from("mkt_influencer_posts").select("asin,kind,language") as any),
-    allRows((a, b) => supabase.from("mkt_channel_notes").select("product,channel").order("product").order("channel").range(a, b) as any),
+    // latest-per-pincode summaries are precomputed (mkt_delivery_*_mv, refreshed on import); a picked date is computed live
+    deliveryDate ? rows(supabase.rpc("mkt_delivery_summary_on", { d: deliveryDate }) as any) : rows(supabase.from("mkt_delivery_summary_mv").select("*") as any),
     rows(supabase.from("am_display_ad_masters").select('"Display campaign name","ASIN"') as any),
     rows(supabase.from("brand_ads_master_sheet").select('"Campaign Name","ASIN"') as any),
     optional(supabase.from("competitor_analysis_wide").select("*").order("week_tag", { ascending: false }).limit(2000) as any),
     optionalAll((a, b) => supabase.rpc("mkt_competitor_prices").order("our_sku").order("competitor_product_url").range(a, b) as any),
-    allRows((a, b) => supabase.rpc("mkt_delivery_zone_summary", deliveryDate ? { d: deliveryDate } : {}).order("asin").order("zone").range(a, b) as any),
+    deliveryDate
+      ? allRows((a, b) => supabase.rpc("mkt_delivery_zone_summary", { d: deliveryDate }).order("asin").order("zone").range(a, b) as any)
+      : allRows((a, b) => supabase.from("mkt_delivery_zone_mv").select("*").order("asin").order("zone").range(a, b) as any),
+    rows(supabase.rpc("mkt_delivery_dates") as any),
+  ]);
+  return { products, ratingDate, fcDate, zoneDate, kwWeek, spMax, gMax, mMax, since, ratings, fcStock, zones, keywords, sp, sd, sb, google, meta, inv, delivery, sdMaster, sbMaster, compWide, compPrices, zoneDelivery, deliveryDates };
+}
+
+async function fullSheet(deliveryDate: string | null) {
+  const base = await sheetBaseCached(deliveryDate);
+  const { products, ratingDate, fcDate, zoneDate, kwWeek, spMax, gMax, mMax, since, ratings, fcStock, zones, keywords, sp, sd, sb, google, meta, inv, delivery, sdMaster, sbMaster, compWide, compPrices, zoneDelivery, deliveryDates } = base;
+  // the team's own fields: always fresh, so an edit shows on the next load
+  const [profiles, plan, influencers, notes] = await Promise.all([
+    rows(supabase.from("mkt_product_profile").select("*") as any),
+    rows(supabase.from("mkt_action_plan").select("asin,task,status,plan_date").order("id") as any),
+    rows(supabase.from("mkt_influencer_posts").select("asin,kind,language") as any),
+    allRows((a, b) => supabase.from("mkt_channel_notes").select("product,channel").order("product").order("channel").range(a, b) as any),
   ]);
   const group = <T,>(xs: T[], key: (x: T) => string | null | undefined) => {
     const m = new Map<string, T[]>();
@@ -381,7 +426,7 @@ async function fullSheet(deliveryDate: string | null) {
     rows: out,
     asOf: { rating: ratingDate, fc: fcDate, forecast: zoneDate, positions: kwWeek, amazonAds: since ? { from: since, to: spMax } : null, google: gMax, meta: mMax },
     competitorBlocked: compWide.blocked ?? compPrices.blocked,
-    deliveryDate, deliveryDates: await rows(supabase.rpc("mkt_delivery_dates") as any),
+    deliveryDate, deliveryDates, cachedAt: base.cachedAt, stale: base.stale ?? null,
   };
 }
 
