@@ -56,3 +56,87 @@ export function campaignKeywords(profileKeywords: string | null | undefined, pro
   const word = (productName ?? "").toLowerCase().split(/[^a-z0-9]+/).find((w) => w.length >= 4 && !STOP.has(w));
   return word ? [word] : [];
 }
+
+// ── full-sheet editing ──────────────────────────────────────────────────────────────────────────
+/** An editable full-sheet cell. Profile cells save to mkt_product_profile; "task" adds an action-plan row. */
+export type SheetEdit =
+  | { kind: "text"; field: "primary_audience" | "secondary_audience" | "fba_weight_note" }
+  | { kind: "number"; field: "tam_value" }
+  | { kind: "multi"; field: "retarget"; options: readonly string[] }
+  | { kind: "bool"; field: "content"; key: string }
+  | { kind: "task" };
+
+export type SheetRowProfile = {
+  tam: number | null; primary: string | null; secondary: string | null; fba_weight?: string | null;
+  retarget_yes: string[] | null; content: Record<string, boolean> | null;
+};
+
+/**
+ * What one profile-cell edit writes, and how the sheet row changes. Only the edited column is sent, so
+ * an upsert never blanks the profile's other fields (ad keywords, notes …). Empty text → null,
+ * not "": a cleared cell reads as "not filled in". Returns an error string for invalid input.
+ */
+export function profileEdit(row: SheetRowProfile, edit: Exclude<SheetEdit, { kind: "task" }>, value: unknown):
+  { db: Record<string, unknown>; row: Partial<SheetRowProfile> } | { error: string } {
+  if (edit.kind === "number") {
+    const s = String(value ?? "").replace(/[,\s₹]/g, "");
+    if (s === "") return { db: { tam_value: null }, row: { tam: null } };
+    const n = Number(s);
+    if (!Number.isFinite(n) || n < 0) return { error: "Enter a number (₹), e.g. 38595700000" };
+    return { db: { tam_value: n }, row: { tam: n } };
+  }
+  if (edit.kind === "text") {
+    const s = String(value ?? "").trim() || null;
+    const key = edit.field === "primary_audience" ? "primary" : edit.field === "secondary_audience" ? "secondary" : "fba_weight";
+    return { db: { [edit.field]: s }, row: { [key]: s } };
+  }
+  if (edit.kind === "multi") {
+    const picked = new Set(Array.isArray(value) ? value.map(String) : []);
+    const map = Object.fromEntries(edit.options.map((o) => [o, picked.has(o)]));
+    return { db: { retarget: map }, row: { retarget_yes: edit.options.filter((o) => picked.has(o)) } };
+  }
+  const content = { ...(row.content ?? {}), [edit.key]: Boolean(value) };
+  return { db: { content }, row: { content } };
+}
+
+// ── delivery vs FBA, by forecast zone ───────────────────────────────────────────────────────────
+// Ship state → FBA forecast zone, exactly as the daily "FBA Forecasting <date>.xlsx" groups sales
+// (its 30_days_sales tab, 16 Nov 2026). States absent there (Lakshadweep …) have no zone.
+export const STATE_ZONE: Record<string, string> = {
+  "Andaman & Nicobar Islands": "Tamilnadu_zone", "Andhra Pradesh": "Telangana_zone", "Arunachal Pradesh": "Assam_zone", Assam: "Assam_zone",
+  Bihar: "bihar_zone", Chandigarh: "Punjab_zone", Chhattisgarh: "Nagpur_zone", "Dadra and Nagar Haveli and Daman and Diu": "Maharashtra_zone",
+  Delhi: "Delhi_zone", Goa: "Karnataka_zone", Gujarat: "gujarat_zone", Haryana: "Delhi_zone", "Himachal Pradesh": "Punjab_zone",
+  "Jammu & Kashmir": "Punjab_zone", Jharkhand: "bihar_zone", Karnataka: "Karnataka_zone", Kerala: "Karnataka_zone", Ladakh: "Punjab_zone",
+  "Madhya Pradesh": "Nagpur_zone", Maharashtra: "Maharashtra_zone", Manipur: "Assam_zone", Meghalaya: "Assam_zone", Mizoram: "Assam_zone",
+  Nagaland: "Assam_zone", Odisha: "Odisha_zone", Puducherry: "Tamilnadu_zone", Punjab: "Punjab_zone", Rajasthan: "Rajasthan_zone",
+  Sikkim: "Assam_zone", "Tamil Nadu": "Tamilnadu_zone", Telangana: "Telangana_zone", Tripura: "Assam_zone", "Uttar Pradesh": "Uttarpradesh_zone",
+  Uttarakhand: "Delhi_zone", "West Bengal": "WestBengal_zone",
+};
+export const zoneLabel = (z: string) => z.replace(/_zone$/i, "").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, (c) => c.toUpperCase());
+
+export type ZoneFacts = { zone: string; pincodes: number; avg_days: number | null; max_days: number | null; slow: number; unavailable: number; orders_30d: number | null; stock: number | null };
+export type ZoneVerdict = { code: "no-check" | "slow-no-orders" | "slow-selling" | "no-stock" | "fast-no-orders" | "ok"; text: string; tone: "critical" | "warning" | "info" | "good" | "none" };
+
+/** Slow delivery days alone are a guess at why orders are missing, so the wording says "likely", and
+ *  "no orders" is only said when the forecast has a 0 for that zone (a missing row is not 0). */
+export const SLOW_DAYS = 5;
+export function zoneVerdict(f: ZoneFacts): ZoneVerdict {
+  if (!f.pincodes || f.avg_days === null) return { code: "no-check", text: "No delivery check in this zone", tone: "none" };
+  const slow = f.avg_days > SLOW_DAYS;
+  const noOrders = f.orders_30d === 0;
+  if (slow && noOrders) return { code: "slow-no-orders", text: `Delivery ${f.avg_days} d avg and no orders in 30 d — slow delivery is the likely reason; send FBA stock here`, tone: "critical" };
+  if (f.stock === 0 && noOrders) return { code: "no-stock", text: "No FBA stock and no orders — stock this zone to test demand", tone: "warning" };
+  if (slow) return { code: "slow-selling", text: `Selling despite ${f.avg_days} d delivery — faster stock here could add orders`, tone: "warning" };
+  if (noOrders) return { code: "fast-no-orders", text: `Delivery is fine (${f.avg_days} d) but no orders — demand / ads / listing, not delivery`, tone: "info" };
+  return { code: "ok", text: "Delivery and orders look fine", tone: "good" };
+}
+
+/** A competitor_analysis row belongs to our product when its our_asin is the ASIN, or its "|"-separated
+ *  our_sku list shares a SKU with the product's listing SKUs (Flipkart rows carry no our_asin). */
+export function ourProduct(c: { our_asin?: string | null; our_sku?: string | null }, asin: string, skus: string[]): boolean {
+  if (c.our_asin && c.our_asin === asin) return true;
+  if (!c.our_sku || !skus.length) return false;
+  const norm = (s: string) => s.replace(/\((AM|FK|Meesho)\)$/i, "").trim().toUpperCase();
+  const mine = new Set(skus.map(norm));
+  return c.our_sku.split("|").some((s) => mine.has(norm(s)));
+}

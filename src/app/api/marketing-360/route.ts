@@ -3,7 +3,7 @@ import { checkSession } from "@/lib/apiAuth";
 import { rejectUnlessAllowed } from "@/lib/appRouteAuth";
 import { supabase } from "@/lib/supabaseClient";
 import { FBA_ALERT_FCS } from "@/lib/fbaWarehouseAlerts";
-import { latestByPincode, fcTable, adState, campaignKeywords, type DeliveryCheck } from "@/lib/marketing360Rules";
+import { latestByPincode, fcTable, adState, campaignKeywords, zoneVerdict, ourProduct, type DeliveryCheck, type ZoneFacts } from "@/lib/marketing360Rules";
 
 // Product Marketing 360 — one product's marketing card, built from stored data only (Supabase).
 //   GET                -> product list (Amazon listings grouped by ASIN, with master name + category)
@@ -85,10 +85,14 @@ async function card(asin: string) {
   // ── competitors (price + rating) — RLS lets only signed-in Supabase users read these tables, so
   // a refusal is reported on the card instead of failing it ──────────────────────────────────
   const [cp, cw] = await Promise.all([
-    optional(supabase.from("competitor_analysis").select("competitor_product_name,competitor_product_url,competitor_price,our_price,competitor_seller_name,competitor_marketplace,is_competitor_cheaper,last_checked_at,match_status").eq("our_asin", asin).order("last_checked_at", { ascending: false }).limit(20) as any),
+    optional(supabase.rpc("mkt_competitor_prices") as any),
     skus.length ? optional(supabase.from("competitor_analysis_wide").select("*").in("our_sku", skus).order("week_tag", { ascending: false }).limit(4) as any) : Promise.resolve({ rows: [], blocked: null }),
   ]);
-  const compPrice = cp.rows, compWide = cw.rows;
+  const SAME = /^(EXACT MATCH|CLOSE EQUIVALENT)$/i;
+  // same-product competitors (mkt_competitor_prices only returns EXACT MATCH / CLOSE EQUIVALENT), matched on our ASIN or any of our SKUs
+  const compPrice = cp.rows.filter((c: any) => SAME.test(c.match_status ?? "") && c.competitor_price !== null && ourProduct(c, asin, skus))
+    .map((c: any) => ({ ...c, is_competitor_cheaper: c.our_price !== null ? Number(c.competitor_price) < Number(c.our_price) : null }))
+    .sort((a: any, b: any) => Number(a.competitor_price) - Number(b.competitor_price)), compWide = cw.rows;
   const competitorBlocked = cp.blocked ?? cw.blocked;
   const compRatings: any[] = [];
   const latestWide = compWide[0]?.week_tag;
@@ -182,13 +186,59 @@ async function card(asin: string) {
     },
     fba: { report_date: fcDate, fcs: fcTable(FBA_ALERT_FCS, sellable), other: fcStock.filter((r) => !sellable.includes(r)), inventory: inv },
     forecast: { report_date: fcDateZone, zones },
+    zoneCompare: { forecast_date: fcDateZone, rows: zoneCompare(await rows(supabase.rpc("mkt_delivery_zone_summary", { p_asin: asin }) as any), zones) },
     positions: { week: kwWeek, keywords, competitors: compPos },
     delivery: { checks: delivery.length, latest: deliveryLatest, weeks: [...new Set(delivery.map((d) => d.week))].sort() },
   };
 }
 
+/** Delivery per zone (mkt_delivery_zone_summary rows for one product) beside the FBA forecast's orders and
+ *  stock for the same zone (summed over the product's SKUs), with the rule-based verdict. Zones with neither
+ *  delivery checks nor forecast rows are left out. */
+function zoneCompare(delivery: any[], forecast: any[]) {
+  const fz = new Map<string, { orders: number; stock: number; toSend: number }>();
+  for (const z of forecast) {
+    const cur = fz.get(z.zone) ?? { orders: 0, stock: 0, toSend: 0 };
+    cur.orders += Number(z.orders_30d) || 0;
+    cur.stock += Number(z.current_stock) || 0;
+    cur.toSend += Number(z.to_send) || 0;
+    fz.set(z.zone, cur);
+  }
+  const dz = new Map(delivery.map((d) => [d.zone, d]));
+  const zones = [...new Set([...dz.keys(), ...fz.keys()])];
+  return zones.map((zone) => {
+    const d = dz.get(zone), f = fz.get(zone);
+    const facts: ZoneFacts = {
+      zone, pincodes: d?.pincodes ?? 0, avg_days: d?.avg_days === null || d?.avg_days === undefined ? null : Number(d.avg_days),
+      max_days: d?.max_days ?? null, slow: d?.slow ?? 0, unavailable: d?.unavailable ?? 0,
+      orders_30d: f ? f.orders : null, stock: f ? f.stock : null,
+    };
+    return { ...facts, to_send: f?.toSend ?? null, verdict: zoneVerdict(facts) };
+  }).sort((a, b) => (b.avg_days ?? -1) - (a.avg_days ?? -1));
+}
+
+/** One product's delivery-vs-FBA table by zone (for the sheet's click-through). */
+async function zoneRows(asin: string, date: string | null) {
+  const skus = [...new Set((await rows(supabase.from("barm_amazon_price_listing").select("seller_sku").eq("asin1", asin) as any)).map((l) => l.seller_sku).filter(Boolean))] as string[];
+  const fDate = (await rows(supabase.from("mkt_fba_forecast_zone").select("report_date").order("report_date", { ascending: false }).limit(1) as any))[0]?.report_date ?? null;
+  const forecast = fDate && skus.length ? await rows(supabase.from("mkt_fba_forecast_zone").select("sku,zone,orders_30d,current_stock,to_send").in("sku", skus).eq("report_date", fDate) as any) : [];
+  const delivery = await rows(supabase.rpc("mkt_delivery_zone_summary", date ? { d: date, p_asin: asin } : { p_asin: asin }) as any);
+  return { forecast_date: fDate, rows: zoneCompare(delivery, forecast) };
+}
+
+/** One product's Amazon delivery checks by pincode: those scraped on `date`, else the latest per pincode. */
+async function deliveryRows(asin: string, date: string | null) {
+  const all = await allRows((a, b) => {
+    let q = supabase.from("mkt_delivery_sweep").select("week,platform,pincode,tier,location,delivery_text,days,scraped_date,status").eq("asin_fsn", asin).eq("platform", "Amazon");
+    if (date) q = q.eq("scraped_date", date);
+    return q.order("week").order("pincode").range(a, b) as any;
+  });
+  const overrides = Object.fromEntries((await rows(supabase.from("mkt_pincode_state").select("pincode,state") as any)).map((o) => [o.pincode, o.state]));
+  return latestByPincode(all, overrides);
+}
+
 // ── the full sheet: every product as one row, the template's column groups ──────────────────
-async function fullSheet() {
+async function fullSheet(deliveryDate: string | null) {
   const products = (await productList()).filter((p: any) => p.active || p.has_profile);
   const latestOf = async (table: string, col: string) => (await rows(supabase.from(table).select(col).order(col, { ascending: false }).limit(1) as any))[0]?.[col] ?? null;
   const [ratingDate, fcDate, zoneDate, kwWeek, spMax, gMax, mMax] = await Promise.all([
@@ -197,10 +247,10 @@ async function fullSheet() {
     latestOf("barm_daily_google_ad_spend", "report_end"), latestOf("barm_daily_social_media", "report_end"),
   ]);
   const since = spMax ? isoMinus(spMax, 6) : null;
-  const [ratings, fcStock, zones, keywords, sp, sd, sb, google, meta, inv, delivery, profiles, plan, influencers, notes, sdMaster, sbMaster, compWide] = await Promise.all([
+  const [ratings, fcStock, zones, keywords, sp, sd, sb, google, meta, inv, delivery, profiles, plan, influencers, notes, sdMaster, sbMaster, compWide, compPrices, zoneDelivery] = await Promise.all([
     ratingDate ? allRows((a, b) => supabase.from("mkt_rating_weekly").select("asin_fsn,sku_id,this_star,this_count,last_count").eq("snapshot_date", ratingDate).order("sku_id").order("asin_fsn").range(a, b) as any) : [],
     fcDate ? allRows((a, b) => supabase.from("mkt_fba_fc_stock").select("asin,fc,disposition,quantity").eq("report_date", fcDate).order("fc").order("msku").order("disposition").range(a, b) as any) : [],
-    zoneDate ? allRows((a, b) => supabase.from("mkt_fba_forecast_zone").select("sku,zone,orders_30d,booked,intransit,to_send,alert_35d").eq("report_date", zoneDate).order("sku").order("zone").range(a, b) as any) : [],
+    zoneDate ? allRows((a, b) => supabase.from("mkt_fba_forecast_zone").select("sku,zone,orders_30d,current_stock,booked,intransit,to_send,alert_35d").eq("report_date", zoneDate).order("sku").order("zone").range(a, b) as any) : [],
     kwWeek ? allRows((a, b) => supabase.from("mkt_keyword_positions").select("asin,search_term,sp_position,organic_position").eq("week", kwWeek).order("search_term").order("asin").range(a, b) as any) : [],
     since ? allRows((a, b) => supabase.from("barm_amazon_sp_advertised_product").select("id,advertised_asin,spend").gte("report_date", since).order("id").range(a, b) as any) : [],
     since ? allRows((a, b) => supabase.from("barm_amazon_sd_campaign").select("id,campaign_name,spend").gte("report_date", since).order("id").range(a, b) as any) : [],
@@ -208,7 +258,7 @@ async function fullSheet() {
     gMax ? allRows((a, b) => supabase.from("barm_daily_google_ad_spend").select("id,campaign_name,spend").gte("report_end", isoMinus(gMax, 6)).order("id").range(a, b) as any) : [],
     mMax ? allRows((a, b) => supabase.from("barm_daily_social_media").select("id,campaign_name,spend").gte("report_end", isoMinus(mMax, 6)).order("id").range(a, b) as any) : [],
     rows(supabase.from("barm_amazon_fba_inventory").select("asin,afn_fulfillable_quantity") as any),
-    rows(supabase.from("mkt_delivery_summary_v").select("*") as any),
+    deliveryDate ? rows(supabase.rpc("mkt_delivery_summary_on", { d: deliveryDate }) as any) : rows(supabase.from("mkt_delivery_summary_v").select("*") as any),
     rows(supabase.from("mkt_product_profile").select("*") as any),
     rows(supabase.from("mkt_action_plan").select("asin,task,status,plan_date").order("id") as any),
     rows(supabase.from("mkt_influencer_posts").select("asin,kind,language") as any),
@@ -216,6 +266,8 @@ async function fullSheet() {
     rows(supabase.from("am_display_ad_masters").select('"Display campaign name","ASIN"') as any),
     rows(supabase.from("brand_ads_master_sheet").select('"Campaign Name","ASIN"') as any),
     optional(supabase.from("competitor_analysis_wide").select("*").order("week_tag", { ascending: false }).limit(2000) as any),
+    optional(supabase.rpc("mkt_competitor_prices") as any),
+    rows(supabase.rpc("mkt_delivery_zone_summary", deliveryDate ? { d: deliveryDate } : {}) as any),
   ]);
   const group = <T,>(xs: T[], key: (x: T) => string | null | undefined) => {
     const m = new Map<string, T[]>();
@@ -235,6 +287,8 @@ async function fullSheet() {
     xs.filter((x) => (names?.length ? names.includes(x.campaign_name) : words.some((w) => String(x.campaign_name).toLowerCase().includes(w.toLowerCase()))));
   const latestWideWeek = compWide.rows[0]?.week_tag;
   const wideBy = group(compWide.rows.filter((w: any) => w.week_tag === latestWideWeek), (w: any) => w.our_sku);
+  const compRows: any[] = compPrices.rows;
+  const zoneDelBy = group(zoneDelivery, (z: any) => z.asin);
 
   const out = products.map((p: any) => {
     const prof: any = profBy.get(p.asin) ?? null;
@@ -259,12 +313,18 @@ async function fullSheet() {
     const topComp = comp.sort((a: any, b: any) => (Number(b.reviews) || 0) - (Number(a.reviews) || 0))[0];
     const orders30 = z.reduce((a: number, x: any) => a + (Number(x.orders_30d) || 0), 0);
     const d: any = delBy.get(p.asin);
+    const zc = zoneCompare(zoneDelBy.get(p.asin) ?? [], z);
+    const lowest = compRows.filter((c) => ourProduct(c, p.asin, p.skus)).sort((a: any, b: any) => Number(a.competitor_price) - Number(b.competitor_price))[0];
+    const slowNoOrders = zc.filter((x) => x.verdict.code === "slow-no-orders");
+    const worst = zc.find((x) => x.avg_days !== null); // zoneCompare sorts slowest first
     return {
       asin: p.asin, name: p.name, skus: p.skus, category: p.category, link: `https://www.amazon.in/dp/${p.asin}`,
       tam: prof?.tam_value ?? null, primary: prof?.primary_audience ?? null, secondary: prof?.secondary_audience ?? null,
       star: r?.this_star ?? null, ratings: r?.this_count ?? null, ratings_change: r && r.this_count !== null && r.last_count !== null ? r.this_count - r.last_count : null,
       comp_star: topComp?.rating ?? null, comp_reviews: topComp?.reviews ?? null,
       price: p.price ?? null,
+      comp_lowest: compPrices.blocked ? null : lowest ? { price: Number(lowest.competitor_price), name: lowest.competitor_product_name, url: lowest.competitor_product_url, match: lowest.match_status } : null,
+      fba_weight: prof?.fba_weight_note ?? null,
       retarget_yes: prof ? Object.entries(prof.retarget ?? {}).filter(([, v]) => v).map(([k]) => k) : null,
       ad_product: since ? adState(spRows.length ? spendOf(spRows) : 0) : "No data",
       ad_display: sdRows === null ? "No data" : sdRows.length ? adState(spendOf(sdRows)) : "Not set up",
@@ -284,12 +344,15 @@ async function fullSheet() {
       delivery: d ? { pincodes: d.pincodes, fast: d.fast, slow: d.slow, unavailable: d.unavailable, avg_days: d.avg_days, last_checked: d.last_checked } : null,
       plan_open: pl.length ? open.length : null, plan_next: open[0]?.task ?? null,
       notes: (notesBy.get(String(p.name).toLowerCase()) ?? []).length,
+      zone_slow_no_orders: zc.length ? slowNoOrders.length : null,
+      zone_worst: worst ? { zone: worst.zone, avg: worst.avg_days, max: worst.max_days } : null,
     };
   });
   return {
     rows: out,
     asOf: { rating: ratingDate, fc: fcDate, forecast: zoneDate, positions: kwWeek, amazonAds: since ? { from: since, to: spMax } : null, google: gMax, meta: mMax },
-    competitorBlocked: compWide.blocked,
+    competitorBlocked: compWide.blocked ?? compPrices.blocked,
+    deliveryDate, deliveryDates: await rows(supabase.rpc("mkt_delivery_dates") as any),
   };
 }
 
@@ -298,7 +361,19 @@ export async function GET(req: Request) {
   if (rejected) return rejected;
   try {
     const params = new URL(req.url).searchParams;
-    if (params.get("sheet")) return NextResponse.json(await fullSheet());
+    const date = params.get("date");
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return NextResponse.json({ error: "date must be yyyy-mm-dd" }, { status: 400 });
+    if (params.get("sheet")) return NextResponse.json(await fullSheet(date));
+    const zonesAsin = params.get("zones");
+    if (zonesAsin) {
+      if (!ASIN.test(zonesAsin)) return NextResponse.json({ error: "zones must be a 10-character Amazon ASIN" }, { status: 400 });
+      return NextResponse.json(await zoneRows(zonesAsin, date));
+    }
+    const deliveryAsin = params.get("delivery");
+    if (deliveryAsin) {
+      if (!ASIN.test(deliveryAsin)) return NextResponse.json({ error: "delivery must be a 10-character Amazon ASIN" }, { status: 400 });
+      return NextResponse.json({ rows: await deliveryRows(deliveryAsin, date) });
+    }
     const asin = params.get("asin");
     if (!asin) return NextResponse.json({ products: await productList() });
     if (!ASIN.test(asin)) return NextResponse.json({ error: "asin must be a 10-character Amazon ASIN" }, { status: 400 });

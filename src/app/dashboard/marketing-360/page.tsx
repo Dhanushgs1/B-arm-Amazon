@@ -10,12 +10,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import {
   Loader2, Upload, Search, Star, Megaphone, Boxes, MapPin, KeyRound, Users, ClipboardList, Target, ExternalLink,
-  CheckCircle2, AlertTriangle, Plus, Trash2, Save, RefreshCw, StickyNote, Truck, Package, Download,
+  CheckCircle2, AlertTriangle, Plus, Trash2, Save, RefreshCw, StickyNote, Truck, Package, Download, Pencil, X,
 } from "lucide-react";
 import { supabasePublic as db } from "@/lib/amazonReportUpload";
 import { importWorkbook } from "@/lib/marketing360Store";
 import { RETARGET_OPTIONS, CHANNELS } from "@/lib/marketing360Import";
-import { deliveryTone } from "@/lib/marketing360Rules";
+import { deliveryTone, profileEdit, zoneLabel, SLOW_DAYS, type SheetEdit } from "@/lib/marketing360Rules";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Product = { asin: string; name: string; category: string | null; active: boolean; skus: string[]; has_profile: boolean };
@@ -113,7 +113,7 @@ function ImportPanel({ onDone }: { onDone: () => void }) {
 
 // ── manual: profile ───────────────────────────────────────────────────────────────────────────
 function ProfileEditor({ asin, profile, onSaved }: { asin: string; profile: any; onSaved: () => void }) {
-  const [p, setP] = useState<any>(() => ({ tam_value: "", primary_audience: "", secondary_audience: "", retarget: {}, content: {}, ad_keywords: "", notes: "", ...(profile ?? {}) }));
+  const [p, setP] = useState<any>(() => ({ tam_value: "", primary_audience: "", secondary_audience: "", retarget: {}, content: {}, ad_keywords: "", notes: "", fba_weight_note: "", ...(profile ?? {}) }));
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const save = async () => {
@@ -121,7 +121,7 @@ function ProfileEditor({ asin, profile, onSaved }: { asin: string; profile: any;
     const row = {
       asin, tam_value: p.tam_value === "" || p.tam_value === null ? null : Number(p.tam_value), primary_audience: p.primary_audience || null,
       secondary_audience: p.secondary_audience || null, retarget: p.retarget ?? {}, content: p.content ?? {}, ad_keywords: p.ad_keywords || null,
-      notes: p.notes || null, updated_at: new Date().toISOString(),
+      notes: p.notes || null, fba_weight_note: p.fba_weight_note || null, updated_at: new Date().toISOString(),
     };
     const { error } = await db.from("mkt_product_profile").upsert(row, { onConflict: "asin" });
     setBusy(false);
@@ -143,6 +143,9 @@ function ProfileEditor({ asin, profile, onSaved }: { asin: string; profile: any;
         </label>
         <label className="block text-[11px] font-bold text-muted-foreground">Google / Meta campaign words (comma separated — used to find this product&apos;s campaigns)
           <input className={input} placeholder="e.g. postpartum, p0stpartum" value={p.ad_keywords ?? ""} onChange={(e) => setP({ ...p, ad_keywords: e.target.value })} />
+        </label>
+        <label className="block text-[11px] font-bold text-muted-foreground">FBA in which low-weight products cannot be onboarded (manual)
+          <input className={input} placeholder="e.g. SATF, SDEU (H&B)" value={p.fba_weight_note ?? ""} onChange={(e) => setP({ ...p, fba_weight_note: e.target.value })} />
         </label>
       </div>
       <div className="space-y-3">
@@ -342,7 +345,7 @@ function ProductCard({ data, reload }: { data: any; reload: () => void }) {
         </Section>
 
         <Section icon={Target} title="Price — lowest in market?" source="competitor_analysis (latest checks)" right={data.competitors.prices.length ? <Pill text={cheaper.length ? `${cheaper.length} competitor${cheaper.length > 1 ? "s" : ""} cheaper` : "We are lowest"} cls={cheaper.length ? STATE_CLS.Off : STATE_CLS.On} /> : undefined}>
-          {data.competitors.prices.length === 0 ? <p className="text-xs text-muted-foreground">{data.competitors.blocked ? "The competitor tables are readable only by signed-in Supabase users, not by the dashboard — no competitor prices can be shown yet." : "No competitor price checks stored for this ASIN."}</p> : (
+          {data.competitors.prices.length === 0 ? <p className="text-xs text-muted-foreground">{data.competitors.blocked ? "Competitor prices are not readable by the dashboard yet (the competitor table is limited to signed-in Supabase users)." : "No same-product competitor (exact match / close equivalent) price stored for this ASIN."}</p> : (
             <table className="w-full text-xs">
               <thead><tr className="border-b border-border"><th className={th}>Competitor</th><th className={th}>Their price</th><th className={th}>Our price</th><th className={th}>Checked</th></tr></thead>
               <tbody>{data.competitors.prices.map((c: any, i: number) => (
@@ -381,6 +384,10 @@ function ProductCard({ data, reload }: { data: any; reload: () => void }) {
             </div>
           ))}
         </div>
+      </Section>
+
+      <Section icon={Truck} title="Delivery vs FBA orders by zone" source="Delivery sweep (latest check per pincode) beside the FBA forecast's 30-day orders and stock">
+        <ZoneTable rows={data.zoneCompare?.rows ?? []} forecastDate={data.zoneCompare?.forecast_date ?? null} date="" />
       </Section>
 
       <Section icon={Package} title="FBA forecast by zone" source={`Drive FBA forecast file, ${dateLabel(data.forecast.report_date)}`}>
@@ -528,25 +535,27 @@ function ChannelNotes({ products }: { products: Product[] }) {
 }
 
 // ── full sheet: every product in one wide table, the template's column groups ─────────────────
-type SheetCol = { group: string; label: string; get: (r: any) => string | number | null; render?: (r: any) => React.ReactNode; w?: number };
+type SheetCol = { group: string; label: string; get: (r: any) => string | number | null; render?: (r: any) => React.ReactNode; w?: number; edit?: SheetEdit };
 const yn = (v: unknown) => (v === null || v === undefined ? "—" : v ? "Yes" : "No");
 const SHEET_COLS: SheetCol[] = [
   { group: "Product", label: "ASIN", get: (r) => r.asin },
   { group: "Product", label: "SKU ID", get: (r) => r.skus.join(", "), w: 140 },
   { group: "Product", label: "Category", get: (r) => r.category },
-  { group: "Market", label: "TAM value", get: (r) => r.tam, render: (r) => inr(r.tam) },
-  { group: "Market", label: "Primary audience", get: (r) => r.primary, w: 220 },
-  { group: "Market", label: "Secondary audience", get: (r) => r.secondary, w: 220 },
+  { group: "Market", label: "TAM value", get: (r) => r.tam, render: (r) => inr(r.tam), edit: { kind: "number", field: "tam_value" } },
+  { group: "Market", label: "Primary audience", get: (r) => r.primary, w: 220, edit: { kind: "text", field: "primary_audience" } },
+  { group: "Market", label: "Secondary audience", get: (r) => r.secondary, w: 220, edit: { kind: "text", field: "secondary_audience" } },
   { group: "Rating & reviews — ours", label: "Star", get: (r) => r.star, render: (r) => (r.star ? `${r.star}★` : "—") },
   { group: "Rating & reviews — ours", label: "Ratings", get: (r) => r.ratings, render: (r) => (r.ratings === null ? "—" : `${fmt(r.ratings)}${r.ratings_change ? ` (${r.ratings_change > 0 ? "+" : ""}${r.ratings_change})` : ""}`) },
   { group: "Rating & reviews — competitor", label: "Star", get: (r) => r.comp_star },
   { group: "Rating & reviews — competitor", label: "Reviews", get: (r) => r.comp_reviews, render: (r) => fmt(r.comp_reviews) },
   { group: "Price", label: "Our price", get: (r) => r.price, render: (r) => inr(r.price) },
-  { group: "Retargeting", label: "Ways in use", get: (r) => (r.retarget_yes === null ? null : r.retarget_yes.length ? r.retarget_yes.join(", ") : "None"), w: 180 },
+  { group: "Price", label: "Lowest competitor (same product)", get: (r) => r.comp_lowest?.price ?? null, w: 170, render: (r) => (r.comp_lowest ? <span>{r.comp_lowest.url ? <a href={r.comp_lowest.url} target="_blank" rel="noreferrer" className="font-bold text-indigo-700 underline dark:text-indigo-300" title={`${r.comp_lowest.name ?? ""} (${r.comp_lowest.match})`}>{inr(r.comp_lowest.price)}</a> : <b>{inr(r.comp_lowest.price)}</b>}{r.price !== null && r.comp_lowest.price < r.price ? <span className="ml-1 text-[10px] font-bold text-red-700 dark:text-red-400">cheaper</span> : null}</span> : <span className="text-muted-foreground">—</span>) },
+  { group: "Retargeting", label: "Ways in use", get: (r) => (r.retarget_yes === null ? null : r.retarget_yes.length ? r.retarget_yes.join(", ") : "None"), w: 180, edit: { kind: "multi", field: "retarget", options: RETARGET_OPTIONS } },
   { group: "Amazon ads", label: "Product ad", get: (r) => r.ad_product, render: (r) => <Pill text={r.ad_product} /> },
   { group: "Amazon ads", label: "Display ad", get: (r) => r.ad_display, render: (r) => <Pill text={r.ad_display} /> },
   { group: "Amazon ads", label: "Brand ad", get: (r) => r.ad_brand, render: (r) => <Pill text={r.ad_brand} /> },
   { group: "FBA stock", label: "Available (FBA report)", get: (r) => r.fba_available, render: (r) => fmt(r.fba_available) },
+  { group: "FBA stock", label: "Low-weight FBA (manual)", get: (r) => r.fba_weight, w: 180, edit: { kind: "text", field: "fba_weight_note" } },
   { group: "FBA stock", label: "FCs stocked", get: (r) => `${r.fc_stocked}/${r.fc_onboarded}` },
   { group: "FBA stock", label: "Units in FCs", get: (r) => r.fc_units, render: (r) => fmt(r.fc_units) },
   { group: "FBA stock", label: "Inbound", get: (r) => r.inbound, render: (r) => fmt(r.inbound) },
@@ -562,28 +571,209 @@ const SHEET_COLS: SheetCol[] = [
   { group: "Influencer posts", label: "Organic", get: (r) => r.infl_organic },
   { group: "Influencer posts", label: "Post ads", get: (r) => r.infl_ads },
   { group: "Influencer posts", label: "Languages", get: (r) => r.infl_languages.join(", ") || null, w: 160 },
-  { group: "How to use", label: "Video", get: (r) => (r.content ? yn(r.content["How to use video"]) : null) },
-  { group: "How to use", label: "QR pamphlet", get: (r) => (r.content ? yn(r.content["QR for pamphlet"]) : null) },
-  { group: "How to use", label: "SEO description", get: (r) => (r.content ? yn(r.content["Description in listing with SEO"]) : null) },
+  { group: "How to use", label: "Video", get: (r) => (r.content ? yn(r.content["How to use video"]) : null), edit: { kind: "bool", field: "content", key: "How to use video" } },
+  { group: "How to use", label: "QR pamphlet", get: (r) => (r.content ? yn(r.content["QR for pamphlet"]) : null), edit: { kind: "bool", field: "content", key: "QR for pamphlet" } },
+  { group: "How to use", label: "SEO description", get: (r) => (r.content ? yn(r.content["Description in listing with SEO"]) : null), edit: { kind: "bool", field: "content", key: "Description in listing with SEO" } },
   { group: "Delivery date", label: "Pincodes", get: (r) => r.delivery?.pincodes ?? null },
   { group: "Delivery date", label: "≤2 days", get: (r) => r.delivery?.fast ?? null },
   { group: "Delivery date", label: "6+ days", get: (r) => r.delivery?.slow ?? null },
   { group: "Delivery date", label: "Unavailable", get: (r) => r.delivery?.unavailable ?? null },
   { group: "Delivery date", label: "Avg days", get: (r) => r.delivery?.avg_days ?? null },
   { group: "Action plan", label: "Open", get: (r) => r.plan_open },
-  { group: "Action plan", label: "Next task", get: (r) => r.plan_next, w: 240 },
+  { group: "Action plan", label: "Next task", get: (r) => r.plan_next, w: 240, edit: { kind: "task" } },
   { group: "Channel notes", label: "Notes", get: (r) => r.notes || null },
+  { group: "Delivery vs FBA (by zone)", label: "Slow zones, no orders", get: (r) => r.zone_slow_no_orders, render: (r) => (r.zone_slow_no_orders === null ? "—" : <Pill text={String(r.zone_slow_no_orders)} cls={r.zone_slow_no_orders ? STATE_CLS.Off : STATE_CLS.On} />) },
+  { group: "Delivery vs FBA (by zone)", label: "Slowest zone", get: (r) => (r.zone_worst ? `${zoneLabel(r.zone_worst.zone)} ${r.zone_worst.avg} d (max ${r.zone_worst.max ?? "—"})` : null), w: 170 },
 ];
 
-function FullSheet({ onOpen }: { onOpen: (asin: string) => void }) {
-  const [resp, setResp] = useState<{ data?: any; error?: string } | null>(null);
-  const [filter, setFilter] = useState("");
+// One editable full-sheet cell. Click to edit; Enter or leaving the cell saves, Esc cancels.
+// Profile cells write only their own column (profileEdit); "Next task" adds an Open action-plan row.
+function EditCell({ row, col, onSaved }: { row: any; col: SheetCol; onSaved: (asin: string, patch: Record<string, unknown>) => void }) {
+  const edit = col.edit!;
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<any>("");
+  const [state, setState] = useState<{ busy?: boolean; error?: string }>({});
+  const start = () => {
+    if (edit.kind === "bool") return save(!(row.content?.[edit.key] ?? false));
+    setDraft(edit.kind === "multi" ? [...(row.retarget_yes ?? [])] : edit.kind === "task" ? "" : edit.kind === "number" ? (row.tam ?? "") : (edit.field === "primary_audience" ? row.primary : edit.field === "secondary_audience" ? row.secondary : row.fba_weight) ?? "");
+    setState({});
+    setOpen(true);
+  };
+  async function save(value: unknown) {
+    setState({ busy: true });
+    if (edit.kind === "task") {
+      const task = String(value ?? "").trim();
+      if (!task) { setOpen(false); setState({}); return; }
+      const { error } = await db.from("mkt_action_plan").insert({ asin: row.asin, task });
+      if (error) return setState({ error: error.message });
+      onSaved(row.asin, { plan_open: (row.plan_open ?? 0) + 1, plan_next: row.plan_next ?? task });
+    } else {
+      const r = profileEdit(row, edit, value);
+      if ("error" in r) return setState({ error: r.error });
+      const { error } = await db.from("mkt_product_profile").upsert({ asin: row.asin, ...r.db, updated_at: new Date().toISOString() }, { onConflict: "asin" });
+      if (error) return setState({ error: error.message });
+      onSaved(row.asin, r.row);
+    }
+    setOpen(false);
+    setState({});
+  }
+  const v = col.get(row);
+  const shown = col.render ? col.render(row) : v === null || v === undefined || v === "" ? <span className="text-muted-foreground">—</span> : <span className={col.w ? "line-clamp-3" : "whitespace-nowrap"} title={String(v)}>{v}</span>;
+  const key = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") { setOpen(false); setState({}); }
+    if (e.key === "Enter" && !e.shiftKey && edit.kind !== "multi") { e.preventDefault(); save(draft); }
+  };
+  if (!open) {
+    return (
+      <button type="button" onClick={start} disabled={state.busy} title={state.error ?? (edit.kind === "task" ? "Click to add a task" : edit.kind === "bool" ? "Click to switch Yes / No" : "Click to edit")}
+        className={`group flex w-full items-start gap-1 rounded px-1 py-0.5 text-left hover:bg-indigo-50 hover:ring-1 hover:ring-indigo-300 dark:hover:bg-indigo-950/40 ${state.error ? "ring-1 ring-red-400" : ""}`}>
+        <span className="min-w-0 flex-1">{edit.kind === "task" && !row.plan_next ? <span className="text-muted-foreground">+ Add task</span> : shown}</span>
+        {state.busy ? <Loader2 className="mt-0.5 h-3 w-3 shrink-0 animate-spin" /> : <Pencil className="mt-0.5 h-3 w-3 shrink-0 opacity-0 group-hover:opacity-60" />}
+      </button>
+    );
+  }
+  return (
+    <div className="space-y-1" onKeyDown={key}>
+      {edit.kind === "multi" ? (
+        <div className="space-y-0.5 rounded-md border border-indigo-300 bg-background p-1.5 dark:border-indigo-700">
+          {edit.options.map((o) => (
+            <label key={o} className="flex items-center gap-1.5 text-[11px]">
+              <input type="checkbox" checked={draft.includes(o)} onChange={() => setDraft((d: string[]) => (d.includes(o) ? d.filter((x) => x !== o) : [...d, o]))} />{o}
+            </label>
+          ))}
+          <div className="flex gap-1 pt-1">
+            <button type="button" className={btnPrimary} disabled={state.busy} onClick={() => save(draft)}>{state.busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />} Save</button>
+            <button type="button" className={btn} onClick={() => { setOpen(false); setState({}); }}>Cancel</button>
+          </div>
+        </div>
+      ) : edit.kind === "text" ? (
+        <textarea autoFocus rows={3} className={input} value={draft} onChange={(e) => setDraft(e.target.value)} onBlur={() => save(draft)} />
+      ) : (
+        <input autoFocus className={input} inputMode={edit.kind === "number" ? "numeric" : undefined} placeholder={edit.kind === "task" ? "New task, Enter to add" : "₹"} value={draft} onChange={(e) => setDraft(e.target.value)} onBlur={() => save(draft)} />
+      )}
+      {state.error && <p className="text-[10px] font-semibold text-red-700 dark:text-red-400">{state.error}</p>}
+    </div>
+  );
+}
+
+// Delivery days beside FBA orders and stock, zone by zone, with the rule-based verdict.
+const VERDICT_CLS: Record<string, string> = {
+  critical: STATE_CLS.Off, warning: "bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-800",
+  info: "bg-blue-100 text-blue-800 border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-800", good: STATE_CLS.On, none: STATE_CLS["No data"],
+};
+function ZoneTable({ rows, forecastDate, date }: { rows: any[]; forecastDate: string | null; date: string }) {
+  if (!rows.length) return <p className="text-xs text-muted-foreground">No delivery checks or FBA forecast rows for this product.</p>;
+  return (
+    <div className="space-y-1.5">
+      <p className="text-[11px] text-muted-foreground">
+        Delivery: {date ? `checks scraped on ${dateLabel(date)}` : "latest check per pincode"} · FBA orders and stock: forecast file {dateLabel(forecastDate)} (30 days) ·
+        zones as the FBA forecast groups states. The verdict is a rule, not a certainty: slow = average over {SLOW_DAYS} days; &quot;no orders&quot; only when the forecast shows 0.
+      </p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead><tr className="border-b border-border">{["Zone", "Pincodes", "Avg days", "Max days", "Slow (6+ d)", "Unavailable", "FBA orders 30 d", "FBA stock", "To send", "What it suggests"].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
+          <tbody>{rows.map((z) => (
+            <tr key={z.zone} className="border-b border-border/60">
+              <td className={`${td} font-semibold`}>{zoneLabel(z.zone)}</td><td className={td}>{z.pincodes || "—"}</td>
+              <td className={td}><b className={z.avg_days !== null && z.avg_days > SLOW_DAYS ? "text-red-700 dark:text-red-400" : ""}>{z.avg_days ?? "—"}</b></td>
+              <td className={td}>{z.max_days ?? "—"}</td><td className={td}>{z.pincodes ? z.slow : "—"}</td><td className={td}>{z.pincodes ? z.unavailable : "—"}</td>
+              <td className={td}><b className={z.orders_30d === 0 ? "text-red-700 dark:text-red-400" : ""}>{fmt(z.orders_30d)}</b></td>
+              <td className={td}>{fmt(z.stock)}</td><td className={td}>{fmt(z.to_send)}</td>
+              <td className={td}><span className={`inline-block rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${VERDICT_CLS[z.verdict.tone]}`}>{z.verdict.text}</span></td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ZoneDetail({ asin, name, date, onClose }: { asin: string; name: string; date: string; onClose: () => void }) {
+  const reqKey = `${asin}|${date}`;
+  const [resp, setResp] = useState<{ key: string; data?: any; error?: string } | null>(null);
   useEffect(() => {
     let live = true;
-    getJson("/api/marketing-360?sheet=1").then((d) => { if (live) setResp({ data: d }); }).catch((e) => { if (live) setResp({ error: e instanceof Error ? e.message : String(e) }); });
+    getJson(`/api/marketing-360?zones=${encodeURIComponent(asin)}${date ? `&date=${date}` : ""}`)
+      .then((d) => { if (live) setResp({ key: reqKey, data: d }); })
+      .catch((e) => { if (live) setResp({ key: reqKey, error: e instanceof Error ? e.message : String(e) }); });
     return () => { live = false; };
-  }, []);
-  const rowsAll: any[] = useMemo(() => resp?.data?.rows ?? [], [resp]);
+  }, [asin, date, reqKey]);
+  return (
+    <div className="rounded-xl border border-indigo-300 bg-card p-3 shadow-sm dark:border-indigo-800">
+      <div className="mb-2 flex items-start justify-between gap-2">
+        <p className="text-sm font-extrabold">{name} — delivery vs FBA orders by zone</p>
+        <button type="button" className={btn} onClick={onClose}><X className="h-3.5 w-3.5" /> Close</button>
+      </div>
+      {resp?.key !== reqKey ? <p className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Comparing…</p>
+        : resp.error ? <p className="text-xs font-semibold text-red-700 dark:text-red-400">{resp.error}</p>
+        : <ZoneTable rows={resp.data.rows} forecastDate={resp.data.forecast_date} date={date} />}
+    </div>
+  );
+}
+
+// The pincodes behind a product's delivery numbers, for the picked date (or the latest check per pincode).
+function DeliveryDetail({ asin, name, focus, date, onClose }: { asin: string; name: string; focus: string; date: string; onClose: () => void }) {
+  const reqKey = `${asin}|${date}`;
+  const [resp, setResp] = useState<{ key: string; rows?: any[]; error?: string } | null>(null);
+  useEffect(() => {
+    let live = true;
+    getJson(`/api/marketing-360?delivery=${encodeURIComponent(asin)}${date ? `&date=${date}` : ""}`)
+      .then((d) => { if (live) setResp({ key: reqKey, rows: d.rows }); })
+      .catch((e) => { if (live) setResp({ key: reqKey, error: e instanceof Error ? e.message : String(e) }); });
+    return () => { live = false; };
+  }, [asin, date, reqKey]);
+  const want = focus === "≤2 days" ? "fast" : focus === "6+ days" ? "slow" : focus === "Unavailable" ? "none" : null;
+  const rows = resp?.key === reqKey ? resp.rows ?? [] : [];
+  const picked = want ? rows.filter((r) => deliveryTone(r) === want) : rows;
+  const byState = new Map<string, any[]>();
+  for (const r of picked) byState.set(r.state, [...(byState.get(r.state) ?? []), r]);
+  return (
+    <div className="rounded-xl border border-indigo-300 bg-card p-3 shadow-sm dark:border-indigo-800">
+      <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="text-sm font-extrabold">{name} — delivery {want ? `(${focus})` : ""}</p>
+          <p className="text-[11px] text-muted-foreground">{date ? `Checks scraped on ${dateLabel(date)} only` : "Latest check per pincode, any date"} · {picked.length} of {rows.length} pincodes</p>
+        </div>
+        <button type="button" className={btn} onClick={onClose}><X className="h-3.5 w-3.5" /> Close</button>
+      </div>
+      {resp?.key !== reqKey ? <p className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading pincodes…</p>
+        : resp.error ? <p className="text-xs font-semibold text-red-700 dark:text-red-400">{resp.error}</p>
+        : !picked.length ? <p className="text-xs text-muted-foreground">No pincodes in this group{date ? " on this date" : ""}.</p> : (
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {[...byState.entries()].map(([state, cells]) => (
+              <div key={state} className="rounded-lg border border-border/70 bg-background p-2">
+                <p className="mb-1 flex items-center gap-1 text-xs font-extrabold"><MapPin className="h-3 w-3" />{state}</p>
+                <div className="flex flex-wrap gap-1">
+                  {cells.map((c) => {
+                    const t = TONE[deliveryTone(c)];
+                    return <span key={c.pincode} className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${t.cls}`} title={`${c.delivery_text ?? c.status ?? ""} · checked ${dateLabel(c.scraped_date)} (${c.week})`}>{c.pincode}{c.location ? ` ${c.location.split("/")[0].trim()}` : ""}: {c.days === null ? (c.status ?? "—") : `${c.days} d`}</span>;
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+    </div>
+  );
+}
+
+function FullSheet({ onOpen }: { onOpen: (asin: string) => void }) {
+  const [deliveryDate, setDeliveryDate] = useState(""); // "" = latest check per pincode
+  const [resp, setResp] = useState<{ key: string; data?: any; error?: string } | null>(null);
+  const [filter, setFilter] = useState("");
+  const [patches, setPatches] = useState<Record<string, Record<string, unknown>>>({});
+  const [detail, setDetail] = useState<{ kind: "delivery" | "zones"; asin: string; name: string; focus: string } | null>(null);
+  useEffect(() => {
+    let live = true;
+    const key = deliveryDate;
+    getJson(`/api/marketing-360?sheet=1${deliveryDate ? `&date=${deliveryDate}` : ""}`)
+      .then((d) => { if (live) setResp({ key, data: d }); })
+      .catch((e) => { if (live) setResp({ key, error: e instanceof Error ? e.message : String(e) }); });
+    return () => { live = false; };
+  }, [deliveryDate]);
+  const refreshing = resp !== null && resp.key !== deliveryDate;
+  const rowsAll: any[] = useMemo(() => (resp?.data?.rows ?? []).map((r: any) => (patches[r.asin] ? { ...r, ...patches[r.asin] } : r)), [resp, patches]);
+  const onSaved = useCallback((asin: string, patch: Record<string, unknown>) => setPatches((p) => ({ ...p, [asin]: { ...(p[asin] ?? {}), ...patch } })), []);
   const shown = useMemo(() => {
     const q = filter.trim().toLowerCase();
     return q ? rowsAll.filter((r) => `${r.name} ${r.asin} ${r.skus.join(" ")} ${r.category ?? ""}`.toLowerCase().includes(q)) : rowsAll;
@@ -608,10 +798,21 @@ function FullSheet({ onOpen }: { onOpen: (asin: string) => void }) {
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative w-full sm:w-72"><Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" /><input className={`${input} pl-7`} placeholder="Filter product, ASIN, SKU, category" value={filter} onChange={(e) => setFilter(e.target.value)} /></div>
         <button className={btn} onClick={exportXlsx}><Download className="h-3.5 w-3.5" /> Export Excel</button>
+        <label className="flex items-center gap-1.5 text-[11px] font-bold text-muted-foreground">
+          <Truck className="h-3.5 w-3.5" /> Delivery date
+          <select className="rounded-md border border-border bg-background px-2 py-1 text-xs font-semibold text-foreground" value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)}>
+            <option value="">Latest check per pincode</option>
+            {(resp.data.deliveryDates ?? []).map((d: any) => <option key={d.scraped_date} value={d.scraped_date}>{dateLabel(d.scraped_date)} — {fmt(d.checks)} checks, {d.products} products</option>)}
+          </select>
+          {refreshing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+        </label>
         <span className="text-[11px] text-muted-foreground">
           {shown.length} products · rating {dateLabel(a.rating)} · FBA {dateLabel(a.fc)} · forecast {dateLabel(a.forecast)} · positions {a.positions ?? "—"} · Amazon ads {a.amazonAds ? `${dateLabel(a.amazonAds.from)}–${dateLabel(a.amazonAds.to)}` : "—"} · Google/Meta to {dateLabel(a.google)} · click a product to open its card
         </span>
       </div>
+      <p className="text-[11px] text-muted-foreground">Shaded columns are editable — click a cell, Enter or click away to save, Esc to cancel. Click a delivery number to see its pincodes.</p>
+      {detail?.kind === "delivery" && <DeliveryDetail asin={detail.asin} name={detail.name} focus={detail.focus} date={deliveryDate} onClose={() => setDetail(null)} />}
+      {detail?.kind === "zones" && <ZoneDetail asin={detail.asin} name={detail.name} date={deliveryDate} onClose={() => setDetail(null)} />}
       {resp.data.competitorBlocked && <p className="text-[11px] font-semibold text-amber-700 dark:text-amber-400">Competitor rating columns are empty: the competitor tables are readable only by signed-in Supabase users, not by the dashboard.</p>}
       <div className="max-h-[75vh] overflow-auto rounded-xl border border-border">
         <table className="text-xs">
@@ -634,8 +835,15 @@ function FullSheet({ onOpen }: { onOpen: (asin: string) => void }) {
                 {SHEET_COLS.map((c, i) => {
                   const v = c.get(r);
                   return (
-                    <td key={i} className={`${td} border-r border-border/40`} style={c.w ? { minWidth: c.w, maxWidth: c.w + 80 } : undefined}>
-                      {c.render ? c.render(r) : v === null || v === undefined || v === "" ? <span className="text-muted-foreground">—</span> : <span className={c.w ? "line-clamp-3" : "whitespace-nowrap"} title={String(v)}>{v}</span>}
+                    <td key={i} className={`${td} border-r border-border/40 ${c.edit ? "bg-indigo-50/30 dark:bg-indigo-950/10" : ""}`} style={c.w ? { minWidth: c.w, maxWidth: c.w + 80 } : undefined}>
+                      {c.edit ? <EditCell row={r} col={c} onSaved={onSaved} />
+                        : c.group === "Delivery date" && r.delivery ? (
+                          <button type="button" className="font-semibold text-indigo-700 underline decoration-dotted hover:decoration-solid dark:text-indigo-300" title="Show the pincodes" onClick={() => setDetail({ kind: "delivery", asin: r.asin, name: r.name, focus: c.label })}>{v ?? "—"}</button>
+                        )
+                        : c.group === "Delivery vs FBA (by zone)" && r.zone_slow_no_orders !== null ? (
+                          <button type="button" className="text-left underline decoration-dotted hover:decoration-solid" title="Compare delivery days with FBA orders, zone by zone" onClick={() => setDetail({ kind: "zones", asin: r.asin, name: r.name, focus: c.label })}>{c.render ? c.render(r) : v ?? "—"}</button>
+                        )
+                        : c.render ? c.render(r) : v === null || v === undefined || v === "" ? <span className="text-muted-foreground">—</span> : <span className={c.w ? "line-clamp-3" : "whitespace-nowrap"} title={String(v)}>{v}</span>}
                     </td>
                   );
                 })}
