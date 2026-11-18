@@ -32,7 +32,7 @@ function Section({ icon: Icon, title, source, children, right }: { icon: typeof 
     <section className="rounded-xl border border-border bg-card p-4 shadow-sm">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h2 className="flex items-center gap-2 text-sm font-extrabold"><Icon className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />{title}</h2>
+          <h2 className="flex items-center gap-2 text-sm font-extrabold"><Icon className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />{title}</h2>
           {source && <p className="mt-0.5 text-[11px] text-muted-foreground">{source}</p>}
         </div>
         {right}
@@ -62,7 +62,7 @@ const th = "px-2 py-1.5 text-left text-[11px] font-bold uppercase tracking-wide 
 const td = "px-2 py-1.5 align-top";
 const input = "w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs";
 const btn = "inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-bold hover:bg-muted disabled:opacity-60";
-const btnPrimary = "inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-indigo-700 disabled:opacity-60";
+const btnPrimary = "inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-60";
 
 // ── import panel ──────────────────────────────────────────────────────────────────────────────
 function ImportPanel({ onDone }: { onDone: () => void }) {
@@ -88,7 +88,7 @@ function ImportPanel({ onDone }: { onDone: () => void }) {
     onDone();
   };
   return (
-    <div className="rounded-xl border border-dashed border-indigo-300 bg-indigo-50/40 p-3 dark:border-indigo-800 dark:bg-indigo-950/20">
+    <div className="rounded-xl border border-dashed border-emerald-300 bg-emerald-50/40 p-3 dark:border-emerald-800 dark:bg-emerald-950/20">
       <div className="flex flex-wrap items-center gap-2">
         <input ref={ref} type="file" multiple accept=".xlsx,.xls" className="hidden" onChange={(e) => run(e.target.files)} />
         <button className={btnPrimary} disabled={busy} onClick={() => ref.current?.click()}>
@@ -248,7 +248,7 @@ function Influencers({ asin, rows, onChange }: { asin: string; rows: any[]; onCh
                 <td className={td}>{r.kind === "ads" ? "Post ad" : "Organic"}</td>
                 <td className={td}>{r.language ?? "—"}</td>
                 <td className={td}>{r.influencer_name}</td>
-                <td className={td}>{r.post_link ? <a className="inline-flex items-center gap-1 text-indigo-700 underline dark:text-indigo-300" href={r.post_link} target="_blank" rel="noreferrer">Open <ExternalLink className="h-3 w-3" /></a> : "—"}</td>
+                <td className={td}>{r.post_link ? <a className="inline-flex items-center gap-1 text-emerald-700 underline dark:text-emerald-300" href={r.post_link} target="_blank" rel="noreferrer">Open <ExternalLink className="h-3 w-3" /></a> : "—"}</td>
                 <td className={td}>{r.digital_rights ?? "—"}</td>
                 <td className={td}>{r.states ?? "—"}</td>
                 <td className={td}><button title="Delete" className="text-muted-foreground hover:text-red-600" onClick={() => del(r.id)}><Trash2 className="h-3.5 w-3.5" /></button></td>
@@ -302,7 +302,7 @@ function ProductCard({ data, reload }: { data: any; reload: () => void }) {
             <h2 className="text-lg font-extrabold">{data.productName ?? data.asin}</h2>
             <p className="mt-0.5 text-xs text-muted-foreground">
               ASIN <b className="text-foreground">{data.asin}</b> · SKU {data.listing.skus.join(", ") || "—"} · {data.category ?? "No category"} ·{" "}
-              <a href={data.listing.link} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-indigo-700 underline dark:text-indigo-300">Amazon listing <ExternalLink className="h-3 w-3" /></a>
+              <a href={data.listing.link} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-emerald-700 underline dark:text-emerald-300">Amazon listing <ExternalLink className="h-3 w-3" /></a>
             </p>
           </div>
           <button className={btn} onClick={reload}><RefreshCw className="h-3.5 w-3.5" /> Refresh</button>
@@ -338,7 +338,7 @@ function ProductCard({ data, reload }: { data: any; reload: () => void }) {
             <table className="w-full text-xs">
               <thead><tr className="border-b border-border"><th className={th}>Competitor</th><th className={th}>Marketplace</th><th className={th}>Rating</th><th className={th}>Reviews</th></tr></thead>
               <tbody>{data.competitors.ratings.map((c: any, i: number) => (
-                <tr key={i} className="border-b border-border/60"><td className={td}>{c.url ? <a href={c.url} target="_blank" rel="noreferrer" className="text-indigo-700 underline dark:text-indigo-300">{c.name ?? "Competitor"}</a> : c.name ?? "—"}</td><td className={td}>{c.marketplace}</td><td className={td}>{c.rating ?? "—"}</td><td className={td}>{fmt(c.reviews)}</td></tr>
+                <tr key={i} className="border-b border-border/60"><td className={td}>{c.url ? <a href={c.url} target="_blank" rel="noreferrer" className="text-emerald-700 underline dark:text-emerald-300">{c.name ?? "Competitor"}</a> : c.name ?? "—"}</td><td className={td}>{c.marketplace}</td><td className={td}>{c.rating ?? "—"}</td><td className={td}>{fmt(c.reviews)}</td></tr>
               ))}</tbody>
             </table>
           )}
@@ -350,7 +350,7 @@ function ProductCard({ data, reload }: { data: any; reload: () => void }) {
               <thead><tr className="border-b border-border"><th className={th}>Competitor</th><th className={th}>Their price</th><th className={th}>Our price</th><th className={th}>Checked</th></tr></thead>
               <tbody>{data.competitors.prices.map((c: any, i: number) => (
                 <tr key={i} className="border-b border-border/60">
-                  <td className={td}>{c.competitor_product_url ? <a href={c.competitor_product_url} target="_blank" rel="noreferrer" className="text-indigo-700 underline dark:text-indigo-300">{c.competitor_product_name ?? c.competitor_seller_name ?? "Competitor"}</a> : c.competitor_product_name ?? "—"} <span className="text-muted-foreground">({c.competitor_marketplace})</span></td>
+                  <td className={td}>{c.competitor_product_url ? <a href={c.competitor_product_url} target="_blank" rel="noreferrer" className="text-emerald-700 underline dark:text-emerald-300">{c.competitor_product_name ?? c.competitor_seller_name ?? "Competitor"}</a> : c.competitor_product_name ?? "—"} <span className="text-muted-foreground">({c.competitor_marketplace})</span></td>
                   <td className={td}><b className={c.is_competitor_cheaper ? "text-red-700 dark:text-red-400" : ""}>{inr(c.competitor_price)}</b></td>
                   <td className={td}>{inr(c.our_price)}</td>
                   <td className={td}>{dateLabel(c.last_checked_at)}</td>
@@ -521,7 +521,7 @@ function ChannelNotes({ products }: { products: Product[] }) {
                   {CHANNELS.map((c) => (
                     <td key={c.key} className="p-0 align-top">
                       <textarea defaultValue={notes[`${p}|${c.key}`] ?? ""} rows={2} onBlur={(e) => save(p, c.key, e.target.value)}
-                        className="block w-full resize-y border-0 bg-transparent px-2 py-1.5 text-xs focus:bg-indigo-50 focus:outline-none dark:focus:bg-indigo-950/40" />
+                        className="block w-full resize-y border-0 bg-transparent px-2 py-1.5 text-xs focus:bg-emerald-50 focus:outline-none dark:focus:bg-emerald-950/40" />
                     </td>
                   ))}
                 </tr>
@@ -549,7 +549,7 @@ const SHEET_COLS: SheetCol[] = [
   { group: "Rating & reviews — competitor", label: "Star", get: (r) => r.comp_star },
   { group: "Rating & reviews — competitor", label: "Reviews", get: (r) => r.comp_reviews, render: (r) => fmt(r.comp_reviews) },
   { group: "Price", label: "Our price", get: (r) => r.price, render: (r) => inr(r.price) },
-  { group: "Price", label: "Lowest competitor (same product)", get: (r) => r.comp_lowest?.price ?? null, w: 170, render: (r) => (r.comp_lowest ? <span>{r.comp_lowest.url ? <a href={r.comp_lowest.url} target="_blank" rel="noreferrer" className="font-bold text-indigo-700 underline dark:text-indigo-300" title={`${r.comp_lowest.name ?? ""} (${r.comp_lowest.match})`}>{inr(r.comp_lowest.price)}</a> : <b>{inr(r.comp_lowest.price)}</b>}{r.price !== null && r.comp_lowest.price < r.price ? <span className="ml-1 text-[10px] font-bold text-red-700 dark:text-red-400">cheaper</span> : null}</span> : <span className="text-muted-foreground">—</span>) },
+  { group: "Price", label: "Lowest competitor (same product)", get: (r) => r.comp_lowest?.price ?? null, w: 170, render: (r) => (r.comp_lowest ? <span>{r.comp_lowest.url ? <a href={r.comp_lowest.url} target="_blank" rel="noreferrer" className="font-bold text-emerald-700 underline dark:text-emerald-300" title={`${r.comp_lowest.name ?? ""} (${r.comp_lowest.match})`}>{inr(r.comp_lowest.price)}</a> : <b>{inr(r.comp_lowest.price)}</b>}{r.price !== null && r.comp_lowest.price < r.price ? <span className="ml-1 text-[10px] font-bold text-red-700 dark:text-red-400">cheaper</span> : null}</span> : <span className="text-muted-foreground">—</span>) },
   { group: "Retargeting", label: "Ways in use", get: (r) => (r.retarget_yes === null ? null : r.retarget_yes.length ? r.retarget_yes.join(", ") : "None"), w: 180, edit: { kind: "multi", field: "retarget", options: RETARGET_OPTIONS } },
   { group: "Amazon ads", label: "Product ad", get: (r) => r.ad_product, render: (r) => <Pill text={r.ad_product} /> },
   { group: "Amazon ads", label: "Display ad", get: (r) => r.ad_display, render: (r) => <Pill text={r.ad_display} /> },
@@ -626,7 +626,7 @@ function EditCell({ row, col, onSaved }: { row: any; col: SheetCol; onSaved: (as
   if (!open) {
     return (
       <button type="button" onClick={start} disabled={state.busy} title={state.error ?? (edit.kind === "task" ? "Click to add a task" : edit.kind === "bool" ? "Click to switch Yes / No" : "Click to edit")}
-        className={`group flex w-full items-start gap-1 rounded px-1 py-0.5 text-left hover:bg-indigo-50 hover:ring-1 hover:ring-indigo-300 dark:hover:bg-indigo-950/40 ${state.error ? "ring-1 ring-red-400" : ""}`}>
+        className={`group flex w-full items-start gap-1 rounded px-1 py-0.5 text-left hover:bg-emerald-50 hover:ring-1 hover:ring-emerald-300 dark:hover:bg-emerald-950/40 ${state.error ? "ring-1 ring-red-400" : ""}`}>
         <span className="min-w-0 flex-1">{edit.kind === "task" && !row.plan_next ? <span className="text-muted-foreground">+ Add task</span> : shown}</span>
         {state.busy ? <Loader2 className="mt-0.5 h-3 w-3 shrink-0 animate-spin" /> : <Pencil className="mt-0.5 h-3 w-3 shrink-0 opacity-0 group-hover:opacity-60" />}
       </button>
@@ -635,7 +635,7 @@ function EditCell({ row, col, onSaved }: { row: any; col: SheetCol; onSaved: (as
   return (
     <div className="space-y-1" onKeyDown={key}>
       {edit.kind === "multi" ? (
-        <div className="space-y-0.5 rounded-md border border-indigo-300 bg-background p-1.5 dark:border-indigo-700">
+        <div className="space-y-0.5 rounded-md border border-emerald-300 bg-background p-1.5 dark:border-emerald-700">
           {edit.options.map((o) => (
             <label key={o} className="flex items-center gap-1.5 text-[11px]">
               <input type="checkbox" checked={draft.includes(o)} onChange={() => setDraft((d: string[]) => (d.includes(o) ? d.filter((x) => x !== o) : [...d, o]))} />{o}
@@ -699,7 +699,7 @@ function ZoneDetail({ asin, name, date, onClose }: { asin: string; name: string;
     return () => { live = false; };
   }, [asin, date, reqKey]);
   return (
-    <div className="rounded-xl border border-indigo-300 bg-card p-3 shadow-sm dark:border-indigo-800">
+    <div className="rounded-xl border border-emerald-300 bg-card p-3 shadow-sm dark:border-emerald-800">
       <div className="mb-2 flex items-start justify-between gap-2">
         <p className="text-sm font-extrabold">{name} — delivery vs FBA orders by zone</p>
         <button type="button" className={btn} onClick={onClose}><X className="h-3.5 w-3.5" /> Close</button>
@@ -728,7 +728,7 @@ function DeliveryDetail({ asin, name, focus, date, onClose }: { asin: string; na
   const byState = new Map<string, any[]>();
   for (const r of picked) byState.set(r.state, [...(byState.get(r.state) ?? []), r]);
   return (
-    <div className="rounded-xl border border-indigo-300 bg-card p-3 shadow-sm dark:border-indigo-800">
+    <div className="rounded-xl border border-emerald-300 bg-card p-3 shadow-sm dark:border-emerald-800">
       <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
         <div>
           <p className="text-sm font-extrabold">{name} — delivery {want ? `(${focus})` : ""}</p>
@@ -817,8 +817,8 @@ function FullSheet({ onOpen }: { onOpen: (asin: string) => void }) {
       <div className="max-h-[75vh] overflow-auto rounded-xl border border-border">
         <table className="text-xs">
           <thead className="sticky top-0 z-10">
-            <tr className="bg-indigo-100 dark:bg-indigo-950">
-              <th className="sticky left-0 z-20 border-b border-r border-border bg-indigo-100 px-2 py-1.5 text-left text-[11px] font-extrabold dark:bg-indigo-950">Product</th>
+            <tr className="bg-emerald-100 dark:bg-emerald-950">
+              <th className="sticky left-0 z-20 border-b border-r border-border bg-emerald-100 px-2 py-1.5 text-left text-[11px] font-extrabold dark:bg-emerald-950">Product</th>
               {groups.map((g, i) => <th key={i} colSpan={g.span} className="whitespace-nowrap border-b border-r border-border px-2 py-1.5 text-center text-[11px] font-extrabold">{g.name}</th>)}
             </tr>
             <tr className="bg-muted">
@@ -830,15 +830,15 @@ function FullSheet({ onOpen }: { onOpen: (asin: string) => void }) {
             {shown.map((r) => (
               <tr key={r.asin} className="border-b border-border/60 hover:bg-muted/40">
                 <td className={`${td} sticky left-0 z-[5] border-r border-border bg-card`}>
-                  <button className="text-left font-semibold text-indigo-700 hover:underline dark:text-indigo-300" onClick={() => onOpen(r.asin)}>{r.name}</button>
+                  <button className="text-left font-semibold text-emerald-700 hover:underline dark:text-emerald-300" onClick={() => onOpen(r.asin)}>{r.name}</button>
                 </td>
                 {SHEET_COLS.map((c, i) => {
                   const v = c.get(r);
                   return (
-                    <td key={i} className={`${td} border-r border-border/40 ${c.edit ? "bg-indigo-50/30 dark:bg-indigo-950/10" : ""}`} style={c.w ? { minWidth: c.w, maxWidth: c.w + 80 } : undefined}>
+                    <td key={i} className={`${td} border-r border-border/40 ${c.edit ? "bg-emerald-50/30 dark:bg-emerald-950/10" : ""}`} style={c.w ? { minWidth: c.w, maxWidth: c.w + 80 } : undefined}>
                       {c.edit ? <EditCell row={r} col={c} onSaved={onSaved} />
                         : c.group === "Delivery date" && r.delivery ? (
-                          <button type="button" className="font-semibold text-indigo-700 underline decoration-dotted hover:decoration-solid dark:text-indigo-300" title="Show the pincodes" onClick={() => setDetail({ kind: "delivery", asin: r.asin, name: r.name, focus: c.label })}>{v ?? "—"}</button>
+                          <button type="button" className="font-semibold text-emerald-700 underline decoration-dotted hover:decoration-solid dark:text-emerald-300" title="Show the pincodes" onClick={() => setDetail({ kind: "delivery", asin: r.asin, name: r.name, focus: c.label })}>{v ?? "—"}</button>
                         )
                         : c.group === "Delivery vs FBA (by zone)" && r.zone_slow_no_orders !== null ? (
                           <button type="button" className="text-left underline decoration-dotted hover:decoration-solid" title="Compare delivery days with FBA orders, zone by zone" onClick={() => setDetail({ kind: "zones", asin: r.asin, name: r.name, focus: c.label })}>{c.render ? c.render(r) : v ?? "—"}</button>
@@ -917,7 +917,7 @@ export default function Marketing360Page() {
         </div>
         <div className="flex rounded-lg border border-border p-0.5">
           {([["sheet", "Full sheet"], ["card", "Product card"], ["notes", "Channel notes"]] as const).map(([k, l]) => (
-            <button key={k} onClick={() => setTab(k)} className={`rounded-md px-3 py-1.5 text-xs font-bold ${tab === k ? "bg-indigo-600 text-white" : "hover:bg-muted"}`}>{l}</button>
+            <button key={k} onClick={() => setTab(k)} className={`rounded-md px-3 py-1.5 text-xs font-bold ${tab === k ? "bg-emerald-600 text-white" : "hover:bg-muted"}`}>{l}</button>
           ))}
         </div>
       </div>
