@@ -6,14 +6,13 @@
 // influencers, action plan, channel notes — is typed in here and saved to Supabase.
 // Missing data is shown as missing ("—" / "No data"), never as zero.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 import {
-  Loader2, Upload, Search, Star, Megaphone, Boxes, MapPin, KeyRound, Users, ClipboardList, Target, ExternalLink,
-  CheckCircle2, AlertTriangle, Plus, Trash2, Save, RefreshCw, StickyNote, Truck, Package, Download, Pencil, X,
+  Loader2, Search, Star, Megaphone, Boxes, MapPin, KeyRound, Users, ClipboardList, Target, ExternalLink,
+  AlertTriangle, Plus, Trash2, Save, RefreshCw, StickyNote, Truck, Package, Download, Pencil, X,
 } from "lucide-react";
 import { supabasePublic as db } from "@/lib/amazonReportUpload";
-import { importWorkbook } from "@/lib/marketing360Store";
 import { RETARGET_OPTIONS, CHANNELS } from "@/lib/marketing360Import";
 import { deliveryTone, profileEdit, zoneLabel, SLOW_DAYS, type SheetEdit } from "@/lib/marketing360Rules";
 
@@ -63,53 +62,6 @@ const td = "px-2 py-1.5 align-top";
 const input = "w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs";
 const btn = "inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-bold hover:bg-muted disabled:opacity-60";
 const btnPrimary = "inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-60";
-
-// ── import panel ──────────────────────────────────────────────────────────────────────────────
-function ImportPanel({ onDone }: { onDone: () => void }) {
-  const ref = useRef<HTMLInputElement>(null);
-  const [busy, setBusy] = useState(false);
-  const [log, setLog] = useState<{ ok: boolean; text: string }[]>([]);
-  const run = async (files: FileList | null) => {
-    if (!files?.length) return;
-    setBusy(true);
-    const out: { ok: boolean; text: string }[] = [];
-    for (const f of Array.from(files)) {
-      try {
-        const wb = XLSX.read(await f.arrayBuffer(), { type: "array" });
-        const r = await importWorkbook(db, wb, f.name);
-        out.push({ ok: true, text: `${f.name}: ${r.summary}` });
-      } catch (e) {
-        out.push({ ok: false, text: e instanceof Error ? e.message : String(e) });
-      }
-      setLog([...out]);
-    }
-    setBusy(false);
-    if (ref.current) ref.current.value = "";
-    onDone();
-  };
-  return (
-    <div className="rounded-xl border border-dashed border-emerald-300 bg-emerald-50/40 p-3 dark:border-emerald-800 dark:bg-emerald-950/20">
-      <div className="flex flex-wrap items-center gap-2">
-        <input ref={ref} type="file" multiple accept=".xlsx,.xls" className="hidden" onChange={(e) => run(e.target.files)} />
-        <button className={btnPrimary} disabled={busy} onClick={() => ref.current?.click()}>
-          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />} Import Drive files
-        </button>
-        <span className="text-[11px] text-muted-foreground">
-          Download as .xlsx from Drive and drop in any of: <b>BARM_W41_W44_Sweep</b> (delivery) · <b>AM FK Rating and Review – &lt;date&gt; (final)</b> · <b>BARM_Gyno_Competitor_Position_Tracker</b> · <b>FBA Forecasting &lt;date&gt;</b> · the <b>Marketing Team Template</b>. Re-importing updates; it never duplicates.
-        </span>
-      </div>
-      {log.length > 0 && (
-        <ul className="mt-2 space-y-0.5">
-          {log.map((l, i) => (
-            <li key={i} className={`flex items-start gap-1.5 text-xs font-semibold ${l.ok ? "text-green-700 dark:text-green-400" : "text-red-700 dark:text-red-400"}`}>
-              {l.ok ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}{l.text}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
 
 // ── manual: profile ───────────────────────────────────────────────────────────────────────────
 function ProfileEditor({ asin, profile, onSaved }: { asin: string; profile: any; onSaved: () => void }) {
@@ -361,6 +313,12 @@ function ProductCard({ data, reload }: { data: any; reload: () => void }) {
         </Section>
       </div>
 
+      {data.adsSuggestion && (
+        <Section icon={Megaphone} title="Should ads be on?" source={`A rule, not a forecast: stock in ${8}+ of the "Yes" FBA FCs (the client's ad-status rule), rating ${"≥"} 3.5★, and our price vs the cheapest same-product competitor`}>
+          <AdsVerdict s={data.adsSuggestion} />
+        </Section>
+      )}
+
       <Section icon={Megaphone} title="Ads status" source={`Amazon: last 7 report days${data.ads.window ? ` (${dateLabel(data.ads.window.from)} – ${dateLabel(data.ads.window.to)})` : ""} · Google / Meta: campaign names containing “${data.ads.keywords.join("”, “") || "—"}”, last 7 days to ${dateLabel(data.ads.google.to)}`}>
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
           {([["Amazon product ads", data.ads.product], ["Amazon display ads", data.ads.display], ["Amazon brand ads", data.ads.brand], ["Google ads", data.ads.google], ["Meta (Facebook / Instagram)", data.ads.meta]] as [string, any][]).map(([label, a]) => (
@@ -517,7 +475,7 @@ function ChannelNotes({ products }: { products: Product[] }) {
             <tbody>
               {names.map((p) => (
                 <tr key={p} className="border-b border-border/60">
-                  <td className={`${td} sticky left-0 bg-card font-semibold`}>{p}</td>
+                  <td className={`${td} sticky left-0 bg-white font-semibold dark:bg-slate-900`}>{p}</td>
                   {CHANNELS.map((c) => (
                     <td key={c.key} className="p-0 align-top">
                       <textarea defaultValue={notes[`${p}|${c.key}`] ?? ""} rows={2} onBlur={(e) => save(p, c.key, e.target.value)}
@@ -530,6 +488,20 @@ function ChannelNotes({ products }: { products: Product[] }) {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+// The ads on/off suggestion: the action, then the reasons it rests on.
+const ADS_CLS: Record<string, string> = {
+  good: STATE_CLS.On, critical: STATE_CLS.Off, none: STATE_CLS["No data"],
+  warning: "bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-800",
+};
+function AdsVerdict({ s }: { s: { action: string; tone: string; reasons: string[] } }) {
+  return (
+    <div className="space-y-0.5">
+      <span className={`inline-block rounded-md border px-1.5 py-0.5 text-[11px] font-extrabold ${ADS_CLS[s.tone] ?? ADS_CLS.none}`}>{s.action}</span>
+      <ul className="list-disc pl-4 text-[11px] text-muted-foreground">{s.reasons.map((x, i) => <li key={i}>{x}</li>)}</ul>
     </div>
   );
 }
@@ -548,8 +520,9 @@ const SHEET_COLS: SheetCol[] = [
   { group: "Rating & reviews — ours", label: "Ratings", get: (r) => r.ratings, render: (r) => (r.ratings === null ? "—" : `${fmt(r.ratings)}${r.ratings_change ? ` (${r.ratings_change > 0 ? "+" : ""}${r.ratings_change})` : ""}`) },
   { group: "Rating & reviews — competitor", label: "Star", get: (r) => r.comp_star },
   { group: "Rating & reviews — competitor", label: "Reviews", get: (r) => r.comp_reviews, render: (r) => fmt(r.comp_reviews) },
-  { group: "Price", label: "Our price", get: (r) => r.price, render: (r) => inr(r.price) },
-  { group: "Price", label: "Lowest competitor (same product)", get: (r) => r.comp_lowest?.price ?? null, w: 170, render: (r) => (r.comp_lowest ? <span>{r.comp_lowest.url ? <a href={r.comp_lowest.url} target="_blank" rel="noreferrer" className="font-bold text-emerald-700 underline dark:text-emerald-300" title={`${r.comp_lowest.name ?? ""} (${r.comp_lowest.match})`}>{inr(r.comp_lowest.price)}</a> : <b>{inr(r.comp_lowest.price)}</b>}{r.price !== null && r.comp_lowest.price < r.price ? <span className="ml-1 text-[10px] font-bold text-red-700 dark:text-red-400">cheaper</span> : null}</span> : <span className="text-muted-foreground">—</span>) },
+  { group: "Price", label: "Our price", get: (r) => r.price, render: (r) => (r.price === null ? <span className="text-muted-foreground">—</span> : <a href={r.link} target="_blank" rel="noreferrer" className="font-bold text-emerald-700 underline dark:text-emerald-300" title="Our Amazon listing">{inr(r.price)}</a>) },
+  { group: "Price", label: "Competitor (same product)", get: (r) => (r.comp_lowest ? `${r.comp_lowest.name ?? r.comp_lowest.seller ?? "Competitor"} (${r.comp_lowest.marketplace ?? ""})` : null), w: 220, render: (r) => (r.comp_lowest ? <span className="line-clamp-3">{r.comp_lowest.url ? <a href={r.comp_lowest.url} target="_blank" rel="noreferrer" className="text-emerald-700 underline dark:text-emerald-300" title={`${r.comp_lowest.match} · open their listing`}>{r.comp_lowest.name ?? r.comp_lowest.seller ?? "Competitor"}</a> : r.comp_lowest.name ?? "Competitor"} <span className="text-muted-foreground">({r.comp_lowest.marketplace})</span></span> : <span className="text-muted-foreground">—</span>) },
+  { group: "Price", label: "Competitor price", get: (r) => r.comp_lowest?.price ?? null, render: (r) => (r.comp_lowest ? <span className="whitespace-nowrap"><b>{inr(r.comp_lowest.price)}</b>{r.price !== null && r.comp_lowest.price < r.price ? <span className="ml-1 text-[10px] font-bold text-red-700 dark:text-red-400">cheaper</span> : null}</span> : <span className="text-muted-foreground">—</span>) },
   { group: "Retargeting", label: "Ways in use", get: (r) => (r.retarget_yes === null ? null : r.retarget_yes.length ? r.retarget_yes.join(", ") : "None"), w: 180, edit: { kind: "multi", field: "retarget", options: RETARGET_OPTIONS } },
   { group: "Amazon ads", label: "Product ad", get: (r) => r.ad_product, render: (r) => <Pill text={r.ad_product} /> },
   { group: "Amazon ads", label: "Display ad", get: (r) => r.ad_display, render: (r) => <Pill text={r.ad_display} /> },
@@ -584,6 +557,7 @@ const SHEET_COLS: SheetCol[] = [
   { group: "Channel notes", label: "Notes", get: (r) => r.notes || null },
   { group: "Delivery vs FBA (by zone)", label: "Slow zones, no orders", get: (r) => r.zone_slow_no_orders, render: (r) => (r.zone_slow_no_orders === null ? "—" : <Pill text={String(r.zone_slow_no_orders)} cls={r.zone_slow_no_orders ? STATE_CLS.Off : STATE_CLS.On} />) },
   { group: "Delivery vs FBA (by zone)", label: "Slowest zone", get: (r) => (r.zone_worst ? `${zoneLabel(r.zone_worst.zone)} ${r.zone_worst.avg} d (max ${r.zone_worst.max ?? "—"})` : null), w: 170 },
+  { group: "Ads suggestion", label: "Turn ads on?", get: (r) => (r.ads_suggestion ? `${r.ads_suggestion.action}: ${r.ads_suggestion.reasons.join("; ")}` : null), w: 300, render: (r) => (r.ads_suggestion ? <AdsVerdict s={r.ads_suggestion} /> : <span className="text-muted-foreground">—</span>) },
 ];
 
 // One editable full-sheet cell. Click to edit; Enter or leaving the cell saves, Esc cancels.
@@ -829,7 +803,7 @@ function FullSheet({ onOpen }: { onOpen: (asin: string) => void }) {
           <tbody>
             {shown.map((r) => (
               <tr key={r.asin} className="border-b border-border/60 hover:bg-muted/40">
-                <td className={`${td} sticky left-0 z-[5] border-r border-border bg-card`}>
+                <td className={`${td} sticky left-0 z-[5] border-r border-border bg-white dark:bg-slate-900`}>
                   <button className="text-left font-semibold text-emerald-700 hover:underline dark:text-emerald-300" onClick={() => onOpen(r.asin)}>{r.name}</button>
                 </td>
                 {SHEET_COLS.map((c, i) => {
@@ -859,13 +833,12 @@ function FullSheet({ onOpen }: { onOpen: (asin: string) => void }) {
 // ── page ──────────────────────────────────────────────────────────────────────────────────────
 export default function Marketing360Page() {
   const [tab, setTab] = useState<"sheet" | "card" | "notes">("sheet");
-  const [sheetVersion, setSheetVersion] = useState(0);
   const [products, setProducts] = useState<Product[]>([]);
   const [asin, setAsin] = useState<string>("");
   const [query, setQuery] = useState("");
   // one response per (asin, version); "loading" = the shown response is not for the current request
   const [cardVersion, setCardVersion] = useState(0);
-  const [productsVersion, setProductsVersion] = useState(0);
+  const productsVersion = 0; // the product list loads once per visit
   const [resp, setResp] = useState<{ key: string; data?: any; error?: string } | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const reqKey = `${asin}|${cardVersion}`;
@@ -922,9 +895,8 @@ export default function Marketing360Page() {
         </div>
       </div>
 
-      <ImportPanel onDone={() => { setProductsVersion((v) => v + 1); setSheetVersion((v) => v + 1); reloadCard(); }} />
 
-      {tab === "sheet" ? <FullSheet key={sheetVersion} onOpen={(a) => { pickAsin(a); setTab("card"); }} /> : tab === "notes" ? <ChannelNotes products={products} /> : (
+      {tab === "sheet" ? <FullSheet onOpen={(a) => { pickAsin(a); setTab("card"); }} /> : tab === "notes" ? <ChannelNotes products={products} /> : (
         <>
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative w-full sm:w-72"><Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" /><input className={`${input} pl-7`} placeholder="Search product, ASIN or SKU" value={query} onChange={(e) => setQuery(e.target.value)} /></div>

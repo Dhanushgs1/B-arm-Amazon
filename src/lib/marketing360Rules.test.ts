@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { latestByPincode, deliveryTone, fcTable, adState, campaignKeywords, profileEdit, zoneVerdict, STATE_ZONE, zoneLabel, ourProduct } from "./marketing360Rules.ts";
+import { latestByPincode, deliveryTone, fcTable, adState, campaignKeywords, profileEdit, zoneVerdict, STATE_ZONE, zoneLabel, ourProduct, adsSuggestion } from "./marketing360Rules.ts";
 import { pincodeState, pos, toIsoDate, dateFromName } from "./marketing360Import.ts";
 
 const chk = (pincode: string, week: string, scraped_date: string, days: number | null, status = "Confirmed Estimate") =>
@@ -111,4 +111,19 @@ test("competitor row matches our product by ASIN or any SKU in the | list", () =
   assert.equal(ourProduct({ our_asin: null, our_sku: "A006|A006-2" }, "B0X", ["A006-2(AM)"]), true);
   assert.equal(ourProduct({ our_asin: null, our_sku: "A006|A006-2" }, "B0X", ["A0061"]), false);
   assert.equal(ourProduct({ our_asin: "B0OTHER", our_sku: null }, "B0X", ["A006"]), false);
+});
+
+test("ads suggestion: client FBA rule first, then rating, then price; reasons always given", () => {
+  const ok = { fcKnown: true, fcStocked: 19, fcOnboarded: 24, fcLow: 0, star: 4.4, ourPrice: 2700, compPrice: 2500, adOn: false };
+  assert.equal(adsSuggestion(ok).action, "Turn ON");
+  assert.equal(adsSuggestion({ ...ok, adOn: true }).action, "Keep ON");
+  assert.equal(adsSuggestion({ ...ok, fcStocked: 7, adOn: true }).action, "Turn OFF");
+  assert.equal(adsSuggestion({ ...ok, fcStocked: 7 }).action, "Keep OFF");
+  assert.match(adsSuggestion({ ...ok, fcStocked: 7 }).reasons[0], /7 of 24/);
+  assert.equal(adsSuggestion({ ...ok, star: 3.2 }).action, "Keep OFF");
+  assert.equal(adsSuggestion({ ...ok, compPrice: 500 }).action, "Review first");
+  assert.equal(adsSuggestion({ ...ok, compPrice: 500, adOn: true }).action, "Keep ON");
+  assert.equal(adsSuggestion({ ...ok, fcLow: 2 }).tone, "warning");
+  assert.equal(adsSuggestion({ ...ok, fcKnown: false }).action, "Check data");
+  assert.ok(adsSuggestion({ ...ok, star: null, compPrice: null }).reasons.some((r) => /No rating/.test(r)));
 });

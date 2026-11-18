@@ -3,7 +3,7 @@ import { checkSession } from "@/lib/apiAuth";
 import { rejectUnlessAllowed } from "@/lib/appRouteAuth";
 import { supabase } from "@/lib/supabaseClient";
 import { FBA_ALERT_FCS } from "@/lib/fbaWarehouseAlerts";
-import { latestByPincode, fcTable, adState, campaignKeywords, zoneVerdict, ourProduct, type DeliveryCheck, type ZoneFacts } from "@/lib/marketing360Rules";
+import { latestByPincode, fcTable, adState, campaignKeywords, zoneVerdict, ourProduct, adsSuggestion, ADS_LOW_UNITS, type DeliveryCheck, type ZoneFacts } from "@/lib/marketing360Rules";
 
 // Product Marketing 360 — one product's marketing card, built from stored data only (Supabase).
 //   GET                -> product list (Amazon listings grouped by ASIN, with master name + category)
@@ -195,6 +195,18 @@ async function card(asin: string) {
       keywords: words,
     },
     fba: { report_date: fcDate, fcs: fcTable(FBA_ALERT_FCS, sellable), other: fcStock.filter((r) => !sellable.includes(r)), inventory: inv },
+    adsSuggestion: (() => {
+      const yes = fcTable(FBA_ALERT_FCS, sellable).filter((f) => f.onboarded === "Yes");
+      const star = rating.find((x: any) => x.this_star !== null)?.this_star;
+      return adsSuggestion({
+        fcKnown: !!fcDate, fcStocked: yes.filter((f) => (f.stock ?? 0) > 0).length, fcOnboarded: yes.length,
+        fcLow: yes.filter((f) => (f.stock ?? 0) > 0 && (f.stock ?? 0) <= ADS_LOW_UNITS).length,
+        star: star === undefined || star === null ? null : Number(star),
+        ourPrice: listing.find((l) => l.price)?.price ? Number(listing.find((l) => l.price)!.price) : null,
+        compPrice: compPrice[0] ? Number(compPrice[0].competitor_price) : null,
+        adOn: (sum(sp, "spend") ?? 0) > 0,
+      });
+    })(),
     forecast: { report_date: fcDateZone, zones },
     zoneCompare: { forecast_date: fcDateZone, rows: zoneCompare(await rows(supabase.rpc("mkt_delivery_zone_summary", { p_asin: asin }) as any), zones) },
     positions: { week: kwWeek, keywords, competitors: compPos },
@@ -333,7 +345,14 @@ async function fullSheet(deliveryDate: string | null) {
       star: r?.this_star ?? null, ratings: r?.this_count ?? null, ratings_change: r && r.this_count !== null && r.last_count !== null ? r.this_count - r.last_count : null,
       comp_star: topComp?.rating ?? null, comp_reviews: topComp?.reviews ?? null,
       price: p.price ?? null,
-      comp_lowest: compPrices.blocked ? null : lowest ? { price: Number(lowest.competitor_price), name: lowest.competitor_product_name, url: lowest.competitor_product_url, match: lowest.match_status } : null,
+      comp_lowest: compPrices.blocked ? null : lowest ? { price: Number(lowest.competitor_price), name: lowest.competitor_product_name, seller: lowest.competitor_seller_name, marketplace: lowest.competitor_marketplace, url: lowest.competitor_product_url, match: lowest.match_status } : null,
+      ads_suggestion: adsSuggestion({
+        fcKnown: !!fcDate, fcStocked: [...yesFcs].filter((c) => (fcQty.get(c) ?? 0) > 0).length, fcOnboarded: yesFcs.size,
+        fcLow: [...yesFcs].filter((c) => { const q = fcQty.get(c) ?? 0; return q > 0 && q <= ADS_LOW_UNITS; }).length,
+        star: r?.this_star === null || r?.this_star === undefined ? null : Number(r.this_star),
+        ourPrice: p.price ?? null, compPrice: lowest && !compPrices.blocked ? Number(lowest.competitor_price) : null,
+        adOn: since ? spendOf(spRows) > 0 : false,
+      }),
       fba_weight: prof?.fba_weight_note ?? null,
       retarget_yes: prof ? Object.entries(prof.retarget ?? {}).filter(([, v]) => v).map(([k]) => k) : null,
       ad_product: since ? adState(spRows.length ? spendOf(spRows) : 0) : "No data",
