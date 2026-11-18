@@ -26,6 +26,14 @@ const fmt = (n: number | null | undefined, d = 0) => (n === null || n === undefi
 const inr = (n: number | null | undefined) => (n === null || n === undefined ? "—" : `₹${fmt(n)}`);
 const crore = (n: number | null | undefined) => (n === null || n === undefined ? "—" : n >= 1e7 ? `₹${(n / 1e7).toLocaleString("en-IN", { maximumFractionDigits: 1 })} Cr` : n >= 1e5 ? `₹${(n / 1e5).toLocaleString("en-IN", { maximumFractionDigits: 1 })} L` : inr(n));
 const buyersText = (n: number | null | undefined) => (n === null || n === undefined ? "—" : n >= 1e7 ? `${(n / 1e7).toLocaleString("en-IN", { maximumFractionDigits: 2 })} crore` : n >= 1e5 ? `${(n / 1e5).toLocaleString("en-IN", { maximumFractionDigits: 1 })} lakh` : fmt(n));
+/** FBA inventory report upload: "uploaded 31 Oct 2026", flagged when 3+ days old (user, 2026-11-18). */
+const IST_DAY = (t: string | Date) => new Date(t).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+function reportAge(createdAt: string | null | undefined): { label: string; days: number | null } {
+  if (!createdAt) return { label: "upload date unknown", days: null };
+  const day = IST_DAY(createdAt);
+  const days = Math.round((Date.parse(`${IST_DAY(new Date())}T00:00:00Z`) - Date.parse(`${day}T00:00:00Z`)) / 864e5);
+  return { label: `uploaded ${dateLabel(day)}`, days };
+}
 const dateLabel = (d: string | null | undefined) => (d ? new Date(`${d.slice(0, 10)}T00:00:00Z`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }) : "—");
 
 function Section({ icon: Icon, title, source, children, right }: { icon: typeof Star; title: string; source?: string; children: React.ReactNode; right?: React.ReactNode }) {
@@ -334,7 +342,19 @@ function ProductCard({ data, reload }: { data: any; reload: () => void }) {
       </Section>
 
       <Section icon={Boxes} title="FBA stock by fulfilment centre" source={`Drive FBA forecast file, FC balances as on ${dateLabel(data.fba.report_date)} · onboarding per "FBA warehouse details" sheet`}
-        right={inv ? <span className="text-[11px] text-muted-foreground">FBA report: fulfillable {fmt(inv.afn_fulfillable_quantity)} · reserved {fmt(inv.afn_reserved_quantity)} · inbound {fmt((inv.afn_inbound_working_quantity ?? 0) + (inv.afn_inbound_shipped_quantity ?? 0) + (inv.afn_inbound_receiving_quantity ?? 0))}</span> : undefined}>
+        right={inv ? (() => {
+          const age = reportAge(inv.created_at);
+          const old = age.days === null || age.days >= 3;
+          return (
+            <span className="text-right text-[11px] text-muted-foreground">
+              FBA report: fulfillable {fmt(inv.afn_fulfillable_quantity)} · reserved {fmt(inv.afn_reserved_quantity)} · inbound {fmt((inv.afn_inbound_working_quantity ?? 0) + (inv.afn_inbound_shipped_quantity ?? 0) + (inv.afn_inbound_receiving_quantity ?? 0))}
+              <br />
+              <span className={old ? "font-semibold text-amber-600 dark:text-amber-400" : ""}>
+                {age.label}{age.days !== null && age.days > 0 ? ` (${age.days} day${age.days === 1 ? "" : "s"} old)` : age.days === 0 ? " (today)" : ""}{old ? " · old, upload a fresh FBA inventory report" : ""}
+              </span>
+            </span>
+          );
+        })() : undefined}>
         <p className="mb-2 text-xs"><b>{stocked.length}</b> of <b>{yes.length}</b> onboarded FCs hold stock · total sellable <b>{fmt(fcs.reduce((a, f) => a + (f.stock ?? 0), 0))}</b> units</p>
         <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4 lg:grid-cols-8">
           {fcs.map((f) => (

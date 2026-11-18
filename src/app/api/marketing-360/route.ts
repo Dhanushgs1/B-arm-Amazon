@@ -157,7 +157,7 @@ async function card(asin: string) {
   const sellable = fcStock.filter((r) => /sellable/i.test(r.disposition) && !/unsellable/i.test(r.disposition));
   const fcDateZone = (await rows(supabase.from("mkt_fba_forecast_zone").select("report_date").order("report_date", { ascending: false }).limit(1) as any))[0]?.report_date ?? null;
   const zones = fcDateZone && skus.length ? await rows(supabase.from("mkt_fba_forecast_zone").select("*").in("sku", skus).eq("report_date", fcDateZone).order("sku").order("zone") as any) : [];
-  const inv = await rows(supabase.from("barm_amazon_fba_inventory").select("sku,your_price,afn_fulfillable_quantity,afn_reserved_quantity,afn_inbound_working_quantity,afn_inbound_shipped_quantity,afn_inbound_receiving_quantity,afn_unsellable_quantity").eq("asin", asin) as any);
+  const inv = await rows(supabase.from("barm_amazon_fba_inventory").select("sku,your_price,afn_fulfillable_quantity,afn_reserved_quantity,afn_inbound_working_quantity,afn_inbound_shipped_quantity,afn_inbound_receiving_quantity,afn_unsellable_quantity,created_at").eq("asin", asin) as any);
 
   // ── keyword positions + competitors on the same search terms ────────────────────────────────
   const kwWeek = (await rows(supabase.from("mkt_keyword_positions").select("week").eq("asin", asin).order("week", { ascending: false }).limit(1) as any))[0]?.week ?? null;
