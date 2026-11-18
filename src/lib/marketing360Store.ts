@@ -28,6 +28,11 @@ export async function importWorkbook(db: SupabaseClient, wb: XLSX.WorkBook, file
   if (kind === "delivery") {
     const rows = parseDelivery(wb);
     await write("mkt_delivery_sweep", rows, "week,platform,asin_fsn,pincode");
+    if (!opts.dry && rows.length) {
+      // the full sheet reads precomputed summaries; rebuild them from the new checks
+      const { error } = await db.rpc("mkt_refresh_delivery");
+      if (error) throw new Error(`mkt_refresh_delivery: ${error.message}`);
+    }
     const weeks = [...new Set(rows.map((r) => r.week))].sort();
     return { kind, summary: `${rows.length} delivery checks, weeks ${weeks.join(", ")}` };
   }
