@@ -112,10 +112,15 @@ async function card(asin: string) {
     .sort((a: any, b: any) => Number(b.same) - Number(a.same) || (Number(b.reviews) || 0) - (Number(a.reviews) || 0));
   const latestWide = cw.rows[0]?.week_tag;
 
-  // ── Amazon ads, last 7 report days ──────────────────────────────────────────────────────────
-  const spMax = (await rows(supabase.from("barm_amazon_sp_advertised_product").select("report_date").order("report_date", { ascending: false }).limit(1) as any))[0]?.report_date ?? null;
+  // ── Amazon ads, last 7 report days of each source ──────────────────────────────────────────
+  // Product ads come from the daily Sponsored Products upload (barm_daily_am_ads, one row per day; user,
+  // 2026-11-18); the older SP table stopped on 29 Oct. Display / brand ads have no daily upload, so each
+  // reads its own latest 7 days and says how far it runs.
+  const latestDay = async (table: string) => (await rows(supabase.from(table).select("report_date").order("report_date", { ascending: false }).limit(1) as any))[0]?.report_date ?? null;
+  const [spMax, sdMax, sbMax] = await Promise.all([latestDay("barm_daily_am_ads"), latestDay("barm_amazon_sd_campaign"), latestDay("barm_amazon_sb_campaign")]);
   const since = spMax ? isoMinus(spMax, 6) : null;
-  const sp = since ? await rows(supabase.from("barm_amazon_sp_advertised_product").select("campaign_name,spend,sales_7d,orders_7d").eq("advertised_asin", asin).gte("report_date", since) as any) : [];
+  const sdSince = sdMax ? isoMinus(sdMax, 6) : null, sbSince = sbMax ? isoMinus(sbMax, 6) : null;
+  const sp = since ? await rows(supabase.from("barm_daily_am_ads").select("campaign_name,spend,sales_7d,orders_7d").eq("asin", asin).gte("report_date", since) as any) : [];
   const [sdMaster, sbMaster] = await Promise.all([
     rows(supabase.from("am_display_ad_masters").select('"Display campaign name"').eq("ASIN", asin) as any),
     rows(supabase.from("brand_ads_master_sheet").select('"Campaign Name"').eq("ASIN", asin) as any),
@@ -123,19 +128,19 @@ async function card(asin: string) {
   // the ASIN→campaign masters, else campaigns whose name carries the product's campaign words
   // (am_display_ad_masters is RLS-hidden from the anon key, so it is often empty here)
   const words = campaignKeywords(profile?.ad_keywords, productName);
-  const byWords = async (table: string) => {
-    if (!since || !words.length) return [];
-    const r = await rows(supabase.from(table).select("campaign_name").or(words.map((w) => `campaign_name.ilike.%${w.replace(/[%,()]/g, "")}%`).join(",")).gte("report_date", since) as any);
+  const byWords = async (table: string, from: string | null) => {
+    if (!from || !words.length) return [];
+    const r = await rows(supabase.from(table).select("campaign_name").or(words.map((w) => `campaign_name.ilike.%${w.replace(/[%,()]/g, "")}%`).join(",")).gte("report_date", from) as any);
     return [...new Set(r.map((x) => x.campaign_name))];
   };
   let sdNames: string[] = sdMaster.map((m) => m["Display campaign name"]).filter(Boolean);
   let sbNames: string[] = sbMaster.map((m) => m["Campaign Name"]).filter(Boolean);
   const sdFromWords = !sdNames.length, sbFromWords = !sbNames.length;
-  if (sdFromWords) sdNames = await byWords("barm_amazon_sd_campaign");
-  if (sbFromWords) sbNames = await byWords("barm_amazon_sb_campaign");
+  if (sdFromWords) sdNames = await byWords("barm_amazon_sd_campaign", sdSince);
+  if (sbFromWords) sbNames = await byWords("barm_amazon_sb_campaign", sbSince);
   const [sd, sb] = await Promise.all([
-    since && sdNames.length ? rows(supabase.from("barm_amazon_sd_campaign").select("campaign_name,spend,sales_14d").in("campaign_name", sdNames).gte("report_date", since) as any) : Promise.resolve(null),
-    since && sbNames.length ? rows(supabase.from("barm_amazon_sb_campaign").select("campaign_name,spend,sales").in("campaign_name", sbNames).gte("report_date", since) as any) : Promise.resolve(null),
+    sdSince && sdNames.length ? rows(supabase.from("barm_amazon_sd_campaign").select("campaign_name,spend,sales_14d").in("campaign_name", sdNames).gte("report_date", sdSince) as any) : Promise.resolve(null),
+    sbSince && sbNames.length ? rows(supabase.from("barm_amazon_sb_campaign").select("campaign_name,spend,sales").in("campaign_name", sbNames).gte("report_date", sbSince) as any) : Promise.resolve(null),
   ]);
   const sum = (xs: any[] | null, k: string) => (xs === null ? null : xs.reduce((a, x) => a + (Number(x[k]) || 0), 0));
   const campaigns = (xs: any[] | null) => [...new Set((xs ?? []).filter((x) => Number(x.spend) > 0).map((x) => x.campaign_name))];
@@ -191,8 +196,8 @@ async function card(asin: string) {
     ads: {
       window: since ? { from: since, to: spMax } : null,
       product: { state: adState(sp.length || since ? sum(sp, "spend") : null), spend: sum(sp, "spend"), sales: sum(sp, "sales_7d"), campaigns: campaigns(sp) },
-      display: { state: sdNames.length ? adState(sum(sd, "spend")) : "Not set up", spend: sum(sd, "spend"), campaigns: sdNames, matched: sdFromWords ? "name" : "master" },
-      brand: { state: sbNames.length ? adState(sum(sb, "spend")) : "Not set up", spend: sum(sb, "spend"), campaigns: sbNames, matched: sbFromWords ? "name" : "master" },
+      display: { state: sdNames.length ? adState(sum(sd, "spend")) : "Not set up", spend: sum(sd, "spend"), campaigns: sdNames, matched: sdFromWords ? "name" : "master", to: sdMax },
+      brand: { state: sbNames.length ? adState(sum(sb, "spend")) : "Not set up", spend: sum(sb, "spend"), campaigns: sbNames, matched: sbFromWords ? "name" : "master", to: sbMax },
       google: { state: words.length ? adState(gSpend) : "No data", spend: gSpend, campaigns: campaigns(google), to: gMax[0]?.report_end ?? null },
       meta: { state: words.length ? adState(mSpend) : "No data", spend: mSpend, campaigns: campaigns(meta), to: mMax[0]?.report_end ?? null },
       keywords: words,
@@ -293,18 +298,20 @@ async function sheetBase(deliveryDate: string | null) {
   const latestOf = async (table: string, col: string) => (await rows(supabase.from(table).select(col).order(col, { ascending: false }).limit(1) as any))[0]?.[col] ?? null;
   const [ratingDate, fcDate, zoneDate, kwWeek, spMax, gMax, mMax] = await Promise.all([
     latestOf("mkt_rating_weekly", "snapshot_date"), latestOf("mkt_fba_fc_stock", "report_date"), latestOf("mkt_fba_forecast_zone", "report_date"),
-    latestOf("mkt_keyword_positions", "week"), latestOf("barm_amazon_sp_advertised_product", "report_date"),
+    latestOf("mkt_keyword_positions", "week"), latestOf("barm_daily_am_ads", "report_date"),
     latestOf("barm_daily_google_ad_spend", "report_end"), latestOf("barm_daily_social_media", "report_end"),
   ]);
   const since = spMax ? isoMinus(spMax, 6) : null;
+  const [sdMax, sbMax] = await Promise.all([latestOf("barm_amazon_sd_campaign", "report_date"), latestOf("barm_amazon_sb_campaign", "report_date")]);
+  const sdSince = sdMax ? isoMinus(sdMax, 6) : null, sbSince = sbMax ? isoMinus(sbMax, 6) : null;
   const [ratings, fcStock, zones, keywords, sp, sd, sb, google, meta, inv, botPrices, delivery, sdMaster, sbMaster, compWide, compPrices, zoneDelivery, deliveryDates] = await Promise.all([
     ratingDate ? allRows((a, b) => supabase.from("mkt_rating_weekly").select("asin_fsn,sku_id,this_star,this_count,last_count").eq("snapshot_date", ratingDate).order("sku_id").order("asin_fsn").range(a, b) as any) : [],
     fcDate ? allRows((a, b) => supabase.from("mkt_fba_fc_stock").select("asin,fc,disposition,quantity").eq("report_date", fcDate).order("fc").order("msku").order("disposition").range(a, b) as any) : [],
     zoneDate ? allRows((a, b) => supabase.from("mkt_fba_forecast_zone").select("sku,zone,orders_30d,current_stock,booked,intransit,to_send,alert_35d").eq("report_date", zoneDate).order("sku").order("zone").range(a, b) as any) : [],
     kwWeek ? allRows((a, b) => supabase.from("mkt_keyword_positions").select("asin,search_term,sp_position,organic_position").eq("week", kwWeek).order("search_term").order("asin").range(a, b) as any) : [],
-    since ? allRows((a, b) => supabase.from("barm_amazon_sp_advertised_product").select("id,advertised_asin,spend").gte("report_date", since).order("id").range(a, b) as any) : [],
-    since ? allRows((a, b) => supabase.from("barm_amazon_sd_campaign").select("id,campaign_name,spend").gte("report_date", since).order("id").range(a, b) as any) : [],
-    since ? allRows((a, b) => supabase.from("barm_amazon_sb_campaign").select("id,campaign_name,spend").gte("report_date", since).order("id").range(a, b) as any) : [],
+    since ? allRows((a, b) => supabase.from("barm_daily_am_ads").select("id,advertised_asin:asin,spend").gte("report_date", since).order("id").range(a, b) as any) : [],
+    sdSince ? allRows((a, b) => supabase.from("barm_amazon_sd_campaign").select("id,campaign_name,spend").gte("report_date", sdSince).order("id").range(a, b) as any) : [],
+    sbSince ? allRows((a, b) => supabase.from("barm_amazon_sb_campaign").select("id,campaign_name,spend").gte("report_date", sbSince).order("id").range(a, b) as any) : [],
     gMax ? allRows((a, b) => supabase.from("barm_daily_google_ad_spend").select("id,campaign_name,spend").gte("report_end", isoMinus(gMax, 6)).order("id").range(a, b) as any) : [],
     mMax ? allRows((a, b) => supabase.from("barm_daily_social_media").select("id,campaign_name,spend").gte("report_end", isoMinus(mMax, 6)).order("id").range(a, b) as any) : [],
     rows(supabase.from("barm_amazon_fba_inventory").select("asin,afn_fulfillable_quantity,your_price") as any),
@@ -320,12 +327,12 @@ async function sheetBase(deliveryDate: string | null) {
       : allRows((a, b) => supabase.from("mkt_delivery_zone_mv").select("*").order("asin").order("zone").range(a, b) as any),
     rows(supabase.rpc("mkt_delivery_dates") as any),
   ]);
-  return { products, ratingDate, fcDate, zoneDate, kwWeek, spMax, gMax, mMax, since, ratings, fcStock, zones, keywords, sp, sd, sb, google, meta, inv, botPrices, delivery, sdMaster, sbMaster, compWide, compPrices, zoneDelivery, deliveryDates };
+  return { products, ratingDate, fcDate, zoneDate, kwWeek, spMax, gMax, mMax, since, sdMax, sbMax, ratings, fcStock, zones, keywords, sp, sd, sb, google, meta, inv, botPrices, delivery, sdMaster, sbMaster, compWide, compPrices, zoneDelivery, deliveryDates };
 }
 
 async function fullSheet(deliveryDate: string | null) {
   const base = await sheetBaseCached(deliveryDate);
-  const { products, ratingDate, fcDate, zoneDate, kwWeek, spMax, gMax, mMax, since, ratings, fcStock, zones, keywords, sp, sd, sb, google, meta, inv, botPrices, delivery, sdMaster, sbMaster, compWide, compPrices, zoneDelivery, deliveryDates } = base;
+  const { products, ratingDate, fcDate, zoneDate, kwWeek, spMax, gMax, mMax, since, sdMax, sbMax, ratings, fcStock, zones, keywords, sp, sd, sb, google, meta, inv, botPrices, delivery, sdMaster, sbMaster, compWide, compPrices, zoneDelivery, deliveryDates } = base;
   // the team's own fields: always fresh, so an edit shows on the next load
   const [profiles, plan, influencers, notes, tamResearch] = await Promise.all([
     rows(supabase.from("mkt_product_profile").select("*") as any),
@@ -371,7 +378,7 @@ async function fullSheet(deliveryDate: string | null) {
     const bestSp = kw.filter((k: any) => k.sp_position !== null).sort((a: any, b: any) => a.sp_position - b.sp_position)[0];
     const sdNames = (sdMap.get(p.asin) ?? []).map((m: any) => m["Display campaign name"]);
     const sbNames = (sbMap.get(p.asin) ?? []).map((m: any) => m["Campaign Name"]);
-    const sdRows = since ? byName(sd, sdNames, words) : null, sbRows = since ? byName(sb, sbNames, words) : null;
+    const sdRows = sdMax ? byName(sd, sdNames, words) : null, sbRows = sbMax ? byName(sb, sbNames, words) : null;
     const g = gMax && words.length ? byName(google, null, words) : null, m = mMax && words.length ? byName(meta, null, words) : null;
     const spRows = spBy.get(p.asin) ?? [];
     const infl = infBy.get(p.asin) ?? [];
@@ -425,7 +432,7 @@ async function fullSheet(deliveryDate: string | null) {
   });
   return {
     rows: out,
-    asOf: { rating: ratingDate, fc: fcDate, forecast: zoneDate, positions: kwWeek, amazonAds: since ? { from: since, to: spMax } : null, google: gMax, meta: mMax },
+    asOf: { rating: ratingDate, fc: fcDate, forecast: zoneDate, positions: kwWeek, amazonAds: since ? { from: since, to: spMax } : null, amazonDisplay: sdMax, amazonBrand: sbMax, google: gMax, meta: mMax },
     competitorBlocked: compWide.blocked ?? compPrices.blocked,
     deliveryDate, deliveryDates, cachedAt: base.cachedAt, stale: base.stale ?? null,
   };
@@ -481,19 +488,19 @@ async function sources() {
     if (f) q = f(q);
     return one(q.order(col, { ascending: false }).limit(1), col);
   };
-  const [rating, fc, forecast, positions, delivery, amazonAds, amazonDaily, google, meta, compPrices, compRatingsWeek, fbaReport, priceListing, botPrice] = await Promise.all([
+  const [rating, fc, forecast, positions, delivery, amazonAds, amazonDisplay, amazonBrand, google, meta, compPrices, compRatingsWeek, fbaReport, priceListing, botPrice] = await Promise.all([
     latest("mkt_rating_weekly", "snapshot_date"), latest("mkt_fba_fc_stock", "report_date"), latest("mkt_fba_forecast_zone", "report_date"),
     latest("mkt_keyword_positions", "week"),
     // the latest check date from mkt_delivery_dates() (sorting the ~60k sweep rows directly is too slow for the anon key)
     one(supabase.rpc("mkt_delivery_dates").select("scraped_date").order("scraped_date", { ascending: false }).limit(1) as any, "scraped_date"),
-    latest("barm_amazon_sp_advertised_product", "report_date"), latest("barm_daily_am_ads", "report_date"),
+    latest("barm_daily_am_ads", "report_date"), latest("barm_amazon_sd_campaign", "report_date"), latest("barm_amazon_sb_campaign", "report_date"),
     latest("barm_daily_google_ad_spend", "report_end"), latest("barm_daily_social_media", "report_end"),
     one(supabase.rpc("mkt_competitor_prices").select("last_checked_at").order("last_checked_at", { ascending: false, nullsFirst: false }).limit(1) as any, "last_checked_at"),
     one(supabase.rpc("mkt_competitor_ratings").select("week_tag").order("week_tag", { ascending: false }).limit(1) as any, "week_tag"),
     latest("barm_amazon_fba_inventory", "created_at"), latest("barm_amazon_price_listing", "created_at"),
     latest("product_rating_review_metrics", "updated_at", (q) => q.eq("platform", "Amazon")),
   ]);
-  const dates: SourceDates = { rating, fc, forecast, positions, delivery, amazonAds, amazonDaily, google, meta, compPrices, compRatingsWeek, fbaReport, priceListing, botPrice };
+  const dates: SourceDates = { rating, fc, forecast, positions, delivery, amazonAds, amazonDisplay, amazonBrand, google, meta, compPrices, compRatingsWeek, fbaReport, priceListing, botPrice };
   const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
   return { today, dates, rows: sourceRows(dates, today) };
 }

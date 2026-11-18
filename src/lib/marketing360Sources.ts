@@ -8,8 +8,9 @@ export type SourceDates = {
   forecast: string | null;        // mkt_fba_forecast_zone.report_date (the forecast file's date)
   positions: string | null;       // mkt_keyword_positions.week
   delivery: string | null;        // mkt_delivery_sweep max scraped_date
-  amazonAds: string | null;       // barm_amazon_sp_advertised_product max report_date (what the Amazon ads columns read)
-  amazonDaily: string | null;     // barm_daily_am_ads max report_date (newer daily upload, shown for comparison)
+  amazonAds: string | null;       // barm_daily_am_ads max report_date (daily Sponsored Products upload, the Product ad column)
+  amazonDisplay: string | null;   // barm_amazon_sd_campaign max report_date (Display ad column)
+  amazonBrand: string | null;     // barm_amazon_sb_campaign max report_date (Brand ad column)
   google: string | null;          // barm_daily_google_ad_spend max report_end
   meta: string | null;            // barm_daily_social_media max report_end
   compPrices: string | null;      // mkt_competitor_prices() max last_checked_at
@@ -47,7 +48,8 @@ function row(group: string, from: string, upTo: string | null, maxAge: number, t
 }
 
 export function sourceRows(d: SourceDates, today: string): SourceRow[] {
-  const ads = day(d.amazonAds), daily = day(d.amazonDaily);
+  const ads = day(d.amazonAds);
+  const sdsb = [day(d.amazonDisplay), day(d.amazonBrand)].filter(Boolean).sort()[0] ?? null;
   const fbaReport = day(d.fbaReport);
   const priceDay = day(d.botPrice) ?? day(d.priceListing);
   return [
@@ -59,8 +61,9 @@ export function sourceRows(d: SourceDates, today: string): SourceRow[] {
     row("Price — ours", "Rating bot's Amazon price (else the FBA report's price) · M.R.P. from the All Listings upload", priceDay, 8, today),
     row("Price — competitor", "Competitor analysis price checks (competitor_analysis, same-product matches only)", day(d.compPrices), 8, today),
     { group: "Retargeting", from: "Typed in by the marketing team", upTo: null, ageDays: null, status: "typed" },
-    row("Amazon ads", "Uploaded Amazon ad reports: Sponsored Products, Display, Brand (last 7 report days)", ads, 3, today,
-      daily && ads && daily > ads ? `the daily Amazon ads upload already runs to ${daily}` : undefined),
+    row("Amazon ads — Product ad", "Daily Amazon Sponsored Products upload (Daily Ad Spend page), last 7 days", ads, 3, today),
+    row("Amazon ads — Display, Brand ad", "Uploaded Amazon Sponsored Display and Sponsored Brands reports, each its own latest 7 days (no daily upload for these)", sdsb, 3, today,
+      d.amazonDisplay !== d.amazonBrand ? `display to ${day(d.amazonDisplay) ?? "—"}, brand to ${day(d.amazonBrand) ?? "—"}` : undefined),
     row("FBA stock — FCs, sales, to send", "Drive: \"FBA Forecasting <date>.xlsx\" — FBA_stock tab (per-FC balance) and FBA analysis tab (30-day orders, to send by zone)", day(d.forecast), 3, today,
       d.fc && d.forecast && d.fc !== d.forecast ? `FC balances inside that file are as on ${day(d.fc)}` : undefined),
     row("FBA stock — Available, Inbound", "Uploaded Amazon FBA inventory report (Inventory page upload)", fbaReport, 3, today),

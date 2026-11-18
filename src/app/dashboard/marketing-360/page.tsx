@@ -330,7 +330,7 @@ function ProductCard({ data, reload }: { data: any; reload: () => void }) {
         </Section>
       )}
 
-      <Section icon={Megaphone} title="Ads status" source={`Amazon: last 7 report days${data.ads.window ? ` (${dateLabel(data.ads.window.from)} – ${dateLabel(data.ads.window.to)})` : ""} · Google / Meta: campaign names containing “${data.ads.keywords.join("”, “") || "—"}”, last 7 days to ${dateLabel(data.ads.google.to)}`}>
+      <Section icon={Megaphone} title="Ads status" source={`Amazon product ads: daily upload, last 7 days${data.ads.window ? ` (${dateLabel(data.ads.window.from)} – ${dateLabel(data.ads.window.to)})` : ""} · display ads to ${dateLabel(data.ads.display.to)} · brand ads to ${dateLabel(data.ads.brand.to)} (their latest reports) · Google / Meta: campaign names containing “${data.ads.keywords.join("”, “") || "—"}”, last 7 days to ${dateLabel(data.ads.google.to)}`}>
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
           {([["Amazon product ads", data.ads.product], ["Amazon display ads", data.ads.display], ["Amazon brand ads", data.ads.brand], ["Google ads", data.ads.google], ["Meta (Facebook / Instagram)", data.ads.meta]] as [string, any][]).map(([label, a]) => (
             <div key={label} className="rounded-lg border border-border/70 bg-background p-2.5">
@@ -852,7 +852,7 @@ function FullSheet({ onOpen }: { onOpen: (asin: string) => void }) {
           {refreshing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
         </label>
         <span className="text-[11px] text-muted-foreground">
-          {shown.length} products · rating {dateLabel(a.rating)} · FBA {dateLabel(a.fc)} · forecast {dateLabel(a.forecast)} · positions {a.positions ?? "—"} · Amazon ads {a.amazonAds ? `${dateLabel(a.amazonAds.from)}–${dateLabel(a.amazonAds.to)}` : "—"} · Google/Meta to {dateLabel(a.google)} · click a product to open its card
+          {shown.length} products · rating {dateLabel(a.rating)} · FBA {dateLabel(a.fc)} · forecast {dateLabel(a.forecast)} · positions {a.positions ?? "—"} · Amazon product ads {a.amazonAds ? `${dateLabel(a.amazonAds.from)}–${dateLabel(a.amazonAds.to)}` : "—"} · display ads to {dateLabel(a.amazonDisplay)} · brand ads to {dateLabel(a.amazonBrand)} · Google/Meta to {dateLabel(a.google)} · click a product to open its card
         </span>
       </div>
       <p className="text-[11px] text-muted-foreground">Shaded columns are editable — click a cell, Enter or click away to save, Esc to cancel. Click a delivery number to see its pincodes.</p>
