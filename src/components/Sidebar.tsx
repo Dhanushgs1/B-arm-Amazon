@@ -35,6 +35,7 @@ import {
   Sparkles,
   Database,
   CalendarRange,
+  Presentation,
   Radio,
   Layers,
   ShoppingBag,
@@ -89,6 +90,7 @@ const NAV_SECTIONS: SidebarNavSection[] = [
   {
     label: "Intelligence",
     items: [
+      { id: "marketing-360", label: "Product Marketing 360", icon: Presentation, path: "/dashboard/marketing-360" },
       { id: "daily-ad-spend", label: "Daily Ad Spend", icon: Sparkles, path: "/dashboard/daily-ad-spend" },
       { id: "ai", label: "AI Assistant", icon: Bot },
     ],
@@ -206,6 +208,7 @@ const COMPARE_NAV_SECTIONS: SidebarNavSection[] = [
       { id: "seasonal", label: "Seasonal Analytics", icon: CalendarRange, path: "/dashboard/seasonal" },
       { id: "ratings-reviews", label: "⭐ Ratings & Reviews Intelligence", icon: Star, path: "/dashboard/ratings-reviews" },
       { id: "master", label: "Master", icon: Database, path: "/dashboard/master" },
+      { id: "marketing-360", label: "Product Marketing 360", icon: Presentation, path: "/dashboard/marketing-360" },
       { id: "daily-ad-spend", label: "Daily Ad Spend", icon: Sparkles, path: "/dashboard/daily-ad-spend" },
       { id: "ai", label: "✨ AI Assistant", icon: Bot, path: "/dashboard/ai" },
       { id: "optimization", label: "Amazon Rules Engine", icon: Wand2, path: "/dashboard/optimization" },

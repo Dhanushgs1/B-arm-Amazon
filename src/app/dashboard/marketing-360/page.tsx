@@ -1,0 +1,742 @@
+"use client";
+
+// Product Marketing 360 — the marketing team's per-product template on the dashboard (user, 2026-11-17).
+// Auto sections come from /api/marketing-360 (stored data only: ad reports, inventory, and the Drive
+// files imported into the mkt_* tables). The team's own planning — TAM, audience, retargeting, content,
+// influencers, action plan, channel notes — is typed in here and saved to Supabase.
+// Missing data is shown as missing ("—" / "No data"), never as zero.
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import * as XLSX from "xlsx";
+import {
+  Loader2, Upload, Search, Star, Megaphone, Boxes, MapPin, KeyRound, Users, ClipboardList, Target, ExternalLink,
+  CheckCircle2, AlertTriangle, Plus, Trash2, Save, RefreshCw, StickyNote, Truck, Package, Download,
+} from "lucide-react";
+import { supabasePublic as db } from "@/lib/amazonReportUpload";
+import { importWorkbook } from "@/lib/marketing360Store";
+import { RETARGET_OPTIONS, CHANNELS } from "@/lib/marketing360Import";
+import { deliveryTone } from "@/lib/marketing360Rules";
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+type Product = { asin: string; name: string; category: string | null; active: boolean; skus: string[]; has_profile: boolean };
+
+const CONTENT_ITEMS = ["How to use video", "QR for pamphlet", "Pamphlets", "Description in listing with SEO", "Audio", "Hashtags"] as const;
+const LANGUAGES = ["Hindi", "English", "Bengali", "Marathi", "Telugu", "Tamil", "Gujarati", "Urdu", "Kannada", "Odia", "Malayalam"];
+
+const fmt = (n: number | null | undefined, d = 0) => (n === null || n === undefined || Number.isNaN(Number(n)) ? "—" : Number(n).toLocaleString("en-IN", { maximumFractionDigits: d }));
+const inr = (n: number | null | undefined) => (n === null || n === undefined ? "—" : `₹${fmt(n)}`);
+const dateLabel = (d: string | null | undefined) => (d ? new Date(`${d.slice(0, 10)}T00:00:00Z`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }) : "—");
+
+function Section({ icon: Icon, title, source, children, right }: { icon: typeof Star; title: string; source?: string; children: React.ReactNode; right?: React.ReactNode }) {
+  return (
+    <section className="rounded-xl border border-border bg-card p-4 shadow-sm">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h2 className="flex items-center gap-2 text-sm font-extrabold"><Icon className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />{title}</h2>
+          {source && <p className="mt-0.5 text-[11px] text-muted-foreground">{source}</p>}
+        </div>
+        {right}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+const STATE_CLS: Record<string, string> = {
+  On: "bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800",
+  Off: "bg-red-100 text-red-800 border-red-300 dark:bg-red-950/50 dark:text-red-300 dark:border-red-800",
+  "Not set up": "bg-slate-100 text-slate-600 border-slate-300 dark:bg-slate-800/60 dark:text-slate-300 dark:border-slate-700",
+  "No data": "bg-slate-50 text-slate-500 border-slate-200 dark:bg-slate-900/60 dark:text-slate-400 dark:border-slate-800",
+};
+const Pill = ({ text, cls }: { text: string; cls?: string }) => (
+  <span className={`inline-flex items-center whitespace-nowrap rounded-md border px-1.5 py-0.5 text-[10px] font-bold ${cls ?? STATE_CLS[text] ?? STATE_CLS["No data"]}`}>{text}</span>
+);
+const TONE: Record<string, { cls: string; label: string }> = {
+  fast: { cls: "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300", label: "≤2 days" },
+  ok: { cls: "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300", label: "3–5 days" },
+  slow: { cls: "border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300", label: "6+ days" },
+  none: { cls: "border-slate-300 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-400", label: "No delivery / unavailable" },
+};
+const Pos = ({ v }: { v: number | null }) => (v === null ? <span className="text-muted-foreground">—</span> : <b className={v <= 3 ? "text-emerald-700 dark:text-emerald-400" : v <= 10 ? "" : "text-amber-700 dark:text-amber-400"}>#{v}</b>);
+const th = "px-2 py-1.5 text-left text-[11px] font-bold uppercase tracking-wide text-muted-foreground";
+const td = "px-2 py-1.5 align-top";
+const input = "w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs";
+const btn = "inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-bold hover:bg-muted disabled:opacity-60";
+const btnPrimary = "inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-indigo-700 disabled:opacity-60";
+
+// ── import panel ──────────────────────────────────────────────────────────────────────────────
+function ImportPanel({ onDone }: { onDone: () => void }) {
+  const ref = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [log, setLog] = useState<{ ok: boolean; text: string }[]>([]);
+  const run = async (files: FileList | null) => {
+    if (!files?.length) return;
+    setBusy(true);
+    const out: { ok: boolean; text: string }[] = [];
+    for (const f of Array.from(files)) {
+      try {
+        const wb = XLSX.read(await f.arrayBuffer(), { type: "array" });
+        const r = await importWorkbook(db, wb, f.name);
+        out.push({ ok: true, text: `${f.name}: ${r.summary}` });
+      } catch (e) {
+        out.push({ ok: false, text: e instanceof Error ? e.message : String(e) });
+      }
+      setLog([...out]);
+    }
+    setBusy(false);
+    if (ref.current) ref.current.value = "";
+    onDone();
+  };
+  return (
+    <div className="rounded-xl border border-dashed border-indigo-300 bg-indigo-50/40 p-3 dark:border-indigo-800 dark:bg-indigo-950/20">
+      <div className="flex flex-wrap items-center gap-2">
+        <input ref={ref} type="file" multiple accept=".xlsx,.xls" className="hidden" onChange={(e) => run(e.target.files)} />
+        <button className={btnPrimary} disabled={busy} onClick={() => ref.current?.click()}>
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />} Import Drive files
+        </button>
+        <span className="text-[11px] text-muted-foreground">
+          Download as .xlsx from Drive and drop in any of: <b>BARM_W41_W44_Sweep</b> (delivery) · <b>AM FK Rating and Review – &lt;date&gt; (final)</b> · <b>BARM_Gyno_Competitor_Position_Tracker</b> · <b>FBA Forecasting &lt;date&gt;</b> · the <b>Marketing Team Template</b>. Re-importing updates; it never duplicates.
+        </span>
+      </div>
+      {log.length > 0 && (
+        <ul className="mt-2 space-y-0.5">
+          {log.map((l, i) => (
+            <li key={i} className={`flex items-start gap-1.5 text-xs font-semibold ${l.ok ? "text-green-700 dark:text-green-400" : "text-red-700 dark:text-red-400"}`}>
+              {l.ok ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}{l.text}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// ── manual: profile ───────────────────────────────────────────────────────────────────────────
+function ProfileEditor({ asin, profile, onSaved }: { asin: string; profile: any; onSaved: () => void }) {
+  const [p, setP] = useState<any>(() => ({ tam_value: "", primary_audience: "", secondary_audience: "", retarget: {}, content: {}, ad_keywords: "", notes: "", ...(profile ?? {}) }));
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const save = async () => {
+    setBusy(true); setMsg(null);
+    const row = {
+      asin, tam_value: p.tam_value === "" || p.tam_value === null ? null : Number(p.tam_value), primary_audience: p.primary_audience || null,
+      secondary_audience: p.secondary_audience || null, retarget: p.retarget ?? {}, content: p.content ?? {}, ad_keywords: p.ad_keywords || null,
+      notes: p.notes || null, updated_at: new Date().toISOString(),
+    };
+    const { error } = await db.from("mkt_product_profile").upsert(row, { onConflict: "asin" });
+    setBusy(false);
+    setMsg(error ? `Not saved: ${error.message}` : "Saved");
+    if (!error) onSaved();
+  };
+  const toggle = (k: "retarget" | "content", key: string) => setP((x: any) => ({ ...x, [k]: { ...(x[k] ?? {}), [key]: !x[k]?.[key] } }));
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <div className="space-y-2">
+        <label className="block text-[11px] font-bold text-muted-foreground">TAM value (₹)
+          <input className={input} inputMode="numeric" value={p.tam_value ?? ""} onChange={(e) => setP({ ...p, tam_value: e.target.value.replace(/[^\d.]/g, "") })} />
+        </label>
+        <label className="block text-[11px] font-bold text-muted-foreground">Primary audience
+          <textarea className={input} rows={3} value={p.primary_audience ?? ""} onChange={(e) => setP({ ...p, primary_audience: e.target.value })} />
+        </label>
+        <label className="block text-[11px] font-bold text-muted-foreground">Secondary audience
+          <textarea className={input} rows={3} value={p.secondary_audience ?? ""} onChange={(e) => setP({ ...p, secondary_audience: e.target.value })} />
+        </label>
+        <label className="block text-[11px] font-bold text-muted-foreground">Google / Meta campaign words (comma separated — used to find this product&apos;s campaigns)
+          <input className={input} placeholder="e.g. postpartum, p0stpartum" value={p.ad_keywords ?? ""} onChange={(e) => setP({ ...p, ad_keywords: e.target.value })} />
+        </label>
+      </div>
+      <div className="space-y-3">
+        <div>
+          <p className="mb-1 text-[11px] font-bold text-muted-foreground">Ways retargeting is done</p>
+          <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+            {RETARGET_OPTIONS.map((o) => (
+              <label key={o} className="flex items-center gap-2 text-xs"><input type="checkbox" checked={!!p.retarget?.[o]} onChange={() => toggle("retarget", o)} />{o}</label>
+            ))}
+          </div>
+        </div>
+        <div>
+          <p className="mb-1 text-[11px] font-bold text-muted-foreground">Content ready</p>
+          <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+            {CONTENT_ITEMS.map((o) => (
+              <label key={o} className="flex items-center gap-2 text-xs"><input type="checkbox" checked={!!p.content?.[o]} onChange={() => toggle("content", o)} />{o}</label>
+            ))}
+          </div>
+        </div>
+        <label className="block text-[11px] font-bold text-muted-foreground">Notes
+          <textarea className={input} rows={2} value={p.notes ?? ""} onChange={(e) => setP({ ...p, notes: e.target.value })} />
+        </label>
+        <div className="flex items-center gap-2">
+          <button className={btnPrimary} disabled={busy} onClick={save}>{busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />} Save</button>
+          {msg && <span className={`text-xs font-semibold ${msg === "Saved" ? "text-green-700 dark:text-green-400" : "text-red-700 dark:text-red-400"}`}>{msg}</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── manual: rows (action plan / influencers) ──────────────────────────────────────────────────
+function ActionPlan({ asin, rows, onChange }: { asin: string; rows: any[]; onChange: () => void }) {
+  const [draft, setDraft] = useState({ plan_date: "", task: "" });
+  const [err, setErr] = useState<string | null>(null);
+  const add = async () => {
+    if (!draft.task.trim()) return;
+    const { error } = await db.from("mkt_action_plan").insert({ asin, plan_date: draft.plan_date || null, task: draft.task.trim() });
+    if (error) return setErr(error.message);
+    setDraft({ plan_date: "", task: "" }); setErr(null); onChange();
+  };
+  const setStatus = async (id: number, status: string) => { const { error } = await db.from("mkt_action_plan").update({ status }).eq("id", id); if (error) setErr(error.message); else onChange(); };
+  const del = async (id: number) => { const { error } = await db.from("mkt_action_plan").delete().eq("id", id); if (error) setErr(error.message); else onChange(); };
+  return (
+    <div className="space-y-2">
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead><tr className="border-b border-border"><th className={th}>Date</th><th className={th}>Task</th><th className={th}>Status</th><th className={th} /></tr></thead>
+          <tbody>
+            {rows.length === 0 && <tr><td className={td} colSpan={4}><span className="text-muted-foreground">No actions yet.</span></td></tr>}
+            {rows.map((r) => (
+              <tr key={r.id} className="border-b border-border/60">
+                <td className={`${td} whitespace-nowrap`}>{r.plan_date ?? "—"}</td>
+                <td className={td}>{r.task}</td>
+                <td className={td}>
+                  <select className="rounded-md border border-border bg-background px-1.5 py-1 text-xs" value={r.status} onChange={(e) => setStatus(r.id, e.target.value)}>
+                    {["Open", "In progress", "Done"].map((s) => <option key={s}>{s}</option>)}
+                  </select>
+                </td>
+                <td className={td}><button title="Delete" className="text-muted-foreground hover:text-red-600" onClick={() => del(r.id)}><Trash2 className="h-3.5 w-3.5" /></button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <input className={`${input} sm:w-40`} placeholder="Date (e.g. 02.09.2026)" value={draft.plan_date} onChange={(e) => setDraft({ ...draft, plan_date: e.target.value })} />
+        <input className={`${input} min-w-0 flex-1`} placeholder="Task" value={draft.task} onChange={(e) => setDraft({ ...draft, task: e.target.value })} onKeyDown={(e) => e.key === "Enter" && add()} />
+        <button className={btn} onClick={add}><Plus className="h-3.5 w-3.5" /> Add</button>
+      </div>
+      {err && <p className="text-xs font-semibold text-red-700 dark:text-red-400">{err}</p>}
+    </div>
+  );
+}
+
+function Influencers({ asin, rows, onChange }: { asin: string; rows: any[]; onChange: () => void }) {
+  const empty = { kind: "organic", language: "Hindi", influencer_name: "", post_link: "", digital_rights: "", states: "" };
+  const [d, setD] = useState(empty);
+  const [err, setErr] = useState<string | null>(null);
+  const add = async () => {
+    if (!d.influencer_name.trim()) return;
+    const { error } = await db.from("mkt_influencer_posts").insert({ asin, ...d, influencer_name: d.influencer_name.trim(), post_link: d.post_link || null, digital_rights: d.digital_rights || null, states: d.states || null });
+    if (error) return setErr(error.message);
+    setD(empty); setErr(null); onChange();
+  };
+  const del = async (id: number) => { const { error } = await db.from("mkt_influencer_posts").delete().eq("id", id); if (error) setErr(error.message); else onChange(); };
+  const byLang = LANGUAGES.map((l) => ({ l, n: rows.filter((r) => r.language === l).length }));
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-1">
+        {byLang.map(({ l, n }) => <Pill key={l} text={`${l}: ${n ? `${n} post${n > 1 ? "s" : ""}` : "none"}`} cls={n ? STATE_CLS.On : STATE_CLS["No data"]} />)}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead><tr className="border-b border-border"><th className={th}>Type</th><th className={th}>Language</th><th className={th}>Influencer</th><th className={th}>Post</th><th className={th}>Digital rights</th><th className={th}>Status / states</th><th className={th} /></tr></thead>
+          <tbody>
+            {rows.length === 0 && <tr><td className={td} colSpan={7}><span className="text-muted-foreground">No influencer posts yet.</span></td></tr>}
+            {rows.map((r) => (
+              <tr key={r.id} className="border-b border-border/60">
+                <td className={td}>{r.kind === "ads" ? "Post ad" : "Organic"}</td>
+                <td className={td}>{r.language ?? "—"}</td>
+                <td className={td}>{r.influencer_name}</td>
+                <td className={td}>{r.post_link ? <a className="inline-flex items-center gap-1 text-indigo-700 underline dark:text-indigo-300" href={r.post_link} target="_blank" rel="noreferrer">Open <ExternalLink className="h-3 w-3" /></a> : "—"}</td>
+                <td className={td}>{r.digital_rights ?? "—"}</td>
+                <td className={td}>{r.states ?? "—"}</td>
+                <td className={td}><button title="Delete" className="text-muted-foreground hover:text-red-600" onClick={() => del(r.id)}><Trash2 className="h-3.5 w-3.5" /></button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-7">
+        <select className={input} value={d.kind} onChange={(e) => setD({ ...d, kind: e.target.value })}><option value="organic">Organic</option><option value="ads">Post ad</option></select>
+        <select className={input} value={d.language} onChange={(e) => setD({ ...d, language: e.target.value })}>{LANGUAGES.map((l) => <option key={l}>{l}</option>)}</select>
+        <input className={input} placeholder="Influencer name" value={d.influencer_name} onChange={(e) => setD({ ...d, influencer_name: e.target.value })} />
+        <input className={input} placeholder="Post link" value={d.post_link} onChange={(e) => setD({ ...d, post_link: e.target.value })} />
+        <input className={input} placeholder="Digital rights" value={d.digital_rights} onChange={(e) => setD({ ...d, digital_rights: e.target.value })} />
+        <input className={input} placeholder="Status / states" value={d.states} onChange={(e) => setD({ ...d, states: e.target.value })} />
+        <button className={btn} onClick={add}><Plus className="h-3.5 w-3.5" /> Add</button>
+      </div>
+      {err && <p className="text-xs font-semibold text-red-700 dark:text-red-400">{err}</p>}
+    </div>
+  );
+}
+
+// ── the card ──────────────────────────────────────────────────────────────────────────────────
+function ProductCard({ data, reload }: { data: any; reload: () => void }) {
+  const ourRating = data.rating.rows.find((r: any) => r.this_star !== null) ?? data.rating.rows[0];
+  const cheaper = data.competitors.prices.filter((c: any) => c.is_competitor_cheaper);
+  const fcs: any[] = data.fba.fcs;
+  const yes = fcs.filter((f) => f.onboarded === "Yes");
+  const stocked = yes.filter((f) => (f.stock ?? 0) > 0);
+  const zones: any[] = data.forecast.zones;
+  const short = zones.filter((z) => z.alert_35d && z.alert_35d !== "OK");
+  const deliveryByState = useMemo(() => {
+    const m = new Map<string, any[]>();
+    for (const c of data.delivery.latest) m.set(c.state, [...(m.get(c.state) ?? []), c]);
+    return [...m.entries()];
+  }, [data.delivery.latest]);
+  const compByTerm = useMemo(() => {
+    const m = new Map<string, any[]>();
+    for (const c of data.positions.competitors) m.set(c.search_term, [...(m.get(c.search_term) ?? []), c]);
+    for (const [k, v] of m) m.set(k, v.filter((c) => c.organic_position !== null || c.sp_position !== null).sort((a, b) => Math.min(a.organic_position ?? 999, a.sp_position ?? 999) - Math.min(b.organic_position ?? 999, b.sp_position ?? 999)).slice(0, 3));
+    return m;
+  }, [data.positions.competitors]);
+  const inv = data.fba.inventory?.[0];
+
+  return (
+    <div className="space-y-4">
+      {/* headline */}
+      <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-lg font-extrabold">{data.productName ?? data.asin}</h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              ASIN <b className="text-foreground">{data.asin}</b> · SKU {data.listing.skus.join(", ") || "—"} · {data.category ?? "No category"} ·{" "}
+              <a href={data.listing.link} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-indigo-700 underline dark:text-indigo-300">Amazon listing <ExternalLink className="h-3 w-3" /></a>
+            </p>
+          </div>
+          <button className={btn} onClick={reload}><RefreshCw className="h-3.5 w-3.5" /> Refresh</button>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+          {[
+            ["Our price", inr(Number(data.listing.price))],
+            ["Star rating", ourRating?.this_star ? `${ourRating.this_star}★` : "—"],
+            ["Ratings", ourRating ? `${fmt(ourRating.this_count)}${ourRating.last_count !== null && ourRating.this_count !== null ? ` (${ourRating.this_count - ourRating.last_count >= 0 ? "+" : ""}${ourRating.this_count - ourRating.last_count} wk)` : ""}` : "—"],
+            ["FBA FCs stocked", `${stocked.length} of ${yes.length}`],
+            ["Zones short (35 d)", zones.length ? `${short.length} of ${zones.length}` : "—"],
+            ["TAM", data.profile?.tam_value ? inr(data.profile.tam_value) : "—"],
+          ].map(([k, v]) => (
+            <div key={k} className="rounded-lg border border-border/70 bg-background px-3 py-2">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">{k}</p>
+              <p className="text-base font-extrabold">{v}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Section icon={Star} title="Rating & reviews — ours vs competitors" source={`Ours: Drive weekly rating file, ${dateLabel(data.rating.snapshot_date)} · Competitors: competitor analysis${data.competitors.ratings_week ? `, ${data.competitors.ratings_week}` : ""}`}>
+          {data.rating.rows.length === 0 ? <p className="text-xs text-muted-foreground">No rating row for this ASIN in the last imported rating file.</p> : (
+            <table className="mb-3 w-full text-xs">
+              <thead><tr className="border-b border-border"><th className={th}>SKU</th><th className={th}>Last week</th><th className={th}>This week</th><th className={th}>Stock</th></tr></thead>
+              <tbody>{data.rating.rows.map((r: any) => (
+                <tr key={r.sku_id} className="border-b border-border/60"><td className={td}>{r.sku_id}</td><td className={td}>{r.last_star ?? "—"}★ · {fmt(r.last_count)}</td><td className={td}><b>{r.this_star ?? "—"}★ · {fmt(r.this_count)}</b></td><td className={td}>{r.stock_status ?? "—"}</td></tr>
+              ))}</tbody>
+            </table>
+          )}
+          {data.competitors.ratings.length === 0 ? <p className="text-xs text-muted-foreground">{data.competitors.blocked ? "Competitor ratings: not readable by the dashboard (same permission as above)." : "No competitor ratings stored for this product yet."}</p> : (
+            <table className="w-full text-xs">
+              <thead><tr className="border-b border-border"><th className={th}>Competitor</th><th className={th}>Marketplace</th><th className={th}>Rating</th><th className={th}>Reviews</th></tr></thead>
+              <tbody>{data.competitors.ratings.map((c: any, i: number) => (
+                <tr key={i} className="border-b border-border/60"><td className={td}>{c.url ? <a href={c.url} target="_blank" rel="noreferrer" className="text-indigo-700 underline dark:text-indigo-300">{c.name ?? "Competitor"}</a> : c.name ?? "—"}</td><td className={td}>{c.marketplace}</td><td className={td}>{c.rating ?? "—"}</td><td className={td}>{fmt(c.reviews)}</td></tr>
+              ))}</tbody>
+            </table>
+          )}
+        </Section>
+
+        <Section icon={Target} title="Price — lowest in market?" source="competitor_analysis (latest checks)" right={data.competitors.prices.length ? <Pill text={cheaper.length ? `${cheaper.length} competitor${cheaper.length > 1 ? "s" : ""} cheaper` : "We are lowest"} cls={cheaper.length ? STATE_CLS.Off : STATE_CLS.On} /> : undefined}>
+          {data.competitors.prices.length === 0 ? <p className="text-xs text-muted-foreground">{data.competitors.blocked ? "The competitor tables are readable only by signed-in Supabase users, not by the dashboard — no competitor prices can be shown yet." : "No competitor price checks stored for this ASIN."}</p> : (
+            <table className="w-full text-xs">
+              <thead><tr className="border-b border-border"><th className={th}>Competitor</th><th className={th}>Their price</th><th className={th}>Our price</th><th className={th}>Checked</th></tr></thead>
+              <tbody>{data.competitors.prices.map((c: any, i: number) => (
+                <tr key={i} className="border-b border-border/60">
+                  <td className={td}>{c.competitor_product_url ? <a href={c.competitor_product_url} target="_blank" rel="noreferrer" className="text-indigo-700 underline dark:text-indigo-300">{c.competitor_product_name ?? c.competitor_seller_name ?? "Competitor"}</a> : c.competitor_product_name ?? "—"} <span className="text-muted-foreground">({c.competitor_marketplace})</span></td>
+                  <td className={td}><b className={c.is_competitor_cheaper ? "text-red-700 dark:text-red-400" : ""}>{inr(c.competitor_price)}</b></td>
+                  <td className={td}>{inr(c.our_price)}</td>
+                  <td className={td}>{dateLabel(c.last_checked_at)}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          )}
+        </Section>
+      </div>
+
+      <Section icon={Megaphone} title="Ads status" source={`Amazon: last 7 report days${data.ads.window ? ` (${dateLabel(data.ads.window.from)} – ${dateLabel(data.ads.window.to)})` : ""} · Google / Meta: campaign names containing “${data.ads.keywords.join("”, “") || "—"}”, last 7 days to ${dateLabel(data.ads.google.to)}`}>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+          {([["Amazon product ads", data.ads.product], ["Amazon display ads", data.ads.display], ["Amazon brand ads", data.ads.brand], ["Google ads", data.ads.google], ["Meta (Facebook / Instagram)", data.ads.meta]] as [string, any][]).map(([label, a]) => (
+            <div key={label} className="rounded-lg border border-border/70 bg-background p-2.5">
+              <div className="flex items-center justify-between gap-2"><p className="text-xs font-bold">{label}</p><Pill text={a.state} /></div>
+              <p className="mt-1 text-[11px] text-muted-foreground">Spend {inr(a.spend)}{a.sales !== undefined ? ` · Sales ${inr(a.sales)}` : ""}</p>
+              {a.campaigns?.length > 0 && <p className="mt-1 line-clamp-3 text-[11px] text-muted-foreground" title={a.campaigns.join("\n")}>{a.campaigns.join(" · ")}</p>}
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      <Section icon={Boxes} title="FBA stock by fulfilment centre" source={`Drive FBA forecast file, FC balances as on ${dateLabel(data.fba.report_date)} · onboarding per "FBA warehouse details" sheet`}
+        right={inv ? <span className="text-[11px] text-muted-foreground">FBA report: fulfillable {fmt(inv.afn_fulfillable_quantity)} · reserved {fmt(inv.afn_reserved_quantity)} · inbound {fmt((inv.afn_inbound_working_quantity ?? 0) + (inv.afn_inbound_shipped_quantity ?? 0) + (inv.afn_inbound_receiving_quantity ?? 0))}</span> : undefined}>
+        <p className="mb-2 text-xs"><b>{stocked.length}</b> of <b>{yes.length}</b> onboarded FCs hold stock · total sellable <b>{fmt(fcs.reduce((a, f) => a + (f.stock ?? 0), 0))}</b> units</p>
+        <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4 lg:grid-cols-8">
+          {fcs.map((f) => (
+            <div key={f.fc} className={`rounded-md border px-2 py-1.5 text-[11px] ${f.stock > 0 ? (f.stock <= 20 ? TONE.ok.cls : TONE.fast.cls) : f.onboarded === "Yes" ? TONE.slow.cls : TONE.none.cls}`} title={f.region ?? ""}>
+              <p className="font-extrabold">{f.fc} <span className="font-semibold opacity-80">· {f.onboarded}</span></p>
+              <p>{fmt(f.stock)} units{f.stock > 0 && f.stock <= 20 ? " (≤20)" : f.onboarded === "Yes" && !f.stock ? " (empty)" : ""}</p>
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      <Section icon={Package} title="FBA forecast by zone" source={`Drive FBA forecast file, ${dateLabel(data.forecast.report_date)}`}>
+        {zones.length === 0 ? <p className="text-xs text-muted-foreground">This product&apos;s SKUs are not in the last imported FBA forecast.</p> : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead><tr className="border-b border-border">{["SKU", "Zone", "Orders 30 d", "Forecast 75 d", "Stock", "Booked", "In transit", "To send", "Runs out in", "35 d forecast", "35 d short", "Alert"].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
+              <tbody>{zones.map((z) => (
+                <tr key={z.sku + z.zone} className="border-b border-border/60">
+                  <td className={td}>{z.sku}</td><td className={td}>{z.zone.replace(/_zone$/i, "")}</td><td className={td}>{fmt(z.orders_30d)}</td><td className={td}>{fmt(z.forecast_75d)}</td>
+                  <td className={td}>{fmt(z.current_stock)}</td><td className={td}>{fmt(z.booked)}</td><td className={td}>{fmt(z.intransit)}</td><td className={td}><b>{fmt(z.to_send)}</b></td>
+                  <td className={td}>{z.runs_out_days === null ? "—" : `${fmt(z.runs_out_days)} d`}</td><td className={td}>{fmt(z.forecast_35d)}</td><td className={td}>{fmt(z.shortfall_35d)}</td>
+                  <td className={td}>{z.alert_35d ? <Pill text={z.alert_35d} cls={z.alert_35d === "OK" ? STATE_CLS.On : STATE_CLS.Off} /> : "—"}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        )}
+      </Section>
+
+      <Section icon={KeyRound} title="Listing position by search term" source={data.positions.week ? `Gyno competitor position tracker, week ${data.positions.week}` : "Gyno competitor position tracker"}>
+        {data.positions.keywords.length === 0 ? <p className="text-xs text-muted-foreground">No position data for this ASIN — the tracker covers Gynaecology products only so far.</p> : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead><tr className="border-b border-border"><th className={th}>Search term</th><th className={th}>Our ad (SP)</th><th className={th}>Brand ad (SB)</th><th className={th}>Organic</th><th className={th}>Top competitors on this term</th></tr></thead>
+              <tbody>{data.positions.keywords.map((k: any) => (
+                <tr key={k.search_term} className="border-b border-border/60">
+                  <td className={td}>{k.search_term}</td><td className={td}><Pos v={k.sp_position} /></td><td className={td}><Pos v={k.sb_position} /></td><td className={td}><Pos v={k.organic_position} /></td>
+                  <td className={td}>{(compByTerm.get(k.search_term) ?? []).map((c) => (
+                    <span key={c.asin} className="mr-2 inline-block">{c.competitor_brand ?? c.asin} <span className="text-muted-foreground">(org {c.organic_position ?? "—"}, ad {c.sp_position ?? "—"})</span></span>
+                  ))}{!(compByTerm.get(k.search_term) ?? []).length && <span className="text-muted-foreground">—</span>}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        )}
+      </Section>
+
+      <Section icon={Truck} title="Delivery days by state and pincode" source={`Drive delivery sweep · latest check per pincode across ${data.delivery.weeks.length} week tabs (${data.delivery.checks} checks)`}
+        right={<div className="flex flex-wrap gap-1">{Object.entries(TONE).map(([k, t]) => <span key={k} className={`rounded-md border px-1.5 py-0.5 text-[10px] font-bold ${t.cls}`}>{t.label}</span>)}</div>}>
+        {deliveryByState.length === 0 ? <p className="text-xs text-muted-foreground">No delivery checks for this ASIN in the imported sweep.</p> : (
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {deliveryByState.map(([state, cells]) => (
+              <div key={state} className="rounded-lg border border-border/70 bg-background p-2">
+                <p className="mb-1 flex items-center gap-1 text-xs font-extrabold"><MapPin className="h-3 w-3" />{state}</p>
+                <div className="flex flex-wrap gap-1">
+                  {cells.map((c: any) => {
+                    const t = TONE[deliveryTone(c)];
+                    return <span key={c.pincode} className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${t.cls}`} title={`${c.location ?? ""} · ${c.delivery_text ?? c.status ?? ""} · checked ${dateLabel(c.scraped_date)} (${c.week})`}>{c.pincode}{c.location ? ` ${c.location.split("/")[0].trim()}` : ""}: {c.days === null ? (c.status ?? "—") : `${c.days} d`}</span>;
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
+
+      <Section icon={Users} title="Audience, TAM, retargeting & content" source="Typed in by the marketing team">
+        <ProfileEditor key={JSON.stringify(data.profile)} asin={data.asin} profile={data.profile} onSaved={reload} />
+      </Section>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Section icon={ClipboardList} title="Action plan" source="Typed in by the marketing team">
+          <ActionPlan asin={data.asin} rows={data.plan} onChange={reload} />
+        </Section>
+        <Section icon={StickyNote} title="Channel notes for this product" source="Channel Notes tab (matched on the product name)">
+          {data.notes.length === 0 ? <p className="text-xs text-muted-foreground">No channel notes under “{data.productName}”. Add them on the Channel Notes tab.</p> : (
+            <ul className="space-y-1 text-xs">{data.notes.map((n: any) => <li key={n.channel}><b>{CHANNELS.find((c) => c.key === n.channel)?.label ?? n.channel}:</b> {n.note}</li>)}</ul>
+          )}
+        </Section>
+      </div>
+
+      <Section icon={Users} title="Influencer posts" source="Typed in by the marketing team">
+        <Influencers asin={data.asin} rows={data.influencers} onChange={reload} />
+      </Section>
+    </div>
+  );
+}
+
+// ── channel notes tab (template Sheet1) ───────────────────────────────────────────────────────
+function ChannelNotes({ products }: { products: Product[] }) {
+  const [notes, setNotes] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState("");
+  const [saving, setSaving] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    Promise.resolve(db.from("mkt_channel_notes").select("product,channel,note").limit(5000)).then(({ data, error }) => {
+      if (!live) return;
+      if (error) setErr(error.message);
+      setNotes(Object.fromEntries((data ?? []).map((n: any) => [`${n.product}|${n.channel}`, n.note])));
+      setLoading(false);
+    });
+    return () => { live = false; };
+  }, []);
+  const names = useMemo(() => {
+    const s = new Set<string>(Object.keys(notes).map((k) => k.split("|")[0]));
+    for (const p of products) if (p.active) s.add(p.name);
+    return [...s].filter((n) => n.toLowerCase().includes(filter.toLowerCase())).sort((a, b) => Number(!Object.keys(notes).some((k) => k.startsWith(`${b}|`))) - Number(!Object.keys(notes).some((k) => k.startsWith(`${a}|`))) || a.localeCompare(b));
+  }, [notes, products, filter]);
+  const save = async (product: string, channel: string, note: string) => {
+    const key = `${product}|${channel}`;
+    if ((notes[key] ?? "") === note) return;
+    setSaving(key);
+    const { error } = note.trim()
+      ? await db.from("mkt_channel_notes").upsert({ product, channel, note: note.trim(), updated_at: new Date().toISOString() }, { onConflict: "product,channel" })
+      : await db.from("mkt_channel_notes").delete().eq("product", product).eq("channel", channel);
+    setSaving(null);
+    if (error) return setErr(error.message);
+    setNotes((n) => { const x = { ...n }; if (note.trim()) x[key] = note.trim(); else delete x[key]; return x; });
+  };
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative w-full sm:w-72"><Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" /><input className={`${input} pl-7`} placeholder="Filter products" value={filter} onChange={(e) => setFilter(e.target.value)} /></div>
+        <span className="text-[11px] text-muted-foreground">Click a cell to edit; it saves when you leave the cell. Empty a cell to remove the note.</span>
+        {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+        {err && <span className="text-xs font-semibold text-red-700 dark:text-red-400">{err}</span>}
+      </div>
+      {loading ? <p className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading notes…</p> : (
+        <div className="max-h-[70vh] overflow-auto rounded-xl border border-border">
+          <table className="min-w-[1800px] text-xs">
+            <thead className="sticky top-0 z-10 bg-muted">
+              <tr><th className={`${th} sticky left-0 z-20 min-w-[240px] bg-muted`}>Product</th>{CHANNELS.map((c) => <th key={c.key} className={`${th} min-w-[140px]`}>{c.label}</th>)}</tr>
+            </thead>
+            <tbody>
+              {names.map((p) => (
+                <tr key={p} className="border-b border-border/60">
+                  <td className={`${td} sticky left-0 bg-card font-semibold`}>{p}</td>
+                  {CHANNELS.map((c) => (
+                    <td key={c.key} className="p-0 align-top">
+                      <textarea defaultValue={notes[`${p}|${c.key}`] ?? ""} rows={2} onBlur={(e) => save(p, c.key, e.target.value)}
+                        className="block w-full resize-y border-0 bg-transparent px-2 py-1.5 text-xs focus:bg-indigo-50 focus:outline-none dark:focus:bg-indigo-950/40" />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── full sheet: every product in one wide table, the template's column groups ─────────────────
+type SheetCol = { group: string; label: string; get: (r: any) => string | number | null; render?: (r: any) => React.ReactNode; w?: number };
+const yn = (v: unknown) => (v === null || v === undefined ? "—" : v ? "Yes" : "No");
+const SHEET_COLS: SheetCol[] = [
+  { group: "Product", label: "ASIN", get: (r) => r.asin },
+  { group: "Product", label: "SKU ID", get: (r) => r.skus.join(", "), w: 140 },
+  { group: "Product", label: "Category", get: (r) => r.category },
+  { group: "Market", label: "TAM value", get: (r) => r.tam, render: (r) => inr(r.tam) },
+  { group: "Market", label: "Primary audience", get: (r) => r.primary, w: 220 },
+  { group: "Market", label: "Secondary audience", get: (r) => r.secondary, w: 220 },
+  { group: "Rating & reviews — ours", label: "Star", get: (r) => r.star, render: (r) => (r.star ? `${r.star}★` : "—") },
+  { group: "Rating & reviews — ours", label: "Ratings", get: (r) => r.ratings, render: (r) => (r.ratings === null ? "—" : `${fmt(r.ratings)}${r.ratings_change ? ` (${r.ratings_change > 0 ? "+" : ""}${r.ratings_change})` : ""}`) },
+  { group: "Rating & reviews — competitor", label: "Star", get: (r) => r.comp_star },
+  { group: "Rating & reviews — competitor", label: "Reviews", get: (r) => r.comp_reviews, render: (r) => fmt(r.comp_reviews) },
+  { group: "Price", label: "Our price", get: (r) => r.price, render: (r) => inr(r.price) },
+  { group: "Retargeting", label: "Ways in use", get: (r) => (r.retarget_yes === null ? null : r.retarget_yes.length ? r.retarget_yes.join(", ") : "None"), w: 180 },
+  { group: "Amazon ads", label: "Product ad", get: (r) => r.ad_product, render: (r) => <Pill text={r.ad_product} /> },
+  { group: "Amazon ads", label: "Display ad", get: (r) => r.ad_display, render: (r) => <Pill text={r.ad_display} /> },
+  { group: "Amazon ads", label: "Brand ad", get: (r) => r.ad_brand, render: (r) => <Pill text={r.ad_brand} /> },
+  { group: "FBA stock", label: "Available (FBA report)", get: (r) => r.fba_available, render: (r) => fmt(r.fba_available) },
+  { group: "FBA stock", label: "FCs stocked", get: (r) => `${r.fc_stocked}/${r.fc_onboarded}` },
+  { group: "FBA stock", label: "Units in FCs", get: (r) => r.fc_units, render: (r) => fmt(r.fc_units) },
+  { group: "FBA stock", label: "Inbound", get: (r) => r.inbound, render: (r) => fmt(r.inbound) },
+  { group: "FBA stock", label: "Sales 30 d", get: (r) => r.sales_30d, render: (r) => fmt(r.sales_30d) },
+  { group: "FBA stock", label: "Need 120 d", get: (r) => r.need_120d, render: (r) => fmt(r.need_120d) },
+  { group: "FBA stock", label: "To send", get: (r) => r.to_send, render: (r) => fmt(r.to_send) },
+  { group: "FBA stock", label: "Zones short", get: (r) => (r.zones ? `${r.zones_short}/${r.zones}` : null), render: (r) => (r.zones ? <Pill text={`${r.zones_short}/${r.zones}`} cls={r.zones_short ? STATE_CLS.Off : STATE_CLS.On} /> : "—") },
+  { group: "Listing position", label: "Terms", get: (r) => r.kw_terms },
+  { group: "Listing position", label: "Best organic", get: (r) => (r.best_organic ? `#${r.best_organic.pos} ${r.best_organic.term}` : null), w: 180 },
+  { group: "Listing position", label: "Best ad", get: (r) => (r.best_ad ? `#${r.best_ad.pos} ${r.best_ad.term}` : null), w: 180 },
+  { group: "Social media ads", label: "Google", get: (r) => r.google, render: (r) => <Pill text={r.google} /> },
+  { group: "Social media ads", label: "Meta", get: (r) => r.meta, render: (r) => <Pill text={r.meta} /> },
+  { group: "Influencer posts", label: "Organic", get: (r) => r.infl_organic },
+  { group: "Influencer posts", label: "Post ads", get: (r) => r.infl_ads },
+  { group: "Influencer posts", label: "Languages", get: (r) => r.infl_languages.join(", ") || null, w: 160 },
+  { group: "How to use", label: "Video", get: (r) => (r.content ? yn(r.content["How to use video"]) : null) },
+  { group: "How to use", label: "QR pamphlet", get: (r) => (r.content ? yn(r.content["QR for pamphlet"]) : null) },
+  { group: "How to use", label: "SEO description", get: (r) => (r.content ? yn(r.content["Description in listing with SEO"]) : null) },
+  { group: "Delivery date", label: "Pincodes", get: (r) => r.delivery?.pincodes ?? null },
+  { group: "Delivery date", label: "≤2 days", get: (r) => r.delivery?.fast ?? null },
+  { group: "Delivery date", label: "6+ days", get: (r) => r.delivery?.slow ?? null },
+  { group: "Delivery date", label: "Unavailable", get: (r) => r.delivery?.unavailable ?? null },
+  { group: "Delivery date", label: "Avg days", get: (r) => r.delivery?.avg_days ?? null },
+  { group: "Action plan", label: "Open", get: (r) => r.plan_open },
+  { group: "Action plan", label: "Next task", get: (r) => r.plan_next, w: 240 },
+  { group: "Channel notes", label: "Notes", get: (r) => r.notes || null },
+];
+
+function FullSheet({ onOpen }: { onOpen: (asin: string) => void }) {
+  const [resp, setResp] = useState<{ data?: any; error?: string } | null>(null);
+  const [filter, setFilter] = useState("");
+  useEffect(() => {
+    let live = true;
+    getJson("/api/marketing-360?sheet=1").then((d) => { if (live) setResp({ data: d }); }).catch((e) => { if (live) setResp({ error: e instanceof Error ? e.message : String(e) }); });
+    return () => { live = false; };
+  }, []);
+  const rowsAll: any[] = useMemo(() => resp?.data?.rows ?? [], [resp]);
+  const shown = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    return q ? rowsAll.filter((r) => `${r.name} ${r.asin} ${r.skus.join(" ")} ${r.category ?? ""}`.toLowerCase().includes(q)) : rowsAll;
+  }, [rowsAll, filter]);
+  const groups = useMemo(() => {
+    const g: { name: string; span: number }[] = [];
+    for (const c of SHEET_COLS) { const last = g[g.length - 1]; if (last?.name === c.group) last.span++; else g.push({ name: c.group, span: 1 }); }
+    return g;
+  }, []);
+  const exportXlsx = () => {
+    const aoa = [["Product", ...SHEET_COLS.map((c) => c.group)], ["Product name", ...SHEET_COLS.map((c) => c.label)], ...shown.map((r) => [r.name, ...SHEET_COLS.map((c) => c.get(r) ?? "")])];
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Marketing 360");
+    XLSX.writeFile(wb, `Product Marketing 360 - ${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+  if (!resp) return <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Building the sheet for every product…</p>;
+  if (resp.error) return <p className="flex items-center gap-1.5 text-sm font-semibold text-red-700 dark:text-red-400"><AlertTriangle className="h-4 w-4" />{resp.error}</p>;
+  const a = resp.data.asOf;
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative w-full sm:w-72"><Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" /><input className={`${input} pl-7`} placeholder="Filter product, ASIN, SKU, category" value={filter} onChange={(e) => setFilter(e.target.value)} /></div>
+        <button className={btn} onClick={exportXlsx}><Download className="h-3.5 w-3.5" /> Export Excel</button>
+        <span className="text-[11px] text-muted-foreground">
+          {shown.length} products · rating {dateLabel(a.rating)} · FBA {dateLabel(a.fc)} · forecast {dateLabel(a.forecast)} · positions {a.positions ?? "—"} · Amazon ads {a.amazonAds ? `${dateLabel(a.amazonAds.from)}–${dateLabel(a.amazonAds.to)}` : "—"} · Google/Meta to {dateLabel(a.google)} · click a product to open its card
+        </span>
+      </div>
+      {resp.data.competitorBlocked && <p className="text-[11px] font-semibold text-amber-700 dark:text-amber-400">Competitor rating columns are empty: the competitor tables are readable only by signed-in Supabase users, not by the dashboard.</p>}
+      <div className="max-h-[75vh] overflow-auto rounded-xl border border-border">
+        <table className="text-xs">
+          <thead className="sticky top-0 z-10">
+            <tr className="bg-indigo-100 dark:bg-indigo-950">
+              <th className="sticky left-0 z-20 border-b border-r border-border bg-indigo-100 px-2 py-1.5 text-left text-[11px] font-extrabold dark:bg-indigo-950">Product</th>
+              {groups.map((g, i) => <th key={i} colSpan={g.span} className="whitespace-nowrap border-b border-r border-border px-2 py-1.5 text-center text-[11px] font-extrabold">{g.name}</th>)}
+            </tr>
+            <tr className="bg-muted">
+              <th className={`${th} sticky left-0 z-20 min-w-[260px] border-r border-border bg-muted`}>Product name</th>
+              {SHEET_COLS.map((c, i) => <th key={i} className={`${th} whitespace-nowrap border-r border-border`}>{c.label}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((r) => (
+              <tr key={r.asin} className="border-b border-border/60 hover:bg-muted/40">
+                <td className={`${td} sticky left-0 z-[5] border-r border-border bg-card`}>
+                  <button className="text-left font-semibold text-indigo-700 hover:underline dark:text-indigo-300" onClick={() => onOpen(r.asin)}>{r.name}</button>
+                </td>
+                {SHEET_COLS.map((c, i) => {
+                  const v = c.get(r);
+                  return (
+                    <td key={i} className={`${td} border-r border-border/40`} style={c.w ? { minWidth: c.w, maxWidth: c.w + 80 } : undefined}>
+                      {c.render ? c.render(r) : v === null || v === undefined || v === "" ? <span className="text-muted-foreground">—</span> : <span className={c.w ? "line-clamp-3" : "whitespace-nowrap"} title={String(v)}>{v}</span>}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── page ──────────────────────────────────────────────────────────────────────────────────────
+export default function Marketing360Page() {
+  const [tab, setTab] = useState<"sheet" | "card" | "notes">("sheet");
+  const [sheetVersion, setSheetVersion] = useState(0);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [asin, setAsin] = useState<string>("");
+  const [query, setQuery] = useState("");
+  // one response per (asin, version); "loading" = the shown response is not for the current request
+  const [cardVersion, setCardVersion] = useState(0);
+  const [productsVersion, setProductsVersion] = useState(0);
+  const [resp, setResp] = useState<{ key: string; data?: any; error?: string } | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+  const reqKey = `${asin}|${cardVersion}`;
+  const loading = !!asin && resp?.key !== reqKey;
+  const data = resp?.data && resp.data.asin === asin ? resp.data : null;
+  const error = listError ?? (resp?.key === reqKey ? resp.error ?? null : null);
+  const reloadCard = useCallback(() => setCardVersion((v) => v + 1), []);
+  const pickAsin = (a: string) => {
+    setAsin(a);
+    try { localStorage.setItem("m360-asin", a); } catch { /* storage blocked */ }
+  };
+
+  useEffect(() => {
+    let live = true;
+    getJson("/api/marketing-360").then((j) => {
+      if (!live) return;
+      setListError(null);
+      setProducts(j.products);
+      setAsin((a) => {
+        if (a) return a;
+        let saved: string | null = null;
+        try { saved = localStorage.getItem("m360-asin"); } catch { /* storage blocked */ }
+        return saved && j.products.some((p: Product) => p.asin === saved) ? saved : j.products.find((p: Product) => p.has_profile)?.asin ?? j.products[0]?.asin ?? "";
+      });
+    }).catch((e) => { if (live) setListError(e instanceof Error ? e.message : String(e)); });
+    return () => { live = false; };
+  }, [productsVersion]);
+  useEffect(() => {
+    if (!asin) return;
+    let live = true;
+    const key = `${asin}|${cardVersion}`;
+    getJson(`/api/marketing-360?asin=${encodeURIComponent(asin)}`)
+      .then((d) => { if (live) setResp({ key, data: d }); })
+      .catch((e) => { if (live) setResp((r) => ({ key, data: r?.data, error: e instanceof Error ? e.message : String(e) })); });
+    return () => { live = false; };
+  }, [asin, cardVersion]);
+
+  const matches = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return (q ? products.filter((p) => `${p.name} ${p.asin} ${p.skus.join(" ")}`.toLowerCase().includes(q)) : products).slice(0, 400);
+  }, [products, query]);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-extrabold tracking-tight">Product Marketing 360</h1>
+          <p className="mt-1 text-sm text-muted-foreground">The marketing team template per product: rating, competitors, ads, FBA, positions and delivery fill from stored data; plans and influencers are typed in here.</p>
+        </div>
+        <div className="flex rounded-lg border border-border p-0.5">
+          {([["sheet", "Full sheet"], ["card", "Product card"], ["notes", "Channel notes"]] as const).map(([k, l]) => (
+            <button key={k} onClick={() => setTab(k)} className={`rounded-md px-3 py-1.5 text-xs font-bold ${tab === k ? "bg-indigo-600 text-white" : "hover:bg-muted"}`}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      <ImportPanel onDone={() => { setProductsVersion((v) => v + 1); setSheetVersion((v) => v + 1); reloadCard(); }} />
+
+      {tab === "sheet" ? <FullSheet key={sheetVersion} onOpen={(a) => { pickAsin(a); setTab("card"); }} /> : tab === "notes" ? <ChannelNotes products={products} /> : (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative w-full sm:w-72"><Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" /><input className={`${input} pl-7`} placeholder="Search product, ASIN or SKU" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
+            <select className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs sm:w-[520px]" value={asin} onChange={(e) => pickAsin(e.target.value)}>
+              {!products.length && <option>Loading products…</option>}
+              {matches.map((p) => <option key={p.asin} value={p.asin}>{p.has_profile ? "● " : ""}{p.name} — {p.asin}{p.active ? "" : " (inactive)"}</option>)}
+            </select>
+            {loading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+          </div>
+          {error && <p className="flex items-center gap-1.5 text-sm font-semibold text-red-700 dark:text-red-400"><AlertTriangle className="h-4 w-4" />{error}</p>}
+          {data ? <ProductCard data={data} reload={reloadCard} /> : !error && <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Loading product…</p>}
+        </>
+      )}
+    </div>
+  );
+}
+
+async function getJson(url: string): Promise<any> {
+  const res = await fetch(url, { credentials: "same-origin" });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j.error ?? res.statusText);
+  return j;
+}

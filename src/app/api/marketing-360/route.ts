@@ -1,0 +1,309 @@
+import { NextResponse } from "next/server";
+import { checkSession } from "@/lib/apiAuth";
+import { rejectUnlessAllowed } from "@/lib/appRouteAuth";
+import { supabase } from "@/lib/supabaseClient";
+import { FBA_ALERT_FCS } from "@/lib/fbaWarehouseAlerts";
+import { latestByPincode, fcTable, adState, campaignKeywords, type DeliveryCheck } from "@/lib/marketing360Rules";
+
+// Product Marketing 360 — one product's marketing card, built from stored data only (Supabase).
+//   GET                -> product list (Amazon listings grouped by ASIN, with master name + category)
+//   GET ?asin=B0…      -> the card: listing, rating, competitors, ads, FBA, forecast, positions, delivery,
+//                         and the team's manual sections (profile, action plan, influencers, channel notes)
+// The Drive files feed the mkt_* tables through the page's import panel (src/lib/marketing360Store.ts).
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+type Q = { data: any[] | null; error: { message: string } | null };
+const rows = async (p: PromiseLike<Q>): Promise<any[]> => {
+  const { data, error } = await p;
+  if (error) throw new Error(error.message);
+  return data ?? [];
+};
+/** A source the anon key may not be allowed to read: rows, or the refusal message. */
+const optional = async (p: PromiseLike<Q>): Promise<{ rows: any[]; blocked: string | null }> => {
+  const { data, error } = await p;
+  if (error && /permission denied/i.test(error.message)) return { rows: [], blocked: error.message };
+  if (error) throw new Error(error.message);
+  return { rows: data ?? [], blocked: null };
+};
+/** All rows of a query, 1000 at a time (PostgREST caps a response). Needs a stable .order(). */
+async function allRows(make: (from: number, to: number) => PromiseLike<Q>): Promise<any[]> {
+  const out: any[] = [];
+  for (let from = 0; from < 200_000; from += 1000) {
+    const page = await rows(make(from, from + 999));
+    out.push(...page);
+    if (page.length < 1000) break;
+  }
+  return out;
+}
+const ASIN = /^[A-Z0-9]{10}$/;
+const isoMinus = (d: string, days: number) => new Date(Date.parse(d) - days * 86_400_000).toISOString().slice(0, 10);
+
+async function productList() {
+  const listing = await rows(supabase.from("barm_amazon_price_listing").select("asin1,seller_sku,item_name,status,price").limit(5000) as any);
+  const skus = [...new Set(listing.map((l) => l.seller_sku).filter(Boolean))];
+  const master = new Map<string, { name: string; category: string | null }>();
+  for (let i = 0; i < skus.length; i += 300) {
+    for (const m of await rows(supabase.from("master_product_skuid").select('"SKU ID","Product Name","Category"').in("SKU ID", skus.slice(i, i + 300)) as any)) {
+      if (!master.has(m["SKU ID"])) master.set(m["SKU ID"], { name: m["Product Name"], category: m.Category });
+    }
+  }
+  const profiles = new Set((await rows(supabase.from("mkt_product_profile").select("asin") as any)).map((p) => p.asin));
+  const by = new Map<string, any>();
+  for (const l of listing) {
+    if (!l.asin1) continue;
+    const cur = by.get(l.asin1) ?? { asin: l.asin1, name: null, category: null, item_name: l.item_name, active: false, price: null, skus: [] as string[], has_profile: profiles.has(l.asin1) };
+    const m = master.get(l.seller_sku);
+    cur.name ??= m?.name ?? null;
+    cur.category ??= m?.category ?? null;
+    cur.active ||= l.status === "Active";
+    cur.price ??= l.price ? Number(l.price) : null;
+    if (l.seller_sku && !cur.skus.includes(l.seller_sku)) cur.skus.push(l.seller_sku);
+    by.set(l.asin1, cur);
+  }
+  return [...by.values()].map((p) => ({ ...p, name: p.name ?? p.item_name })).sort((a, b) => Number(b.active) - Number(a.active) || String(a.name).localeCompare(String(b.name)));
+}
+
+async function card(asin: string) {
+  const listing = await rows(supabase.from("barm_amazon_price_listing").select("seller_sku,item_name,status,price,fulfillment_channel").eq("asin1", asin) as any);
+  const skus = [...new Set(listing.map((l) => l.seller_sku).filter(Boolean))] as string[];
+  const master = skus.length ? await rows(supabase.from("master_product_skuid").select('"SKU ID","Product Name","Category"').in("SKU ID", skus) as any) : [];
+  const productName: string | null = master[0]?.["Product Name"] ?? listing[0]?.item_name ?? null;
+
+  const [profileRows, plan, influencers] = await Promise.all([
+    rows(supabase.from("mkt_product_profile").select("*").eq("asin", asin) as any),
+    rows(supabase.from("mkt_action_plan").select("*").eq("asin", asin).order("id") as any),
+    rows(supabase.from("mkt_influencer_posts").select("*").eq("asin", asin).order("id") as any),
+  ]);
+  const profile = profileRows[0] ?? null;
+
+  // ── rating (latest weekly Drive file) ───────────────────────────────────────────────────────
+  const ratingLatest = await rows(supabase.from("mkt_rating_weekly").select("snapshot_date").eq("asin_fsn", asin).order("snapshot_date", { ascending: false }).limit(1) as any);
+  const rating = ratingLatest.length
+    ? await rows(supabase.from("mkt_rating_weekly").select("*").eq("asin_fsn", asin).eq("snapshot_date", ratingLatest[0].snapshot_date) as any)
+    : [];
+
+  // ── competitors (price + rating) — RLS lets only signed-in Supabase users read these tables, so
+  // a refusal is reported on the card instead of failing it ──────────────────────────────────
+  const [cp, cw] = await Promise.all([
+    optional(supabase.from("competitor_analysis").select("competitor_product_name,competitor_product_url,competitor_price,our_price,competitor_seller_name,competitor_marketplace,is_competitor_cheaper,last_checked_at,match_status").eq("our_asin", asin).order("last_checked_at", { ascending: false }).limit(20) as any),
+    skus.length ? optional(supabase.from("competitor_analysis_wide").select("*").in("our_sku", skus).order("week_tag", { ascending: false }).limit(4) as any) : Promise.resolve({ rows: [], blocked: null }),
+  ]);
+  const compPrice = cp.rows, compWide = cw.rows;
+  const competitorBlocked = cp.blocked ?? cw.blocked;
+  const compRatings: any[] = [];
+  const latestWide = compWide[0]?.week_tag;
+  for (const w of compWide.filter((x) => x.week_tag === latestWide)) {
+    for (let i = 1; i <= 10; i++) {
+      if (!w[`competitor_${i}_url`] && !w[`competitor_${i}_product_name`]) continue;
+      compRatings.push({ marketplace: w.competitor_marketplace, name: w[`competitor_${i}_product_name`], url: w[`competitor_${i}_url`], rating: w[`competitor_${i}_rating`], reviews: w[`competitor_${i}_reviews`], week: w.week_tag });
+    }
+  }
+
+  // ── Amazon ads, last 7 report days ──────────────────────────────────────────────────────────
+  const spMax = (await rows(supabase.from("barm_amazon_sp_advertised_product").select("report_date").order("report_date", { ascending: false }).limit(1) as any))[0]?.report_date ?? null;
+  const since = spMax ? isoMinus(spMax, 6) : null;
+  const sp = since ? await rows(supabase.from("barm_amazon_sp_advertised_product").select("campaign_name,spend,sales_7d,orders_7d").eq("advertised_asin", asin).gte("report_date", since) as any) : [];
+  const [sdMaster, sbMaster] = await Promise.all([
+    rows(supabase.from("am_display_ad_masters").select('"Display campaign name"').eq("ASIN", asin) as any),
+    rows(supabase.from("brand_ads_master_sheet").select('"Campaign Name"').eq("ASIN", asin) as any),
+  ]);
+  // the ASIN→campaign masters, else campaigns whose name carries the product's campaign words
+  // (am_display_ad_masters is RLS-hidden from the anon key, so it is often empty here)
+  const words = campaignKeywords(profile?.ad_keywords, productName);
+  const byWords = async (table: string) => {
+    if (!since || !words.length) return [];
+    const r = await rows(supabase.from(table).select("campaign_name").or(words.map((w) => `campaign_name.ilike.%${w.replace(/[%,()]/g, "")}%`).join(",")).gte("report_date", since) as any);
+    return [...new Set(r.map((x) => x.campaign_name))];
+  };
+  let sdNames: string[] = sdMaster.map((m) => m["Display campaign name"]).filter(Boolean);
+  let sbNames: string[] = sbMaster.map((m) => m["Campaign Name"]).filter(Boolean);
+  const sdFromWords = !sdNames.length, sbFromWords = !sbNames.length;
+  if (sdFromWords) sdNames = await byWords("barm_amazon_sd_campaign");
+  if (sbFromWords) sbNames = await byWords("barm_amazon_sb_campaign");
+  const [sd, sb] = await Promise.all([
+    since && sdNames.length ? rows(supabase.from("barm_amazon_sd_campaign").select("campaign_name,spend,sales_14d").in("campaign_name", sdNames).gte("report_date", since) as any) : Promise.resolve(null),
+    since && sbNames.length ? rows(supabase.from("barm_amazon_sb_campaign").select("campaign_name,spend,sales").in("campaign_name", sbNames).gte("report_date", since) as any) : Promise.resolve(null),
+  ]);
+  const sum = (xs: any[] | null, k: string) => (xs === null ? null : xs.reduce((a, x) => a + (Number(x[k]) || 0), 0));
+  const campaigns = (xs: any[] | null) => [...new Set((xs ?? []).filter((x) => Number(x.spend) > 0).map((x) => x.campaign_name))];
+
+  // ── Google / Meta by campaign-name keywords ─────────────────────────────────────────────────
+  const nameFilter = words.map((w) => `campaign_name.ilike.%${w.replace(/[%,()]/g, "")}%`).join(",");
+  const [gMax, mMax] = await Promise.all([
+    rows(supabase.from("barm_daily_google_ad_spend").select("report_end").order("report_end", { ascending: false }).limit(1) as any),
+    rows(supabase.from("barm_daily_social_media").select("report_end").order("report_end", { ascending: false }).limit(1) as any),
+  ]);
+  const [google, meta] = await Promise.all([
+    nameFilter && gMax[0] ? rows(supabase.from("barm_daily_google_ad_spend").select("campaign_name,spend,report_end").or(nameFilter).gte("report_end", isoMinus(gMax[0].report_end, 6)) as any) : Promise.resolve(null),
+    nameFilter && mMax[0] ? rows(supabase.from("barm_daily_social_media").select("campaign_name,spend,report_end").or(nameFilter).gte("report_end", isoMinus(mMax[0].report_end, 6)) as any) : Promise.resolve(null),
+  ]);
+  const gSpend = sum(google, "spend"), mSpend = sum(meta, "spend");
+
+  // ── FBA: per-FC stock + zone forecast (latest daily forecast file) ──────────────────────────
+  const fcDate = (await rows(supabase.from("mkt_fba_fc_stock").select("report_date").order("report_date", { ascending: false }).limit(1) as any))[0]?.report_date ?? null;
+  const fcStock = fcDate ? await rows(supabase.from("mkt_fba_fc_stock").select("fc,msku,disposition,quantity").eq("asin", asin).eq("report_date", fcDate) as any) : [];
+  const sellable = fcStock.filter((r) => /sellable/i.test(r.disposition) && !/unsellable/i.test(r.disposition));
+  const fcDateZone = (await rows(supabase.from("mkt_fba_forecast_zone").select("report_date").order("report_date", { ascending: false }).limit(1) as any))[0]?.report_date ?? null;
+  const zones = fcDateZone && skus.length ? await rows(supabase.from("mkt_fba_forecast_zone").select("*").in("sku", skus).eq("report_date", fcDateZone).order("sku").order("zone") as any) : [];
+  const inv = await rows(supabase.from("barm_amazon_fba_inventory").select("sku,afn_fulfillable_quantity,afn_reserved_quantity,afn_inbound_working_quantity,afn_inbound_shipped_quantity,afn_inbound_receiving_quantity,afn_unsellable_quantity").eq("asin", asin) as any);
+
+  // ── keyword positions + competitors on the same search terms ────────────────────────────────
+  const kwWeek = (await rows(supabase.from("mkt_keyword_positions").select("week").eq("asin", asin).order("week", { ascending: false }).limit(1) as any))[0]?.week ?? null;
+  const keywords = kwWeek ? await rows(supabase.from("mkt_keyword_positions").select("*").eq("asin", asin).eq("week", kwWeek).order("search_term") as any) : [];
+  const terms = keywords.map((k) => k.search_term);
+  const compPos = terms.length ? await rows(supabase.from("mkt_competitor_positions").select("search_term,asin,competitor_brand,product_name,product_url,sp_position,sb_position,organic_position").eq("week", kwWeek).in("search_term", terms) as any) : [];
+
+  // ── delivery days ───────────────────────────────────────────────────────────────────────────
+  const delivery: DeliveryCheck[] = [];
+  for (let from = 0; ; from += 1000) {
+    const page = await rows(supabase.from("mkt_delivery_sweep").select("week,platform,pincode,tier,location,delivery_text,days,scraped_date,status").eq("asin_fsn", asin).order("week").order("pincode").range(from, from + 999) as any);
+    delivery.push(...page);
+    if (page.length < 1000) break;
+  }
+  const overrides = Object.fromEntries((await rows(supabase.from("mkt_pincode_state").select("pincode,state") as any)).map((o) => [o.pincode, o.state]));
+  const deliveryLatest = latestByPincode(delivery.filter((d) => d.platform === "Amazon"), overrides);
+
+  const notes = productName ? await rows(supabase.from("mkt_channel_notes").select("*").ilike("product", productName) as any) : [];
+
+  return {
+    asin, productName, category: master[0]?.Category ?? null,
+    listing: { skus, items: listing, price: listing.find((l) => l.price)?.price ?? null, link: `https://www.amazon.in/dp/${asin}` },
+    profile, plan, influencers, notes,
+    rating: { snapshot_date: ratingLatest[0]?.snapshot_date ?? null, rows: rating },
+    competitors: { prices: compPrice, ratings: compRatings, ratings_week: latestWide ?? null, blocked: competitorBlocked },
+    ads: {
+      window: since ? { from: since, to: spMax } : null,
+      product: { state: adState(sp.length || since ? sum(sp, "spend") : null), spend: sum(sp, "spend"), sales: sum(sp, "sales_7d"), campaigns: campaigns(sp) },
+      display: { state: sdNames.length ? adState(sum(sd, "spend")) : "Not set up", spend: sum(sd, "spend"), campaigns: sdNames, matched: sdFromWords ? "name" : "master" },
+      brand: { state: sbNames.length ? adState(sum(sb, "spend")) : "Not set up", spend: sum(sb, "spend"), campaigns: sbNames, matched: sbFromWords ? "name" : "master" },
+      google: { state: words.length ? adState(gSpend) : "No data", spend: gSpend, campaigns: campaigns(google), to: gMax[0]?.report_end ?? null },
+      meta: { state: words.length ? adState(mSpend) : "No data", spend: mSpend, campaigns: campaigns(meta), to: mMax[0]?.report_end ?? null },
+      keywords: words,
+    },
+    fba: { report_date: fcDate, fcs: fcTable(FBA_ALERT_FCS, sellable), other: fcStock.filter((r) => !sellable.includes(r)), inventory: inv },
+    forecast: { report_date: fcDateZone, zones },
+    positions: { week: kwWeek, keywords, competitors: compPos },
+    delivery: { checks: delivery.length, latest: deliveryLatest, weeks: [...new Set(delivery.map((d) => d.week))].sort() },
+  };
+}
+
+// ── the full sheet: every product as one row, the template's column groups ──────────────────
+async function fullSheet() {
+  const products = (await productList()).filter((p: any) => p.active || p.has_profile);
+  const latestOf = async (table: string, col: string) => (await rows(supabase.from(table).select(col).order(col, { ascending: false }).limit(1) as any))[0]?.[col] ?? null;
+  const [ratingDate, fcDate, zoneDate, kwWeek, spMax, gMax, mMax] = await Promise.all([
+    latestOf("mkt_rating_weekly", "snapshot_date"), latestOf("mkt_fba_fc_stock", "report_date"), latestOf("mkt_fba_forecast_zone", "report_date"),
+    latestOf("mkt_keyword_positions", "week"), latestOf("barm_amazon_sp_advertised_product", "report_date"),
+    latestOf("barm_daily_google_ad_spend", "report_end"), latestOf("barm_daily_social_media", "report_end"),
+  ]);
+  const since = spMax ? isoMinus(spMax, 6) : null;
+  const [ratings, fcStock, zones, keywords, sp, sd, sb, google, meta, inv, delivery, profiles, plan, influencers, notes, sdMaster, sbMaster, compWide] = await Promise.all([
+    ratingDate ? allRows((a, b) => supabase.from("mkt_rating_weekly").select("asin_fsn,sku_id,this_star,this_count,last_count").eq("snapshot_date", ratingDate).order("sku_id").order("asin_fsn").range(a, b) as any) : [],
+    fcDate ? allRows((a, b) => supabase.from("mkt_fba_fc_stock").select("asin,fc,disposition,quantity").eq("report_date", fcDate).order("fc").order("msku").order("disposition").range(a, b) as any) : [],
+    zoneDate ? allRows((a, b) => supabase.from("mkt_fba_forecast_zone").select("sku,zone,orders_30d,booked,intransit,to_send,alert_35d").eq("report_date", zoneDate).order("sku").order("zone").range(a, b) as any) : [],
+    kwWeek ? allRows((a, b) => supabase.from("mkt_keyword_positions").select("asin,search_term,sp_position,organic_position").eq("week", kwWeek).order("search_term").order("asin").range(a, b) as any) : [],
+    since ? allRows((a, b) => supabase.from("barm_amazon_sp_advertised_product").select("id,advertised_asin,spend").gte("report_date", since).order("id").range(a, b) as any) : [],
+    since ? allRows((a, b) => supabase.from("barm_amazon_sd_campaign").select("id,campaign_name,spend").gte("report_date", since).order("id").range(a, b) as any) : [],
+    since ? allRows((a, b) => supabase.from("barm_amazon_sb_campaign").select("id,campaign_name,spend").gte("report_date", since).order("id").range(a, b) as any) : [],
+    gMax ? allRows((a, b) => supabase.from("barm_daily_google_ad_spend").select("id,campaign_name,spend").gte("report_end", isoMinus(gMax, 6)).order("id").range(a, b) as any) : [],
+    mMax ? allRows((a, b) => supabase.from("barm_daily_social_media").select("id,campaign_name,spend").gte("report_end", isoMinus(mMax, 6)).order("id").range(a, b) as any) : [],
+    rows(supabase.from("barm_amazon_fba_inventory").select("asin,afn_fulfillable_quantity") as any),
+    rows(supabase.from("mkt_delivery_summary_v").select("*") as any),
+    rows(supabase.from("mkt_product_profile").select("*") as any),
+    rows(supabase.from("mkt_action_plan").select("asin,task,status,plan_date").order("id") as any),
+    rows(supabase.from("mkt_influencer_posts").select("asin,kind,language") as any),
+    allRows((a, b) => supabase.from("mkt_channel_notes").select("product,channel").order("product").order("channel").range(a, b) as any),
+    rows(supabase.from("am_display_ad_masters").select('"Display campaign name","ASIN"') as any),
+    rows(supabase.from("brand_ads_master_sheet").select('"Campaign Name","ASIN"') as any),
+    optional(supabase.from("competitor_analysis_wide").select("*").order("week_tag", { ascending: false }).limit(2000) as any),
+  ]);
+  const group = <T,>(xs: T[], key: (x: T) => string | null | undefined) => {
+    const m = new Map<string, T[]>();
+    for (const x of xs) { const k = key(x); if (k) m.set(k, [...(m.get(k) ?? []), x]); }
+    return m;
+  };
+  const ratingBy = group(ratings, (r: any) => r.asin_fsn), fcBy = group(fcStock, (r: any) => r.asin), zoneBy = group(zones, (r: any) => r.sku);
+  const kwBy = group(keywords, (r: any) => r.asin), spBy = group(sp, (r: any) => r.advertised_asin), invBy = group(inv, (r: any) => r.asin);
+  const planBy = group(plan, (r: any) => r.asin), infBy = group(influencers, (r: any) => r.asin);
+  const notesBy = group(notes, (r: any) => String(r.product).toLowerCase());
+  const delBy = new Map(delivery.map((d: any) => [d.asin, d]));
+  const profBy = new Map(profiles.map((p: any) => [p.asin, p]));
+  const sdMap = group(sdMaster, (r: any) => r.ASIN), sbMap = group(sbMaster, (r: any) => r.ASIN);
+  const yesFcs = new Set(FBA_ALERT_FCS.map((f) => f.code));
+  const spendOf = (xs: any[]) => xs.reduce((a, x) => a + (Number(x.spend) || 0), 0);
+  const byName = (xs: any[], names: string[] | null, words: string[]) =>
+    xs.filter((x) => (names?.length ? names.includes(x.campaign_name) : words.some((w) => String(x.campaign_name).toLowerCase().includes(w.toLowerCase()))));
+  const latestWideWeek = compWide.rows[0]?.week_tag;
+  const wideBy = group(compWide.rows.filter((w: any) => w.week_tag === latestWideWeek), (w: any) => w.our_sku);
+
+  const out = products.map((p: any) => {
+    const prof: any = profBy.get(p.asin) ?? null;
+    const words = campaignKeywords(prof?.ad_keywords, p.name);
+    const r = (ratingBy.get(p.asin) ?? []).find((x: any) => x.this_star !== null) ?? (ratingBy.get(p.asin) ?? [])[0];
+    const fc = (fcBy.get(p.asin) ?? []).filter((x: any) => /sellable/i.test(x.disposition) && !/unsellable/i.test(x.disposition));
+    const fcQty = new Map<string, number>();
+    for (const x of fc) fcQty.set(x.fc, (fcQty.get(x.fc) ?? 0) + Number(x.quantity));
+    const z = p.skus.flatMap((s: string) => zoneBy.get(s) ?? []);
+    const kw = kwBy.get(p.asin) ?? [];
+    const bestOrg = kw.filter((k: any) => k.organic_position !== null).sort((a: any, b: any) => a.organic_position - b.organic_position)[0];
+    const bestSp = kw.filter((k: any) => k.sp_position !== null).sort((a: any, b: any) => a.sp_position - b.sp_position)[0];
+    const sdNames = (sdMap.get(p.asin) ?? []).map((m: any) => m["Display campaign name"]);
+    const sbNames = (sbMap.get(p.asin) ?? []).map((m: any) => m["Campaign Name"]);
+    const sdRows = since ? byName(sd, sdNames, words) : null, sbRows = since ? byName(sb, sbNames, words) : null;
+    const g = gMax && words.length ? byName(google, null, words) : null, m = mMax && words.length ? byName(meta, null, words) : null;
+    const spRows = spBy.get(p.asin) ?? [];
+    const infl = infBy.get(p.asin) ?? [];
+    const pl = planBy.get(p.asin) ?? [];
+    const open = pl.filter((x: any) => x.status !== "Done");
+    const comp = p.skus.flatMap((s: string) => wideBy.get(s) ?? []).flatMap((w: any) => Array.from({ length: 10 }, (_, i) => ({ rating: w[`competitor_${i + 1}_rating`], reviews: w[`competitor_${i + 1}_reviews`] }))).filter((c: any) => c.rating !== null && c.rating !== undefined);
+    const topComp = comp.sort((a: any, b: any) => (Number(b.reviews) || 0) - (Number(a.reviews) || 0))[0];
+    const orders30 = z.reduce((a: number, x: any) => a + (Number(x.orders_30d) || 0), 0);
+    const d: any = delBy.get(p.asin);
+    return {
+      asin: p.asin, name: p.name, skus: p.skus, category: p.category, link: `https://www.amazon.in/dp/${p.asin}`,
+      tam: prof?.tam_value ?? null, primary: prof?.primary_audience ?? null, secondary: prof?.secondary_audience ?? null,
+      star: r?.this_star ?? null, ratings: r?.this_count ?? null, ratings_change: r && r.this_count !== null && r.last_count !== null ? r.this_count - r.last_count : null,
+      comp_star: topComp?.rating ?? null, comp_reviews: topComp?.reviews ?? null,
+      price: p.price ?? null,
+      retarget_yes: prof ? Object.entries(prof.retarget ?? {}).filter(([, v]) => v).map(([k]) => k) : null,
+      ad_product: since ? adState(spRows.length ? spendOf(spRows) : 0) : "No data",
+      ad_display: sdRows === null ? "No data" : sdRows.length ? adState(spendOf(sdRows)) : "Not set up",
+      ad_brand: sbRows === null ? "No data" : sbRows.length ? adState(spendOf(sbRows)) : "Not set up",
+      fba_available: invBy.get(p.asin)?.reduce((a: number, x: any) => a + (Number(x.afn_fulfillable_quantity) || 0), 0) ?? null,
+      fc_stocked: [...yesFcs].filter((c) => (fcQty.get(c) ?? 0) > 0).length, fc_onboarded: yesFcs.size,
+      fc_units: fcDate ? [...fcQty.values()].reduce((a, b) => a + b, 0) : null,
+      inbound: z.length ? z.reduce((a: number, x: any) => a + (Number(x.booked) || 0) + (Number(x.intransit) || 0), 0) : null,
+      sales_30d: z.length ? orders30 : null, need_120d: z.length ? orders30 * 4 : null,
+      zones_short: z.length ? z.filter((x: any) => x.alert_35d && x.alert_35d !== "OK").length : null, zones: z.length || null,
+      to_send: z.length ? z.reduce((a: number, x: any) => a + (Number(x.to_send) || 0), 0) : null,
+      kw_terms: kw.length || null, best_organic: bestOrg ? { pos: bestOrg.organic_position, term: bestOrg.search_term } : null, best_ad: bestSp ? { pos: bestSp.sp_position, term: bestSp.search_term } : null,
+      google: g === null ? "No data" : adState(spendOf(g)), meta: m === null ? "No data" : adState(spendOf(m)),
+      infl_organic: infl.filter((x: any) => x.kind !== "ads").length, infl_ads: infl.filter((x: any) => x.kind === "ads").length,
+      infl_languages: [...new Set(infl.map((x: any) => x.language).filter(Boolean))],
+      content: prof?.content ?? null,
+      delivery: d ? { pincodes: d.pincodes, fast: d.fast, slow: d.slow, unavailable: d.unavailable, avg_days: d.avg_days, last_checked: d.last_checked } : null,
+      plan_open: pl.length ? open.length : null, plan_next: open[0]?.task ?? null,
+      notes: (notesBy.get(String(p.name).toLowerCase()) ?? []).length,
+    };
+  });
+  return {
+    rows: out,
+    asOf: { rating: ratingDate, fc: fcDate, forecast: zoneDate, positions: kwWeek, amazonAds: since ? { from: since, to: spMax } : null, google: gMax, meta: mMax },
+    competitorBlocked: compWide.blocked,
+  };
+}
+
+export async function GET(req: Request) {
+  const rejected = rejectUnlessAllowed(req, checkSession, { bucket: "marketing-360", limit: 120, windowMs: 60_000 });
+  if (rejected) return rejected;
+  try {
+    const params = new URL(req.url).searchParams;
+    if (params.get("sheet")) return NextResponse.json(await fullSheet());
+    const asin = params.get("asin");
+    if (!asin) return NextResponse.json({ products: await productList() });
+    if (!ASIN.test(asin)) return NextResponse.json({ error: "asin must be a 10-character Amazon ASIN" }, { status: 400 });
+    return NextResponse.json(await card(asin));
+  } catch (e) {
+    return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+  }
+}
