@@ -15,6 +15,7 @@ import {
 import { supabasePublic as db } from "@/lib/amazonReportUpload";
 import { RETARGET_OPTIONS, CHANNELS } from "@/lib/marketing360Import";
 import { deliveryTone, profileEdit, zoneLabel, SLOW_DAYS, type SheetEdit } from "@/lib/marketing360Rules";
+import type { SourceRow } from "@/lib/marketing360Sources";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Product = { asin: string; name: string; category: string | null; active: boolean; skus: string[]; has_profile: boolean };
@@ -968,6 +969,8 @@ export default function Marketing360Page() {
       </div>
 
 
+      <DataSources />
+
       {tab === "sheet" ? <FullSheet onOpen={(a) => { pickAsin(a); setTab("card"); }} /> : tab === "notes" ? <ChannelNotes products={products} /> : (
         <>
           <div className="flex flex-wrap items-center gap-2">
@@ -983,6 +986,58 @@ export default function Marketing360Page() {
         </>
       )}
     </div>
+  );
+}
+
+/** "Where this data comes from" (user, 2026-11-18): each column group of the Full sheet's first header row,
+ *  its exact source, how far the stored copy runs, and whether that is current (src/lib/marketing360Sources.ts). */
+function DataSources() {
+  const [d, setD] = useState<{ today: string; rows: SourceRow[] } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    getJson("/api/marketing-360?sources=1").then((j) => { if (live) setD(j); }).catch((e) => { if (live) setErr(e instanceof Error ? e.message : String(e)); });
+    return () => { live = false; };
+  }, []);
+  const old = d?.rows.filter((r) => r.status === "old" || r.status === "missing") ?? [];
+  const chip: Record<SourceRow["status"], [string, string]> = {
+    current: ["Current", "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300"],
+    old: ["Old", "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300"],
+    missing: ["No data", "bg-red-100 text-red-800 dark:bg-red-500/15 dark:text-red-300"],
+    typed: ["Typed in", "bg-muted text-muted-foreground"],
+    rule: ["Rule", "bg-muted text-muted-foreground"],
+  };
+  return (
+    <details className="rounded-xl border border-border bg-card" open>
+      <summary className="cursor-pointer select-none px-4 py-2.5 text-sm font-bold">
+        Where this data comes from
+        {d && <span className={`ml-2 text-xs font-semibold ${old.length ? "text-amber-700 dark:text-amber-400" : "text-emerald-700 dark:text-emerald-400"}`}>
+          {old.length ? `${old.length} source${old.length === 1 ? " is" : "s are"} old: ${old.map((r) => r.group).join(", ")}` : "all sources current"}
+        </span>}
+      </summary>
+      {err && <p className="px-4 pb-3 text-xs text-red-700 dark:text-red-400">Could not load the source dates: {err}</p>}
+      {!d && !err && <p className="flex items-center gap-2 px-4 pb-3 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Checking each source…</p>}
+      {d && (
+        <div className="overflow-x-auto px-4 pb-3">
+          <table className="w-full min-w-[720px] text-xs">
+            <thead><tr className="border-b border-border text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+              <th className="py-1.5 pr-3">Column group (sheet's first row)</th><th className="py-1.5 pr-3">Comes from</th><th className="py-1.5 pr-3 whitespace-nowrap">Data up to</th><th className="py-1.5">Status</th>
+            </tr></thead>
+            <tbody>
+              {d.rows.map((r) => (
+                <tr key={r.group} className="border-b border-border/50 align-top last:border-0">
+                  <td className="py-1.5 pr-3 font-semibold">{r.group}</td>
+                  <td className="py-1.5 pr-3 text-muted-foreground">{r.from}{r.note && <span className="block font-semibold text-amber-700 dark:text-amber-400">Note: {r.note}</span>}</td>
+                  <td className="py-1.5 pr-3 whitespace-nowrap tabular-nums">{r.upTo ? <>{dateLabel(r.upTo)}{r.ageDays !== null && r.ageDays > 0 && <span className="text-muted-foreground"> ({r.ageDays} day{r.ageDays === 1 ? "" : "s"} ago)</span>}</> : "—"}</td>
+                  <td className="py-1.5"><span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${chip[r.status][1]}`}>{chip[r.status][0]}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="mt-2 text-[11px] text-muted-foreground">Drive files are imported into the dashboard's database; uploads come from the dashboard's upload pages. "Old" = the stored copy is more than 3 days behind today (8 days for weekly files). Checked {dateLabel(d.today)}.</p>
+        </div>
+      )}
+    </details>
   );
 }
 
