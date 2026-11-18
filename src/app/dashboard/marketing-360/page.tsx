@@ -261,7 +261,7 @@ function ProductCard({ data, reload }: { data: any; reload: () => void }) {
         </div>
         <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
           {[
-            ["Our price", inr(Number(data.listing.price))],
+            ["Our price", data.listing.price === null ? "—" : `${inr(Number(data.listing.price))}${data.listing.mrp ? `  (M.R.P. ${inr(Number(data.listing.mrp))})` : ""}`],
             ["Star rating", ourRating?.this_star ? `${ourRating.this_star}★` : "—"],
             ["Ratings", ourRating ? `${fmt(ourRating.this_count)}${ourRating.last_count !== null && ourRating.this_count !== null ? ` (${ourRating.this_count - ourRating.last_count >= 0 ? "+" : ""}${ourRating.this_count - ourRating.last_count} wk)` : ""}` : "—"],
             ["FBA FCs stocked", `${stocked.length} of ${yes.length}`],
@@ -520,7 +520,8 @@ const SHEET_COLS: SheetCol[] = [
   { group: "Rating & reviews — ours", label: "Ratings", get: (r) => r.ratings, render: (r) => (r.ratings === null ? "—" : `${fmt(r.ratings)}${r.ratings_change ? ` (${r.ratings_change > 0 ? "+" : ""}${r.ratings_change})` : ""}`) },
   { group: "Rating & reviews — competitor", label: "Star", get: (r) => r.comp_star },
   { group: "Rating & reviews — competitor", label: "Reviews", get: (r) => r.comp_reviews, render: (r) => fmt(r.comp_reviews) },
-  { group: "Price", label: "Our price", get: (r) => r.price, render: (r) => (r.price === null ? <span className="text-muted-foreground">—</span> : <a href={r.link} target="_blank" rel="noreferrer" className="font-bold text-indigo-700 underline dark:text-indigo-300" title="Our Amazon listing">{inr(r.price)}</a>) },
+  { group: "Price", label: "Our price", get: (r) => r.price, render: (r) => (r.price === null ? <span className="text-muted-foreground">—</span> : <a href={r.link} target="_blank" rel="noreferrer" className="font-bold text-indigo-700 underline dark:text-indigo-300" title={`Selling price from the ${r.price_source}; opens our Amazon listing`}>{inr(r.price)}</a>) },
+  { group: "Price", label: "M.R.P.", get: (r) => r.mrp, render: (r) => <span className="text-muted-foreground">{inr(r.mrp)}</span> },
   { group: "Price", label: "Competitor (same product)", get: (r) => (r.comp_lowest ? `${r.comp_lowest.name ?? r.comp_lowest.seller ?? "Competitor"} (${r.comp_lowest.marketplace ?? ""})` : null), w: 220, render: (r) => (r.comp_lowest ? <span className="line-clamp-3">{r.comp_lowest.url ? <a href={r.comp_lowest.url} target="_blank" rel="noreferrer" className="text-indigo-700 underline dark:text-indigo-300" title={`${r.comp_lowest.match} · open their listing`}>{r.comp_lowest.name ?? r.comp_lowest.seller ?? "Competitor"}</a> : r.comp_lowest.name ?? "Competitor"} <span className="text-muted-foreground">({r.comp_lowest.marketplace})</span></span> : <span className="text-muted-foreground">—</span>) },
   { group: "Price", label: "Competitor price", get: (r) => r.comp_lowest?.price ?? null, render: (r) => (r.comp_lowest ? <span className="whitespace-nowrap"><b>{inr(r.comp_lowest.price)}</b>{r.price !== null && r.comp_lowest.price < r.price ? <span className="ml-1 text-[10px] font-bold text-red-700 dark:text-red-400">cheaper</span> : null}</span> : <span className="text-muted-foreground">—</span>) },
   { group: "Retargeting", label: "Ways in use", get: (r) => (r.retarget_yes === null ? null : r.retarget_yes.length ? r.retarget_yes.join(", ") : "None"), w: 180, edit: { kind: "multi", field: "retarget", options: RETARGET_OPTIONS } },

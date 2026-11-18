@@ -173,3 +173,16 @@ export function adsSuggestion(i: AdsInput): AdsSuggestion {
   if (i.compPrice === null) reasons.push("No same-product competitor price on file");
   return { action: i.adOn ? "Keep ON" : "Turn ON", tone: i.fcLow > 0 ? "warning" : "good", reasons };
 }
+
+// ── our selling price ───────────────────────────────────────────────────────────────────────────
+// barm_amazon_price_listing.price is the M.R.P. (the All-Listings export has no price column, so the
+// upload saves M.R.P. there — see the "Price upload MRP fallback" note). The selling price comes from
+// the rating & review bot's Amazon page price, else the FBA inventory report's your-price.
+export type OurPrice = { price: number | null; source: "rating bot (Amazon page)" | "FBA inventory report" | null; mrp: number | null };
+export function ourSellingPrice(botPrice: unknown, fbaPrice: unknown, listingPrice: unknown): OurPrice {
+  const n = (v: unknown) => { const x = Number(v); return v === null || v === undefined || v === "" || !Number.isFinite(x) || x <= 0 ? null : x; };
+  const mrp = n(listingPrice);
+  if (n(botPrice) !== null) return { price: n(botPrice), source: "rating bot (Amazon page)", mrp };
+  if (n(fbaPrice) !== null) return { price: n(fbaPrice), source: "FBA inventory report", mrp };
+  return { price: null, source: null, mrp };
+}

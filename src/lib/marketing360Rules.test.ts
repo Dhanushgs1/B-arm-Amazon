@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { latestByPincode, deliveryTone, fcTable, adState, campaignKeywords, profileEdit, zoneVerdict, STATE_ZONE, zoneLabel, ourProduct, adsSuggestion } from "./marketing360Rules.ts";
+import { latestByPincode, deliveryTone, fcTable, adState, campaignKeywords, profileEdit, zoneVerdict, STATE_ZONE, zoneLabel, ourProduct, adsSuggestion, ourSellingPrice } from "./marketing360Rules.ts";
 import { pincodeState, pos, toIsoDate, dateFromName } from "./marketing360Import.ts";
 
 const chk = (pincode: string, week: string, scraped_date: string, days: number | null, status = "Confirmed Estimate") =>
@@ -126,4 +126,10 @@ test("ads suggestion: client FBA rule first, then rating, then price; reasons al
   assert.equal(adsSuggestion({ ...ok, fcLow: 2 }).tone, "warning");
   assert.equal(adsSuggestion({ ...ok, fcKnown: false }).action, "Check data");
   assert.ok(adsSuggestion({ ...ok, star: null, compPrice: null }).reasons.some((r) => /No rating/.test(r)));
+});
+
+test("our price is the selling price, never the M.R.P. from the listing upload", () => {
+  assert.deepEqual(ourSellingPrice("363.00", 363, 750), { price: 363, source: "rating bot (Amazon page)", mrp: 750 });
+  assert.deepEqual(ourSellingPrice(null, "363", "750"), { price: 363, source: "FBA inventory report", mrp: 750 });
+  assert.deepEqual(ourSellingPrice(0, null, 750), { price: null, source: null, mrp: 750 });
 });
