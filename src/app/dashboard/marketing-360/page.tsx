@@ -667,7 +667,7 @@ function ZoneTable({ rows, forecastDate, date }: { rows: any[]; forecastDate: st
     <div className="space-y-1.5">
       <p className="text-[11px] text-muted-foreground">
         Delivery: {date ? `checks scraped on ${dateLabel(date)}` : "latest check per pincode"} · FBA orders and stock: forecast file {dateLabel(forecastDate)} (30 days) ·
-        zones as the FBA forecast groups states. The verdict is a rule, not a certainty: slow = average over {SLOW_DAYS} days; &quot;no orders&quot; only when the forecast shows 0.
+        zones as the FBA forecast groups states. The verdict is a rule, not a certainty: slow = average over {`${SLOW_DAYS} days`}; &quot;no orders&quot; only when the forecast shows 0.
       </p>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">

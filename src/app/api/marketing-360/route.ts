@@ -35,6 +35,16 @@ async function allRows(make: (from: number, to: number) => PromiseLike<Q>): Prom
   }
   return out;
 }
+/** allRows() for a source the anon key may be refused: rows, or the refusal message. */
+async function optionalAll(make: (from: number, to: number) => PromiseLike<Q>): Promise<{ rows: any[]; blocked: string | null }> {
+  try {
+    return { rows: await allRows(make), blocked: null };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/permission denied/i.test(msg)) return { rows: [], blocked: msg };
+    throw e;
+  }
+}
 const ASIN = /^[A-Z0-9]{10}$/;
 const isoMinus = (d: string, days: number) => new Date(Date.parse(d) - days * 86_400_000).toISOString().slice(0, 10);
 
@@ -85,7 +95,7 @@ async function card(asin: string) {
   // ── competitors (price + rating) — RLS lets only signed-in Supabase users read these tables, so
   // a refusal is reported on the card instead of failing it ──────────────────────────────────
   const [cp, cw] = await Promise.all([
-    optional(supabase.rpc("mkt_competitor_prices") as any),
+    optionalAll((a, b) => supabase.rpc("mkt_competitor_prices").order("our_sku").order("competitor_product_url").range(a, b) as any),
     skus.length ? optional(supabase.from("competitor_analysis_wide").select("*").in("our_sku", skus).order("week_tag", { ascending: false }).limit(4) as any) : Promise.resolve({ rows: [], blocked: null }),
   ]);
   const SAME = /^(EXACT MATCH|CLOSE EQUIVALENT)$/i;
@@ -266,8 +276,8 @@ async function fullSheet(deliveryDate: string | null) {
     rows(supabase.from("am_display_ad_masters").select('"Display campaign name","ASIN"') as any),
     rows(supabase.from("brand_ads_master_sheet").select('"Campaign Name","ASIN"') as any),
     optional(supabase.from("competitor_analysis_wide").select("*").order("week_tag", { ascending: false }).limit(2000) as any),
-    optional(supabase.rpc("mkt_competitor_prices") as any),
-    rows(supabase.rpc("mkt_delivery_zone_summary", deliveryDate ? { d: deliveryDate } : {}) as any),
+    optionalAll((a, b) => supabase.rpc("mkt_competitor_prices").order("our_sku").order("competitor_product_url").range(a, b) as any),
+    allRows((a, b) => supabase.rpc("mkt_delivery_zone_summary", deliveryDate ? { d: deliveryDate } : {}).order("asin").order("zone").range(a, b) as any),
   ]);
   const group = <T,>(xs: T[], key: (x: T) => string | null | undefined) => {
     const m = new Map<string, T[]>();
