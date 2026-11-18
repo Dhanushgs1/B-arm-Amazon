@@ -165,7 +165,7 @@ export default function ConsolidatedStockPage() {
       for (let i = 0; i < f.bytes.length; i += 0x8000) bin += String.fromCharCode(...f.bytes.subarray(i, i + 0x8000));
       const r = await fetch("/api/consolidated-mail", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind, filename: f.filename, content: btoa(bin), date: f.date, rows: f.rows }),
+        body: JSON.stringify({ kind, filename: f.filename, content: btoa(bin), date: f.date, rows: f.rows, tables: f.tables }),
       });
       const j = await r.json().catch(() => ({}));
       setNote(r.ok ? { ok: true, text: `"${title}" mail sent.` } : { ok: false, text: `"${title}" mail not sent: ${j?.error || `HTTP ${r.status}`}` });
