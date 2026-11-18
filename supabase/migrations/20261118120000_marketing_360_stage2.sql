@@ -96,3 +96,17 @@ begin
 end $$;
 revoke all on function public.mkt_refresh_delivery() from public;
 grant execute on function public.mkt_refresh_delivery() to anon;
+
+-- Researched potential-buyer counts per audience group (India), with sources, for TAM suggestions
+-- (TAM = buyers x our selling price). Products map to a group in marketing360Rules.ts tamGroup().
+create table if not exists public.mkt_tam_research (
+  group_key        text primary key,
+  buyers           bigint,
+  buyer_definition text,
+  derivation       text,
+  sources          jsonb not null default '[]'::jsonb,
+  confidence       text,
+  note             text,
+  researched_at    timestamptz not null default now()
+);
+grant select on public.mkt_tam_research to anon;

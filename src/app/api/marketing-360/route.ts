@@ -3,7 +3,7 @@ import { checkSession } from "@/lib/apiAuth";
 import { rejectUnlessAllowed } from "@/lib/appRouteAuth";
 import { supabase } from "@/lib/supabaseClient";
 import { FBA_ALERT_FCS } from "@/lib/fbaWarehouseAlerts";
-import { latestByPincode, fcTable, adState, campaignKeywords, zoneVerdict, ourProduct, adsSuggestion, ADS_LOW_UNITS, ourSellingPrice, type DeliveryCheck, type ZoneFacts } from "@/lib/marketing360Rules";
+import { latestByPincode, fcTable, adState, campaignKeywords, zoneVerdict, ourProduct, adsSuggestion, ADS_LOW_UNITS, ourSellingPrice, tamGroup, tamSuggestion, type DeliveryCheck, type ZoneFacts } from "@/lib/marketing360Rules";
 
 // Product Marketing 360 — one product's marketing card, built from stored data only (Supabase).
 //   GET                -> product list (Amazon listings grouped by ASIN, with master name + category)
@@ -187,11 +187,13 @@ async function card(asin: string) {
   const notes = productName ? await rows(supabase.from("mkt_channel_notes").select("*").ilike("product", productName) as any) : [];
   const botPrice = (await rows(supabase.from("product_rating_review_metrics").select("price").eq("platform", "Amazon").eq("marketplace_product_id", asin).gt("price", 0).limit(1) as any))[0]?.price;
   const our = ourSellingPrice(botPrice, inv.find((x: any) => Number(x.your_price) > 0)?.your_price, listing.find((l) => l.price)?.price);
+  const tamGroupKey = tamGroup(productName);
+  const tamRow = tamGroupKey ? (await rows(supabase.from("mkt_tam_research").select("*").eq("group_key", tamGroupKey) as any))[0] : undefined;
 
   return {
     asin, productName, category: master[0]?.Category ?? null,
     listing: { skus, items: listing, price: our.price, price_source: our.source, mrp: our.mrp, link: `https://www.amazon.in/dp/${asin}` },
-    profile, plan, influencers, notes,
+    profile, plan, influencers, notes, tamSuggest: tamInfo(tamRow, tamGroupKey, our.price),
     rating: { snapshot_date: ratingLatest[0]?.snapshot_date ?? null, rows: rating },
     competitors: { prices: compPrice, ratings: compRatings, ratings_week: latestWide ?? null, blocked: competitorBlocked },
     ads: {
@@ -333,11 +335,12 @@ async function fullSheet(deliveryDate: string | null) {
   const base = await sheetBaseCached(deliveryDate);
   const { products, ratingDate, fcDate, zoneDate, kwWeek, spMax, gMax, mMax, since, ratings, fcStock, zones, keywords, sp, sd, sb, google, meta, inv, botPrices, delivery, sdMaster, sbMaster, compWide, compPrices, zoneDelivery, deliveryDates } = base;
   // the team's own fields: always fresh, so an edit shows on the next load
-  const [profiles, plan, influencers, notes] = await Promise.all([
+  const [profiles, plan, influencers, notes, tamResearch] = await Promise.all([
     rows(supabase.from("mkt_product_profile").select("*") as any),
     rows(supabase.from("mkt_action_plan").select("asin,task,status,plan_date").order("id") as any),
     rows(supabase.from("mkt_influencer_posts").select("asin,kind,language") as any),
     allRows((a, b) => supabase.from("mkt_channel_notes").select("product,channel").order("product").order("channel").range(a, b) as any),
+    rows(supabase.from("mkt_tam_research").select("*") as any),
   ]);
   const group = <T,>(xs: T[], key: (x: T) => string | null | undefined) => {
     const m = new Map<string, T[]>();
@@ -363,6 +366,8 @@ async function fullSheet(deliveryDate: string | null) {
   const zoneDelBy = group(zoneDelivery, (z: any) => z.asin);
 
   const priceOf = (p: any) => ourSellingPrice(botPriceBy.get(p.asin), (invBy.get(p.asin) ?? []).find((x: any) => Number(x.your_price) > 0)?.your_price, p.price);
+  const tamBy = new Map(tamResearch.map((t: any) => [t.group_key, t]));
+  const tamOf = (name: string | null, price: number | null) => tamInfo(tamBy.get(tamGroup(name) ?? ""), tamGroup(name), price);
   const out = products.map((p: any) => {
     const prof: any = profBy.get(p.asin) ?? null;
     const words = campaignKeywords(prof?.ad_keywords, p.name);
@@ -426,6 +431,7 @@ async function fullSheet(deliveryDate: string | null) {
       notes: (notesBy.get(String(p.name).toLowerCase()) ?? []).length,
       zone_slow_no_orders: zc.length ? slowNoOrders.length : null,
       zone_worst: worst ? { zone: worst.zone, avg: worst.avg_days, max: worst.max_days } : null,
+      tam_suggest: tamOf(p.name, priceOf(p).price),
     };
   });
   return {
@@ -461,4 +467,15 @@ export async function GET(req: Request) {
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
   }
+}
+
+/** The TAM suggestion shown for a product: its audience group, the researched buyers (with sources), and
+ *  buyers × our selling price. Null value when the group has no researched figure yet. */
+function tamInfo(t: any, group: string | null, price: number | null) {
+  if (!group) return null;
+  return {
+    group, price, value: tamSuggestion(t?.buyers ? Number(t.buyers) : null, price),
+    buyers: t?.buyers ? Number(t.buyers) : null, definition: t?.buyer_definition ?? null, derivation: t?.derivation ?? null,
+    sources: t?.sources ?? [], confidence: t?.confidence ?? null, note: t?.note ?? null, researched: !!t,
+  };
 }
