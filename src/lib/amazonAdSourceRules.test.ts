@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isSpCardRow, isCampaignCardRow, dailyAmAdsReportRows, allocateCampaignSpend, amazonCardSpendRows, brandDisplayAdRows, spRowsToAdRows, SKU_LESS_SOURCE } from "./amazonAdSourceRules.ts";
+import { isSpCardRow, isCampaignCardRow, dailyAmAdsReportRows, allocateCampaignSpend, amazonCardSpendRows, amazonSpendRowsWithDailyFill, brandDisplayAdRows, spRowsToAdRows, SKU_LESS_SOURCE } from "./amazonAdSourceRules.ts";
 import { spCampaignDays, isSplitCoveredCampaignRow } from "./amazonSpendRules.ts";
 
 test("campaign spend is spread by weight; no weights means equal shares (₹300 over 3 SKUs = ₹100 each)", () => {
@@ -195,4 +195,20 @@ test("a campaign-day on either card table blocks the SKU-less row, whatever its 
   );
   assert.deepEqual(sbRows, []);
   assert.deepEqual(sdRows.map((r) => r.spend), [11]);
+});
+
+test("daily fill: card days keep the card, days without SP card rows come from the daily upload", () => {
+  const sp = [{ report_date: "2026-10-29", campaign_name: "SP1", advertised_sku: "S1", spend: 100, raw: { Date: "29 Oct" } }];
+  const sb = [{ report_date: "2026-11-18", campaign_name: "Brand", spend: 70, raw: {} }];
+  const daily = [
+    { report_date: "2026-10-29", campaign_name: "SP1", sku: "S1", spend: 999, raw: {} }, // card has this day: ignored
+    { report_date: "2026-11-18", campaign_name: "SP1", sku: "S1", spend: 40, sales_7d: 200, raw: {} },
+    { report_date: "2026-11-18", campaign_name: "Display", sku: "", spend: 25, raw: { "Ad Type": "SD" } },
+  ];
+  const { spRows, campaignRows } = amazonSpendRowsWithDailyFill(sp, sb, [], daily);
+  const total = (rows: Record<string, unknown>[]) => rows.reduce((a: number, r) => a + Number(r.spend), 0);
+  assert.equal(total(spRows), 140);
+  assert.deepEqual(campaignRows.map((r) => [r.campaign_name, r.spend]).sort(), [["Brand", 70], ["Display", 25]]);
+  // no daily rows: exactly the card result
+  assert.deepEqual(amazonSpendRowsWithDailyFill(sp, sb, [], []), amazonCardSpendRows(sp, sb, []));
 });

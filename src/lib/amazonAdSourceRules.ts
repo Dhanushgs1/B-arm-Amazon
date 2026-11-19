@@ -149,6 +149,30 @@ export function amazonCardSpendRows(sp: Row[], sb: Row[], sd: Row[]): { spRows: 
 }
 
 /**
+ * amazonCardSpendRows for the days the SP card has rows; every other day from the daily combined
+ * upload (barm_daily_am_ads, built as the Ad Spend Report builds it — dailyAmAdsReportRows). The SP
+ * card stopped at 29 Oct 2026 while the daily upload goes on, so without this the Overall page showed
+ * Amazon ad spend ₹0 for every later day (user, 19 Nov 2026). Card data still wins where it exists.
+ */
+export function amazonSpendRowsWithDailyFill(sp: Row[], sb: Row[], sd: Row[], daily: Row[]): { spRows: Row[]; campaignRows: Row[] } {
+  const day = (r: Row) => String(r.report_date ?? "").slice(0, 10);
+  const card = amazonCardSpendRows(sp, sb, sd);
+  const cardDays = new Set(card.spRows.map(day));
+  const fillDaily = daily.filter((r) => !cardDays.has(day(r)));
+  if (!fillDaily.length) return card;
+  const fillDays = new Set(fillDaily.map(day));
+  const onFill = (r: Row) => fillDays.has(day(r));
+  const d = dailyAmAdsReportRows(fillDaily, sb.filter(onFill), sd.filter(onFill));
+  const splitDays = spCampaignDays(d.spRows);
+  const fillCampaigns = [...d.sbRows, ...d.sdRows].filter((r) => !isSplitCoveredCampaignRow(r, splitDays));
+  return {
+    spRows: [...card.spRows, ...d.spRows],
+    // card SB/SD rows on fill days are re-judged against the daily split above, so drop them from the card set
+    campaignRows: [...card.campaignRows.filter((r) => !onFill(r)), ...fillCampaigns],
+  };
+}
+
+/**
  * Brand/Display campaign-day spend from amazonCardSpendRows, spread over the mapped SKUs (allocateCampaignSpend)
  * and returned as spend-only SP-shaped rows, so a consumer can aggregate them like SP rows. The SB/SD cards carry
  * no per-SKU sales or units, so those stay 0. Unmapped campaign spend is not returned. A SKU with no ASIN keeps an

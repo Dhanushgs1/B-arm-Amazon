@@ -1,7 +1,8 @@
 // Readers for the Overall page's ads data. Same tables and row mapping as the High ACOS email
 // (highAcosChannels.ts) and the Google & Meta page — uploaded reports only, never SellerMate.
 //   Amazon   barm_amazon_sp_advertised_product   per day / campaign / SKU, SP-card rows only
-//            + barm_amazon_sb_campaign / _sd_campaign card rows not already split per SKU (amazonCardSpendRows)
+//            + barm_amazon_sb_campaign / _sd_campaign card rows not already split per SKU (amazonCardSpendRows);
+//            days with no SP card rows from barm_daily_am_ads (amazonSpendRowsWithDailyFill)
 //   Flipkart barm_daily_fk_ads                   per day / campaign
 //   Meesho   barm_daily_ms_barm_ads              per day / SKU (sales estimated from its average price)
 //   Google   barm_daily_google_ad_spend          report windows → resolveDailySpend
@@ -9,7 +10,7 @@
 import { fetchAllRows } from "@/lib/amazonReportShared";
 import { amazonRows, flipkartRows, meeshoRows, meeshoAvgPrice, type ChannelAdRow } from "@/lib/highAcosChannels";
 import type { AdSpendRow } from "@/lib/adSpendDailyRules";
-import { amazonCardSpendRows } from "@/lib/amazonAdSourceRules";
+import { amazonSpendRowsWithDailyFill } from "@/lib/amazonAdSourceRules";
 
 const addDays = (iso: string, k: number) => {
   const d = new Date(`${iso}T00:00:00Z`);
@@ -26,12 +27,14 @@ export async function loadMarketplaceAds(key: MarketplaceAdKey, start: string, e
   if (key === "amazon") {
     // Sponsored Products card rows, plus each Sponsored Brands / Display card campaign-day the SP card
     // doesn't split per SKU (amazonCardSpendRows — the same Amazon spend the Weekly and Live reports count).
-    const [sp, sb, sd] = await Promise.all([
+    const [sp, sb, sd, daily] = await Promise.all([
       fetchAllRows("barm_amazon_sp_advertised_product", between(start, end)),
       fetchAllRows("barm_amazon_sb_campaign", between(start, end)).catch(() => []),
       fetchAllRows("barm_amazon_sd_campaign", between(start, end)).catch(() => []),
+      // Days the SP card has no rows (it stopped 29 Oct 2026) come from the daily "Last 7 days" upload.
+      fetchAllRows("barm_daily_am_ads", between(start, end)),
     ]);
-    const { spRows, campaignRows } = amazonCardSpendRows(sp, sb, sd);
+    const { spRows, campaignRows } = amazonSpendRowsWithDailyFill(sp, sb, sd, daily);
     // A card row with no campaign name still counts; it is shown under its SKU.
     const spChannel = spRows.map((r) => ({ ...r, campaign_name: r.campaign_name || `SKU ${r.advertised_sku}` }));
     const brand = campaignRows.filter((r) => r.campaign_name).map((r) => ({
