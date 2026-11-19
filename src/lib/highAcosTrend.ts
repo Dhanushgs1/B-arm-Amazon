@@ -103,8 +103,10 @@ export function buildAcosTrend(
       trend: trendOf(days, threshold),
     });
   }
-  // Biggest spend first: that is where the over-threshold ACOS costs the most.
-  return out.sort((a, b) => b.spend - a.spend || a.name.localeCompare(b.name));
+  // Highest 7-day ACOS first (user, 2026-11-19). Spent with no sales (ACOS null) is the worst case,
+  // so those lead; ties by spend.
+  const rank = (r: AcosTrendRow) => (r.acos === null ? Infinity : r.acos);
+  return out.sort((a, b) => rank(b) - rank(a) || b.spend - a.spend || a.name.localeCompare(b.name));
 }
 
 /** The last `n` complete IST dates ending yesterday, oldest first (YYYY-MM-DD). */

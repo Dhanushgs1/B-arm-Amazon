@@ -53,6 +53,14 @@ const WINDOW_TABLE = { google: "barm_daily_google_ad_spend", meta: "barm_daily_s
 
 /** Report windows touching start..end, plus a week either side so missing days can be worked out. */
 export async function loadSpendWindows(source: keyof typeof WINDOW_TABLE, start: string, end: string): Promise<AdSpendRow[]> {
-  return (await fetchAllRows(WINDOW_TABLE[source], (q) => q.lte("report_start", addDays(end, 6)).gte("report_end", addDays(start, -6)))) as AdSpendRow[];
+  const rows = (await fetchAllRows(WINDOW_TABLE[source], (q) => q.lte("report_start", addDays(end, 6)).gte("report_end", addDays(start, -6)))) as (AdSpendRow & { raw?: unknown })[];
+  // Meta rows have no clicks column; the upload keeps the file's clicks in raw.clicks_total.
+  if (source === "meta") {
+    return rows.map((r) => {
+      const raw = r.raw && typeof r.raw === "object" && !Array.isArray(r.raw) ? (r.raw as Record<string, unknown>) : {};
+      return { ...r, clicks: Number(raw.clicks_total) || 0 };
+    });
+  }
+  return rows;
 }
 

@@ -43,10 +43,18 @@ test("trend compares the last 3 days with the 4 before", () => {
   assert.deepEqual(byName, { Worse: "worse", Better: "better", Flat: "flat", Fresh: "new" });
 });
 
-test("sorted by spend, merged by campaign id across days", () => {
+test("no-sale ties by spend, merged by campaign id across days", () => {
   const a = series("A", DATES.map(() => [100, 0]), "1");
   const b = series("B", DATES.map(() => [300, 0]), "2");
   assert.deepEqual(buildAcosTrend(perDay(a, b), 14, 200).map((r) => r.name), ["B", "A"]);
+});
+
+test("sorted by 7-day ACOS, highest first, no-sale on top", () => {
+  const big20 = series("Big 20%", DATES.map(() => [1000, 5000]));
+  const small50 = series("Small 50%", DATES.map(() => [100, 200]));
+  const mid30 = series("Mid 30%", DATES.map(() => [300, 1000]));
+  const burner = series("No sale", DATES.map(() => [50, 0]));
+  assert.deepEqual(buildAcosTrend(perDay(big20, small50, mid30, burner), 14, 200).map((r) => r.name), ["No sale", "Small 50%", "Mid 30%", "Big 20%"]);
 });
 
 test("lastIstDates: 7 complete IST days ending yesterday", () => {

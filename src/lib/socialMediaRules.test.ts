@@ -29,3 +29,13 @@ test("different windows and different campaigns stay separate; blank name / date
     ["Camp A", "2026-09-30", 700],
   ]);
 });
+
+test("clicks add up across a campaign's lines; null when the file has no clicks", () => {
+  const base = { sheet: "S", report_start: "2026-11-18", report_end: "2026-11-18" };
+  const out = mergeMetaRows([
+    { ...base, campaign_name: "Kit", spend: 100, clicks: 10 },
+    { ...base, campaign_name: "kit ", spend: 50, clicks: 5 },
+    { ...base, campaign_name: "Other", spend: 20, clicks: null },
+  ]);
+  assert.deepEqual(out.map((r) => [r.campaign_name, r.spend, r.clicks]), [["Kit", 150, 15], ["Other", 20, null]]);
+});

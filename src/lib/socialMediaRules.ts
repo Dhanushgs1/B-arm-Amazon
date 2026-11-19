@@ -17,6 +17,8 @@ export interface MetaRowLike {
   report_end: string | null;
   campaign_name: string;
   spend: number;
+  /** Link clicks when the export has a clicks column, else null. Added up like spend. */
+  clicks?: number | null;
 }
 
 /** Valid rows (campaign + both dates) merged to one row per window + campaign. The saved name is
@@ -30,8 +32,10 @@ export function mergeMetaRows<T extends MetaRowLike>(rows: T[]): T[] {
     const sheet = bySheet.get(r.sheet) ?? new Map<string, T>();
     bySheet.set(r.sheet, sheet);
     const hit = sheet.get(key);
-    if (hit) hit.spend = Math.round((hit.spend + r.spend) * 100) / 100;
-    else sheet.set(key, { ...r, campaign_name: name });
+    if (hit) {
+      hit.spend = Math.round((hit.spend + r.spend) * 100) / 100;
+      if (hit.clicks != null || r.clicks != null) hit.clicks = (hit.clicks ?? 0) + (r.clicks ?? 0);
+    } else sheet.set(key, { ...r, campaign_name: name });
   }
   const out = new Map<string, T>();
   bySheet.forEach((sheet) => sheet.forEach((r, key) => {

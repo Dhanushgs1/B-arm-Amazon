@@ -73,12 +73,18 @@ interface MappedRow {
   campaign_name: string;
   spend: number;
   currency: string;
+  clicks: number | null;
   raw: RawRow;
 }
 
+/** Meta Ads Manager clicks columns, most specific first. */
+const META_CLICK_HEADERS = ["Link clicks", "Clicks (all)", "Clicks"];
+
 function mapRow({ row, sheet }: { row: RawRow; sheet: string }): MappedRow {
   const p = makePicker(row);
+  const hasClicks = Object.keys(row).some((k) => META_CLICK_HEADERS.some((h) => normalizeHeaderKey(h) === normalizeHeaderKey(k)));
   return {
+    clicks: hasClicks ? Math.round(num(p(...META_CLICK_HEADERS))) : null,
     sheet,
     report_start: toDate(p("Reporting starts")),
     report_end: toDate(p("Reporting ends")),
@@ -144,7 +150,13 @@ export async function uploadSocialMediaReportFile(file: File): Promise<SocialMed
   // One row per window + campaign (Postgres rejects an upsert batch that touches the same row
   // twice): the same campaign twice in one sheet ADDS its spend; a copy in another sheet for the
   // same window is not doubled — see socialMediaRules.ts. `sheet` is not a table column.
-  const valid = mergeMetaRows(mapped).map((r) => { const row: Partial<MappedRow> = { ...r }; delete row.sheet; return row; });
+  // The table has no clicks column: the merged clicks (all lines of the campaign) ride in raw.clicks_total.
+  const valid = mergeMetaRows(mapped).map((r) => {
+    const row: Partial<MappedRow> = { ...r, raw: r.clicks == null ? r.raw : { ...r.raw, clicks_total: r.clicks } };
+    delete row.sheet;
+    delete row.clicks;
+    return row;
+  });
 
   if (!valid.length) {
     return { totalRows: rawRows.length, savedRows: 0, skippedRows: rawRows.length, minDate: null, maxDate: null, windows: [] };

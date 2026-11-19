@@ -1046,7 +1046,7 @@ export function buildHtml(type: string, data: Record<string, any>, toEmail: stri
     const tiles = multi ? `
         <tr><td style="padding-bottom:6px;">
           <h2 style="margin:0;color:#111;font-size:20px;font-weight:800;">&#128200; High ACOS &#8212; last ${dates.length} days (${range})</h2>
-          <p style="margin:4px 0 12px;color:#6b7280;font-size:12px;font-weight:600;">${total} campaign${total === 1 ? "" : "s"} above ${t}% ACOS across ${channels.length} channels, from the uploaded ads reports. Biggest spend first.</p>
+          <p style="margin:4px 0 12px;color:#6b7280;font-size:12px;font-weight:600;">${total} campaign${total === 1 ? "" : "s"} above ${t}% ACOS across ${channels.length} channels, from the uploaded ads reports. Highest 7-day ACOS first.</p>
           <table width="100%" cellpadding="0" cellspacing="6" border="0"><tr>
             ${channels.map((c) => `<td style="padding:10px;border:1px solid #e5e7eb;border-radius:10px;vertical-align:top;width:${Math.floor(100 / channels.length)}%;">
               <p style="margin:0;font-size:11px;font-weight:800;color:${c.color};text-transform:uppercase;">${c.label}</p>
@@ -1065,7 +1065,7 @@ export function buildHtml(type: string, data: Record<string, any>, toEmail: stri
         </td></tr>
         <tr><td style="padding-top:16px;">
           <p style="margin:0;color:#9ca3af;font-size:11px;line-height:1.6;">
-            Campaigns whose ${dates.length}-day ACOS (spend &#247; ad sales) is above ${t}%, or that spent with no sales, and spent at least the channel's minimum in the period${multi ? ` (${channels.map((c) => `${c.label} ${money(c.minSpend || 0)}`).join(", ")})` : ` (${money(data.minSpend || 0)})`}. Biggest spend first.
+            Campaigns whose ${dates.length}-day ACOS (spend &#247; ad sales) is above ${t}%, or that spent with no sales, and spent at least the channel's minimum in the period${multi ? ` (${channels.map((c) => `${c.label} ${money(c.minSpend || 0)}`).join(", ")})` : ` (${money(data.minSpend || 0)})`}. Highest 7-day ACOS first.
             Each day's cell is that day's ACOS: green at or under ${t}%, amber above, red above ${t * 2}%, "No sale" when it spent with no sales, "–" when it did not spend.
             Trend compares the last 3 days with the 4 before them. "x/${dates.length} days" counts the days above ${t}%.
             ${multi ? `Source: the uploaded "Last 7 days" ads reports &#8212; Amazon Sponsored Products (7-day attributed sales), Flipkart ads (revenue), Meesho B-ARM ads (orders &#215; average selling price).` : "Source: SellerMate campaign performance (all statuses); the most recent day can still be filling in."}
@@ -1125,6 +1125,8 @@ export function buildHtml(type: string, data: Record<string, any>, toEmail: stri
         <p style="margin:0;font-size:13px;font-weight:800;color:${COLORS[c.key] || "#111"};">${c.label}${c.day !== data.day ? ` <span style="color:#b45309;font-size:10px;">(${dayLabel(c.day)})</span>` : ""}</p>
         ${c.spendOnly
           ? campTable("Biggest spend", "#374151", c.top || [], true)
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            + ((c.top || []).length && (c.top as any[]).every((x) => !x.clicks) ? `<p style="margin:4px 0 0;font-size:10px;color:#b45309;font-weight:600;">Clicks: the uploaded ${c.label} file for this day has no clicks column.</p>` : "")
           : campTable("&#127942; Best campaigns", "#059669", c.best || [], false) + campTable("&#9888;&#65039; Losing campaigns", "#dc2626", c.losing || [], false)}
       </td></tr>`).join("");
     const lateNotes: string[] = data.lateNotes || [];
