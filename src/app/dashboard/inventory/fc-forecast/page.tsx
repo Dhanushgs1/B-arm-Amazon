@@ -117,7 +117,7 @@ export default function FcForecastPage() {
           onClick={() => forecast.data && unmapped.data && exportFcWorkbook(forecast.data, unmapped.data, asOf)}
           disabled={!forecast.data?.length || !unmapped.data}
           title={unmapped.isError ? "The unmapped-SKU list failed to load; reload before downloading" : undefined}
-          className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-60"
+          className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-bold text-white hover:bg-indigo-700 disabled:opacity-60"
         >
           <Download className="h-3.5 w-3.5" /> Download xlsx
         </button>
@@ -126,7 +126,7 @@ export default function FcForecastPage() {
           onClick={() => fileRef.current?.click()}
           disabled={busy}
           title='Amazon Seller Flex "VSNC-CUSTOMER_SHIPMENTS-ALL-<from>-<to>.csv"'
-          className="flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-background px-3.5 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-50 disabled:opacity-60 dark:border-emerald-700 dark:text-emerald-300 dark:hover:bg-emerald-950"
+          className="flex items-center gap-1.5 rounded-lg border border-indigo-300 bg-background px-3.5 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50 disabled:opacity-60 dark:border-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-950"
         >
           {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />} Upload Seller Flex shipments CSV
         </button>
@@ -194,7 +194,7 @@ export default function FcForecastPage() {
                     <td className={td}>{int(r.block1)}</td>
                     <td className={td}>{int(r.peak)}</td>
                     <td className={td}>{int(r.max_units)}</td>
-                    <td className={`${td} font-extrabold text-emerald-700 dark:text-emerald-300`}>{int(r.min_stock)}</td>
+                    <td className={`${td} font-extrabold text-indigo-700 dark:text-indigo-300`}>{int(r.min_stock)}</td>
                     <td className={td}>{int(r.ch_amazon)}</td>
                     <td className={td}>{int(r.ch_flipkart)}</td>
                     <td className={td}>{int(r.ch_meesho)}</td>
@@ -270,7 +270,7 @@ function UnmappedPanel({ items, loading, error, onRetry, names, onSaved }: { ite
                     <td className="px-2 py-2">
                       <div className="flex items-center gap-1.5">
                         <input list="fc-product-names" value={draft[key] ?? ""} onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value }))} placeholder="Product name" className="w-64 rounded-md border border-border bg-background px-2 py-1 text-xs" />
-                        <button onClick={() => save(u)} disabled={saving !== null || !(draft[key] ?? "").trim()} className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-60">
+                        <button onClick={() => save(u)} disabled={saving !== null || !(draft[key] ?? "").trim()} className="rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-bold text-white hover:bg-indigo-700 disabled:opacity-60">
                           {saving === key ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save"}
                         </button>
                       </div>
