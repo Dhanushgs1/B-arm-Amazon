@@ -1,7 +1,7 @@
 // FC Forecast tab (2026-11-20) — data access. Every number comes from the SQL functions in
 // supabase/migrations/20261120130000_fc_forecast_functions.sql (+ 20261120140000), one small RPC each.
 
-import { supabasePublic } from "@/lib/supabasePublic";
+import { supabasePublic } from "@/lib/amazonReportUpload";
 import { normalizeSku } from "@/lib/sellerFlexShipments";
 import type { FcRow, FcSourceDate, FcUnmapped } from "@/lib/fcForecastRules";
 
@@ -42,12 +42,12 @@ export async function fetchFcSourceDates(): Promise<FcSourceDate[]> {
 export async function fetchFcProductNames(): Promise<string[]> {
   const p = await supabasePublic.from("fc_products").select("product");
   if (p.error) throw new Error(p.error.message);
-  const names = (p.data ?? []).map((r) => String(r.product));
+  const names = (p.data ?? []).map((r: { product: unknown }) => String(r.product));
   // The API returns at most 1,000 rows per request; the map has ~1,500.
   for (let from = 0; ; from += 1000) {
     const m = await supabasePublic.from("fc_sku_product_map").select("product").order("sku").range(from, from + 999);
     if (m.error) throw new Error(m.error.message);
-    names.push(...(m.data ?? []).map((r) => String(r.product)));
+    names.push(...(m.data ?? []).map((r: { product: unknown }) => String(r.product)));
     if ((m.data ?? []).length < 1000) break;
   }
   return [...new Set(names.map((n) => n.trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));

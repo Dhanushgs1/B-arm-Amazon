@@ -9,7 +9,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { InventoryTabs } from "@/components/InventoryTabs";
 import { KPICard } from "@/components/KPICard";
 import { QueryErrorState } from "@/components/QueryErrorState";
-import { supabasePublic } from "@/lib/supabasePublic";
+import { supabasePublic } from "@/lib/amazonReportUpload";
 import { FC_KEYS, fetchFcForecast, fetchFcProductNames, fetchFcSourceDates, fetchFcUnmapped, saveSkuMapping } from "@/lib/fcForecastData";
 import { blocks, rangeLabel, staleChannels, sourceCheckNotice, unmappedKpi, yesterdayIst, FC_CHANNELS, FC_CHANNEL_LABEL, type FcRow, type FcUnmapped } from "@/lib/fcForecastRules";
 import { exportFcWorkbook } from "@/lib/fcForecastExport";
