@@ -35,6 +35,7 @@ import {
   Presentation,
   Radio,
   Layers,
+  ClipboardList,
   ShoppingBag,
   type LucideIcon
 } from "lucide-react";
@@ -80,6 +81,7 @@ const NAV_SECTIONS: SidebarNavSection[] = [
       { id: "inventory", label: "Inventory", icon: Box },
       { id: "live", label: "Live Inventory", icon: Radio, path: "/dashboard/inventory/live" },
       { id: "consolidated", label: "Consolidated Stock Sheet", icon: Layers, path: "/dashboard/inventory/consolidated" },
+      { id: "fc-forecast", label: "FC Forecast", icon: ClipboardList, path: "/dashboard/inventory/fc-forecast" },
       { id: "marketshare", label: "Market Share", icon: TrendingUp },
     ],
   },

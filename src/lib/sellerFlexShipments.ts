@@ -36,7 +36,8 @@ function parseDay(v: string): string | null {
 }
 
 export function parseSellerFlexCsv(text: string): { rows: SellerFlexRow[]; minDate: string | null; maxDate: string | null; skipped: number } {
-  const parsed = Papa.parse<Record<string, string>>(text, { header: true, skipEmptyLines: true, transformHeader: (h) => h.trim() });
+  // Same cast as flipkartReportUpload.ts: papaparse's overloads type a string parse as void.
+  const parsed = Papa.parse<Record<string, string>>(text, { header: true, skipEmptyLines: true, transformHeader: (h: string) => h.trim() }) as unknown as { data: Record<string, string>[] };
   const byKey = new Map<string, SellerFlexRow>();
   let skipped = 0;
   for (const r of parsed.data) {
