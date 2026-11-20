@@ -48,3 +48,16 @@ test("normalizeSku strips U+200E, trims and lowercases", () => {
   assert.equal(normalizeSku("‎B-VD-PLAS-TPE "), "b-vd-plas-tpe");
   assert.equal(normalizeSku("﻿ A019​"), "a019");
 });
+
+// Shared with scripts/fc-forecast-rpc-check.mjs, which runs the same list through SQL fc_norm_sku().
+export const SKU_NORM_FIXTURES: [string, string][] = [
+  ["\u200EB-VD-PLAS-TPE ", "b-vd-plas-tpe"],
+  ["\tA019\r\n", "a019"],
+  ["B-XYZ\u00A0", "b-xyz"],
+  ["\uFEFF\u3000SC25\u2009", "sc25"],
+  ["B-MID SPACE", "b-mid space"],
+];
+
+test("normalizeSku strips tabs, CR/LF, NBSP and other edge whitespace like SQL fc_norm_sku", () => {
+  for (const [input, want] of SKU_NORM_FIXTURES) assert.equal(normalizeSku(input), want, JSON.stringify(input));
+});

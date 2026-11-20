@@ -11,7 +11,7 @@ import { KPICard } from "@/components/KPICard";
 import { QueryErrorState } from "@/components/QueryErrorState";
 import { supabasePublic } from "@/lib/supabasePublic";
 import { FC_KEYS, fetchFcForecast, fetchFcProductNames, fetchFcSourceDates, fetchFcUnmapped, saveSkuMapping } from "@/lib/fcForecastData";
-import { blocks, rangeLabel, staleChannels, yesterdayIst, FC_CHANNELS, FC_CHANNEL_LABEL, type FcRow, type FcUnmapped } from "@/lib/fcForecastRules";
+import { blocks, rangeLabel, staleChannels, sourceCheckNotice, unmappedKpi, yesterdayIst, FC_CHANNELS, FC_CHANNEL_LABEL, type FcRow, type FcUnmapped } from "@/lib/fcForecastRules";
 import { exportFcWorkbook } from "@/lib/fcForecastExport";
 import { uploadSellerFlexCsv } from "@/lib/sellerFlexUpload";
 import { Loader2, Upload, Download, Search, CheckCircle2, AlertTriangle } from "lucide-react";
@@ -60,6 +60,8 @@ export default function FcForecastPage() {
 
   const totalMin = (forecast.data ?? []).reduce((a, r) => a + r.min_stock, 0);
   const unmappedUnits = (unmapped.data ?? []).reduce((a, u) => a + u.units_90d, 0);
+  const umKpi = unmappedKpi(unmapped.data, unmapped.isError);
+  const sourceNotice = sourceCheckNotice(sources.isError, stale);
 
   const refreshAll = async () => {
     await Promise.all([
@@ -112,8 +114,9 @@ export default function FcForecastPage() {
           <input id="fc-as-of" type="date" value={asOf} max={yesterday} onChange={(e) => e.target.value && setAsOf(e.target.value)} className="bg-transparent text-xs font-semibold outline-none" />
         </label>
         <button
-          onClick={() => forecast.data && exportFcWorkbook(forecast.data, unmapped.data ?? [], asOf)}
-          disabled={!forecast.data?.length}
+          onClick={() => forecast.data && unmapped.data && exportFcWorkbook(forecast.data, unmapped.data, asOf)}
+          disabled={!forecast.data?.length || !unmapped.data}
+          title={unmapped.isError ? "The unmapped-SKU list failed to load; reload before downloading" : undefined}
           className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-60"
         >
           <Download className="h-3.5 w-3.5" /> Download xlsx
@@ -143,10 +146,10 @@ export default function FcForecastPage() {
         ))}
       </div>
 
-      {stale.length > 0 && (
+      {sourceNotice && (
         <div role="alert" id="fc-stale-warning" className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2.5 text-xs font-semibold text-amber-900 dark:border-amber-700 dark:bg-amber-950/60 dark:text-amber-200">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>{stale.map((c) => FC_CHANNEL_LABEL[c] ?? c).join(", ")} {stale.length === 1 ? "has" : "have"} no data after the date shown above, so the last 30 days read low for {stale.length === 1 ? "it" : "them"}. Upload the latest file or pick an earlier as-of date.</span>
+          <span>{sourceNotice}</span>
         </div>
       )}
 
@@ -160,7 +163,7 @@ export default function FcForecastPage() {
             <KPICard title="Products" value={int(forecast.data?.length)} subtitle="Client list + any product sold in 90 days" accent="purple" />
             <KPICard title="Total minimum stock" value={int(totalMin)} subtitle="Units, all products" accent="green" />
             <KPICard title="Last 30 days sold" value={int((forecast.data ?? []).reduce((a, r) => a + r.last30, 0))} subtitle={rangeLabel(b.b1)} accent="blue" />
-            <KPICard title="Unmapped SKUs" value={int(unmapped.data?.length)} subtitle={`${int(unmappedUnits)} units in 90 days not in any product`} accent="orange" />
+            <KPICard title="Unmapped SKUs" value={umKpi.value} subtitle={unmapped.isError ? "Couldn't load the unmapped list" : `${int(unmappedUnits)} units in 90 days not in any product`} accent="orange" />
           </div>
 
           <div className="relative max-w-sm">
@@ -206,14 +209,14 @@ export default function FcForecastPage() {
             </table>
           </div>
 
-          <UnmappedPanel items={unmapped.data ?? []} loading={unmapped.isLoading} names={productNames.data ?? []} onSaved={refreshAll} />
+          <UnmappedPanel items={unmapped.data ?? []} loading={unmapped.isLoading} error={unmapped.isError ? ((unmapped.error as Error)?.message ?? "unknown error") : null} onRetry={() => unmapped.refetch()} names={productNames.data ?? []} onSaved={refreshAll} />
         </>
       )}
     </div>
   );
 }
 
-function UnmappedPanel({ items, loading, names, onSaved }: { items: FcUnmapped[]; loading: boolean; names: string[]; onSaved: () => Promise<void> }) {
+function UnmappedPanel({ items, loading, error, onRetry, names, onSaved }: { items: FcUnmapped[]; loading: boolean; error: string | null; onRetry: () => void; names: string[]; onSaved: () => Promise<void> }) {
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -245,6 +248,8 @@ function UnmappedPanel({ items, loading, names, onSaved }: { items: FcUnmapped[]
       <datalist id="fc-product-names">{names.map((n) => <option key={n} value={n} />)}</datalist>
       {loading ? (
         <p className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading…</p>
+      ) : error ? (
+        <div className="mt-3"><QueryErrorState message={`The unmapped-SKU list couldn't load: ${error}`} onRetry={onRetry} /></div>
       ) : !items.length ? (
         <p className="mt-3 flex items-center gap-1.5 text-xs font-semibold text-green-700 dark:text-green-400"><CheckCircle2 className="h-3.5 w-3.5" /> Every SKU sold in the last 90 days is mapped to a product.</p>
       ) : (

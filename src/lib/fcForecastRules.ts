@@ -64,3 +64,17 @@ export function rangeLabel([from, to]: [string, string]): string {
   const f = (s: string) => new Date(`${s}T00:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
   return `${f(from)} – ${f(to)}`;
 }
+
+/** Unmapped-SKU KPI: a failed load shows "–" and never reads as "all mapped" (review fix, 2026-11-20). */
+export function unmappedKpi(items: FcUnmapped[] | undefined, failed: boolean): { value: string; ok: boolean } {
+  if (failed || !items) return { value: "–", ok: false };
+  return { value: String(items.length), ok: items.length === 0 };
+}
+
+/** Banner text for the data-up-to line, or null when every channel is current. */
+export function sourceCheckNotice(failed: boolean, stale: string[]): string | null {
+  if (failed) return "Couldn't check how recent each channel's data is, so a stale source would not be flagged. Reload the page before trusting the last 30 days.";
+  if (!stale.length) return null;
+  const names = stale.map((c) => FC_CHANNEL_LABEL[c] ?? c).join(", ");
+  return `${names} ${stale.length === 1 ? "has" : "have"} no data after the date shown above, so the last 30 days read low for ${stale.length === 1 ? "it" : "them"}. Upload the latest file or pick an earlier as-of date.`;
+}

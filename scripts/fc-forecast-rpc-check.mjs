@@ -12,4 +12,10 @@ const s = await db.rpc("fc_source_dates");
 for (const [n, r] of [["fc_forecast", f], ["fc_unmapped_skus", u], ["fc_source_dates", s]]) if (r.error) throw new Error(`${n}: ${r.error.message}`);
 if (f.data.length < 186) throw new Error(`fc_forecast returned ${f.data.length} rows`);
 if (f.data.some((r) => r.min_stock < 5)) throw new Error("min_stock below 5");
+// SQL fc_norm_sku must strip exactly what normalizeSku() strips (same fixtures as sellerFlexShipments.test.ts).
+const fixtures = [["\u200EB-VD-PLAS-TPE ", "b-vd-plas-tpe"], ["\tA019\r\n", "a019"], ["B-XYZ\u00A0", "b-xyz"], ["\uFEFF\u3000SC25\u2009", "sc25"], ["B-MID SPACE", "b-mid space"]];
+for (const [i, want] of fixtures) {
+  const { data, error } = await db.rpc("fc_norm_sku", { s: i });
+  if (error || data !== want) throw new Error(`fc_norm_sku(${JSON.stringify(i)}) = ${JSON.stringify(data)} (${error?.message ?? ""}), want ${want}`);
+}
 console.log(`fc_forecast ${f.data.length} rows, unmapped ${u.data.length}, sources ${s.data.map((x) => `${x.source}=${x.max_day}`).join(" ")}`);

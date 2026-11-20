@@ -62,3 +62,17 @@ test("fcWorkbook writes the client's FORECAST SHEET columns plus DETAIL and UNMA
   const um = XLSX.utils.sheet_to_json(wb.Sheets["UNMAPPED SKUS"], { header: 1 });
   assert.deepEqual(um[1], ["X-1", "Meesho", 3, "t"]);
 });
+
+test("unmappedKpi shows a dash, not 0, when the unmapped list failed to load", async () => {
+  const { unmappedKpi } = await import("./fcForecastRules.ts");
+  assert.deepEqual(unmappedKpi(undefined, true), { value: "–", ok: false });
+  assert.deepEqual(unmappedKpi([], false), { value: "0", ok: true });
+  assert.deepEqual(unmappedKpi([{ sku: "a", channel: "meesho", units_90d: 2, sample_title: null }], false), { value: "1", ok: false });
+});
+
+test("sourceCheckNotice warns when the data-up-to check itself failed", async () => {
+  const { sourceCheckNotice } = await import("./fcForecastRules.ts");
+  assert.match(sourceCheckNotice(true, []) ?? "", /couldn't check/i);
+  assert.match(sourceCheckNotice(false, ["sellerflex"]) ?? "", /Seller Flex/);
+  assert.equal(sourceCheckNotice(false, []), null);
+});
