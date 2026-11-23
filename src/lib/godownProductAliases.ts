@@ -10,6 +10,9 @@ export const GODOWN_PRODUCT_ALIASES: Record<string, string> = {
   "Chewy tube (Red)-Bump": "Chewy Tube Red (Bump Type)",
   "Gluco spark (Pack of 200) Strips": "GlucoSpark Strips (Pack of 200)",
   "Pregnancy Kit (1 Early 1 Normal 2 Pee Cup)": "Pregnancy kit(1 early, 1 normal, 2 pee cup)",
+  // the client's Current stock sheet of 04.11.2026 spells it without commas; without this the sheet listed
+  // it with 0 stock and no sales while the godown file had 52 (19-11-2026 mails)
+  "Pregnancy kit(1 early 1 normal 2 pee cup)": "Pregnancy kit(1 early, 1 normal, 2 pee cup)",
   "Teething tube combo (Green red yellow)": "Teething tube combo (Green,red,yellow)",
   "Wearable Lactation massager (Grey)": "Wearable Lactation Massager-Grey",
   "Wearable Lactation massager (purple)": "Wearable Lactation Massager-Purple",

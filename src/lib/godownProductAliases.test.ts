@@ -75,3 +75,12 @@ test("mapping check: flags spelling-only mismatches and copies with other stock,
   assert.deepEqual(checkStockMapping([{ product: "IR THERMOMETER- GP 100", currentStock: 4 }, { product: "IR Thermometer GP-100", currentStock: 4 }], shown), []);
   assert.deepEqual(checkStockMapping([{ product: "Teething Tube Combo (Green Red Yellow)", currentStock: 189 }], shown), []);
 });
+
+test("Current stock sheet of 04.11.2026 spells Pregnancy kit without commas — it still maps to the godown product (19-11-2026 mails)", () => {
+  // the 4-Nov spelling and the godown spelling must end up as the same product, or the sheet shows 0 stock
+  assert.equal(keptGodownName("Pregnancy kit(1 early 1 normal 2 pee cup)"), "Pregnancy kit(1 early, 1 normal, 2 pee cup)");
+  assert.equal(keptGodownName("Pregnancy Kit (1 Early 1 Normal 2 Pee Cup)"), "Pregnancy kit(1 early, 1 normal, 2 pee cup)");
+  const godown = mergeGodownProducts([p("Pregnancy Kit (1 Early 1 Normal 2 Pee Cup)", 52), p("Pregnancy kit(1 early, 1 normal, 2 pee cup)", 0)]);
+  assert.deepEqual(checkStockMapping([{ product: "Pregnancy Kit (1 Early 1 Normal 2 Pee Cup)", currentStock: 52 }], [{ product: keptGodownName("Pregnancy kit(1 early 1 normal 2 pee cup)") }]), []);
+  assert.deepEqual(godown.map((r) => [r.product, r.currentStock]), [["Pregnancy kit(1 early, 1 normal, 2 pee cup)", 52]]);
+});
