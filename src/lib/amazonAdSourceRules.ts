@@ -173,6 +173,21 @@ export function amazonSpendRowsWithDailyFill(sp: Row[], sb: Row[], sd: Row[], da
 }
 
 /**
+ * Amazon ad spend (before GST) for [start, end] from amazonSpendRowsWithDailyFill (card rows, plus the daily
+ * upload for days the SP card lacks), with the first and last day that has spend rows, for the "covers both
+ * periods" check. The Overview summary card uses it so it counts the same spend as the Advertising section;
+ * before this it read the card tables only and showed ₹0 for every day after 29 Oct 2026 (user, 23 Nov 2026).
+ */
+export function amazonSpendWithDailyFillIn(sp: Row[], sb: Row[], sd: Row[], daily: Row[], start: string, end: string): { spend: number; first: string | null; last: string | null } {
+  const day = (r: Row) => String(r.report_date ?? "").slice(0, 10);
+  const within = (rows: Row[]) => rows.filter((r) => { const d = day(r); return d >= start && d <= end; });
+  const { spRows, campaignRows } = amazonSpendRowsWithDailyFill(within(sp), within(sb), within(sd), within(daily));
+  const rows = [...spRows, ...campaignRows];
+  const days = rows.map(day).filter(Boolean).sort();
+  return { spend: rows.reduce((t, r) => t + (Number(r.spend) || 0), 0), first: days[0] ?? null, last: days[days.length - 1] ?? null };
+}
+
+/**
  * Brand/Display campaign-day spend from amazonCardSpendRows, spread over the mapped SKUs (allocateCampaignSpend)
  * and returned as spend-only SP-shaped rows, so a consumer can aggregate them like SP rows. The SB/SD cards carry
  * no per-SKU sales or units, so those stay 0. Unmapped campaign spend is not returned. A SKU with no ASIN keeps an

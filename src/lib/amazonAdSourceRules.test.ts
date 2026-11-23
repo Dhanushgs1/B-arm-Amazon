@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isSpCardRow, isCampaignCardRow, dailyAmAdsReportRows, allocateCampaignSpend, amazonCardSpendRows, amazonSpendRowsWithDailyFill, brandDisplayAdRows, spRowsToAdRows, SKU_LESS_SOURCE } from "./amazonAdSourceRules.ts";
+import { isSpCardRow, isCampaignCardRow, dailyAmAdsReportRows, allocateCampaignSpend, amazonCardSpendRows, amazonSpendRowsWithDailyFill, amazonSpendWithDailyFillIn, brandDisplayAdRows, spRowsToAdRows, SKU_LESS_SOURCE } from "./amazonAdSourceRules.ts";
 import { spCampaignDays, isSplitCoveredCampaignRow } from "./amazonSpendRules.ts";
 
 test("campaign spend is spread by weight; no weights means equal shares (₹300 over 3 SKUs = ₹100 each)", () => {
@@ -211,4 +211,19 @@ test("daily fill: card days keep the card, days without SP card rows come from t
   assert.deepEqual(campaignRows.map((r) => [r.campaign_name, r.spend]).sort(), [["Brand", 70], ["Display", 25]]);
   // no daily rows: exactly the card result
   assert.deepEqual(amazonSpendRowsWithDailyFill(sp, sb, [], []), amazonCardSpendRows(sp, sb, []));
+});
+
+test("summary card spend: daily upload fills days after the SP card, per period, with first/last for coverage", () => {
+  const sp = [{ report_date: "2026-10-29", campaign_name: "SP1", advertised_sku: "S1", spend: 100, raw: { Date: "29 Oct" } }];
+  const daily = [
+    { report_date: "2026-11-20", campaign_name: "SP1", sku: "S1", spend: 50, raw: {} },
+    { report_date: "2026-11-21", campaign_name: "SP1", sku: "S1", spend: 30, raw: {} },
+    { report_date: "2026-11-21", campaign_name: "SP2", sku: "S2", spend: 12, raw: {} },
+  ];
+  assert.deepEqual(amazonSpendWithDailyFillIn(sp, [], [], daily, "2026-11-21", "2026-11-21"), { spend: 42, first: "2026-11-21", last: "2026-11-21" });
+  assert.deepEqual(amazonSpendWithDailyFillIn(sp, [], [], daily, "2026-11-20", "2026-11-20"), { spend: 50, first: "2026-11-20", last: "2026-11-20" });
+  // card days still come from the card only
+  assert.deepEqual(amazonSpendWithDailyFillIn(sp, [], [], daily, "2026-10-29", "2026-10-29"), { spend: 100, first: "2026-10-29", last: "2026-10-29" });
+  // nothing anywhere: no coverage
+  assert.deepEqual(amazonSpendWithDailyFillIn(sp, [], [], [], "2026-11-21", "2026-11-21"), { spend: 0, first: null, last: null });
 });

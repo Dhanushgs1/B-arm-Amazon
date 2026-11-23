@@ -9,10 +9,10 @@ import { isFkSkeletonOrderRow } from "@/lib/flipkartOrderRules";
 import { DEFAULT_GST_MULTIPLIER } from "@/lib/masterProductSkuid";
 import { supabasePublic } from "@/lib/supabasePublic";
 import { adSpendCoversBoth } from "@/lib/adSpendCoverage";
-import { adTablesWithin, loadAmazonAdTables, type AdTableRows } from "@/lib/amazonAdTables";
+import { loadAmazonAdTables, type AdTableRows } from "@/lib/amazonAdTables";
 import { sharedFetch } from "@/lib/sharedFetch";
 import { previousRange } from "@/lib/dateRanges";
-import { amazonCardSpendRows } from "@/lib/amazonAdSourceRules";
+import { amazonSpendWithDailyFillIn } from "@/lib/amazonAdSourceRules";
 import { dailyFallbackStart, dailyFkRowAsMis, dedupeOrderLines, misMaxForFill } from "@/lib/dailyOrderFallbackRules";
 import { dayLabel, splitPeriod, summarizeMisLines, type MisMarketplace } from "@/lib/misInvoiceRules";
 import { loadMisLines, misCoverage } from "@/lib/misInvoiceData";
@@ -309,15 +309,14 @@ async function fetchFlipkartOrderSummaryUncached(start: string, end: string): Pr
 // returns (Amazon: order item prices; Flipkart: listing price × units; Meesho: Quantity × Supplier
 // Listed Price; BARM: Order Total Amount once per order). Ad spend includes 18% GST.
 
-/** Amazon ad spend (with GST) the same way the Ad Spend Report counts it: every Sponsored Products
- *  row (which already carries the seller's per-SKU split of Brand/Display spend) plus each Sponsored
- *  Brands / Display campaign-day that has no such split, so nothing is counted twice. */
-function amazonSpendTaxIn(tables: AdTableRows, start: string, end: string): { spend: number; first: string | null; last: string | null } {
-  const { sp, sb, sd } = adTablesWithin(tables, start, end);
-  const { spRows, campaignRows } = amazonCardSpendRows(sp, sb, sd);
-  const sum = (rows: { spend?: unknown }[]) => rows.reduce((t, r) => t + (Number(r.spend) || 0), 0);
-  const days = [...spRows, ...campaignRows].map((r) => String((r as { report_date?: unknown }).report_date ?? "").slice(0, 10)).filter(Boolean).sort();
-  return { spend: (sum(spRows) + sum(campaignRows)) * DEFAULT_GST_MULTIPLIER, first: days[0] ?? null, last: days[days.length - 1] ?? null };
+/** Amazon ad spend (with GST) the same way the page's Advertising section counts it: every Sponsored
+ *  Products row (which already carries the seller's per-SKU split of Brand/Display spend) plus each
+ *  Sponsored Brands / Display campaign-day that has no such split, so nothing is counted twice — and,
+ *  for days the SP card has no rows (it stopped 29 Oct 2026), the daily upload (barm_daily_am_ads). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function amazonSpendTaxIn(tables: AdTableRows, daily: any[], start: string, end: string): { spend: number; first: string | null; last: string | null } {
+  const r = amazonSpendWithDailyFillIn(tables.sp, tables.sb, tables.sd, daily, start, end);
+  return { ...r, spend: r.spend * DEFAULT_GST_MULTIPLIER };
 }
 
 /** Amazon, from the same MIS tables and rules as the Amazon Weekly Sales Report — plus the daily
@@ -337,12 +336,13 @@ async function fetchAmazonSummaryUncached(start: string, end: string): Promise<C
   const { loadAmazonSkuPeriodData } = await import("@/lib/amazonSkuPeriodData");
   // One read of the ads tables across both periods (the same range, and so the same shared read,
   // as the page's advertising section), split by period in memory.
-  const [data, adTables] = await Promise.all([
+  const [data, adTables, dailyAds] = await Promise.all([
     loadAmazonSkuPeriodData({ periods, includeAds: false, includeStock: false, fillFromDailyUpload: true }),
     loadAmazonAdTables(periods[0].start, end),
+    fetchAllRows("barm_daily_am_ads", (q) => q.gte("report_date", periods[0].start).lte("report_date", end)),
   ]);
-  const spendCur = amazonSpendTaxIn(adTables, start, end);
-  const spendPrev = amazonSpendTaxIn(adTables, periods[0].start, periods[0].end);
+  const spendCur = amazonSpendTaxIn(adTables, dailyAds, start, end);
+  const spendPrev = amazonSpendTaxIn(adTables, dailyAds, periods[0].start, periods[0].end);
   const gross = (label: string) => data.visibleRows.reduce((t, p) => { const s = p.periods[label]; return t + (s ? s.price * s.orders : 0); }, 0);
   return {
     current: { ...summarize(data, "current"), sales: gross("current"), adSpendTax: spendCur.spend },
