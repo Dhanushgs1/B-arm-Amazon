@@ -7,7 +7,7 @@ import { fetchMisFkOrders, fetchMisFkReturns } from "@/lib/misAdapters";
 import { isFkSkeletonOrderRow } from "@/lib/flipkartOrderRules";
 import { DEFAULT_GST_MULTIPLIER } from "@/lib/masterProductSkuid";
 import { supabasePublic } from "@/lib/amazonReportUpload";
-import { amazonCardSpendRows } from "@/lib/amazonAdSourceRules";
+import { amazonSpendWithDailyFillIn } from "@/lib/amazonAdSourceRules";
 import { dailyFallbackStart, dailyFkRowAsMis, dedupeOrderLines } from "@/lib/dailyOrderFallbackRules";
 
 // Short "this period vs the previous period" summary for the Meesho, BARM and Flipkart Overview
@@ -199,16 +199,16 @@ async function spendTaxIn(table: string, col: string, start: string, end: string
 
 /** Amazon ad spend (with GST) the same way the Ad Spend Report counts it: every Sponsored Products
  *  row (which already carries the seller's per-SKU split of Brand/Display spend) plus each Sponsored
- *  Brands / Display campaign-day that has no such split, so nothing is counted twice. */
+ *  Brands / Display campaign-day that has no such split, so nothing is counted twice — and, for days the
+ *  SP card has no rows (it stopped 29 Oct 2026), the daily upload (barm_daily_am_ads), as the page's
+ *  Advertising section counts it (amazonSpendRowsWithDailyFill). */
 async function amazonSpendTaxIn(start: string, end: string): Promise<number> {
-  const [sp, sb, sd] = await Promise.all(
-    ["barm_amazon_sp_advertised_product", "barm_amazon_sb_campaign", "barm_amazon_sd_campaign"].map((t) =>
+  const [sp, sb, sd, daily] = await Promise.all(
+    ["barm_amazon_sp_advertised_product", "barm_amazon_sb_campaign", "barm_amazon_sd_campaign", "barm_daily_am_ads"].map((t) =>
       fetchAllRows(t, (q) => q.gte("report_date", start).lte("report_date", end)).catch(() => [])
     )
   );
-  const { spRows, campaignRows } = amazonCardSpendRows(sp, sb, sd);
-  const sum = (rows: { spend?: unknown }[]) => rows.reduce((t, r) => t + (Number(r.spend) || 0), 0);
-  return (sum(spRows) + sum(campaignRows)) * DEFAULT_GST_MULTIPLIER;
+  return amazonSpendWithDailyFillIn(sp, sb, sd, daily, start, end).spend * DEFAULT_GST_MULTIPLIER;
 }
 
 /** Amazon, from the same MIS tables and rules as the Amazon Weekly Sales Report — plus the daily
