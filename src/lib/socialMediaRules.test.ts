@@ -29,3 +29,56 @@ test("different windows and different campaigns stay separate; blank name / date
     ["Camp A", "2026-09-30", 700],
   ]);
 });
+
+test("clicks add up across a campaign's lines; null when the file has no clicks", () => {
+  const base = { sheet: "S", report_start: "2026-11-18", report_end: "2026-11-18" };
+  const out = mergeMetaRows([
+    { ...base, campaign_name: "Kit", spend: 100, clicks: 10 },
+    { ...base, campaign_name: "kit ", spend: 50, clicks: 5 },
+    { ...base, campaign_name: "Other", spend: 20, clicks: null },
+  ]);
+  assert.deepEqual(out.map((r) => [r.campaign_name, r.spend, r.clicks]), [["Kit", 150, 15], ["Other", 20, null]]);
+});
+
+// ── Ad-level export (25 Nov 2026) ──────────────────────────────────────────
+import { metaRowName, metaCampaignPart, metaRowsToReplace, META_AD_SEPARATOR } from "./socialMediaRules.ts";
+
+test("ad rows are named '<campaign> :: <ad>' and split back to the campaign", () => {
+  assert.equal(META_AD_SEPARATOR, " :: ");
+  assert.equal(metaRowName(" Postpartum kit  -11/11/2026 ", " Reel  1 "), "Postpartum kit -11/11/2026 :: Reel 1");
+  assert.equal(metaRowName("insemination kit", ""), "insemination kit");
+  assert.equal(metaCampaignPart("Postpartum kit -11/11/2026 :: Reel 1"), "Postpartum kit -11/11/2026");
+  assert.equal(metaCampaignPart("insemination kit"), "insemination kit");
+});
+
+test("two lines of one ad add up spend, purchase value and purchases; a missing value stays null", () => {
+  const ad = (spend: number, metaValue: number | null, metaPurchases: number | null) =>
+    ({ ...row("day", "Camp A :: Ad 1", spend), metaValue, metaPurchases });
+  const [one] = mergeMetaRows([ad(100, 999, 1), ad(50, 1998, 2)]);
+  assert.deepEqual([one.spend, one.metaValue, one.metaPurchases], [150, 2997, 3]);
+  const [none] = mergeMetaRows([ad(10, null, null), ad(5, null, null)]);
+  assert.deepEqual([none.metaValue, none.metaPurchases], [null, null]);
+});
+
+test("an ad-level upload replaces the saved campaign total of the same window (no double spend)", () => {
+  const saved = [
+    { id: 1, report_start: "2026-11-24", report_end: "2026-11-24", campaign_name: "Camp A" },
+    { id: 2, report_start: "2026-11-18", report_end: "2026-11-24", campaign_name: "Camp A" }, // other window: kept
+    { id: 3, report_start: "2026-11-24", report_end: "2026-11-24", campaign_name: "Camp B" }, // not in upload: kept
+    { id: 4, report_start: "2026-11-24", report_end: "2026-11-24", campaign_name: "camp a :: Old ad" }, // ad gone: replaced
+    { id: 5, report_start: "2026-11-24", report_end: "2026-11-24", campaign_name: "Camp A :: Ad 1" }, // re-uploaded: kept (upsert)
+  ];
+  const incoming = [
+    { report_start: "2026-11-24", report_end: "2026-11-24", campaign_name: "Camp A :: Ad 1" },
+    { report_start: "2026-11-24", report_end: "2026-11-24", campaign_name: "Camp A :: Ad 2" },
+  ];
+  assert.deepEqual(metaRowsToReplace(saved, incoming), [1, 4]);
+});
+
+test("a campaign-level upload replaces that window's saved ad rows of the campaign", () => {
+  const saved = [
+    { id: 1, report_start: "2026-11-24", report_end: "2026-11-24", campaign_name: "Camp A :: Ad 1" },
+    { id: 2, report_start: "2026-11-24", report_end: "2026-11-24", campaign_name: "Camp A" },
+  ];
+  assert.deepEqual(metaRowsToReplace(saved, [{ report_start: "2026-11-24", report_end: "2026-11-24", campaign_name: "camp a" }]), [1]);
+});

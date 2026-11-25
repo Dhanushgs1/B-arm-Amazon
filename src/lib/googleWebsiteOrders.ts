@@ -32,6 +32,8 @@ export interface ShopifyReportItem {
   quantity: number | string | null;
   price: number | string | null;
   line_total?: number | string | null;
+  /** Shopify line SKU (barm_shopify_orders_summary returns it) — maps a Meta order to its product. */
+  sku?: string | null;
 }
 
 export interface ShopifyReportOrder {
@@ -161,4 +163,20 @@ export function googleAdsRatios(spend: number, adSales: number): { acos: number 
     acos: adSales > 0 ? spend / adSales : null,
     roas: adSales / spend,
   };
+}
+
+/** Meta Ads-attributed Shopify sales: non-cancelled orders whose visit came from a Meta ad click
+ *  (ad_channel "meta_ads" = fbclid on the landing URL), dated inside [start, end]. Same order value
+ *  as the Google lines above (line_total, else quantity x price). ad_channel is one label per order,
+ *  so an order is never credited to both Meta and Google. */
+export function metaAdsAttributedSales(shopifyOrders: ShopifyReportOrder[], start: string, end: string): { value: number; orders: number } {
+  let value = 0;
+  let orders = 0;
+  shopifyOrders
+    .filter((o) => !o.is_cancelled && o.ad_channel === "meta_ads" && o.order_date >= start && o.order_date <= end)
+    .forEach((o) => {
+      orders += 1;
+      value += o.items.reduce((s, i) => s + (i.line_total == null || i.line_total === "" ? num(i.quantity) * num(i.price) : num(i.line_total)), 0);
+    });
+  return { value: Math.round(value * 100) / 100, orders };
 }
