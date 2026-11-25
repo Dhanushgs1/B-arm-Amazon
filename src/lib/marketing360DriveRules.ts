@@ -25,6 +25,20 @@ export const DRIVE_SOURCES: DriveSource[] = [
   { key: "forecast", label: "FBA forecast", nameContains: "FBA Forecasting", match: /^FBA Forecasting \d{4}-\d{2}-\d{2}(\.xlsx)?$/i, take: "newest" },
 ];
 
+/** Sources the auto-import may run: MKT360_DRIVE_SOURCES (comma list of keys), default FBA forecast
+ *  ONLY (user, 2026-11-25: keep every other Drive integration off until approved). Unknown keys are ignored. */
+export const DEFAULT_DRIVE_SOURCES = ["forecast"];
+export function enabledSources(setting: string | undefined): DriveSource[] {
+  const keys = (setting ?? "").split(",").map((k) => k.trim().toLowerCase()).filter(Boolean);
+  const want = keys.length ? keys : DEFAULT_DRIVE_SOURCES;
+  return DRIVE_SOURCES.filter((s) => want.includes(s.key));
+}
+
+/** Drive query for the .xlsx files directly inside one folder (the FBA pipeline's Output folder). */
+export function folderQuery(folderId: string): string {
+  return `'${folderId.replace(/[^A-Za-z0-9_-]/g, "")}' in parents and trashed = false and mimeType = '${XLSX_MIME}'`;
+}
+
 /** The files of one source to consider, newest first. */
 export function pickFiles(source: DriveSource, files: DriveFile[]): DriveFile[] {
   const ok = files.filter((f) => source.match.test(f.name.trim())).sort((a, b) => b.modifiedTime.localeCompare(a.modifiedTime));

@@ -13,22 +13,30 @@
 //
 // What was imported (file id → Drive modifiedTime) is kept in .data/mkt360-drive-sync.json, so a
 // restart does not re-import unchanged files; deleting that file only means one extra import.
+//
+// Which sources run: MKT360_DRIVE_SOURCES (default "forecast" only — user, 2026-11-25). The FBA
+// forecast is read ONLY from the pipeline's Output folder and imported ONLY when verified against the
+// pipeline's run log (marketing360FbaImport.ts); both are named by id:
+//   MKT360_FBA_OUTPUT_FOLDER_ID  the Output folder holding "FBA Forecasting YYYY-MM-DD.xlsx"
+//   MKT360_FBA_RUN_LOG_ID        the "FBA Forecasting Run Log" Google Sheet
+// MKT360_DRIVE_SYNC=dry runs the hourly loop in dry-run mode (checks and reports, writes nothing).
 
 import { createSign } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import * as XLSX from "xlsx";
-import { createClient } from "@supabase/supabase-js";
-import { DRIVE_SOURCES, driveQuery, downloadPath, importName, needsImport, pickFiles, type DriveFile } from "../marketing360DriveRules.ts";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { driveQuery, downloadPath, enabledSources, folderQuery, importName, needsImport, pickFiles, SHEET_MIME, type DriveFile } from "../marketing360DriveRules.ts";
 import { importWorkbook } from "../marketing360Store.ts";
+import { importVerifiedForecast, RUN_LOG_TAB, type Counts, type FbaResult } from "../marketing360FbaImport.ts";
 
 export const DRIVE_SYNC_EVERY_MS = 60 * 60_000;
 const FIRST_RUN_DELAY_MS = 2 * 60_000;
 const STATE_FILE = join(process.cwd(), ".data", "mkt360-drive-sync.json");
 
 type ServiceAccount = { client_email: string; private_key: string; token_uri?: string };
-export type SyncFileResult = { source: string; file: string; modifiedTime: string; status: "imported" | "unchanged" | "failed"; summary?: string; error?: string };
-export type SyncResult = { at: string; files: SyncFileResult[]; error?: string };
+export type SyncFileResult = { source: string; file: string; modifiedTime: string; status: "imported" | "unchanged" | "failed" | FbaResult["status"]; summary?: string; error?: string; fba?: FbaResult };
+export type SyncResult = { at: string; dry: boolean; files: SyncFileResult[]; error?: string };
 
 let lastResult: SyncResult | null = null;
 let running: Promise<SyncResult> | null = null;
@@ -96,11 +104,54 @@ function writeState(s: Record<string, string>) {
   writeFileSync(STATE_FILE, JSON.stringify(s, null, 1));
 }
 
+/** The verified FBA forecast import, wired to Drive (Output folder + run log, by id) and Supabase. */
+async function syncForecast(token: string, db: SupabaseClient, state: Record<string, string>, opts: { dry?: boolean; force?: boolean }): Promise<FbaResult> {
+  const folder = process.env.MKT360_FBA_OUTPUT_FOLDER_ID?.trim();
+  const runLog = process.env.MKT360_FBA_RUN_LOG_ID?.trim();
+  if (!folder || !runLog) return { file: "—", modifiedTime: "", status: "failed", reason: "MKT360_FBA_OUTPUT_FOLDER_ID / MKT360_FBA_RUN_LOG_ID not set" };
+  let logRows: Record<string, unknown>[] | null = null;
+  return importVerifiedForecast({
+    now: () => Date.now(),
+    listOutput: () => listFiles(token, folderQuery(folder)),
+    download: (f) => download(token, { ...f, mimeType: "" }),
+    runLogRows: async () => {
+      if (logRows) return logRows;
+      const wb = XLSX.read(await download(token, { id: runLog, name: "FBA Forecasting Run Log", mimeType: SHEET_MIME, modifiedTime: "" }), { type: "buffer", cellDates: true });
+      const ws = wb.Sheets[RUN_LOG_TAB];
+      if (!ws) throw new Error(`run log has no "${RUN_LOG_TAB}" tab`);
+      return (logRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" }));
+    },
+    previousCounts: async (date) => {
+      const prev = await db.from("mkt_fba_forecast_zone").select("report_date").lt("report_date", date).order("report_date", { ascending: false }).limit(1);
+      if (prev.error) throw new Error(`previous forecast date: ${prev.error.message}`);
+      const d = (prev.data?.[0] as { report_date?: string } | undefined)?.report_date;
+      if (!d) return null;
+      const skus = new Set<string>();
+      let zones = 0;
+      for (let from = 0; ; from += 1000) {
+        const page = await db.from("mkt_fba_forecast_zone").select("sku").eq("report_date", d).order("sku").order("zone").range(from, from + 999);
+        if (page.error) throw new Error(`previous forecast rows: ${page.error.message}`);
+        for (const r of page.data ?? []) skus.add((r as { sku: string }).sku);
+        zones += page.data?.length ?? 0;
+        if ((page.data?.length ?? 0) < 1000) break;
+      }
+      return { zones, skus: skus.size, fc: 0 } satisfies Counts;
+    },
+    replace: async (date, zones, fc) => {
+      const { data, error } = await db.rpc("mkt_replace_fba_forecast", { p_report_date: date, p_zones: zones, p_fc: fc });
+      if (error) throw new Error(`mkt_replace_fba_forecast: ${error.message}`);
+      return data as { zones: number; fc: number; fc_dates: string[] };
+    },
+    imported: opts.force ? {} : state,
+    markImported: (f) => { state[f.id] = f.modifiedTime; writeState(state); },
+  }, { dry: opts.dry });
+}
+
 /** One pass over every source. `dry` parses but writes nothing (and does not record the files). */
 export async function syncDriveOnce(opts: { dry?: boolean; force?: boolean } = {}): Promise<SyncResult> {
   if (running) return running;
   running = (async () => {
-    const result: SyncResult = { at: new Date().toISOString(), files: [] };
+    const result: SyncResult = { at: new Date().toISOString(), dry: !!opts.dry, files: [] };
     try {
       const sa = serviceAccount();
       if (!sa) throw new Error("No Google service account configured (GOOGLE_SERVICE_ACCOUNT_JSON / GOOGLE_SERVICE_ACCOUNT_FILE)");
@@ -110,7 +161,12 @@ export async function syncDriveOnce(opts: { dry?: boolean; force?: boolean } = {
       const db = createClient(url, key, { auth: { persistSession: false } });
       const token = await accessToken(sa);
       const state = readState();
-      for (const source of DRIVE_SOURCES) {
+      for (const source of enabledSources(process.env.MKT360_DRIVE_SOURCES)) {
+        if (source.key === "forecast") {
+          const fba = await syncForecast(token, db, state, opts);
+          result.files.push({ source: source.label, file: fba.file, modifiedTime: fba.modifiedTime, status: fba.status, summary: fba.reason, fba });
+          continue;
+        }
         let files: DriveFile[];
         try {
           files = pickFiles(source, await listFiles(token, driveQuery(source)));
@@ -153,6 +209,8 @@ export function startDriveSync() {
   try { configured = serviceAccount() !== null; } catch (e) { console.error("[mkt360-drive] bad service account key:", e instanceof Error ? e.message : e); }
   if (!configured) return;
   started = true;
-  console.log("[mkt360-drive] Drive auto-import on — first run in 2 min, then hourly");
-  setTimeout(() => { void syncDriveOnce(); setInterval(() => void syncDriveOnce(), DRIVE_SYNC_EVERY_MS).unref?.(); }, FIRST_RUN_DELAY_MS).unref?.();
+  const dry = mode === "dry";
+  const sources = enabledSources(process.env.MKT360_DRIVE_SOURCES).map((s) => s.key).join(", ");
+  console.log(`[mkt360-drive] Drive auto-import on${dry ? " (DRY RUN — writes nothing)" : ""} for ${sources} — first run in 2 min, then hourly`);
+  setTimeout(() => { void syncDriveOnce({ dry }); setInterval(() => void syncDriveOnce({ dry }), DRIVE_SYNC_EVERY_MS).unref?.(); }, FIRST_RUN_DELAY_MS).unref?.();
 }
