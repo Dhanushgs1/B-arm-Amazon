@@ -3,6 +3,7 @@ import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } fr
 import { spCampaignDays, isSplitCoveredCampaignRow, unmappedCampaignSpend, campaignsMissingOnDay } from "@/lib/amazonSpendRules";
 import { dailyAmAdsReportRows } from "@/lib/amazonAdSourceRules";
 import { upsertInChunks, supabasePublic } from "@/lib/amazonReportUpload";
+import { metaCampaignPart, META_AD_SEPARATOR } from "@/lib/socialMediaRules";
 import { mergeGoogleWebsiteOrders, googleAdsRatios, metaAdsAttributedSales, type DroppedCardRow, type ShopifyReportOrder } from "@/lib/googleWebsiteOrders";
 import { toDate as parseFlexibleDate } from "@/lib/meeshoReportUpload";
 import { resolveProductName } from "@/lib/categoryMap";
@@ -1331,7 +1332,9 @@ async function fetchSocialMediaAdSpend(
   range: { start: string; end: string },
   endDate: string
 ): Promise<WindowedAdSpend> {
-  return fetchWindowedAdSpend("barm_daily_social_media", range, endDate);
+  // fullWindowOnly: once a whole-window (7-day) Meta export is on file, a campaign without a row in
+  // it has no range spend — its daily rows are not summed in its place (same as the Edge Function).
+  return fetchWindowedAdSpend("barm_daily_social_media", range, endDate, { fullWindowOnly: true });
 }
 
 // Meta campaign name → the Amazon product (master Product Name) it promotes. Meta's export has no
@@ -1341,24 +1344,48 @@ async function fetchSocialMediaAdSpend(
 const SOCIAL_MEDIA_CAMPAIGN_PRODUCTS: { match: RegExp; product: string }[] = [
   { match: /peak\s*flow/i, product: "Sonmol Peak Flow meter (without BLE)" },
   { match: /insemin/i, product: "Insemination kit (Pack of 5)" },
+  // Pack-size split (24 Nov 2026): a postpartum campaign/ad naming "6 pcs" or "10 pcs" lands on that
+  // kit. These two must stay before the generic postpartum rule (no pack size → the 10 pcs kit).
+  { match: /post\s*pa.*(?:^|[^0-9])6\s*-?\s*(?:pcs|pc|pieces|piece)\b/i, product: "Postpartum Recovery Essentials care kit (6 pcs kit)" },
+  { match: /post\s*pa.*(?:^|[^0-9])10\s*-?\s*(?:pcs|pc|pieces|piece)\b/i, product: "Postpartum Recovery Essentials care kit (10 pcs kit)" },
   { match: /post\s*pa/i, product: "Postpartum Recovery Essentials care kit (10 pcs kit)" },
 ];
 
+/** Product of a saved Meta row — an ad row ("<campaign> :: <ad>") is matched on its campaign part. */
 function socialMediaProductFor(campaign: string): string {
-  return SOCIAL_MEDIA_CAMPAIGN_PRODUCTS.find((m) => m.match.test(campaign))?.product ?? campaign;
+  const campaignPart = metaCampaignPart(campaign);
+  return SOCIAL_MEDIA_CAMPAIGN_PRODUCTS.find((m) => m.match.test(campaignPart))?.product ?? campaignPart;
+}
+
+/** Where a Meta ad's sales come from in the per-ad rows: Meta's own reported purchase value (the
+ *  uploaded "Purchases conversion value" column). Must match the generate-ad-spend-report Edge Function. */
+export const META_AD_SALES_SOURCE: "meta_reported" | "shopify" = "meta_reported";
+
+interface WindowedCampaign {
+  name: string;
+  daySpend: number;
+  rangeSpend: number;
+  /** Ad names from a campaign-level row's raw "Ad name" (";"-separated), only for rows with spend. */
+  adNames: string[];
+  /** Meta-reported purchase value / purchases summed over the window's rows; null = not in the export. */
+  dayMetaValue: number | null;
+  rangeMetaValue: number | null;
+  dayMetaPurchases: number | null;
+  rangeMetaPurchases: number | null;
 }
 
 interface WindowedAdSpend {
   daySpend: number;
   rangeSpend: number;
   /** Same day/range resolution as the totals, split per campaign (spelling of the first row seen). */
-  campaigns: { name: string; daySpend: number; rangeSpend: number }[];
+  campaigns: WindowedCampaign[];
 }
 
 async function fetchWindowedAdSpend(
   table: string,
   range: { start: string; end: string },
-  endDate: string
+  endDate: string,
+  opts: { fullWindowOnly?: boolean } = {}
 ): Promise<WindowedAdSpend> {
   const rows = (await fetchAllRows(
     table,
@@ -1369,17 +1396,31 @@ async function fetchWindowedAdSpend(
   // Same campaign matched ignoring case/spacing (same rule as the upload, socialMediaRules.ts),
   // so "Camp A" daily rows and a "camp a" whole-window row are never both summed.
   const campaignKey = (r: { campaign_name?: string }) => String(r.campaign_name || "").replace(/\s+/g, " ").trim().toLowerCase();
-  const campaigns = new Map<string, { name: string; daySpend: number; rangeSpend: number }>();
+  const campaigns = new Map<string, WindowedCampaign>();
   const campaignFor = (r: { campaign_name?: string }) => {
     const key = campaignKey(r);
-    const hit = campaigns.get(key) ?? { name: String(r.campaign_name || "").replace(/\s+/g, " ").trim(), daySpend: 0, rangeSpend: 0 };
+    const hit = campaigns.get(key) ?? {
+      name: String(r.campaign_name || "").replace(/\s+/g, " ").trim(), daySpend: 0, rangeSpend: 0, adNames: [],
+      dayMetaValue: null, rangeMetaValue: null, dayMetaPurchases: null, rangeMetaPurchases: null,
+    };
     campaigns.set(key, hit);
     return hit;
   };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const adNamesOf = (r: any) => String(r.raw?.["Ad name"] ?? "").split(";").map((a) => a.replace(/\s+/g, " ").trim()).filter(Boolean);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rawNum = (r: any, col: string): number | null => (r.raw && col in r.raw ? num(r.raw[col]) : null);
+  const addNum = (a: number | null, b: number | null) => (a == null && b == null ? null : (a ?? 0) + (b ?? 0));
 
   rows
     .filter((r) => r.report_start === endDate && r.report_end === endDate)
-    .forEach((r) => { campaignFor(r).daySpend += num(r.spend); });
+    .forEach((r) => {
+      const c = campaignFor(r);
+      c.daySpend += num(r.spend);
+      c.dayMetaValue = addNum(c.dayMetaValue, rawNum(r, "Meta purchase value"));
+      c.dayMetaPurchases = addNum(c.dayMetaPurchases, rawNum(r, "Meta purchases"));
+      if (num(r.spend) > 0) adNamesOf(r).forEach((a) => { if (!c.adNames.includes(a)) c.adNames.push(a); });
+    });
 
   const byCampaign = new Map<string, typeof rows>();
   rows
@@ -1390,13 +1431,26 @@ async function fetchWindowedAdSpend(
       list.push(r);
       byCampaign.set(key, list);
     });
+  const hasFullWindowExport = !!opts.fullWindowOnly && rows.some((r) => r.report_start === range.start && r.report_end === endDate);
   byCampaign.forEach((campaignRows) => {
     const wideRows = campaignRows.filter((r) => r.report_start === range.start && r.report_end === endDate);
-    campaignFor(campaignRows[0]).rangeSpend += (wideRows.length ? wideRows : campaignRows).reduce((s, r) => s + num(r.spend), 0);
+    if (hasFullWindowExport && !wideRows.length) return;
+    const used = wideRows.length ? wideRows : campaignRows;
+    const c = campaignFor(campaignRows[0]);
+    c.rangeSpend += used.reduce((s, r) => s + num(r.spend), 0);
+    used.forEach((r) => {
+      c.rangeMetaValue = addNum(c.rangeMetaValue, rawNum(r, "Meta purchase value"));
+      c.rangeMetaPurchases = addNum(c.rangeMetaPurchases, rawNum(r, "Meta purchases"));
+    });
   });
 
-  const list = [...campaigns.values()]
-    .map((c) => ({ name: c.name, daySpend: round2(c.daySpend), rangeSpend: round2(c.rangeSpend) }))
+  const list: WindowedCampaign[] = [...campaigns.values()]
+    .map((c) => ({
+      name: c.name, daySpend: round2(c.daySpend), rangeSpend: round2(c.rangeSpend), adNames: c.adNames,
+      dayMetaValue: c.dayMetaValue == null ? null : round2(c.dayMetaValue),
+      rangeMetaValue: c.rangeMetaValue == null ? null : round2(c.rangeMetaValue),
+      dayMetaPurchases: c.dayMetaPurchases, rangeMetaPurchases: c.rangeMetaPurchases,
+    }))
     .filter((c) => c.daySpend > 0 || c.rangeSpend > 0);
   return {
     daySpend: round2(list.reduce((s, c) => s + c.daySpend, 0)),
@@ -1457,6 +1511,8 @@ async function fetchGoogleOrders(range: { start: string; end: string }, endDate:
   metaAdRangeValue: number;
   metaAdDayOrders: number;
   metaAdRangeOrders: number;
+  /** The range's Meta-attributed Shopify orders (not cancelled), for per-product Meta sales. */
+  metaAdOrders: ShopifyReportOrder[];
   /** Card rows in the range left out as Shopify duplicates (kept in the table, not counted). */
   dropped: DroppedCardRow[];
   /** Set when the Shopify orders could not be read — card rows are then used alone. */
@@ -1542,6 +1598,7 @@ async function fetchGoogleOrders(range: { start: string; end: string }, endDate:
     metaAdRangeValue: metaRange.value,
     metaAdDayOrders: metaDay.orders,
     metaAdRangeOrders: metaRange.orders,
+    metaAdOrders: shopify.orders.filter((o) => !o.is_cancelled && o.ad_channel === "meta_ads" && o.order_date >= range.start && o.order_date <= range.end),
     dropped: merged.dropped.filter((d) => d.date >= range.start && d.date <= range.end),
     shopifyLoadError: shopify.error,
     shopifyFrom: merged.shopifyFrom,
@@ -2045,6 +2102,23 @@ export interface PlatformEmailSummary {
 // buildAdSpendReportWorkbook). daySpend/daySpendTax are the channel totals; `products` has one entry
 // per promoted product (Meta campaigns grouped by SOCIAL_MEDIA_CAMPAIGN_PRODUCTS). product/price/
 // day/range repeat the first entry, for an email function deployed before `products` existed.
+/** One window of a Meta ad / product total / grand total. orders, sales and acos are null = N/A
+ *  (not in the export, or unverified). ACOS = spend ÷ sales of that same row, never an average. */
+export interface MetaAdBlock { spend: number; spendTax: number; orders: number | null; sales: number | null; acos: number | null }
+
+export interface SocialMediaProductSummary {
+  product: string;
+  campaigns: string[];
+  price: number;
+  day: ProductMetricBlock;
+  range: ProductMetricBlock;
+  adNames?: string[];
+  daySales?: number | null;
+  rangeSales?: number | null;
+  ads?: { name: string; day: MetaAdBlock; range: MetaAdBlock }[];
+  total?: { day: MetaAdBlock; range: MetaAdBlock };
+}
+
 export interface SocialMediaEmailSummary {
   daySpend: number;
   daySpendTax: number;
@@ -2052,7 +2126,14 @@ export interface SocialMediaEmailSummary {
   price: number;
   day: ProductMetricBlock;
   range: ProductMetricBlock;
-  products: { product: string; campaigns: string[]; price: number; day: ProductMetricBlock; range: ProductMetricBlock }[];
+  products: SocialMediaProductSummary[];
+  /** Per-product Orders/ACOS (+ sales) on the products — the mail renders them per row when true. */
+  productBreakdown?: boolean;
+  /** Product → Ad name rows (products[].ads + products[].total, and grandTotal) — the mail's v3 layout. */
+  adBreakdown?: boolean;
+  /** Where per-ad sales come from: Meta's own reported purchase value, or Shopify. */
+  adSalesSource?: "meta_reported" | "shopify";
+  grandTotal?: { day: MetaAdBlock; range: MetaAdBlock };
   /** Meta channel ACOS (Spend without tax ÷ Meta-attributed Shopify sales) and those sales, per
    *  window; null = N/A (attribution unverified, no spend or no attributed sales). Absent on a
    *  summary built before Meta ACOS existed — the email then renders the row as before. */
@@ -2627,14 +2708,18 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // Meta-attributed orders (same orders as the Ad Sales above); null (shown "N/A") when unverified.
   const metaDayOrders = metaDayVerified ? googleOrders.metaAdDayOrders : null;
   const metaRangeOrders = metaRangeVerified ? googleOrders.metaAdRangeOrders : null;
-  const socialMediaProducts: { product: string; campaigns: string[]; price: number; dayAgg: WindowAgg; rangeAgg: WindowAgg }[] = [];
+  // Each entry of socialMedia.campaigns is a saved row name: a campaign, or one ad ("<campaign> :: <ad>",
+  // export downloaded at Ad level). `ads` keeps them for the per-ad rows of the email.
+  const socialMediaProducts: { product: string; campaigns: string[]; adNames: string[]; ads: WindowedCampaign[]; price: number; dayAgg: WindowAgg; rangeAgg: WindowAgg }[] = [];
   if (socialMedia.daySpend > 0 || socialMedia.rangeSpend > 0) {
     const amazonRowsForSocial = groupProductsByName([...amz.products.values()], undefined, skuToMasterSkuidName);
-    const byProduct = new Map<string, { campaigns: string[]; daySpend: number; rangeSpend: number }>();
+    const byProduct = new Map<string, { campaigns: string[]; adNames: string[]; ads: WindowedCampaign[]; daySpend: number; rangeSpend: number }>();
     socialMedia.campaigns.forEach((c) => {
       const product = socialMediaProductFor(c.name);
-      const hit = byProduct.get(product) ?? { campaigns: [], daySpend: 0, rangeSpend: 0 };
+      const hit = byProduct.get(product) ?? { campaigns: [], adNames: [], ads: [], daySpend: 0, rangeSpend: 0 };
       hit.campaigns.push(c.name);
+      hit.ads.push(c);
+      c.adNames.forEach((a) => { if (!hit.adNames.includes(a)) hit.adNames.push(a); });
       hit.daySpend += c.daySpend;
       hit.rangeSpend += c.rangeSpend;
       byProduct.set(product, hit);
@@ -2647,6 +2732,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       socialMediaProducts.push({
         product: amazonRow?.name ?? product,
         campaigns: v.campaigns,
+        adNames: v.adNames,
+        ads: v.ads,
         price: amazonRow?.price ?? 0,
         dayAgg: { spend: round2(v.daySpend), units: 0 },
         rangeAgg: { spend: round2(v.rangeSpend), units: 0 },
@@ -2660,29 +2747,100 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     // uploaded), there's no way to tell who ran, so every product is kept as before.
     const socialSummaryProducts = socialMedia.daySpend > 0 ? socialMediaProducts.filter((p) => p.dayAgg.spend > 0) : socialMediaProducts;
     const dayTotalAgg: WindowAgg = { spend: socialMedia.daySpend, units: 0 };
+    // Per-product Meta sales (24 Nov 2026, seller's request): the Meta-attributed Shopify orders'
+    // lines whose SKU maps to this product (master product name). Same orders as metaDayAdSales etc.
+    const metaSalesFor = (product: string, start: string, end: string) => {
+      const key = product.trim().toLowerCase();
+      let value = 0;
+      let orders = 0;
+      googleOrders.metaAdOrders.filter((o) => o.order_date >= start && o.order_date <= end).forEach((o) => {
+        const lines = o.items.filter((i) => (skuToMasterSkuidName.get(String(i.sku ?? "").trim()) ?? "").trim().toLowerCase() === key);
+        if (!lines.length) return;
+        orders += 1;
+        value += lines.reduce((s, i) => s + (i.line_total == null || i.line_total === "" ? num(i.quantity) * num(i.price) : num(i.line_total)), 0);
+      });
+      return { value: round2(value), orders };
+    };
+    const productMeta = new Map(socialSummaryProducts.map((p) => {
+      const d = metaSalesFor(p.product, endDate, endDate);
+      const r = metaSalesFor(p.product, range.start, endDate);
+      return [p.product, {
+        dayOrders: metaDayVerified ? d.orders : null,
+        daySales: metaDayVerified ? d.value : null,
+        dayAcos: metaAcos(metaDayVerified, p.dayAgg.spend, d.value),
+        rangeOrders: metaRangeVerified ? r.orders : null,
+        rangeSales: metaRangeVerified ? r.value : null,
+        rangeAcos: metaAcos(metaRangeVerified, p.rangeAgg.spend, r.value),
+      }];
+    }));
+    const productLabel = (p: { product: string; adNames: string[] }) => (p.adNames.length ? `${p.product}\nAds: ${p.adNames.join("; ")}` : p.product);
     socialMediaRow = sumAoa.length;
-    // CPC stays blank (both blocks) — Meta's export carries spend only (see the orders note above).
-    // Total Orders / Total Sales / ACOS / Ad Sales are the Meta channel's own (metaDayAcos etc. above),
-    // on the first row and merged down like the channel spend. Total Sales = the same verified
-    // Meta-attributed sales as Ad Sales (Meta has no other sales figure).
-    socialSummaryProducts.forEach((p, i) => sumAoa.push([
-      i === 0 ? "Social Media" : "",
-      i === 0 ? round2(socialMedia.daySpend) : "", i === 0 ? round2(spendTax(dayTotalAgg)) : "",
-      p.product, p.price || "",
-      round2(p.dayAgg.spend), round2(spendTax(p.dayAgg)), i === 0 ? metaDayOrders ?? "N/A" : "", i === 0 ? metaDayAdSales ?? "N/A" : "", "",
-      i === 0 ? metaDayAcos ?? "N/A" : "", i === 0 ? metaDayAdSales ?? "N/A" : null,
-      round2(p.rangeAgg.spend), round2(spendTax(p.rangeAgg)), i === 0 ? metaRangeOrders ?? "N/A" : "", i === 0 ? metaRangeAdSales ?? "N/A" : "", "",
-      i === 0 ? metaRangeAcos ?? "N/A" : "", i === 0 ? metaRangeAdSales ?? "N/A" : null,
-      "", "",
-    ]));
+    // CPC stays blank (both blocks) — Meta's export carries no CPC. Each product row carries its own
+    // Meta Orders / Sales / ACOS (productMeta above); the channel spend and Overall sales are merged down.
+    socialSummaryProducts.forEach((p, i) => {
+      const m = productMeta.get(p.product)!;
+      sumAoa.push([
+        i === 0 ? "Social Media" : "",
+        i === 0 ? round2(socialMedia.daySpend) : "", i === 0 ? round2(spendTax(dayTotalAgg)) : "",
+        productLabel(p), p.price || "",
+        round2(p.dayAgg.spend), round2(spendTax(p.dayAgg)), m.dayOrders ?? "N/A", m.daySales ?? "N/A", "",
+        m.dayAcos ?? "N/A", m.daySales ?? null,
+        round2(p.rangeAgg.spend), round2(spendTax(p.rangeAgg)), m.rangeOrders ?? "N/A", m.rangeSales ?? "N/A", "",
+        m.rangeAcos ?? "N/A", m.rangeSales ?? null,
+        "", "",
+      ]);
+    });
     if (socialSummaryProducts.length > 1) {
-      [0, 1, 2, 7, 8, 10, 11, 14, 15, 17, 18, 19, 20].forEach((c) => sumMerges.push({ s: { r: socialMediaRow!, c }, e: { r: socialMediaRow! + socialSummaryProducts.length - 1, c } }));
+      [0, 1, 2, 19, 20].forEach((c) => sumMerges.push({ s: { r: socialMediaRow!, c }, e: { r: socialMediaRow! + socialSummaryProducts.length - 1, c } }));
     }
-    // Same figures as the Summary-sheet rows above, reshaped for the emailed daily digest (see
-    // buildAdSpendDailyHtml in supabase/functions/send-ad-spend-email/index.ts), which renders
-    // them directly below Meesho's, per the seller's explicit request.
+    // Same figures reshaped for the emailed daily digest (buildAdSpendDailyHtml in
+    // supabase/functions/send-ad-spend-email/index.ts): Product → Ad name rows, a product total and a
+    // grand total. An ad's sales are Meta's own reported purchase value (META_AD_SALES_SOURCE); N/A
+    // when the export has no purchase columns. Each total's ACOS = its own spend ÷ its own sales.
     const block = (agg: WindowAgg): ProductMetricBlock => ({ spend: round2(agg.spend), spendTax: round2(spendTax(agg)), orders: 0, cpc: 0, acos: null });
-    const products = socialSummaryProducts.map((p) => ({ product: p.product, campaigns: p.campaigns, price: p.price, day: block(p.dayAgg), range: block(p.rangeAgg) }));
+    const metaReported = META_AD_SALES_SOURCE === "meta_reported";
+    const adBlock = (spend: number, sales: number | null, orders: number | null, verified: boolean): MetaAdBlock => ({
+      spend: round2(spend),
+      spendTax: round2(spendTax({ spend, units: 0 })),
+      orders: verified ? orders : null,
+      sales: verified && sales != null ? round2(sales) : null,
+      acos: verified && sales != null ? metaAcos(true, spend, sales) : null,
+    });
+    const adLabel = (c: WindowedCampaign) => {
+      const i = c.name.indexOf(META_AD_SEPARATOR);
+      return i >= 0 ? c.name.slice(i + META_AD_SEPARATOR.length) : c.adNames.length ? c.adNames.join("; ") : c.name;
+    };
+    const sumOrNull = (xs: (number | null)[]) => (xs.every((x) => x == null) ? null : xs.reduce<number>((s, x) => s + (x ?? 0), 0));
+    const products: SocialMediaProductSummary[] = socialSummaryProducts.map((p) => {
+      const m = productMeta.get(p.product)!;
+      const ads = p.ads.slice().sort((a, b) => b.rangeSpend - a.rangeSpend || b.daySpend - a.daySpend).map((c) => ({
+        name: adLabel(c),
+        day: metaReported ? adBlock(c.daySpend, c.dayMetaValue, c.dayMetaPurchases, c.dayMetaValue != null) : adBlock(c.daySpend, null, null, false),
+        range: metaReported ? adBlock(c.rangeSpend, c.rangeMetaValue, c.rangeMetaPurchases, c.rangeMetaValue != null) : adBlock(c.rangeSpend, null, null, false),
+      }));
+      const total = metaReported
+        ? {
+          day: adBlock(p.dayAgg.spend, sumOrNull(ads.map((a) => a.day.sales)), sumOrNull(ads.map((a) => a.day.orders)), ads.some((a) => a.day.sales != null)),
+          range: adBlock(p.rangeAgg.spend, sumOrNull(ads.map((a) => a.range.sales)), sumOrNull(ads.map((a) => a.range.orders)), ads.some((a) => a.range.sales != null)),
+        }
+        : {
+          day: adBlock(p.dayAgg.spend, m.daySales, m.dayOrders, m.daySales != null),
+          range: adBlock(p.rangeAgg.spend, m.rangeSales, m.rangeOrders, m.rangeSales != null),
+        };
+      return {
+        product: p.product, campaigns: p.campaigns, price: p.price,
+        day: { ...block(p.dayAgg), orders: m.dayOrders ?? 0, acos: m.dayAcos },
+        range: { ...block(p.rangeAgg), orders: m.rangeOrders ?? 0, acos: m.rangeAcos },
+        adNames: p.adNames, daySales: m.daySales, rangeSales: m.rangeSales,
+        ads, total,
+      };
+    });
+    const grandBlock = (spend: number, totals: MetaAdBlock[]) =>
+      adBlock(spend, sumOrNull(totals.map((t) => t.sales)), sumOrNull(totals.map((t) => t.orders)), totals.some((t) => t.sales != null));
+    const grandTotal = {
+      day: grandBlock(socialMedia.daySpend, products.map((p) => p.total!.day)),
+      range: grandBlock(socialMedia.rangeSpend, products.map((p) => p.total!.range)),
+    };
     socialMediaSummary = {
       daySpend: round2(socialMedia.daySpend),
       daySpendTax: round2(spendTax(dayTotalAgg)),
@@ -2690,6 +2848,10 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       price: products[0].price,
       day: products[0].day,
       range: products[0].range,
+      productBreakdown: true,
+      adBreakdown: true,
+      adSalesSource: META_AD_SALES_SOURCE,
+      grandTotal,
       products,
       dayAcos: metaDayAcos,
       rangeAcos: metaRangeAcos,

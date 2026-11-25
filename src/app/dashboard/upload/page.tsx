@@ -425,7 +425,7 @@ function SocialMediaUploadCard({ onUploaded, dataInfo }: { onUploaded: () => voi
         .map((w) => `${w.start === w.end ? w.start : `${w.start} → ${w.end}`} (${w.days === 1 ? "1 day" : `${w.days} days`}) ₹${w.spend.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`)
         .join(" · ");
       const message = res.savedRows
-        ? `Saved ${windows}${res.skippedRows ? ` — ${res.skippedRows} total/blank rows skipped` : ""}`
+        ? `Saved ${windows}${res.adRows ? ` — ${res.adRows} ad-level rows (per-ad spend, sales and ACOS in the report)` : " — campaign level only (export at Ad level for per-ad ACOS)"}${res.skippedRows ? ` — ${res.skippedRows} total/blank rows skipped` : ""}`
         : `Nothing saved — no row had a Campaign name with Reporting starts/ends (${res.totalRows} rows read)`;
       setState({ status: "done", fileName: file.name, message });
       onUploaded();
@@ -447,7 +447,9 @@ function SocialMediaUploadCard({ onUploaded, dataInfo }: { onUploaded: () => voi
       </div>
       <p className="text-xs text-muted-foreground mb-4">
         Drop Meta Ads Manager&apos;s &quot;Raw Data Report&quot; export here — a single day&apos;s export or a
-        multi-day range both work, this card auto-detects which. One workbook can carry both — e.g. a
+        multi-day range both work, this card auto-detects which. For each ad&apos;s spend, sales and ACOS,
+        export at Ad level (Breakdown → Ad name) with the &quot;Purchases&quot; and &quot;Purchases conversion
+        value&quot; columns. One workbook can carry both — e.g. a
         &quot;oct 15&quot; sheet and an &quot;oct 9-15&quot; sheet — and every sheet is saved. Feeds the{" "}
         <Link href="/dashboard/reports" className="underline hover:text-foreground">Ad Spend Report</Link>&apos;s
         Summary sheet &quot;Social Media&quot; row.

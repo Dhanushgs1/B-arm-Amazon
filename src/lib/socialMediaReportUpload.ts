@@ -1,7 +1,7 @@
 import * as XLSX from "xlsx";
 import { supabasePublic } from "@/lib/amazonReportUpload";
 import { toDate } from "@/lib/meeshoReportUpload";
-import { mergeMetaRows } from "@/lib/socialMediaRules";
+import { mergeMetaRows, metaRowName, metaRowsToReplace, META_AD_SEPARATOR } from "@/lib/socialMediaRules";
 
 // Social Media (Meta Ads Manager) ad-spend upload — same shape as
 // meeshoReportUpload.ts: one card, parsed in the browser, written into a
@@ -74,21 +74,33 @@ interface MappedRow {
   spend: number;
   currency: string;
   clicks: number | null;
+  metaValue: number | null;
+  metaPurchases: number | null;
   raw: RawRow;
 }
 
 /** Meta Ads Manager clicks columns, most specific first. */
 const META_CLICK_HEADERS = ["Link clicks", "Clicks (all)", "Clicks"];
+/** Meta's own purchase value / purchase count columns (add them in Ads Manager to get per-ad sales). */
+const META_VALUE_HEADERS = ["Purchases conversion value", "Website purchases conversion value", "Purchase conversion value", "Purchases value"];
+const META_PURCHASE_HEADERS = ["Purchases", "Website purchases"];
+
+function hasHeader(row: RawRow, headers: string[]): boolean {
+  return Object.keys(row).some((k) => headers.some((h) => normalizeHeaderKey(h) === normalizeHeaderKey(k)));
+}
 
 function mapRow({ row, sheet }: { row: RawRow; sheet: string }): MappedRow {
   const p = makePicker(row);
-  const hasClicks = Object.keys(row).some((k) => META_CLICK_HEADERS.some((h) => normalizeHeaderKey(h) === normalizeHeaderKey(k)));
+  const hasClicks = hasHeader(row, META_CLICK_HEADERS);
   return {
     clicks: hasClicks ? Math.round(num(p(...META_CLICK_HEADERS))) : null,
+    metaValue: hasHeader(row, META_VALUE_HEADERS) ? num(p(...META_VALUE_HEADERS)) : null,
+    metaPurchases: hasHeader(row, META_PURCHASE_HEADERS) ? num(p(...META_PURCHASE_HEADERS)) : null,
     sheet,
     report_start: toDate(p("Reporting starts")),
     report_end: toDate(p("Reporting ends")),
-    campaign_name: str(p("Campaign name", "Campaign Name")),
+    // Export downloaded at Ad level: one row per ad, saved as "<campaign> :: <ad>" (socialMediaRules.ts).
+    campaign_name: metaRowName(str(p("Campaign name", "Campaign Name")), str(p("Ad name", "Ad Name"))),
     spend: num(p("Amount spent (INR)", "Amount spent")),
     currency: str(p("Currency")) || "INR",
     raw: row,
@@ -113,6 +125,8 @@ export interface SocialMediaUploadResult {
   /** One entry per reporting window saved (a single day, a 7-day range, ...), oldest end first —
    *  so the card can show that a two-sheet workbook saved both its day and its range. */
   windows: SocialMediaSavedWindow[];
+  /** Rows saved per ad (export downloaded at Ad level); 0 = campaign level only. */
+  adRows: number;
 }
 
 export interface SocialMediaSavedWindow {
@@ -151,18 +165,47 @@ export async function uploadSocialMediaReportFile(file: File): Promise<SocialMed
   // twice): the same campaign twice in one sheet ADDS its spend; a copy in another sheet for the
   // same window is not doubled — see socialMediaRules.ts. `sheet` is not a table column.
   // The table has no clicks column: the merged clicks (all lines of the campaign) ride in raw.clicks_total.
+  // Meta's purchase value/count (merged over the row's lines) ride in raw as "Meta purchase value" /
+  // "Meta purchases" — the names the report reads (adSpendReportExport.ts fetchWindowedAdSpend).
   const valid = mergeMetaRows(mapped).map((r) => {
-    const row: Partial<MappedRow> = { ...r, raw: r.clicks == null ? r.raw : { ...r.raw, clicks_total: r.clicks } };
+    const raw: RawRow = { ...r.raw };
+    if (r.clicks != null) raw.clicks_total = r.clicks;
+    if (r.metaValue != null) raw["Meta purchase value"] = r.metaValue;
+    if (r.metaPurchases != null) raw["Meta purchases"] = r.metaPurchases;
+    const row: Partial<MappedRow> = { ...r, raw };
     delete row.sheet;
     delete row.clicks;
+    delete row.metaValue;
+    delete row.metaPurchases;
     return row;
   });
+  const adRows = valid.filter((r) => (r.campaign_name ?? "").includes(META_AD_SEPARATOR)).length;
 
   if (!valid.length) {
-    return { totalRows: rawRows.length, savedRows: 0, skippedRows: rawRows.length, minDate: null, maxDate: null, windows: [] };
+    return { totalRows: rawRows.length, savedRows: 0, skippedRows: rawRows.length, minDate: null, maxDate: null, windows: [], adRows: 0 };
   }
 
+  // A window + campaign saved before at the other level (campaign total vs ads) is replaced, so its
+  // spend is never counted twice — see metaRowsToReplace.
+  const windows = [...new Set(valid.map((r) => `${r.report_start}|${r.report_end}`))];
+  const saved: { id: number; report_start: string; report_end: string; campaign_name: string }[] = [];
+  for (const w of windows) {
+    const [start, end] = w.split("|");
+    const { data, error } = await supabasePublic.from(SOCIAL_MEDIA_TABLE).select("id, report_start, report_end, campaign_name")
+      .eq("report_start", start).eq("report_end", end);
+    if (error) throw new Error(`Reading saved ${SOCIAL_MEDIA_TABLE} rows failed: ${error.message}`);
+    saved.push(...((data ?? []) as typeof saved));
+  }
+  const replaceIds = metaRowsToReplace(
+    saved.map((r) => ({ ...r, report_start: String(r.report_start).slice(0, 10), report_end: String(r.report_end).slice(0, 10) })),
+    valid as { report_start: string; report_end: string; campaign_name: string }[],
+  );
+
   await upsertInChunks(valid as unknown as Record<string, unknown>[]);
+  if (replaceIds.length) {
+    const { error } = await supabasePublic.from(SOCIAL_MEDIA_TABLE).delete().in("id", replaceIds);
+    if (error) throw new Error(`Saved the new rows, but removing the replaced ${replaceIds.length} row(s) failed — the report may count that spend twice until this file is uploaded again: ${error.message}`);
+  }
 
   const starts = valid.map((r) => r.report_start as string).sort();
   const ends = valid.map((r) => r.report_end as string).sort();
@@ -173,6 +216,7 @@ export async function uploadSocialMediaReportFile(file: File): Promise<SocialMed
     minDate: starts[0] ?? null,
     maxDate: ends[ends.length - 1] ?? null,
     windows: savedWindows(valid),
+    adRows,
   };
 }
 

@@ -32,6 +32,8 @@ export interface ShopifyReportItem {
   quantity: number | string | null;
   price: number | string | null;
   line_total?: number | string | null;
+  /** Shopify line SKU (barm_shopify_orders_summary returns it) — maps a Meta order to its product. */
+  sku?: string | null;
 }
 
 export interface ShopifyReportOrder {
