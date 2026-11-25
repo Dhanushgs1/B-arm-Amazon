@@ -4,7 +4,7 @@ import { rejectUnlessAllowed } from "@/lib/appRouteAuth";
 import { supabase } from "@/lib/supabaseClient";
 import { FBA_ALERT_FCS } from "@/lib/fbaWarehouseAlerts";
 import { sourceRows, type SourceDates } from "@/lib/marketing360Sources";
-import { latestByPincode, fcTable, adState, campaignKeywords, zoneVerdict, ourProduct, ratingRowMatches, topCompetitorRating, adsSuggestion, ADS_LOW_UNITS, ourSellingPrice, tamGroup, tamSuggestion, type DeliveryCheck, type ZoneFacts } from "@/lib/marketing360Rules";
+import { latestByPincode, fcTable, adState, campaignKeywords, zoneVerdict, ourProduct, ratingRowMatches, topCompetitorRating, adsSuggestion, ADS_LOW_UNITS, ourSellingPrice, tamGroup, tamSuggestion, type DeliveryCheck, type ZoneFacts, sameProductCompetitors } from "@/lib/marketing360Rules";
 
 // Product Marketing 360 — one product's marketing card, built from stored data only (Supabase).
 //   GET                -> product list (Amazon listings grouped by ASIN, with master name + category)
@@ -192,7 +192,7 @@ async function card(asin: string) {
     listing: { skus, items: listing, price: our.price, price_source: our.source, mrp: our.mrp, link: `https://www.amazon.in/dp/${asin}` },
     profile, plan, influencers, notes, tamSuggest: tamInfo(tamRow, tamGroupKey, our.price),
     rating: { snapshot_date: ratingLatest[0]?.snapshot_date ?? null, rows: rating },
-    competitors: { prices: compPrice, ratings: compRatings, ratings_week: latestWide ?? null, blocked: competitorBlocked },
+    competitors: { prices: compPrice, ratings: compRatings, same: sameProductCompetitors(compRatings, compPrice, cw.rows), ratings_week: latestWide ?? null, blocked: competitorBlocked },
     ads: {
       window: since ? { from: since, to: spMax } : null,
       product: { state: adState(sp.length || since ? sum(sp, "spend") : null), spend: sum(sp, "spend"), sales: sum(sp, "sales_7d"), campaigns: campaigns(sp) },

@@ -243,11 +243,9 @@ function ProductCard({ data, reload }: { data: any; reload: () => void }) {
   const stocked = yes.filter((f) => (f.stock ?? 0) > 0);
   const zones: any[] = data.forecast.zones;
   const short = zones.filter((z) => z.alert_35d && z.alert_35d !== "OK");
-  const deliveryByState = useMemo(() => {
-    const m = new Map<string, any[]>();
-    for (const c of data.delivery.latest) m.set(c.state, [...(m.get(c.state) ?? []), c]);
-    return [...m.entries()];
-  }, [data.delivery.latest]);
+  const deliveryRows = useMemo(() => (data.delivery.latest as any[])
+    .map((c) => ({ ...c, city: c.location ? String(c.location).split("/")[0].trim() : "" }))
+    .sort((a, b) => a.state.localeCompare(b.state) || (a.city || "~").localeCompare(b.city || "~") || a.pincode.localeCompare(b.pincode)), [data.delivery.latest]);
   const compByTerm = useMemo(() => {
     const m = new Map<string, any[]>();
     for (const c of data.positions.competitors) m.set(c.search_term, [...(m.get(c.search_term) ?? []), c]);
@@ -297,11 +295,19 @@ function ProductCard({ data, reload }: { data: any; reload: () => void }) {
               ))}</tbody>
             </table>
           )}
-          {data.competitors.ratings.length === 0 ? <p className="text-xs text-muted-foreground">{data.competitors.blocked ? "Competitor ratings: not readable by the dashboard (same permission as above)." : "No competitor ratings stored for this product yet."}</p> : (
+          {/* same-product competitors only, with price (user, 2026-11-25) */}
+          {(data.competitors.same ?? []).length === 0 ? <p className="text-xs text-muted-foreground">{data.competitors.blocked ? "Competitor ratings: not readable by the dashboard (same permission as above)." : "No same-product competitor (exact match / close equivalent) stored for this product yet."}</p> : (
             <table className="w-full text-xs">
-              <thead><tr className="border-b border-border"><th className={th}>Competitor</th><th className={th}>Marketplace</th><th className={th}>Rating</th><th className={th}>Reviews</th><th className={th}>Match</th></tr></thead>
-              <tbody>{data.competitors.ratings.map((c: any, i: number) => (
-                <tr key={i} className="border-b border-border/60"><td className={td}>{c.url ? <a href={c.url} target="_blank" rel="noreferrer" className="text-emerald-700 underline dark:text-emerald-300">{c.name ?? "Competitor"}</a> : c.name ?? "—"}</td><td className={td}>{c.marketplace}</td><td className={td}>{c.rating ?? "—"}</td><td className={td}>{fmt(c.reviews)}</td><td className={td}><Pill text={c.same ? "Same product" : "Related"} cls={c.same ? STATE_CLS.On : STATE_CLS["No data"]} /></td></tr>
+              <thead><tr className="border-b border-border"><th className={th}>Same-product competitor</th><th className={th}>Marketplace</th><th className={th}>Rating</th><th className={th}>Reviews</th><th className={th}>Price</th><th className={th}>Checked</th></tr></thead>
+              <tbody>{data.competitors.same.map((c: any, i: number) => (
+                <tr key={i} className="border-b border-border/60">
+                  <td className={td}>{c.url ? <a href={c.url} target="_blank" rel="noreferrer" className="text-emerald-700 underline dark:text-emerald-300">{c.name ?? "Competitor"}</a> : c.name ?? "—"}</td>
+                  <td className={td}>{c.marketplace ?? "—"}</td>
+                  <td className={td}>{c.rating === null ? "—" : `${c.rating}★`}</td>
+                  <td className={td}>{fmt(c.reviews)}</td>
+                  <td className={td}>{c.price === null ? "—" : <b className={c.cheaper ? "text-red-700 dark:text-red-400" : ""} title={c.our_price === null ? undefined : `Our price ${inr(c.our_price)}`}>{inr(c.price)}</b>}</td>
+                  <td className={td}>{c.checked ? dateLabel(c.checked) : "—"}</td>
+                </tr>
               ))}</tbody>
             </table>
           )}
@@ -409,19 +415,23 @@ function ProductCard({ data, reload }: { data: any; reload: () => void }) {
 
       <Section icon={Truck} title="Delivery days by state and pincode" source={`Drive delivery sweep · latest check per pincode across ${data.delivery.weeks.length} week tabs (${data.delivery.checks} checks)`}
         right={<div className="flex flex-wrap gap-1">{Object.entries(TONE).map(([k, t]) => <span key={k} className={`rounded-md border px-1.5 py-0.5 text-[10px] font-bold ${t.cls}`}>{t.label}</span>)}</div>}>
-        {deliveryByState.length === 0 ? <p className="text-xs text-muted-foreground">No delivery checks for this ASIN in the imported sweep.</p> : (
-          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-            {deliveryByState.map(([state, cells]) => (
-              <div key={state} className="rounded-lg border border-border/70 bg-background p-2">
-                <p className="mb-1 flex items-center gap-1 text-xs font-extrabold"><MapPin className="h-3 w-3" />{state}</p>
-                <div className="flex flex-wrap gap-1">
-                  {cells.map((c: any) => {
-                    const t = TONE[deliveryTone(c)];
-                    return <span key={c.pincode} className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${t.cls}`} title={`${c.location ?? ""} · ${c.delivery_text ?? c.status ?? ""} · checked ${dateLabel(c.scraped_date)} (${c.week})`}>{c.pincode}{c.location ? ` ${c.location.split("/")[0].trim()}` : ""}: {c.days === null ? (c.status ?? "—") : `${c.days} d`}</span>;
-                  })}
-                </div>
-              </div>
-            ))}
+        {data.delivery.latest.length === 0 ? <p className="text-xs text-muted-foreground">No delivery checks for this ASIN in the imported sweep.</p> : (
+          // one row per pincode: State | Pincode | City | Delivery days (user, 2026-11-25), state then city order
+          <div className="max-h-[520px] overflow-auto">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-card"><tr className="border-b border-border"><th className={th}>State</th><th className={th}>Pincode</th><th className={th}>City</th><th className={th}>Delivery days</th></tr></thead>
+              <tbody>{deliveryRows.map((c: any) => {
+                const t = TONE[deliveryTone(c)];
+                return (
+                  <tr key={c.pincode} className="border-b border-border/60" title={`${c.delivery_text ?? c.status ?? ""} · checked ${dateLabel(c.scraped_date)} (${c.week})`}>
+                    <td className={td}>{c.state}</td>
+                    <td className={td}>{c.pincode}</td>
+                    <td className={td}>{c.city || "—"}</td>
+                    <td className={td}><span className={`rounded-md border px-1.5 py-0.5 text-[11px] font-bold ${t.cls}`}>{c.days === null ? (c.status ?? "—") : `${c.days} ${c.days === 1 ? "day" : "days"}`}</span></td>
+                  </tr>
+                );
+              })}</tbody>
+            </table>
           </div>
         )}
       </Section>

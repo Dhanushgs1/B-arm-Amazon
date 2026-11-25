@@ -172,3 +172,37 @@ test("competitor ratings: parent SKU match, same-product preferred over more-rev
   assert.deepEqual([topCompetitorRating([rows[0]])?.product_name, topCompetitorRating([rows[0]])?.same], ["Pads", false]);
   assert.equal(topCompetitorRating([]), null);
 });
+
+test("competitor table: same-product only, rating and price joined on the listing URL", async () => {
+  const { sameProductCompetitors } = await import("./marketing360Rules.ts");
+  const out = sameProductCompetitors(
+    [
+      { name: "Kit A", url: "https://www.amazon.in/dp/AAA?ref=x", marketplace: "Amazon", rating: "4.1", reviews: 395, match_status: "EXACT MATCH" },
+      { name: "Ovulation kit", url: "https://www.amazon.in/dp/REL", marketplace: "Amazon", rating: 4.4, reviews: 900, match_status: "RELATED" },
+      { name: "Kit C", url: "https://www.flipkart.com/c", marketplace: "Flipkart", rating: 3.8, reviews: 86, match_status: "close equivalent" },
+    ],
+    [
+      { competitor_product_name: "Kit A", competitor_product_url: "https://amazon.in/dp/AAA/", competitor_marketplace: "Amazon India", competitor_price: 298, our_price: 349, last_checked_at: "2026-10-13", match_status: "EXACT MATCH" },
+      { competitor_product_name: "Kit A", competitor_product_url: "https://amazon.in/dp/AAA", competitor_marketplace: "Amazon India", competitor_price: 310, our_price: 349, last_checked_at: "2026-10-01", match_status: "EXACT MATCH" },
+      { competitor_product_name: "Kit B", competitor_product_url: "https://amazon.in/dp/BBB", competitor_marketplace: "Amazon India", competitor_price: 499, our_price: 349, last_checked_at: "2026-10-13", match_status: "EXACT MATCH" },
+    ],
+  );
+  assert.deepEqual(out.map((c) => [c.name, c.rating, c.reviews, c.price, c.cheaper]), [
+    ["Kit A", 4.1, 395, 298, true],
+    ["Kit B", null, null, 499, false],
+    ["Kit C", 3.8, 86, null, null],
+  ]);
+});
+
+test("delivery: the latest check without a city takes the city from an older check of that pincode", () => {
+  const out = latestByPincode([{ ...chk("530001", "2026-W46", "2026-11-03", 4), location: "Visakhapatnam" }, chk("530001", "2026-W48", "2026-11-16", 3)]);
+  assert.deepEqual(out.map((o) => [o.pincode, o.days, o.location]), [["530001", 3, "Visakhapatnam"]]);
+});
+
+test("competitor table: a priced competitor takes its rating from the same listing elsewhere in the sheet", async () => {
+  const { sameProductCompetitors } = await import("./marketing360Rules.ts");
+  const out = sameProductCompetitors([],
+    [{ competitor_product_name: "Kit B", competitor_product_url: "https://www.amazon.in/dp/BBB", competitor_marketplace: "Amazon India", competitor_price: 499, our_price: 349, last_checked_at: "2026-10-13", match_status: "EXACT MATCH" }],
+    [{ url: "https://amazon.in/dp/BBB?th=1", rating: 4.2, reviews: 120 }, { url: "https://amazon.in/dp/OTHER", rating: 3, reviews: 5 }]);
+  assert.deepEqual(out.map((c) => [c.name, c.rating, c.reviews, c.price]), [["Kit B", 4.2, 120, 499]]);
+});

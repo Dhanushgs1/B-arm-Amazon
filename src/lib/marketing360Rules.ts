@@ -9,15 +9,27 @@ export type DeliveryCheck = {
 export type DeliveryCell = DeliveryCheck & { state: string };
 
 /** Latest check per pincode (by scraped date, then week label), with its state. */
+/** City of the sweep pincodes whose checks never carry a location (head post offices; checked 2026-11-25). */
+export const PIN_CITY: Record<string, string> = {
+  "134109": "Panchkula", "141001": "Ludhiana", "180001": "Jammu", "211001": "Prayagraj", "249401": "Haridwar",
+  "263139": "Haldwani", "324001": "Kota", "342001": "Jodhpur", "403001": "Panaji", "440001": "Nagpur",
+  "462001": "Bhopal", "492001": "Raipur", "522002": "Guntur", "530001": "Visakhapatnam", "575001": "Mangaluru",
+  "625001": "Madurai", "673001": "Kozhikode", "682011": "Kochi", "734001": "Siliguri", "751001": "Bhubaneswar",
+  "769001": "Rourkela", "793001": "Shillong", "796001": "Aizawl", "797112": "Dimapur", "800001": "Patna", "826001": "Dhanbad",
+};
+
 export function latestByPincode(rows: DeliveryCheck[], overrides: Record<string, string> = {}): DeliveryCell[] {
   const best = new Map<string, DeliveryCheck>();
+  // the newest check sometimes has no city; an older check of the same pincode usually names it
+  const city = new Map<string, string>();
+  for (const r of rows) if (r.location && r.location.trim() && !city.has(r.pincode)) city.set(r.pincode, r.location);
   for (const r of rows) {
     const cur = best.get(r.pincode);
     const k = `${r.scraped_date ?? ""}|${r.week}`;
     if (!cur || k > `${cur.scraped_date ?? ""}|${cur.week}`) best.set(r.pincode, r);
   }
   return [...best.values()]
-    .map((r) => ({ ...r, state: overrides[r.pincode] ?? pincodeState(r.pincode) ?? "Unknown" }))
+    .map((r) => ({ ...r, location: r.location && r.location.trim() ? r.location : city.get(r.pincode) ?? PIN_CITY[r.pincode] ?? null, state: overrides[r.pincode] ?? pincodeState(r.pincode) ?? "Unknown" }))
     .sort((a, b) => a.state.localeCompare(b.state) || a.pincode.localeCompare(b.pincode));
 }
 
@@ -251,4 +263,62 @@ export function topCompetitorRating(rows: CompRating[]): (CompRating & { same: b
   const same = rows.filter((r) => /^(EXACT MATCH|CLOSE EQUIVALENT)$/i.test(r.match_status ?? ""));
   if (same.length) return { ...by(same), same: true };
   return rows.length ? { ...by(rows), same: false } : null;
+}
+
+/** Same-product competitors only (user, 2026-11-25: "Related" products are not competitors), one row per
+ *  competitor listing with its rating, reviews AND price. Ratings come from the competitor analysis'
+ *  weekly sheet (mkt_competitor_ratings), prices from its latest price checks (mkt_competitor_prices);
+ *  the two are joined on the listing URL. A competitor known to only one of them still shows, with "—"
+ *  for what is missing. Sorted cheapest first (unpriced last), then by review count. */
+export type SameCompetitor = {
+  name: string | null; url: string | null; marketplace: string | null; rating: number | null; reviews: number | null;
+  price: number | null; our_price: number | null; cheaper: boolean | null; checked: string | null;
+};
+const urlKey = (u: string | null | undefined) => (u ?? "").trim().toLowerCase().replace(/^https?:\/\/(www\.)?/, "").replace(/[?#].*$/, "").replace(/\/+$/, "");
+const SAME_MATCH = /^(EXACT MATCH|CLOSE EQUIVALENT)$/i;
+export function sameProductCompetitors(
+  ratings: { name: string | null; url: string | null; marketplace: string | null; rating: unknown; reviews: unknown; match_status: string | null }[],
+  prices: { competitor_product_name: string | null; competitor_seller_name?: string | null; competitor_product_url: string | null; competitor_marketplace: string | null; competitor_price: unknown; our_price: unknown; last_checked_at: string | null; match_status?: string | null }[],
+  allRatings: { url: string | null; rating: unknown; reviews: unknown }[] = [],
+): SameCompetitor[] {
+  const n = (v: unknown) => (v === null || v === undefined || v === "" || Number.isNaN(Number(v)) ? null : Number(v));
+  const out = new Map<string, SameCompetitor>();
+  for (const r of ratings) {
+    if (!SAME_MATCH.test(r.match_status ?? "")) continue;
+    const k = urlKey(r.url) || `name:${(r.name ?? "").toLowerCase()}`;
+    if (!out.has(k)) out.set(k, { name: r.name, url: r.url, marketplace: r.marketplace, rating: n(r.rating), reviews: n(r.reviews), price: null, our_price: null, cheaper: null, checked: null });
+  }
+  for (const p of prices) {
+    if (p.match_status != null && !SAME_MATCH.test(p.match_status)) continue;
+    const price = n(p.competitor_price);
+    if (price === null) continue;
+    const k = urlKey(p.competitor_product_url) || `name:${(p.competitor_product_name ?? "").toLowerCase()}`;
+    const ours = n(p.our_price);
+    const row = out.get(k) ?? { name: p.competitor_product_name ?? p.competitor_seller_name ?? null, url: p.competitor_product_url, marketplace: p.competitor_marketplace, rating: null, reviews: null, price: null, our_price: null, cheaper: null, checked: null };
+    // keep the latest check for this listing
+    if (row.checked === null || (p.last_checked_at ?? "") > row.checked) {
+      row.price = price; row.our_price = ours; row.checked = p.last_checked_at; row.cheaper = ours === null ? null : price < ours;
+    }
+    if (!row.marketplace) row.marketplace = p.competitor_marketplace;
+    out.set(k, row);
+  }
+  // a priced competitor without a rating takes the rating the weekly sheet stored for the same listing
+  // (same URL) anywhere else — e.g. listed under another of our SKUs, or marked "Related" there
+  if (allRatings.length) {
+    const byUrl = new Map<string, { rating: number | null; reviews: number | null }>();
+    for (const r of allRatings) {
+      const k = urlKey(r.url);
+      const rating = n(r.rating);
+      if (!k || rating === null) continue;
+      const reviews = n(r.reviews);
+      const cur = byUrl.get(k);
+      if (!cur || (reviews ?? 0) > (cur.reviews ?? 0)) byUrl.set(k, { rating, reviews });
+    }
+    for (const row of out.values()) {
+      if (row.rating !== null) continue;
+      const hit = byUrl.get(urlKey(row.url));
+      if (hit) { row.rating = hit.rating; row.reviews = hit.reviews; }
+    }
+  }
+  return [...out.values()].sort((a, b) => (a.price ?? Infinity) - (b.price ?? Infinity) || (b.reviews ?? 0) - (a.reviews ?? 0));
 }
