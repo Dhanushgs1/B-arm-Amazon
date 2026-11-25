@@ -62,6 +62,15 @@ test("run log: the LATEST row for the date must be PASS and name the file", () =
   assert.equal(runLogVerdict([passRow("2026-11-26", f, 4270)], "2026-11-26", f, 4270).ok, true);
 });
 
+test("run log: \"PASS (with warnings)\" passes; PASSED-looking words and FAIL do not", () => {
+  const f = "FBA Forecasting 2026-11-25.xlsx";
+  const r = runLogVerdict([{ ...passRow("2026-11-25"), Status: "PASS (with warnings)", Validation: "PASS with WARN: Column X stale" }], "2026-11-25", f);
+  assert.equal(r.ok, true);
+  assert.match(r.reason, /PASS \(with warnings\)/);
+  assert.equal(runLogVerdict([{ ...passRow("2026-11-25"), Status: "PASSIVE" }], "2026-11-25", f).ok, false);
+  assert.equal(runLogVerdict([{ ...passRow("2026-11-25"), Status: "FAIL (with warnings)" }], "2026-11-25", f).ok, false);
+});
+
 test("run log dates may come as real dates or sheet serials", () => {
   const f = "FBA Forecasting 2026-11-26.xlsx";
   assert.equal(runLogVerdict([{ ...passRow("2026-11-26"), Date: new Date("2026-11-26T00:00:00Z") }], "2026-11-26", f).ok, true);

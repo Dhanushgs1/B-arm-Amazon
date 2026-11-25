@@ -50,15 +50,16 @@ export function runLogVerdict(rows: Record<string, unknown>[], date: string, fil
   const forDate = rows.filter((r) => isoOf(r[Object.keys(r).find((h) => h.trim().toLowerCase() === "date") ?? ""]) === date);
   if (!forDate.length) return { ok: false, reason: `Forecast Run Log has no row for ${date} yet` };
   const last = forDate[forDate.length - 1];
+  // "PASS" or "PASS (with warnings)" (the pipeline's own wording); FAIL / blank / anything else holds
   const status = cell(last, "Status").toUpperCase();
-  if (status !== "PASS") return { ok: false, reason: `Forecast Run Log's latest row for ${date} is ${status || "blank"}${cell(last, "Failure reason") ? ` (${cell(last, "Failure reason")})` : ""}` };
+  if (!/^PASS\b/.test(status)) return { ok: false, reason: `Forecast Run Log's latest row for ${date} is ${status || "blank"}${cell(last, "Failure reason") ? ` (${cell(last, "Failure reason")})` : ""}` };
   const base = fileName.replace(/\.xlsx$/i, "");
   if (!cell(last, "Forecast file").includes(base)) return { ok: false, reason: `Forecast Run Log's PASS row for ${date} names "${cell(last, "Forecast file") || "no file"}", not ${base}` };
   const stated = /(\d[\d,]*) data rows/i.exec(cell(last, "Validation"));
   if (stated && dataRows !== undefined && Number(stated[1].replace(/,/g, "")) !== dataRows) {
     return { ok: false, reason: `Forecast Run Log says ${stated[1]} data rows, the file has ${dataRows}` };
   }
-  return { ok: true, reason: `Forecast Run Log PASS for ${date}` };
+  return { ok: true, reason: `Forecast Run Log ${cell(last, "Status")} for ${date}` };
 }
 
 /** Refuse a file much smaller than the last imported day (a truncated or partial build). */
