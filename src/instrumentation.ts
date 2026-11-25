@@ -24,6 +24,9 @@ export async function register() {
   // starts before the DISABLE_SCHEDULER check — see src/lib/server/overallPreload.ts.
   if (process.env.NEXT_RUNTIME === "nodejs") {
     (await import("@/lib/server/overallPreload")).startOverallPreload();
+    // Product Marketing 360 Drive auto-import — no e-mail, so it also runs where DISABLE_SCHEDULER is
+    // set; it only starts when a Google service account is configured (see marketing360DriveSync.ts).
+    (await import("@/lib/server/marketing360DriveSync")).startDriveSync();
   }
 
   // DISABLE_SCHEDULER=true turns the jobs off on an extra production host (e.g. the

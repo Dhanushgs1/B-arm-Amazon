@@ -68,3 +68,6 @@ supabase/.temp/
 
 # executive dashboard: last built dataset (server-side cache)
 /.cache/
+
+# Product Marketing 360 Drive auto-import: which Drive file versions were imported
+/.data/
