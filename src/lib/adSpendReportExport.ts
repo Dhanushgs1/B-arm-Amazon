@@ -139,6 +139,13 @@ export interface WindowAgg { spend: number; units: number; gstMultiplier?: numbe
 const emptyAgg = (): WindowAgg => ({ spend: 0, units: 0 });
 export const spendTax = (a: WindowAgg): number => a.spend * (a.gstMultiplier ?? DEFAULT_GST_MULTIPLIER);
 export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) / a.units : spendTax(a));
+// Summary / Ad spend report "Sell price" and "Ad orders" columns (26 Nov 2026, seller's request).
+// Sell price = the window's real order revenue ÷ units sold ("–" with no sale). Ad orders = the ad
+// platform's own ad-attributed orders (Amazon "7 Day Total Orders", Flipkart ads units sold, Meesho
+// "Orders by ad"); "–" when that platform has none on file for the product.
+export const sellPriceCell = (a: WindowAgg): number | string =>
+  a.units > 0 && (a.revenue ?? 0) > 0 ? Math.round(((a.revenue ?? 0) / a.units) * 100) / 100 : "–";
+export const adOrdersCell = (a: WindowAgg): number | string => (a.adOrders !== undefined ? a.adOrders : "–");
 // Ad Status Report's per-platform 1/0 indicator: real ad Spend (with tax) this range window,
 // strictly — per the seller's later, explicit instruction, confirmed a second time after review:
 // "spend aakirtha 1, illana 0, avlaotha" (ad spend happened -> 1, otherwise -> 0, nothing else
@@ -2499,6 +2506,9 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     { s: { r: 3, c: 19 }, e: { r: 3, c: 20 } },
   ];
   const sumHeaderRowsStyled = [3, 4];
+  // Per-row [Sell price, day Ad orders, range Ad orders], inserted as columns once every row is built
+  // (see sumCol below), so each row builder keeps its original column order.
+  const sumExtras = new Map<number, (string | number)[]>([[4, ["Sell price", "Ad orders", "Ad orders"]]]);
   const sumLabelCells: { row: number; platform: Platform }[] = [];
   const platformTotals: AdSpendReportResult["platformTotals"] = [];
   const platformSummaries: PlatformEmailSummary[] = [];
@@ -2658,6 +2668,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
         const listingPrice = listingPriceFor(platform, p.sku);
         const daySummaryAcos = acosCell(p.day, p.price, listingPrice);
         const rangeSummaryAcos = acosCell(p.range, p.price, listingPrice);
+        sumExtras.set(sumAoa.length, [sellPriceCell(p.day), adOrdersCell(p.day), adOrdersCell(p.range)]);
         sumAoa.push([
           // "Ad spend (without/with tax)" here is the SINGLE-DAY total, matching
           // the seller's own manual workbook's Summary sheet convention — the
@@ -2835,7 +2846,13 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     // has no purchase columns. Channel spend (B, C) and Overall sales (T, U) are merged down the block.
     const metaCells = (b: MetaAdBlock) => [b.spend, b.spendTax, b.orders ?? "N/A", b.sales ?? "N/A", "", b.acos ?? "N/A", b.sales ?? "N/A"];
     const blank7 = ["", "", "", "", "", "", ""];
-    const pushSocial = (label: string, price: number | "", day: (string | number)[], range: (string | number)[]) => {
+    // Sell price = Meta sales ÷ Meta purchases; Ad orders = Meta-reported purchases.
+    const metaExtra = (d: MetaAdBlock, r: MetaAdBlock): (string | number)[] => [
+      d.sales != null && d.sales > 0 && d.orders != null && d.orders > 0 ? round2(d.sales / d.orders) : "–",
+      d.orders ?? "N/A", r.orders ?? "N/A",
+    ];
+    const pushSocial = (label: string, price: number | "", day: (string | number)[], range: (string | number)[], extra?: (string | number)[]) => {
+      if (extra) sumExtras.set(sumAoa.length, extra);
       const first = sumAoa.length === socialMediaRow;
       sumAoa.push([
         first ? "Social Media" : "",
@@ -2846,12 +2863,12 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     products.forEach((p) => {
       socialHeadRows.push(sumAoa.length);
       pushSocial(`${p.product}${p.price ? ` · ₹${p.price.toLocaleString("en-IN")}` : ""}`, "", blank7, blank7);
-      p.ads!.forEach((a, i) => pushSocial(`Ad ${i + 1}: ${a.name}`, "", metaCells(a.day), metaCells(a.range)));
+      p.ads!.forEach((a, i) => pushSocial(`Ad ${i + 1}: ${a.name}`, "", metaCells(a.day), metaCells(a.range), metaExtra(a.day, a.range)));
       socialBoldRows.push(sumAoa.length);
-      pushSocial(`Total – ${p.product}`, p.price || "", metaCells(p.total!.day), metaCells(p.total!.range));
+      pushSocial(`Total – ${p.product}`, p.price || "", metaCells(p.total!.day), metaCells(p.total!.range), metaExtra(p.total!.day, p.total!.range));
     });
     socialBoldRows.push(sumAoa.length);
-    pushSocial("Grand total – all Meta products", "", metaCells(grandTotal.day), metaCells(grandTotal.range));
+    pushSocial("Grand total – all Meta products", "", metaCells(grandTotal.day), metaCells(grandTotal.range), metaExtra(grandTotal.day, grandTotal.range));
     if (sumAoa.length - socialMediaRow > 1) {
       [0, 1, 2, 19, 20].forEach((c) => sumMerges.push({ s: { r: socialMediaRow!, c }, e: { r: sumAoa.length - 1, c } }));
     }
@@ -2902,6 +2919,11 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const ratio4 = (v: number | null) => (v === null ? null : Math.round(v * 10000) / 10000);
   if (googleOrders.rangeUnits > 0 || googleOrders.rangeValue > 0 || hasGoogleSpend) {
     googleRow = sumAoa.length;
+    // Sell price = website order value ÷ orders; Ad orders = Shopify orders from a Google Ads click.
+    sumExtras.set(sumAoa.length, [
+      googleOrders.dayUnits > 0 ? round2(googleOrders.dayValue / googleOrders.dayUnits) : "–",
+      googleAttributed ? googleOrders.adDayOrders : "", googleAttributed ? googleOrders.adRangeOrders : "",
+    ]);
     sumAoa.push([
       "Google",
       round2(googleDayAgg.spend), round2(spendTax(googleDayAgg)),
@@ -2948,10 +2970,24 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   await enrichAmazonActionRows(actionRows, amz.spRows, endDate, aiSuggestions);
   await enrichFlipkartActionRows(actionRows, fk.fsnRows, aiSuggestions);
 
+  // Insert Sell price after "price", and Ad orders after each block's Total Orders. Every Summary
+  // column index from here on goes through sumCol (original index -> index after the 3 inserts).
+  const sumCol = (c: number) => c + (c >= 5 ? 1 : 0) + (c >= 8 ? 1 : 0) + (c >= 15 ? 1 : 0);
+  sumAoa.forEach((row, r) => {
+    if (row.length < 15) return;
+    const [sell, adDay, adRange] = sumExtras.get(r) ?? ["", "", ""];
+    row.splice(15, 0, adRange);
+    row.splice(8, 0, adDay);
+    row.splice(5, 0, sell);
+  });
+  sumMerges.forEach((m) => { m.s.c = sumCol(m.s.c); m.e.c = sumCol(m.e.c); });
+  const worstHeadMerge = sumMerges.find((m) => m.s.r === 3 && m.s.c === 3);
+  if (worstHeadMerge) worstHeadMerge.e.c = 5; // "Worst ACOS product" spans Product, price, Sell price
+  const SUM_COLS_OUT = sumCol(SUM_COLS - 1) + 1;
   const wsSummary = XLSX.utils.aoa_to_sheet(sumAoa);
   wsSummary["!merges"] = sumMerges;
   if (wsSummary["A2"]) wsSummary["A2"].s = { font: { bold: true, sz: 13 } };
-  sumHeaderRowsStyled.forEach((row) => styleHeader(wsSummary, row, SUM_COLS, "312E81"));
+  sumHeaderRowsStyled.forEach((row) => styleHeader(wsSummary, row, SUM_COLS_OUT, "312E81"));
   sumLabelCells.forEach(({ row, platform }) => styleLabel(wsSummary, XLSX.utils.encode_cell({ r: row, c: 0 }), PLATFORM_FILL[platform]));
   // Clicking the "Amazon"/"Flipkart"/"Meesho" platform cell opens the live
   // Daily Ad Spend dashboard page (same cross-platform data this report is
@@ -2973,17 +3009,25 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   if (googleRow !== null) styleLabel(wsSummary, XLSX.utils.encode_cell({ r: googleRow, c: 0 }), "4285F4");
   const meeshoErrorCell = meeshoErrorRow !== null ? wsSummary[XLSX.utils.encode_cell({ r: meeshoErrorRow, c: 0 })] : undefined;
   if (meeshoErrorCell) meeshoErrorCell.s = { font: { bold: true, color: { rgb: "B91C1C" } } };
-  wsSummary["!cols"] = [
+  const sumWidths = [
     { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 60 }, { wch: 10 },
     { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 24 }, { wch: 13 }, { wch: 13 }, { wch: 13 }, // day block: Spend, Spend(with tax), Total Orders, Total Sales (wider header), CPC, ACOS, Ad Sales
     { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 24 }, { wch: 13 }, { wch: 13 }, { wch: 13 }, // range block: same shape
     { wch: 10 }, { wch: 14 },
   ];
-  applyNumberFormats(wsSummary, 5, sumAoa.length, {
+  sumWidths.splice(15, 0, { wch: 11 });
+  sumWidths.splice(8, 0, { wch: 11 });
+  sumWidths.splice(5, 0, { wch: 11 });
+  wsSummary["!cols"] = sumWidths;
+  const sumFormats: Record<number, string> = {
     1: CURRENCY_FMT, 2: CURRENCY_FMT, 4: CURRENCY_FMT, 5: CURRENCY_FMT, 6: CURRENCY_FMT,
     8: CURRENCY_FMT, 9: CURRENCY_FMT, 10: PERCENT_FMT, 11: CURRENCY_FMT,
     12: CURRENCY_FMT, 13: CURRENCY_FMT, 15: CURRENCY_FMT, 16: CURRENCY_FMT, 17: PERCENT_FMT, 18: CURRENCY_FMT,
     20: CURRENCY_FMT,
+  };
+  applyNumberFormats(wsSummary, 5, sumAoa.length, {
+    ...Object.fromEntries(Object.entries(sumFormats).map(([c, f]) => [sumCol(Number(c)), f])),
+    5: CURRENCY_FMT, // Sell price
   });
   // Long titles (a SKU with no product-master entry falls back to the raw
   // marketing title) need to wrap within the column instead of overflowing
@@ -2995,7 +3039,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   }
   // Social Media block: product headings on a light fill, product and grand totals in bold (cols D–S).
   const emphasise = (r: number, fill?: string) => {
-    for (let c = 3; c <= 18; c++) {
+    for (let c = 3; c <= sumCol(18); c++) {
       const addr = XLSX.utils.encode_cell({ r, c });
       const cell = wsSummary[addr] ?? (wsSummary[addr] = { t: "s", v: "" });
       cell.s = { ...(cell.s ?? {}), font: { ...(cell.s?.font ?? {}), bold: true }, ...(fill ? { fill: { fgColor: { rgb: fill } } } : {}) };
@@ -3014,6 +3058,9 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const detailHeaderRows: number[] = [];
   const detailLabelCells: { addr: string; platform: Platform }[] = [];
   const detailMerges: XLSX.Range[] = [];
+  // Per-row [Sell price, day Ad orders, range Ad orders], inserted as columns after the rows are
+  // built (see detCol below) — same columns and sources as the Summary sheet's.
+  const detailExtras = new Map<number, (string | number)[]>();
   adPlatforms.forEach(({ platform, products }) => {
     // Sorted by day ACOS descending (worst first) — same metric/direction as the Summary
     // sheet's "Worst ACOS product" shortlist, so a reader doesn't have to reconcile two
@@ -3045,7 +3092,12 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       { s: { r: groupRow, c: 3 }, e: { r: groupRow, c: 7 } },
       { s: { r: groupRow, c: 8 }, e: { r: groupRow, c: 12 } },
     );
-    rows.forEach((p) => detailAoa.push([p.sku, ...productAoaRow(p, listingPriceFor(platform, p.sku))]));
+    detailExtras.set(groupRow, ["Sell price", "", ""]);
+    detailExtras.set(groupRow + 1, ["", "Ad orders", "Ad orders"]);
+    rows.forEach((p) => {
+      detailExtras.set(detailAoa.length, [sellPriceCell(p.day), adOrdersCell(p.day), adOrdersCell(p.range)]);
+      detailAoa.push([p.sku, ...productAoaRow(p, listingPriceFor(platform, p.sku))]);
+    });
     if (!rows.length) detailAoa.push(["(no advertised products with activity in range)", ...Array(DETAIL_COLS - 1).fill("")]);
     detailAoa.push([]);
   });
@@ -3070,7 +3122,10 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       { s: { r: groupRow, c: 3 }, e: { r: groupRow, c: 7 } },
       { s: { r: groupRow, c: 8 }, e: { r: groupRow, c: 12 } },
     );
+    detailExtras.set(groupRow, ["Sell price", "", ""]);
+    detailExtras.set(groupRow + 1, ["", "Ad orders", "Ad orders"]);
     const firstProductRow = detailAoa.length;
+    socialMediaProducts.forEach((_p, i) => detailExtras.set(firstProductRow + i, ["–", i === 0 ? metaDayOrders ?? "N/A" : "", i === 0 ? metaRangeOrders ?? "N/A" : ""]));
     socialMediaProducts.forEach((p, i) => detailAoa.push([
       p.campaigns.join(", "), p.product, p.price || "",
       round2(p.dayAgg.spend), round2(spendTax(p.dayAgg)), i === 0 ? metaDayOrders ?? "N/A" : "", "", i === 0 ? metaDayAcos ?? "N/A" : "",
@@ -3099,17 +3154,34 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     detailAoa.push([]);
   }
 
+  // Insert Sell price after Price, and Ad orders after each block's Orders (original index -> new).
+  const detCol = (c: number) => c + (c >= 3 ? 1 : 0) + (c >= 6 ? 1 : 0) + (c >= 11 ? 1 : 0);
+  detailAoa.forEach((row, r) => {
+    if (row.length < DETAIL_COLS) return;
+    const [sell, adDay, adRange] = detailExtras.get(r) ?? ["", "", ""];
+    row.splice(11, 0, adRange);
+    row.splice(6, 0, adDay);
+    row.splice(3, 0, sell);
+  });
+  detailMerges.forEach((m) => { m.s.c = detCol(m.s.c); m.e.c = detCol(m.e.c); });
+  // "Sell price" header spans both header rows, like "Price".
+  detailHeaderRows.forEach((row) => detailMerges.push({ s: { r: row, c: 3 }, e: { r: row + 1, c: 3 } }));
+  const DETAIL_COLS_OUT = detCol(DETAIL_COLS - 1) + 1;
   const wsDetail = XLSX.utils.aoa_to_sheet(detailAoa);
   wsDetail["!merges"] = detailMerges;
   detailLabelCells.forEach(({ addr, platform }) => styleLabel(wsDetail, addr, PLATFORM_FILL[platform]));
-  detailHeaderRows.forEach((row) => { styleHeader(wsDetail, row, DETAIL_COLS, "312E81"); styleHeader(wsDetail, row + 1, DETAIL_COLS, "312E81"); });
+  detailHeaderRows.forEach((row) => { styleHeader(wsDetail, row, DETAIL_COLS_OUT, "312E81"); styleHeader(wsDetail, row + 1, DETAIL_COLS_OUT, "312E81"); });
   if (socialDetailLabelRow !== null) styleLabel(wsDetail, XLSX.utils.encode_cell({ r: socialDetailLabelRow, c: 0 }), "1877F2");
   if (googleDetailLabelRow !== null) styleLabel(wsDetail, XLSX.utils.encode_cell({ r: googleDetailLabelRow, c: 0 }), "4285F4");
   if (googleDetailHeaderRow !== null) styleHeader(wsDetail, googleDetailHeaderRow, 4, "312E81");
-  wsDetail["!cols"] = [{ wch: 30 }, { wch: 60 }, { wch: 10 }, ...Array.from({ length: DETAIL_COLS - 3 }, () => ({ wch: 13 }))];
-  applyNumberFormats(wsDetail, 0, detailAoa.length, {
+  wsDetail["!cols"] = [{ wch: 30 }, { wch: 60 }, { wch: 10 }, { wch: 11 }, ...Array.from({ length: DETAIL_COLS_OUT - 4 }, () => ({ wch: 13 }))];
+  const detailFormats: Record<number, string> = {
     2: CURRENCY_FMT, 3: CURRENCY_FMT, 4: CURRENCY_FMT, 6: CURRENCY_FMT, 7: PERCENT_FMT,
     8: CURRENCY_FMT, 9: CURRENCY_FMT, 11: CURRENCY_FMT, 12: PERCENT_FMT,
+  };
+  applyNumberFormats(wsDetail, 0, detailAoa.length, {
+    ...Object.fromEntries(Object.entries(detailFormats).map(([c, f]) => [detCol(Number(c)), f])),
+    3: CURRENCY_FMT, // Sell price
   });
   // Long titles (a SKU with no product-master entry falls back to the raw
   // marketing title) need to wrap within the column instead of overflowing —
