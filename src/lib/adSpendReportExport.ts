@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx-js-style";
-import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
+import { fetchAllRows, fetchAllRowsByDateChunks, isCancelledOrder, isStandardOrderId, istDayWindowUtc } from "@/lib/amazonReportShared";
 import { spCampaignDays, isSplitCoveredCampaignRow, unmappedCampaignSpend, campaignsMissingOnDay } from "@/lib/amazonSpendRules";
 import { dailyAmAdsReportRows } from "@/lib/amazonAdSourceRules";
 import { upsertInChunks, supabasePublic } from "@/lib/amazonReportUpload";
@@ -565,7 +565,9 @@ export async function fetchAmazonProducts(
   // The SB/SD card rows are still read: a Brand/Display campaign-day the "AM ads" sheet carries
   // neither split per SKU nor as a SKU-less row is only known from them (amazonAdSourceRules.ts).
   const [dailyAdRows, sbCardRows, sdCardRows, mapRows, orderRowsRaw, priceRows] = await Promise.all([
-    fetchAllRows("barm_daily_am_ads", (q) => q.gte("report_date", range.start).lte("report_date", endDate), ["report_date", "id"]),
+    // One request per day (~350 wide rows each): a 1000-row page of this table ran past the
+    // database's statement timeout on a busy instance (26 Nov 2026). Same rows, same order.
+    fetchAllRowsByDateChunks("barm_daily_am_ads", "report_date", range.start, endDate, undefined, 1),
     fetchAllRows("barm_amazon_sb_campaign", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
     fetchAllRows("barm_amazon_sd_campaign", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
     // No "id" column on this hand-maintained mapping table — order by its
