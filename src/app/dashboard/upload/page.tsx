@@ -10,7 +10,6 @@ import {
   REPORT_LABEL,
   fetchAllReportDataInfo,
 } from "@/lib/amazonReportUpload";
-import { maybeAlertHighAcos, ACOS_ALERT_TYPES } from "@/lib/uploadAcosAlert";
 import { uploadCombinedWorkbook, fetchDailyTablesDataInfo, type SheetUploadOutcome } from "@/lib/combinedAdSpendUpload";
 import { staleness } from "@/lib/dataFreshness";
 import { fetchAllMisReportDataInfo, type MisReportDataInfo } from "@/lib/misAdapters";
@@ -866,26 +865,8 @@ export default function UploadReportsPage() {
         [type]: { status: "done", fileName: file.name, message },
       }));
       refreshMeta();
-
-      // Weekly ads upload -> check the campaigns that just landed for high
-      // ACOS, and if any are over threshold, email an alert (with AI fix
-      // suggestions) to whoever's configured in Settings. Runs after the
-      // "done" state above so a slow Gemini/email round-trip never blocks
-      // the upload UI from showing success.
-      if (ACOS_ALERT_TYPES.includes(type) && res.rows?.length) {
-        maybeAlertHighAcos(type, res.rows, keySlot)
-          .then((alert) => {
-            if (alert.highAcosCount === 0) return;
-            const suffix = alert.emailed
-              ? ` · ⚠ ${alert.highAcosCount} high-ACOS campaign${alert.highAcosCount > 1 ? "s" : ""} emailed to ${alert.to}`
-              : ` · ⚠ ${alert.highAcosCount} high-ACOS campaign${alert.highAcosCount > 1 ? "s" : ""} found (${alert.error || "email not sent"})`;
-            setCardState((prev) => ({
-              ...prev,
-              [type]: { status: "done", fileName: file.name, message: `${message}${suffix}` },
-            }));
-          })
-          .catch(() => {});
-      }
+      // No High ACOS email from these report cards: the only High ACOS email comes from the
+      // daily "Ad Spend Report (Last 7 days)" upload (CombinedAdSpendUploadCard).
     } catch (err) {
       setCardState((prev) => ({
         ...prev,
