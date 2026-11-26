@@ -1358,6 +1358,19 @@ const SOCIAL_MEDIA_CAMPAIGN_PRODUCTS: { match: RegExp; product: string }[] = [
   { match: /post\s*pa/i, product: "Postpartum Recovery Essentials care kit (10 pcs kit)" },
 ];
 
+// Google Ads campaign -> product (26 Nov 2026, seller's request: Google shown like Meta, product ->
+// campaign rows -> product total). The same rules are applied to the product titles of Google Ads-click
+// Shopify orders, so a product's sales land under the product its campaigns advertise.
+const GOOGLE_CAMPAIGN_PRODUCTS: { match: RegExp; product: string }[] = [
+  ...SOCIAL_MEDIA_CAMPAIGN_PRODUCTS,
+  { match: /\bv\.?\s?d\b|dilator/i, product: "Vaginal Dilator" },
+  { match: /lacto/i, product: "Lacto Spark lactate meter" },
+];
+function googleProductFor(name: string): string {
+  const clean = name.replace(/\s+/g, " ").trim();
+  return GOOGLE_CAMPAIGN_PRODUCTS.find((m) => m.match.test(clean))?.product ?? clean;
+}
+
 /** Product of a saved Meta row — an ad row ("<campaign> :: <ad>") is matched on its campaign part. */
 function socialMediaProductFor(campaign: string): string {
   const campaignPart = metaCampaignPart(campaign);
@@ -1513,6 +1526,8 @@ async function fetchGoogleOrders(range: { start: string; end: string }, endDate:
   adRangeValue: number;
   adDayOrders: number;
   adRangeOrders: number;
+  /** The range's Google Ads-attributed order lines (same lines as adRangeValue), for per-product sales. */
+  adLines: { date: string; name: string; quantity: number; value: number; order: string | null }[];
   /** Meta Ads-attributed Shopify sales (fbclid) and order counts — see metaAdsAttributedSales. */
   metaAdDayValue: number;
   metaAdRangeValue: number;
@@ -1601,6 +1616,7 @@ async function fetchGoogleOrders(range: { start: string; end: string }, endDate:
     adRangeValue: Math.round(adRangeValue * 100) / 100,
     adDayOrders: adDayOrders.size,
     adRangeOrders: adRangeOrders.size,
+    adLines: rows.filter((r) => r.googleAds).map((r) => ({ date: r.date, name: r.name, quantity: r.quantity, value: r.value, order: r.order })),
     metaAdDayValue: metaDay.value,
     metaAdRangeValue: metaRange.value,
     metaAdDayOrders: metaDay.orders,
@@ -2926,11 +2942,11 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   if (googleOrders.rangeUnits > 0 || googleOrders.rangeValue > 0 || hasGoogleSpend) {
     googleRow = sumAoa.length;
     // Sell price = website order value ÷ orders; Ad orders = Shopify orders from a Google Ads click.
-    sumExtras.set(sumAoa.length, [
+    const googleExtra: (string | number)[] = [
       googleOrders.dayUnits > 0 ? round2(googleOrders.dayValue / googleOrders.dayUnits) : "–",
       googleAttributed ? googleOrders.adDayOrders : "", googleAttributed ? googleOrders.adRangeOrders : "",
-    ]);
-    sumAoa.push([
+    ];
+    const googleTotals: (string | number | null)[] = [
       "Google",
       round2(googleDayAgg.spend), round2(spendTax(googleDayAgg)),
       hasGoogleSpend ? (googleAttributed ? "(Google Ads spend + website orders)" : "(Google Ads spend + B-Arm orders)") : "(Orders/Sales only — no Google Ads report for this window)", "",
@@ -2939,7 +2955,77 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       round2(googleRangeAgg.spend), round2(spendTax(googleRangeAgg)), googleOrders.rangeUnits, round2(googleOrders.rangeValue), "",
       googleAttributed ? ratio4(googleRangeRatios.acos) ?? "" : "", googleAttributed ? round2(googleOrders.adRangeValue) : "",
       googleOrders.dayUnits, round2(googleOrders.dayValue),
-    ]);
+    ];
+    if (hasGoogleSpend && googleAttributed && googleAdSpend.campaigns.length) {
+      // Same layout as Social Media (26 Nov 2026, seller's request): per product a heading, one row per
+      // Google Ads campaign with its spend, then a product total whose Orders / Sales / ACOS come from the
+      // Google Ads-click Shopify orders of that product (googleProductFor on the line's product title).
+      // A product with two campaigns can't split its sales between them (the Google export has no
+      // campaign ID), so orders/sales/ACOS sit on the product total. The grand total is the Google row as
+      // before, unchanged. ACOS = Spend ÷ Sales, or Spend ÷ 1 (shown as the amount) with no sales.
+      type GProduct = { campaigns: WindowedCampaign[]; daySales: number; rangeSales: number; dayUnits: number; rangeUnits: number; dayOrders: Set<string>; rangeOrders: Set<string> };
+      const gProducts = new Map<string, GProduct>();
+      const gAcc = (product: string) => {
+        const hit = gProducts.get(product) ?? { campaigns: [], daySales: 0, rangeSales: 0, dayUnits: 0, rangeUnits: 0, dayOrders: new Set<string>(), rangeOrders: new Set<string>() };
+        gProducts.set(product, hit);
+        return hit;
+      };
+      googleAdSpend.campaigns.forEach((c) => gAcc(googleProductFor(c.name)).campaigns.push(c));
+      googleOrders.adLines.forEach((l) => {
+        const a = gAcc(googleProductFor(l.name));
+        a.rangeSales += l.value;
+        a.rangeUnits += l.quantity;
+        if (l.order) a.rangeOrders.add(l.order);
+        if (l.date === endDate) {
+          a.daySales += l.value;
+          a.dayUnits += l.quantity;
+          if (l.order) a.dayOrders.add(l.order);
+        }
+      });
+      const rangeSpendOf = (p: GProduct) => p.campaigns.reduce((s, c) => s + c.rangeSpend, 0);
+      const daySpendOf = (p: GProduct) => p.campaigns.reduce((s, c) => s + c.daySpend, 0);
+      const ordered = [...gProducts.entries()].sort((a, b) => rangeSpendOf(b[1]) - rangeSpendOf(a[1]) || b[1].rangeSales - a[1].rangeSales);
+      const blank7G = ["", "", "", "", "", "", ""];
+      const spendCells = (spend: number) => [round2(spend), round2(spendTax({ spend, units: 0 })), "", "", "", "", ""];
+      const totalCells = (spend: number, orders: number, sales: number) => [
+        round2(spend), round2(spendTax({ spend, units: 0 })), orders, round2(sales), "",
+        spend > 0 ? Math.round((spend / (sales > 0 ? sales : 1)) * 10000) / 10000 : "", round2(sales),
+      ];
+      const pushGoogle = (label: string, day: (string | number | null)[], range: (string | number | null)[], extra?: (string | number)[]) => {
+        if (extra) sumExtras.set(sumAoa.length, extra);
+        ([[day, 10], [range, 17]] as const).forEach(([b, c]) => {
+          if (b[3] === 0 && typeof b[5] === "number") sumPlainAcos.push({ r: sumAoa.length, c });
+        });
+        const first = sumAoa.length === googleRow;
+        sumAoa.push([
+          first ? "Google" : "", first ? googleTotals[1] : "", first ? googleTotals[2] : "",
+          label, "", ...day, ...range, first ? googleTotals[19] : "", first ? googleTotals[20] : "",
+        ]);
+      };
+      ordered.forEach(([product, p]) => {
+        socialHeadRows.push(sumAoa.length);
+        pushGoogle(product, blank7G, blank7G);
+        p.campaigns
+          .slice()
+          .sort((a, b) => b.rangeSpend - a.rangeSpend || b.daySpend - a.daySpend)
+          .forEach((c, i) => pushGoogle(`Ad ${i + 1}: ${c.name}`, spendCells(c.daySpend), spendCells(c.rangeSpend)));
+        socialBoldRows.push(sumAoa.length);
+        pushGoogle(
+          `Total – ${product}`,
+          totalCells(daySpendOf(p), p.dayOrders.size, p.daySales),
+          totalCells(rangeSpendOf(p), p.rangeOrders.size, p.rangeSales),
+          [p.dayUnits > 0 ? round2(p.daySales / p.dayUnits) : "–", p.dayOrders.size, p.rangeOrders.size],
+        );
+      });
+      socialBoldRows.push(sumAoa.length);
+      pushGoogle("Grand total – all Google", googleTotals.slice(5, 12), googleTotals.slice(12, 19), googleExtra);
+      if (sumAoa.length - googleRow > 1) {
+        [0, 1, 2, 19, 20].forEach((c) => sumMerges.push({ s: { r: googleRow!, c }, e: { r: sumAoa.length - 1, c } }));
+      }
+    } else {
+      sumExtras.set(sumAoa.length, googleExtra);
+      sumAoa.push(googleTotals);
+    }
     // Same figures, reshaped for the emailed daily digest (see buildAdSpendDailyHtml in
     // supabase/functions/send-ad-spend-email/index.ts), which renders this as one more row
     // directly below Social Media's, per the same pattern. Day totals, matching the fix above —
