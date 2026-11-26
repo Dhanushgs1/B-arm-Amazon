@@ -2890,7 +2890,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       });
       const first = sumAoa.length === socialMediaRow;
       sumAoa.push([
-        first ? "Social Media" : "",
+        first ? "Social Media (Meta)" : "",
         first ? round2(socialMedia.daySpend) : "", first ? round2(spendTax(dayTotalAgg)) : "",
         label, price, ...day, ...range, "", "",
       ]);
@@ -3137,7 +3137,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   const meeshoErrorCell = meeshoErrorRow !== null ? wsSummary[XLSX.utils.encode_cell({ r: meeshoErrorRow, c: 0 })] : undefined;
   if (meeshoErrorCell) meeshoErrorCell.s = { font: { bold: true, color: { rgb: "B91C1C" } } };
   const sumWidths = [
-    { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 60 }, { wch: 10 },
+    { wch: 20 }, { wch: 16 }, { wch: 16 }, { wch: 60 }, { wch: 10 },
     { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 24 }, { wch: 13 }, { wch: 13 }, { wch: 13 }, // day block: Spend, Spend(with tax), Total Orders, Total Sales (wider header), CPC, ACOS, Ad Sales
     { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 24 }, { wch: 13 }, { wch: 13 }, { wch: 13 }, // range block: same shape
     { wch: 10 }, { wch: 14 },
@@ -3245,7 +3245,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   let socialDetailLabelRow: number | null = null;
   if (socialMediaProducts.length) {
     socialDetailLabelRow = detailAoa.length;
-    detailAoa.push(["Social Media", ...Array(DETAIL_COLS - 1).fill("")]);
+    detailAoa.push(["Social Media (Meta)", ...Array(DETAIL_COLS - 1).fill("")]);
     detailAoa.push(Array(DETAIL_COLS).fill(""));
     const groupRow = detailAoa.length;
     detailHeaderRows.push(groupRow);
