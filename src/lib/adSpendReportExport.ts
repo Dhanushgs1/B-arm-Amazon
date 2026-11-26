@@ -2509,6 +2509,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // Per-row [Sell price, day Ad orders, range Ad orders], inserted as columns once every row is built
   // (see sumCol below), so each row builder keeps its original column order.
   const sumExtras = new Map<number, (string | number)[]>([[4, ["Sell price", "Ad orders", "Ad orders"]]]);
+  /** Meta ACOS cells computed as Spend ÷ 1 (no sales), original column index — formatted as a number, not a %. */
+  const sumPlainAcos: { r: number; c: number }[] = [];
   const sumLabelCells: { row: number; platform: Platform }[] = [];
   const platformTotals: AdSpendReportResult["platformTotals"] = [];
   const platformSummaries: PlatformEmailSummary[] = [];
@@ -2853,6 +2855,10 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     ];
     const pushSocial = (label: string, price: number | "", day: (string | number)[], range: (string | number)[], extra?: (string | number)[]) => {
       if (extra) sumExtras.set(sumAoa.length, extra);
+      // A block with no sales has ACOS = Spend ÷ 1: shown as that plain amount (277.25), not a % (27725%).
+      ([[day, 10], [range, 17]] as const).forEach(([b, c]) => {
+        if ((b[3] === "N/A" || b[3] === 0) && typeof b[5] === "number") sumPlainAcos.push({ r: sumAoa.length, c });
+      });
       const first = sumAoa.length === socialMediaRow;
       sumAoa.push([
         first ? "Social Media" : "",
@@ -3028,6 +3034,10 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   applyNumberFormats(wsSummary, 5, sumAoa.length, {
     ...Object.fromEntries(Object.entries(sumFormats).map(([c, f]) => [sumCol(Number(c)), f])),
     5: CURRENCY_FMT, // Sell price
+  });
+  sumPlainAcos.forEach(({ r, c }) => {
+    const cell = wsSummary[XLSX.utils.encode_cell({ r, c: sumCol(c) })];
+    if (cell && typeof cell.v === "number") cell.z = "0.00";
   });
   // Long titles (a SKU with no product-master entry falls back to the raw
   // marketing title) need to wrap within the column instead of overflowing
