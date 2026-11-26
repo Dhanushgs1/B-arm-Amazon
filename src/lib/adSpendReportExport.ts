@@ -2692,6 +2692,9 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   // as a multi-product platform block. Overall sales QTS/Value is left blank — those sales are
   // already counted once under Amazon's own Overall Sales, so repeating them would double-count.
   let socialMediaRow: number | null = null;
+  /** Summary rows of the Social Media block: product headings, and total rows (bold). */
+  const socialHeadRows: number[] = [];
+  const socialBoldRows: number[] = [];
   let socialMediaSummary: SocialMediaEmailSummary | null = null;
   // Meta channel ACOS = channel Spend (without tax) ÷ Shopify sales whose visit came from a Meta ad
   // click (fbclid, see metaAdsAttributedSales). null (shown "N/A") when it can't be verified — no
@@ -2773,26 +2776,9 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
         rangeAcos: metaAcos(metaRangeVerified, p.rangeAgg.spend, r.value),
       }];
     }));
-    const productLabel = (p: { product: string; adNames: string[] }) => (p.adNames.length ? `${p.product}\nAds: ${p.adNames.join("; ")}` : p.product);
     socialMediaRow = sumAoa.length;
-    // CPC stays blank (both blocks) — Meta's export carries no CPC. Each product row carries its own
-    // Meta Orders / Sales / ACOS (productMeta above); the channel spend and Overall sales are merged down.
-    socialSummaryProducts.forEach((p, i) => {
-      const m = productMeta.get(p.product)!;
-      sumAoa.push([
-        i === 0 ? "Social Media" : "",
-        i === 0 ? round2(socialMedia.daySpend) : "", i === 0 ? round2(spendTax(dayTotalAgg)) : "",
-        productLabel(p), p.price || "",
-        round2(p.dayAgg.spend), round2(spendTax(p.dayAgg)), m.dayOrders ?? "N/A", m.daySales ?? "N/A", "",
-        m.dayAcos ?? "N/A", m.daySales ?? null,
-        round2(p.rangeAgg.spend), round2(spendTax(p.rangeAgg)), m.rangeOrders ?? "N/A", m.rangeSales ?? "N/A", "",
-        m.rangeAcos ?? "N/A", m.rangeSales ?? null,
-        "", "",
-      ]);
-    });
-    if (socialSummaryProducts.length > 1) {
-      [0, 1, 2, 19, 20].forEach((c) => sumMerges.push({ s: { r: socialMediaRow!, c }, e: { r: socialMediaRow! + socialSummaryProducts.length - 1, c } }));
-    }
+    // The Summary rows are written below, once the per-ad figures exist (26 Nov 2026, seller's
+    // request): the same Product → Ad → Product total → Grand total layout as the daily mail.
     // Same figures reshaped for the emailed daily digest (buildAdSpendDailyHtml in
     // supabase/functions/send-ad-spend-email/index.ts): Product → Ad name rows, a product total and a
     // grand total. An ad's sales are Meta's own reported purchase value (META_AD_SALES_SOURCE); N/A
@@ -2841,6 +2827,32 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       day: grandBlock(socialMedia.daySpend, products.map((p) => p.total!.day)),
       range: grandBlock(socialMedia.rangeSpend, products.map((p) => p.total!.range)),
     };
+    // Summary sheet, same layout as the mail: per product a heading row, one row per ad with its own
+    // Spend / Orders / Sales / ACOS, a product total row; then a grand total for all Meta products.
+    // CPC stays blank (Meta's export carries none). Orders / Sales / ACOS are "N/A" when the export
+    // has no purchase columns. Channel spend (B, C) and Overall sales (T, U) are merged down the block.
+    const metaCells = (b: MetaAdBlock) => [b.spend, b.spendTax, b.orders ?? "N/A", b.sales ?? "N/A", "", b.acos ?? "N/A", b.sales ?? "N/A"];
+    const blank7 = ["", "", "", "", "", "", ""];
+    const pushSocial = (label: string, price: number | "", day: (string | number)[], range: (string | number)[]) => {
+      const first = sumAoa.length === socialMediaRow;
+      sumAoa.push([
+        first ? "Social Media" : "",
+        first ? round2(socialMedia.daySpend) : "", first ? round2(spendTax(dayTotalAgg)) : "",
+        label, price, ...day, ...range, "", "",
+      ]);
+    };
+    products.forEach((p) => {
+      socialHeadRows.push(sumAoa.length);
+      pushSocial(`${p.product}${p.price ? ` · ₹${p.price.toLocaleString("en-IN")}` : ""}`, "", blank7, blank7);
+      p.ads!.forEach((a, i) => pushSocial(`Ad ${i + 1}: ${a.name}`, "", metaCells(a.day), metaCells(a.range)));
+      socialBoldRows.push(sumAoa.length);
+      pushSocial(`Total – ${p.product}`, p.price || "", metaCells(p.total!.day), metaCells(p.total!.range));
+    });
+    socialBoldRows.push(sumAoa.length);
+    pushSocial("Grand total – all Meta products", "", metaCells(grandTotal.day), metaCells(grandTotal.range));
+    if (sumAoa.length - socialMediaRow > 1) {
+      [0, 1, 2, 19, 20].forEach((c) => sumMerges.push({ s: { r: socialMediaRow!, c }, e: { r: sumAoa.length - 1, c } }));
+    }
     socialMediaSummary = {
       daySpend: round2(socialMedia.daySpend),
       daySpendTax: round2(spendTax(dayTotalAgg)),
@@ -2979,6 +2991,16 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     const addr = XLSX.utils.encode_cell({ r, c: 3 });
     if (wsSummary[addr]) wsSummary[addr].s = { alignment: { wrapText: true, vertical: "top" } };
   }
+  // Social Media block: product headings on a light fill, product and grand totals in bold (cols D–S).
+  const emphasise = (r: number, fill?: string) => {
+    for (let c = 3; c <= 18; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      const cell = wsSummary[addr] ?? (wsSummary[addr] = { t: "s", v: "" });
+      cell.s = { ...(cell.s ?? {}), font: { ...(cell.s?.font ?? {}), bold: true }, ...(fill ? { fill: { fgColor: { rgb: fill } } } : {}) };
+    }
+  };
+  socialHeadRows.forEach((r) => emphasise(r, "EEF2FF"));
+  socialBoldRows.forEach((r) => emphasise(r));
   XLSX.utils.book_append_sheet(wb, wsSummary, "Summary");
 
   // ── Ad spend report sheet (every advertised product, per platform) ──
