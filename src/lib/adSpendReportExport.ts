@@ -626,6 +626,12 @@ export async function fetchAmazonProducts(
   const priceBySku = new Map<string, number>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   priceRows.forEach((r: any) => { if (r.seller_sku && num(r.price) > 0) priceBySku.set(r.seller_sku, num(r.price)); });
+  // Every listing with a Selling Price or an M.R.P. stays in the product list (Ad Status Report etc.),
+  // also when its Selling Price is empty: since 26 Nov 2026 the M.R.P. is no longer stored as the price
+  // (price listing upload), and those listings must not drop out. Their price stays unknown (shown N/A).
+  const listedSkus = new Set<string>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  priceRows.forEach((r: any) => { if (r.seller_sku && (num(r.price) > 0 || num(r.mrp) > 0)) listedSkus.add(r.seller_sku); });
 
   const nameBySku = new Map<string, string>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -779,7 +785,7 @@ export async function fetchAmazonProducts(
     revenueBySku.set(r.sku, (revenueBySku.get(r.sku) || 0) + num(r.item_price));
   });
 
-  const skus = new Set<string>([...spendBySku.keys(), ...unitsBySku.keys(), ...priceBySku.keys()].filter(Boolean));
+  const skus = new Set<string>([...spendBySku.keys(), ...unitsBySku.keys(), ...priceBySku.keys(), ...listedSkus].filter(Boolean));
   const products = new Map<string, ProductRow>();
   skus.forEach((sku) => {
     const rangeSpend = spendBySku.get(sku)?.spend || 0;
@@ -2064,8 +2070,10 @@ const GOOGLE_FILL = "34A853";
 // threaded through to computeAcos's own listingPrice parameter untouched. Omitted for Meesho (no
 // listing table exists) and for a merged multi-SKU row whose comma-joined p.sku isn't a key in
 // either map — both cases fall back to computeAcos's own `price` argument automatically.
+/** Price cell: the Selling Price, or "N/A" when none is on file (26 Nov 2026). Display only. */
+const priceCell = (price: number): number | string => (price > 0 ? price : "N/A");
 const productAoaRow = (p: ProductRow, listingPrice?: number): (string | number | null)[] => [
-  p.name, p.price,
+  p.name, priceCell(p.price),
   round2(p.day.spend), round2(spendTax(p.day)), p.day.units, round2(computeCpc(p.day)), acosCell(p.day, p.price, listingPrice),
   round2(p.range.spend), round2(spendTax(p.range)), p.range.units, round2(computeCpc(p.range)), acosCell(p.range, p.price, listingPrice),
 ];
@@ -2707,7 +2715,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           // preserved separately in platformTotals.rangeSpendTax for the
           // post-generate toast on the Download page.
           i === 0 ? platform : "", i === 0 ? round2(daySpendRaw) : "", i === 0 ? round2(daySpendTaxTotal) : "",
-          p.name, p.price,
+          p.name, priceCell(p.price),
           round2(p.day.spend), round2(spendTax(p.day)), p.day.units, dayTotalSales, round2(computeCpc(p.day)), daySummaryAcos, dayAdSales,
           round2(p.range.spend), round2(spendTax(p.range)), p.range.units, rangeTotalSales, round2(computeCpc(p.range)), rangeSummaryAcos, rangeAdSales,
           // Overall sales QTS/Value is the SINGLE reporting day's total (matches
@@ -3415,7 +3423,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
         // above), so p.sku is always a single exact SKU and always a valid key into the maps.
         const listingPrice = listingPriceFor(platform, p.sku);
         skuWiseRows.push([
-          p.sku, platform, p.price,
+          p.sku, platform, priceCell(p.price),
           round2(p.day.spend), round2(spendTax(p.day)), p.day.units, round2(dayTotalSales), round2(computeCpc(p.day)), acosCell(p.day, p.price, listingPrice), dayAdSales, dayAdOrders,
           round2(p.range.spend), round2(spendTax(p.range)), p.range.units, round2(rangeTotalSales), round2(computeCpc(p.range)), acosCell(p.range, p.price, listingPrice), rangeAdSales, rangeAdOrders,
         ]);
