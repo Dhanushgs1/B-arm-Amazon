@@ -2790,7 +2790,9 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       spendTax: round2(spendTax({ spend, units: 0 })),
       orders: verified ? orders : null,
       sales: verified && sales != null ? round2(sales) : null,
-      acos: verified && sales != null ? metaAcos(true, spend, sales) : null,
+      // ACOS = Spend (without tax) ÷ Sales; with no sales (0 or not reported) the divisor is 1, so
+      // ACOS = Spend ÷ 1 — same convention as CPC with 0 orders (seller's rule, 26 Nov 2026).
+      acos: spend > 0 ? Math.round((spend / (verified && sales != null && sales > 0 ? sales : 1)) * 10000) / 10000 : null,
     });
     const adLabel = (c: WindowedCampaign) => {
       const i = c.name.indexOf(META_AD_SEPARATOR);
