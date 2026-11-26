@@ -481,11 +481,7 @@ async function fetchDailyAmazonOrders(range: { start: string; end: string }, end
   // Sort over every row in the date range on each paginated page, which grew slow enough to hit a
   // statement timeout as the table grew with months of daily uploads. "id" stays as a tiebreaker
   // for .range() pagination stability, same reasoning as fetchAllRows's own comment on ordering.
-  const rows = await fetchAllRows(
-    "barm_daily_am_orders",
-    (q) => q.gte("report_date", range.start).lte("report_date", endDate),
-    ["report_date", "id"]
-  );
+  const rows = await fetchAllRowsByDateChunks("barm_daily_am_orders", "report_date", range.start, endDate, undefined, 1); // one request per day (statement timeout, 26 Nov 2026)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (rows as any[]).map((r) => {
     const raw = (r.raw as Record<string, unknown>) || {};
@@ -512,11 +508,7 @@ async function fetchDailyAmazonOrders(range: { start: string; end: string }, end
 async function fetchDailyFlipkartOrders(range: { start: string; end: string }, endDate: string) {
   // See fetchDailyAmazonOrders's comment — same fix, ordered by the indexed report_date column
   // (barm_daily_fk_orders_date_idx) instead of "id" to avoid the same statement-timeout risk.
-  const rows = await fetchAllRows(
-    "barm_daily_fk_orders",
-    (q) => q.gte("report_date", range.start).lte("report_date", endDate),
-    ["report_date", "id"]
-  );
+  const rows = await fetchAllRowsByDateChunks("barm_daily_fk_orders", "report_date", range.start, endDate, undefined, 1); // one request per day (statement timeout, 26 Nov 2026)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (rows as any[]).map((r) => {
     const raw = (r.raw as Record<string, unknown>) || {};
@@ -1117,7 +1109,7 @@ export async function fetchFlipkartListingPriceMap(): Promise<Map<string, number
 // while the daily upload had orders through 29 Sep). Renamed to the column names used below.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function fetchMeeshoDailyOrderRows(start: string, end: string): Promise<any[]> {
-  const rows = await fetchAllRows("barm_daily_ms_barm_orders", (q) => q.gte("report_date", start).lte("report_date", end));
+  const rows = await fetchAllRowsByDateChunks("barm_daily_ms_barm_orders", "report_date", start, end, undefined, 1);
   return rows.map((r) => ({
     ...r,
     order_date: r.report_date,
@@ -1150,7 +1142,7 @@ export async function fetchMeeshoProducts(
   const [adsRows, orderRows, marketingRows] = await Promise.all([
     // barm_meesho_ads was dropped (29 Sep 2026); barm_daily_ms_barm_ads is the
     // combined upload's "MS BARM ads" copy with the same columns and rows.
-    fetchAllRows("barm_daily_ms_barm_ads", (q) => q.gte("report_date", range.start).lte("report_date", endDate)).catch(loadFailed("barm_daily_ms_barm_ads")),
+    fetchAllRowsByDateChunks("barm_daily_ms_barm_ads", "report_date", range.start, endDate, undefined, 1).catch(loadFailed("barm_daily_ms_barm_ads")),
     fetchMeeshoDailyOrderRows(range.start, endDate).catch(loadFailed("barm_daily_ms_barm_orders")),
     // meesho_price_marketing (scripts/meesho_price_marketing_table.sql) holds
     // the live scraped Meesho listing price per SKU — the same role
