@@ -85,6 +85,13 @@ const REPLACE_DATE_FIELD: Partial<Record<UploadReportType, string>> = {
 const REPLACE_UPSERT_KEY: Partial<Record<UploadReportType, string>> = {
   inventory_ledger: "ledger_date,fnsku,msku,disposition,location",
 };
+// Types whose date-range replace runs one calendar day at a time, writing first and removing only what
+// the file no longer has (replaceDaysWriteFirst), instead of one delete over the whole range. A full
+// ledger file is ~100 days × ~1,300 rows; clearing it in one statement hit the 3-second statement
+// timeout, and on 26 Nov 2026 even single-day deletes timed out while the table was busy.
+const REPLACE_DAY_BY_DAY: Partial<Record<UploadReportType, true>> = {
+  inventory_ledger: true,
+};
 // fba_returns.return_date is a timestamptz; the others are plain dates.
 const REPLACE_IS_TIMESTAMP: Partial<Record<UploadReportType, boolean>> = {
   fba_returns: true,
@@ -638,6 +645,94 @@ async function insertInChunks(
   }
 }
 
+/** Retry pause for replaceDaysWriteFirst; tests set it to 0. */
+export const dayWriteOptions = { retryDelayMs: 1000, attempts: 3 };
+
+type DbResult = { data?: unknown; error: { message: string } | null };
+
+// One statement, retried on any error. Safe because every statement replaceDaysWriteFirst sends is
+// idempotent: an id select, an upsert on the natural key, a delete by id list.
+async function runWithRetry(what: string, run: () => PromiseLike<DbResult>): Promise<unknown> {
+  let last = "";
+  for (let attempt = 1; attempt <= dayWriteOptions.attempts; attempt++) {
+    try {
+      const { data, error } = await run();
+      if (!error) return data;
+      last = error.message;
+    } catch (e) {
+      last = e instanceof Error ? e.message : String(e);
+    }
+    if (attempt < dayWriteOptions.attempts && dayWriteOptions.retryDelayMs > 0) {
+      await new Promise((r) => setTimeout(r, dayWriteOptions.retryDelayMs * attempt));
+    }
+  }
+  throw new Error(`${what} failed after ${dayWriteOptions.attempts} tries: ${last}`);
+}
+
+async function idsOnDay(table: string, dateCol: string, day: string): Promise<number[]> {
+  const ids: number[] = [];
+  for (let from = 0; ; from += 1000) {
+    const page = (await runWithRetry(`Reading ${table} ids for ${day}`, () =>
+      supabasePublic.from(table).select("id").eq(dateCol, day).order("id", { ascending: true }).range(from, from + 999)
+    )) as { id: number }[] | null;
+    (page ?? []).forEach((r) => ids.push(Number(r.id)));
+    if (!page || page.length < 1000) return ids;
+  }
+}
+
+/**
+ * Replaces [minDate, maxDate] one calendar day at a time, so no statement is large: for each day, read
+ * the ids on file, upsert the file's rows for that day (on the natural key), then delete only the ids
+ * the file no longer has. End state is the same as "delete the range, insert the file" — including
+ * clearing a day inside the range the file has no rows for — but a row is never removed before the
+ * file's rows for its day are saved. If anything fails (after retries) the upload stops with:
+ *   - every earlier day fully replaced,
+ *   - the failing day keeping every row it had (some may already carry this file's values),
+ *   - every later day, and every date outside the range, untouched.
+ * Uploading the same file again finishes the job without duplicates.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function replaceDaysWriteFirst(table: string, dateCol: string, naturalKey: string, rows: any[], minDate: string, maxDate: string): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const byDay = new Map<string, any[]>();
+  for (const r of rows) {
+    const day = String(r[dateCol]).slice(0, 10);
+    const list = byDay.get(day);
+    if (list) list.push(r);
+    else byDay.set(day, [r]);
+  }
+  let lastDone: string | null = null;
+  for (let day = minDate; day <= maxDate; day = nextDayIso(day)) {
+    try {
+      const before = await idsOnDay(table, dateCol, day);
+      const kept = new Set<number>();
+      const dayRows = byDay.get(day) ?? [];
+      for (let i = 0; i < dayRows.length; i += 300) {
+        const chunk = dayRows.slice(i, i + 300);
+        const written = (await runWithRetry(`Saving ${table} rows for ${day}`, () =>
+          supabasePublic.from(table).upsert(chunk, { onConflict: naturalKey }).select("id")
+        )) as { id: number }[] | null;
+        (written ?? []).forEach((r) => kept.add(Number(r.id)));
+      }
+      const stale = before.filter((id) => !kept.has(id));
+      for (let i = 0; i < stale.length; i += 200) {
+        const ids = stale.slice(i, i + 200);
+        await runWithRetry(`Removing ${table} rows for ${day} that the file no longer has`, () =>
+          supabasePublic.from(table).delete().in("id", ids)
+        );
+      }
+      lastDone = day;
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      const saved = lastDone ? `${minDate} to ${lastDone} are fully saved` : "no day was fully saved yet";
+      throw new Error(
+        `Upload stopped on ${day}: ${why}. ${saved}; ${day} kept all its existing rows and later dates are unchanged. ` +
+          `Upload the same file again to finish — nothing will be duplicated.`
+      );
+    }
+  }
+}
+
 function nextDayIso(iso: string): string {
   const d = new Date(`${iso}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + 1);
@@ -802,14 +897,18 @@ export async function uploadParsedRows(type: UploadReportType, rawRows: RawRow[]
     const dates = deduped.map((r) => r[replaceDateField]).filter(Boolean).sort();
     const minDate = dates[0].slice(0, 10);
     const maxDate = dates[dates.length - 1].slice(0, 10);
-    await replaceDateRange(table, replaceDateField, !!REPLACE_IS_TIMESTAMP[type], minDate, maxDate);
     const naturalKey = REPLACE_UPSERT_KEY[type];
-    if (naturalKey) {
-      // last row wins per key (one upsert chunk may not touch the same key twice)
-      const byKey = new Map(deduped.map((r) => [naturalKey.split(",").map((f) => String(r[f] ?? "")).join("|"), r]));
-      await upsertInChunks(table, [...byKey.values()], naturalKey);
+    // last row wins per key (one upsert chunk may not touch the same key twice)
+    const toWrite = naturalKey
+      ? [...new Map(deduped.map((r) => [naturalKey.split(",").map((f) => String(r[f] ?? "")).join("|"), r])).values()]
+      : deduped;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const write = (rows: any[]) => (naturalKey ? upsertInChunks(table, rows, naturalKey) : insertInChunks(table, rows));
+    if (REPLACE_DAY_BY_DAY[type] && naturalKey) {
+      await replaceDaysWriteFirst(table, replaceDateField, naturalKey, toWrite, minDate, maxDate);
     } else {
-      await insertInChunks(table, deduped);
+      await replaceDateRange(table, replaceDateField, !!REPLACE_IS_TIMESTAMP[type], minDate, maxDate);
+      await write(toWrite);
     }
     const statusHistory = type === "am_orders" ? await appendOrderStatusHistory(deduped, fileName) : undefined;
     if (PRUNE_TO_UPLOAD_RANGE[type]) {

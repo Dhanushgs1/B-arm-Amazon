@@ -4,12 +4,24 @@
 // the real tables have, so a duplicate-key write fails the way Postgres does.
 
 type Row = Record<string, unknown>;
-type Filter = { col: string; op: "gte" | "lte" | "gt" | "lt" | "eq"; val: unknown };
-export interface FakeCall { op: "insert" | "upsert" | "delete"; table: string; filters: Filter[] }
+type Filter = { col: string; op: "gte" | "lte" | "gt" | "lt" | "eq" | "in"; val: unknown };
+export interface FakeCall { op: "insert" | "upsert" | "delete" | "select"; table: string; filters: Filter[] }
+
+/** Failure injection: each hook sees the call about to run and returns an error message to fail it, or null.
+ *  A failed call changes nothing, like a statement Postgres cancelled on timeout. Cleared by resetFakeDb. */
+export const faults: ((call: FakeCall & { payload?: Row[] }) => string | null)[] = [];
+function injected(call: FakeCall & { payload?: Row[] }): string | null {
+  for (const f of faults) {
+    const m = f(call);
+    if (m) return m;
+  }
+  return null;
+}
 
 /** Unique keys per table, mirroring the real indexes. Upserts use the onConflict key given by the caller. */
 const UNIQUE_KEYS: Record<string, string[]> = {
   barm_amazon_sp_advertised_product: ["report_date", "campaign_name", "ad_group_name", "advertised_sku"],
+  barm_amazon_inventory_ledger: ["ledger_date", "fnsku", "msku", "disposition", "location"],
 };
 
 export const tables = new Map<string, Row[]>();
@@ -19,6 +31,7 @@ let nextId = 1;
 export function resetFakeDb(): void {
   tables.clear();
   calls.length = 0;
+  faults.length = 0;
   nextId = 1;
 }
 
@@ -32,6 +45,7 @@ function keyOf(row: Row, fields: string[]): string {
 
 function matches(row: Row, filters: Filter[]): boolean {
   return filters.every(({ col, op, val }) => {
+    if (op === "in") return (val as unknown[]).map(String).includes(String(row[col] ?? ""));
     const v = String(row[col] ?? "");
     const t = String(val);
     if (op === "gte") return v >= t;
@@ -46,8 +60,16 @@ function fail(message: string): { error: { message: string } } {
   return { error: { message } };
 }
 
-function execute(table: string, op: FakeCall["op"], payload: Row[] | undefined, filters: Filter[], onConflict: string | undefined) {
-  calls.push({ op, table, filters: [...filters] });
+function execute(table: string, op: FakeCall["op"], payload: Row[] | undefined, filters: Filter[], onConflict: string | undefined, skipFaults = false) {
+  const call = { op, table, filters: [...filters] };
+  const injectedError = skipFaults ? null : injected({ ...call, payload });
+  // "LOST:" = the statement ran, but its response never reached the client (e.g. "Failed to fetch").
+  if (injectedError?.startsWith("LOST:")) {
+    execute(table, op, payload, filters, onConflict, true);
+    return fail(injectedError);
+  }
+  calls.push(call);
+  if (injectedError) return fail(injectedError);
   const store = tables.get(table) ?? [];
   tables.set(table, store);
   const unique = UNIQUE_KEYS[table];
@@ -79,17 +101,27 @@ function execute(table: string, op: FakeCall["op"], payload: Row[] | undefined, 
     if (batch.has(k)) return fail(`ON CONFLICT DO UPDATE command cannot affect row a second time on ${table}`);
     batch.add(k);
   }
+  const written: Row[] = [];
   for (const row of payload ?? []) {
     const existing = store.find((r) => keyOf(r, fields) === keyOf(row, fields));
-    if (existing) Object.assign(existing, row);
-    else store.push({ id: nextId++, ...row });
+    if (existing) written.push(Object.assign(existing, row));
+    else {
+      const added = { id: nextId++, ...row };
+      store.push(added);
+      written.push(added);
+    }
   }
-  return { error: null };
+  return { data: written.map((r) => ({ ...r })), error: null };
 }
+
+class SelectFailed extends Error {}
 
 /** SELECT: filter, order (ascending, by the given columns), then slice by range (inclusive from..to). */
 function selectRows(table: string, filters: Filter[], orderCols: string[], from: number | null, to: number | null): Row[] {
-  calls.push({ op: "select" as FakeCall["op"], table, filters: [...filters] });
+  const call: FakeCall = { op: "select", table, filters: [...filters] };
+  const injectedError = injected(call);
+  calls.push(call);
+  if (injectedError) throw new SelectFailed(injectedError);
   let rows = rowsOf(table).filter((r) => matches(r, filters));
   if (orderCols.length) {
     rows = [...rows].sort((a, b) => {
@@ -112,6 +144,7 @@ function builder(table: string) {
   let rangeFrom: number | null = null;
   let rangeTo: number | null = null;
   const b = {
+    // after insert/upsert, .select() only asks for the written rows back; the op stays a write
     select: () => b,
     order: (col: string) => (orderCols.push(col), b),
     range: (from: number, to: number) => ((rangeFrom = from), (rangeTo = to), b),
@@ -135,11 +168,13 @@ function builder(table: string) {
     gt: (col: string, val: unknown) => (filters.push({ col, op: "gt", val }), b),
     lt: (col: string, val: unknown) => (filters.push({ col, op: "lt", val }), b),
     eq: (col: string, val: unknown) => (filters.push({ col, op: "eq", val }), b),
+    in: (col: string, val: unknown[]) => (filters.push({ col, op: "in", val }), b),
     then<R>(resolve: (v: unknown) => R, reject?: (e: unknown) => R) {
       try {
         if (op === "select") return resolve({ data: selectRows(table, filters, orderCols, rangeFrom, rangeTo), error: null });
         return resolve(execute(table, op, payload, filters, onConflict));
       } catch (e) {
+        if (e instanceof SelectFailed) return resolve({ data: null, error: { message: e.message } });
         return reject ? reject(e) : Promise.reject(e);
       }
     },
