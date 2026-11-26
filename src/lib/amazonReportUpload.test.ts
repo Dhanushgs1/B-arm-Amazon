@@ -299,3 +299,28 @@ test("ledger writes stay small: at most 300 rows per save, each save within one 
   assert.ok(days.every((n) => n === 1));
   assert.equal(fake.rowsOf(LEDGER).length, 710);
 });
+
+// ── Price listing: Selling Price vs M.R.P. (user, 26 Nov 2026) ──────────────────────────────────────
+// A listing with no Selling Price must not show its M.R.P. as the price: price stays empty (shown N/A)
+// and the M.R.P. is kept in its own column.
+const PRICE = "barm_amazon_price_listing";
+const listingRow = (sku: string, price: string, mrp: string) => ({
+  "seller-sku": sku, "item-name": "N", "price": price, "maximum-retail-price": mrp, "quantity": "1",
+  "fulfillment-channel": "AMAZON_IN", "asin1": "B0TEST", "item-condition": "New", "status": "Incomplete",
+});
+
+test("price listing: a listing with no Selling Price stores price empty and keeps the M.R.P. separately", async () => {
+  await upload.uploadParsedRows("price_listing", [listingRow("NOPRICE", "", "1999"), listingRow("PRICED", "749", "999")], "listing.txt");
+  const bySku = new Map(fake.rowsOf(PRICE).map((r) => [r.seller_sku, r]));
+  assert.equal(bySku.get("NOPRICE")?.price, null);
+  assert.equal(bySku.get("NOPRICE")?.mrp, 1999);
+  assert.equal(bySku.get("PRICED")?.price, 749);
+  assert.equal(bySku.get("PRICED")?.mrp, 999);
+});
+
+test("price listing: an export with no price column at all stores every price empty, never the M.R.P.", async () => {
+  const noPriceColumn = [listingRow("A", "", "500")].map(({ price: _drop, ...rest }) => rest);
+  await upload.uploadParsedRows("price_listing", noPriceColumn, "listing.txt");
+  assert.equal(fake.rowsOf(PRICE)[0].price, null);
+  assert.equal(fake.rowsOf(PRICE)[0].mrp, 500);
+});

@@ -50,7 +50,7 @@ const ASIN = /^[A-Z0-9]{10}$/;
 const isoMinus = (d: string, days: number) => new Date(Date.parse(d) - days * 86_400_000).toISOString().slice(0, 10);
 
 async function productList() {
-  const listing = await rows(supabase.from("barm_amazon_price_listing").select("asin1,seller_sku,item_name,status,price").limit(5000) as any);
+  const listing = await rows(supabase.from("barm_amazon_price_listing").select("asin1,seller_sku,item_name,status,price,mrp").limit(5000) as any);
   const skus = [...new Set(listing.map((l) => l.seller_sku).filter(Boolean))];
   const master = new Map<string, { name: string; category: string | null }>();
   for (let i = 0; i < skus.length; i += 300) {
@@ -67,7 +67,8 @@ async function productList() {
     cur.name ??= m?.name ?? null;
     cur.category ??= m?.category ?? null;
     cur.active ||= l.status === "Active";
-    cur.price ??= l.price ? Number(l.price) : null;
+    // M.R.P. for ourSellingPrice: the mrp column, else (rows saved before it existed) the old price-as-M.R.P.
+    cur.price ??= l.mrp ? Number(l.mrp) : l.price ? Number(l.price) : null;
     if (l.seller_sku && !cur.skus.includes(l.seller_sku)) cur.skus.push(l.seller_sku);
     by.set(l.asin1, cur);
   }
@@ -75,7 +76,7 @@ async function productList() {
 }
 
 async function card(asin: string) {
-  const listing = await rows(supabase.from("barm_amazon_price_listing").select("seller_sku,item_name,status,price,fulfillment_channel").eq("asin1", asin) as any);
+  const listing = await rows(supabase.from("barm_amazon_price_listing").select("seller_sku,item_name,status,price,mrp,fulfillment_channel").eq("asin1", asin) as any);
   const skus = [...new Set(listing.map((l) => l.seller_sku).filter(Boolean))] as string[];
   const master = skus.length ? await rows(supabase.from("master_product_skuid").select('"SKU ID","Product Name","Category"').in("SKU ID", skus) as any) : [];
   const productName: string | null = master[0]?.["Product Name"] ?? listing[0]?.item_name ?? null;
@@ -183,7 +184,7 @@ async function card(asin: string) {
 
   const notes = productName ? await rows(supabase.from("mkt_channel_notes").select("*").ilike("product", productName) as any) : [];
   const botPrice = (await rows(supabase.from("product_rating_review_metrics").select("price").eq("platform", "Amazon").eq("marketplace_product_id", asin).gt("price", 0).limit(1) as any))[0]?.price;
-  const our = ourSellingPrice(botPrice, inv.find((x: any) => Number(x.your_price) > 0)?.your_price, listing.find((l) => l.price)?.price);
+  const our = ourSellingPrice(botPrice, inv.find((x: any) => Number(x.your_price) > 0)?.your_price, listing.find((l) => l.mrp)?.mrp ?? listing.find((l) => l.price)?.price);
   const tamGroupKey = tamGroup(productName);
   const tamRow = tamGroupKey ? (await rows(supabase.from("mkt_tam_research").select("*").eq("group_key", tamGroupKey) as any))[0] : undefined;
 

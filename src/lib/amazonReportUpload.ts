@@ -423,10 +423,11 @@ function mapPriceListingRow(row: RawRow) {
   return {
     seller_sku: pick(row, /^seller-sku$/i),
     item_name: pick(row, /^item-name$/i),
-    // The custom-column All-Listings export (Manage All Inventory) can carry
-    // only "maximum-retail-price" and no "price" — user rule (2026-10-26):
-    // store the MRP as the price then, instead of 0 for every SKU.
-    price: toNum(pick(row, /^price$/i) || pick(row, /^maximum-retail-price$/i)),
+    // Selling Price only. A listing with no price keeps price empty (reports show N/A) — the M.R.P. is
+    // never stored as the price (user, 26 Nov 2026; replaces the 26 Oct 2026 MRP fallback). The M.R.P.
+    // is kept in its own column.
+    price: pick(row, /^price$/i) ? toNum(pick(row, /^price$/i)) : null,
+    mrp: pick(row, /^maximum-retail-price$/i) ? toNum(pick(row, /^maximum-retail-price$/i)) : null,
     business_price: toNum(pick(row, /^Business Price$/i)),
     quantity: toInt(pick(row, /^quantity$/i)),
     fulfillment_channel: pick(row, /^fulfillment-channel$/i),

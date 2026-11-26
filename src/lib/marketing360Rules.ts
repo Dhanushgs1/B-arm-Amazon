@@ -175,8 +175,8 @@ export function adsSuggestion(i: AdsInput): AdsSuggestion {
 }
 
 // ── our selling price ───────────────────────────────────────────────────────────────────────────
-// barm_amazon_price_listing.price is the M.R.P. (the All-Listings export has no price column, so the
-// upload saves M.R.P. there — see the "Price upload MRP fallback" note). The selling price comes from
+// The M.R.P. is barm_amazon_price_listing.mrp (rows saved before 26 Nov 2026 have it in price instead;
+// the route falls back to that). The selling price comes from
 // the rating & review bot's Amazon page price, else the FBA inventory report's your-price.
 export type OurPrice = { price: number | null; source: "rating bot (Amazon page)" | "FBA inventory report" | null; mrp: number | null };
 export function ourSellingPrice(botPrice: unknown, fbaPrice: unknown, listingPrice: unknown): OurPrice {

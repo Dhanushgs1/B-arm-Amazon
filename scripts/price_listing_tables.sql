@@ -29,6 +29,9 @@ create table if not exists public.barm_amazon_price_listing (
   created_at timestamptz not null default now()
 );
 create index if not exists barm_amazon_price_listing_seller_sku_idx on public.barm_amazon_price_listing (seller_sku);
+-- M.R.P. ("maximum-retail-price"), kept apart from price (the Selling Price, empty when the listing
+-- has none) — added 26 Nov 2026.
+alter table public.barm_amazon_price_listing add column if not exists mrp numeric;
 
 -- Flipkart "Manage Listings" export (Listings -> Manage Listings ->
 -- Export). Mapped by parseListingsReport in src/lib/flipkartReportUpload.ts
