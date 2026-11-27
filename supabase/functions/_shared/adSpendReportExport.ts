@@ -1,4 +1,4 @@
-// Bundled for deploy (26 Nov 2026 IST): src/lib/adSpendReportExport.ts of Vercel commit d749702 with its src/lib deps,
+// Bundled for deploy (26 Nov 2026 IST): src/lib/adSpendReportExport.ts of Vercel commit 7e22fa9 with its src/lib deps,
 // amazonReportUpload/siteUrl replaced by Deno stand-ins (same as v62). Source of truth = that commit.
 // src/lib/adSpendReportExport.ts
 import XLSX4 from "npm:xlsx-js-style@1.2.0";
@@ -3348,6 +3348,17 @@ async function buildAdSpendReportWorkbook(opts) {
     const rangeSpendTaxTotal = rows.reduce((s, p) => s + spendTax(p.range), 0);
     platformTotals.push({ platform, daySpendTax: daySpendTaxTotal, rangeSpendTax: rangeSpendTaxTotal });
     const shortlist = rows.filter((p) => spendTax(p.range) > ACOS_SHORTLIST_MIN_SPEND).sort((a, b) => acosSortRank(b.day, b.price, listingPriceFor(platform, b.sku)) - acosSortRank(a.day, a.price, listingPriceFor(platform, a.sku))).slice(0, TOP_N);
+    const emailProduct = (p) => {
+      const listingPrice = listingPriceFor(platform, p.sku);
+      const sell = sellPriceCell(p.day);
+      return {
+        name: p.name,
+        price: p.price,
+        sellPrice: typeof sell === "number" ? sell : null,
+        day: { spend: round2(p.day.spend), spendTax: round2(spendTax(p.day)), orders: p.day.units, cpc: round2(computeCpc(p.day)), acos: acosCell(p.day, p.price, listingPrice), adOrders: p.day.adOrders ?? null },
+        range: { spend: round2(p.range.spend), spendTax: round2(spendTax(p.range)), orders: p.range.units, cpc: round2(computeCpc(p.range)), acos: acosCell(p.range, p.price, listingPrice), adOrders: p.range.adOrders ?? null }
+      };
+    };
     platformSummaries.push({
       platform,
       daySpend: round2(daySpendRaw),
@@ -3358,24 +3369,8 @@ async function buildAdSpendReportWorkbook(opts) {
       overallDayValue: round2(overallDay.value),
       overallRangeUnits: overallRange.units,
       overallRangeValue: round2(overallRange.value),
-      topProducts: shortlist.map((p) => {
-        const listingPrice = listingPriceFor(platform, p.sku);
-        return {
-          name: p.name,
-          price: p.price,
-          day: { spend: round2(p.day.spend), spendTax: round2(spendTax(p.day)), orders: p.day.units, cpc: round2(computeCpc(p.day)), acos: acosCell(p.day, p.price, listingPrice) },
-          range: { spend: round2(p.range.spend), spendTax: round2(spendTax(p.range)), orders: p.range.units, cpc: round2(computeCpc(p.range)), acos: acosCell(p.range, p.price, listingPrice) }
-        };
-      }),
-      allProducts: [...rows].sort((a, b) => acosSortRank(b.day, b.price, listingPriceFor(platform, b.sku)) - acosSortRank(a.day, a.price, listingPriceFor(platform, a.sku))).map((p) => {
-        const listingPrice = listingPriceFor(platform, p.sku);
-        return {
-          name: p.name,
-          price: p.price,
-          day: { spend: round2(p.day.spend), spendTax: round2(spendTax(p.day)), orders: p.day.units, cpc: round2(computeCpc(p.day)), acos: acosCell(p.day, p.price, listingPrice) },
-          range: { spend: round2(p.range.spend), spendTax: round2(spendTax(p.range)), orders: p.range.units, cpc: round2(computeCpc(p.range)), acos: acosCell(p.range, p.price, listingPrice) }
-        };
-      })
+      topProducts: shortlist.map(emailProduct),
+      allProducts: [...rows].sort((a, b) => acosSortRank(b.day, b.price, listingPriceFor(platform, b.sku)) - acosSortRank(a.day, a.price, listingPriceFor(platform, a.sku))).map(emailProduct)
     });
     const blockStart = sumAoa.length;
     const blockRows = Math.max(shortlist.length, 1);
@@ -3508,12 +3503,14 @@ async function buildAdSpendReportWorkbook(opts) {
       orders: verified ? orders : null,
       sales: verified && sales != null ? round2(sales) : null,
       // ACOS = Spend (without tax) ÷ Sales; with no sales (0 or not reported) the divisor is 1, so
-      // ACOS = Spend ÷ 1 — same convention as CPC with 0 orders (seller's rule, 26 Nov 2026).
+      // ACOS = Spend ÷ 1 (seller's rule, 26 Nov 2026, confirmed again 27 Nov).
       acos: spend > 0 ? Math.round(spend / (verified && sales != null && sales > 0 ? sales : 1) * 1e4) / 1e4 : null
     });
     const adLabel = (c) => {
       const i = c.name.indexOf(META_AD_SEPARATOR);
-      return i >= 0 ? c.name.slice(i + META_AD_SEPARATOR.length) : c.adNames.length ? c.adNames.join("; ") : c.name;
+      if (i < 0) return c.adNames.length ? c.adNames.join("; ") : c.name;
+      const parts = c.name.slice(i + META_AD_SEPARATOR.length).split(META_AD_SEPARATOR).map((x) => x.trim()).filter(Boolean);
+      return [...new Set(parts)].join(META_AD_SEPARATOR);
     };
     const sumOrNull = (xs) => xs.every((x) => x == null) ? null : xs.reduce((s, x) => s + (x ?? 0), 0);
     const products = socialSummaryProducts.map((p) => {
@@ -3605,6 +3602,7 @@ async function buildAdSpendReportWorkbook(opts) {
   }
   let googleRow = null;
   const googleDetailRows = [];
+  const googleMailProducts = [];
   let googleSummary = null;
   const googleDayAgg = { spend: googleAdSpend.daySpend, units: 0 };
   const googleRangeAgg = { spend: googleAdSpend.rangeSpend, units: 0 };
@@ -3728,6 +3726,26 @@ async function buildAdSpendReportWorkbook(opts) {
             ...rangeSpendOf(p) > 0 && p.rangeSales <= 0 ? [12] : []
           ]
         });
+        const mailTotal = (spend, orders, sales, units) => ({
+          spend: round2(spend),
+          spendTax: round2(spendTax({ spend, units: 0 })),
+          orders,
+          sales: round2(sales),
+          acos: spend > 0 ? Math.round(spend / (sales > 0 ? sales : 1) * 1e4) / 1e4 : null,
+          sellPrice: units > 0 && sales > 0 ? round2(sales / units) : null
+        });
+        googleMailProducts.push({
+          product,
+          campaigns: p.campaigns.slice().sort((a, b) => b.rangeSpend - a.rangeSpend || b.daySpend - a.daySpend).map((c) => ({
+            name: c.name,
+            day: { spend: round2(c.daySpend), spendTax: round2(spendTax({ spend: c.daySpend, units: 0 })) },
+            range: { spend: round2(c.rangeSpend), spendTax: round2(spendTax({ spend: c.rangeSpend, units: 0 })) }
+          })),
+          total: {
+            day: mailTotal(daySpendOf(p), p.dayOrders.size, p.daySales, p.dayUnits),
+            range: mailTotal(rangeSpendOf(p), p.rangeOrders.size, p.rangeSales, p.rangeUnits)
+          }
+        });
       });
       socialBoldRows.push(sumAoa.length);
       pushGoogle("Grand total \u2013 all Google", googleTotals.slice(5, 12), googleTotals.slice(12, 19), googleExtra);
@@ -3751,7 +3769,11 @@ async function buildAdSpendReportWorkbook(opts) {
       dayAcos: googleAttributed ? ratio4(googleDayRatios.acos) : null,
       rangeAcos: googleAttributed ? ratio4(googleRangeRatios.acos) : null,
       dayRoas: googleAttributed ? ratio4(googleDayRatios.roas) : null,
-      rangeRoas: googleAttributed ? ratio4(googleRangeRatios.roas) : null
+      rangeRoas: googleAttributed ? ratio4(googleRangeRatios.roas) : null,
+      rangeUnits: googleOrders.rangeUnits,
+      dayAdOrders: googleAttributed ? googleOrders.adDayOrders : null,
+      rangeAdOrders: googleAttributed ? googleOrders.adRangeOrders : null,
+      ...googleMailProducts.length ? { products: googleMailProducts } : {}
     };
   }
   let meeshoErrorRow = null;

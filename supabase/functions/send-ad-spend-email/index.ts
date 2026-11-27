@@ -114,6 +114,13 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
   // deno-lint-ignore no-explicit-any
   const platforms: any[] = data.platformSummaries || [];
   const PLATFORM_COLOR: Record<string, string> = { Amazon: "#FF9900", Flipkart: "#2874F0", Meesho: "#9F2089" };
+  const META_COLOR = "#0E7490";
+  const GOOGLE_COLOR = "#34A853";
+  const tdDiv = 'class="aspd-td aspd-div"';
+  // Price "N/A" when no Selling Price is on file; Sell price = that day's order value ÷ units ("-" with no sale).
+  const priceText = (v: number | null | undefined) => (v ? money(v) : "N/A");
+  const sellText = (v: number | null | undefined) => (v ? money(v) : "-");
+  const adOrdersText = (v: number | null | undefined) => (v == null ? "-" : String(v));
 
   // Every cell below carries a class instead of a repeated inline style attribute — with
   // Amazon/Flipkart's full per-product tables running 20-40+ rows x 11 columns each, inline
@@ -130,6 +137,7 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
       .aspd-hi{color:#dc2626;font-weight:800;}
       .aspd-mid{color:#d97706;font-weight:800;}
       .aspd-lo{color:#059669;font-weight:800;}
+      .aspd-div{border-left:3px solid #111827 !important;}
     </style>`;
 
   // Social Media (Meta Ads) isn't a real platform in the data model (see the comment where
@@ -154,24 +162,74 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
       : i === 0
         ? `<td class="aspd-td ${acosClass(v ?? null)}"${socialSpan}>${v == null ? "N/A" : acosPct(v)}</td>`
         : "";
-  const socialMediaRowHtml = socialMedia
+  // Per-product Meta figures (24 Nov 2026, seller's request) — only when the report carries them
+  // (productBreakdown, see SocialMediaEmailSummary): each product row gets its own Orders and ACOS
+  // (+ its Meta Ad Sales on a small line under the ACOS) and its ad names under the product name.
+  // Same columns as before; a report saved without productBreakdown renders exactly as before.
+  const metaPerProduct = socialMedia?.productBreakdown === true;
+  const subLine = (text: string) => `<br><span style="font-size:11px;font-weight:600;color:#4b5563;">${text}</span>`;
+  const metaOrdersCell = (orders: number, sales: number | null | undefined) =>
+    `<td ${td}>${!metaPerProduct ? "-" : sales == null ? "N/A" : orders}</td>`;
+  const metaProductAcosCell = (v: number | null | undefined, sales: number | null | undefined) =>
+    `<td class="aspd-td ${acosClass(v ?? null)}">${v == null ? "N/A" : acosPct(v)}${subLine(`Sales ${sales == null ? "N/A" : money(sales)}`)}</td>`;
+  // v3 (25 Nov 2026, seller's request): Product -> Ad name layout inside the same Social Media block,
+  // same 16 columns. Per product: a heading row, one row per Meta ad, a product total row; then one
+  // grand total row. ACOS = spend ÷ attributed sales (each total from its own summed spend and sales,
+  // never an average of ad ACOS), "N/A" when sales are unavailable/unverified; "Sales ₹X" rides under
+  // the ACOS (no Sales column in this table). Only for summaries that carry adBreakdown — anything
+  // older renders exactly as before. Rows are written without indentation to stay under Gmail's clip.
+  // ad/product/grand-total sales sub-line label: "Meta-reported" when the summary uses Meta's own purchase value
+  const metaAdSalesLabel = socialMedia?.adSalesSource === "meta_reported" ? "Meta-reported" : "Sales";
+  const metaAdLayout = socialMedia?.adBreakdown === true && socialProducts.every((p) => Array.isArray(p.ads) && p.total);
+  // A Meta ad / total with no sales has ACOS = Spend ÷ 1 (26 Nov 2026, seller's rule): shown as that
+  // amount (277.25), the same as the Excel, not as a percentage (27725%).
+  // deno-lint-ignore no-explicit-any
+  const adAcosText = (b: any) => (b.acos == null ? "N/A" : b.sales == null || b.sales <= 0 ? new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(b.acos) : acosPct(b.acos));
+  // deno-lint-ignore no-explicit-any
+  const adCells = (b: any, first: boolean) => `<td ${first ? tdDiv : td}>${money(b.spend)}</td><td ${td}>${money(b.spendTax)}</td><td ${td}>${b.orders == null ? "N/A" : b.orders}</td><td ${td}>${b.orders == null ? "N/A" : b.orders}</td><td ${td}>-</td><td class="aspd-td ${b.acos == null ? "" : acosClass(b.acos)}"${b.acos == null ? ' style="color:#6b7280;font-weight:700;"' : ""}>${adAcosText(b)}${subLine(`${metaAdSalesLabel} ${b.sales == null ? "N/A" : money(b.sales)}`)}</td>`;
+  // deno-lint-ignore no-explicit-any
+  const metaSell = (b: any) => (b && b.sales > 0 && b.orders > 0 ? money(b.sales / b.orders) : "-");
+  // deno-lint-ignore no-explicit-any
+  const adRow = (label: string, w: { day: any; range: any }, price: string, strong: boolean) =>
+    `<tr${strong ? ' style="font-weight:800;background:#f9fafb;"' : ""}><td ${tdName}>${label}</td><td ${td}>${price}</td><td ${td}>${metaSell(w.day)}</td>${adCells(w.day, false)}${adCells(w.range, true)}</tr>`;
+  const metaAdRowCount = metaAdLayout ? socialProducts.reduce((n, p) => n + p.ads.length + 2, 0) + 1 : 0;
+  const metaAdLeft = (n: number) => `<td ${td} rowspan="${n}" style="font-weight:800;border-left:3px solid ${META_COLOR};">Social Media (Meta)</td><td ${td} rowspan="${n}">${money(socialMedia.daySpend)}</td><td ${td} rowspan="${n}">${money(socialMedia.daySpendTax)}</td>`;
+  const metaAdRight = (n: number) => `<td ${td} rowspan="${n}">-</td><td ${td} rowspan="${n}">-</td>`;
+  const metaAdHtml = () => {
+    const rows: string[] = [];
+    socialProducts.forEach((p) => {
+      rows.push(`<tr><td ${tdName} colspan="15" style="font-weight:800;background:#eef2ff;">${p.product}${p.price ? ` &#183; ${money(p.price)}` : ""}</td></tr>`);
+      // deno-lint-ignore no-explicit-any
+      p.ads.forEach((a: any, j: number) => rows.push(adRow(`Ad ${j + 1}: ${a.name}`, a, "-", false)));
+      rows.push(adRow(`Total &#8211; ${clip(p.product)}`, p.total, p.price ? money(p.price) : "-", true));
+    });
+    if (socialMedia.grandTotal) rows.push(adRow("Grand total &#8211; all Meta products", socialMedia.grandTotal, "-", true));
+    else rows.push(`<tr><td ${tdName} colspan="15">-</td></tr>`);
+    // The channel cells (left) and Overall sales (right) span every row, as in the other blocks.
+    rows[0] = rows[0].replace("<tr>", `<tr>${metaAdLeft(metaAdRowCount)}`).replace(/<\/tr>$/, `${metaAdRight(metaAdRowCount)}</tr>`);
+    return rows.join("\n");
+  };
+  const socialMediaRowHtml = socialMedia && metaAdLayout ? metaAdHtml() : socialMedia
     ? socialProducts.map((p, i) => `
         <tr>
-          ${i === 0 ? `<td ${td}${socialSpan} style="font-weight:800;border-left:3px solid #1877F2;">Social Media</td>
+          ${i === 0 ? `<td ${td}${socialSpan} style="font-weight:800;border-left:3px solid ${META_COLOR};">Social Media (Meta)</td>
           <td ${td}${socialSpan}>${money(socialMedia.daySpend)}</td>
           <td ${td}${socialSpan}>${money(socialMedia.daySpendTax)}</td>` : ""}
-          <td ${tdName}>${clip(p.product)}</td>
+          <td ${tdName}>${clip(p.product)}${metaPerProduct && p.adNames?.length ? subLine(`Ads: ${p.adNames.join("; ")}`) : ""}</td>
           <td ${td}>${p.price ? money(p.price) : "-"}</td>
+          <td ${td}>-</td>
           <td ${td}>${money(p.day.spend)}</td>
           <td ${td}>${money(p.day.spendTax)}</td>
+          ${metaOrdersCell(p.day.orders, p.daySales)}
           <td ${td}>-</td>
           <td ${td}>-</td>
-          ${metaAcosCell(socialMedia.dayAcos, i)}
-          <td ${td}>${money(p.range.spend)}</td>
+          ${metaPerProduct ? metaProductAcosCell(p.day.acos, p.daySales) : metaAcosCell(socialMedia.dayAcos, i)}
+          <td ${tdDiv}>${money(p.range.spend)}</td>
           <td ${td}>${money(p.range.spendTax)}</td>
+          ${metaOrdersCell(p.range.orders, p.rangeSales)}
           <td ${td}>-</td>
           <td ${td}>-</td>
-          ${metaAcosCell(socialMedia.rangeAcos, i)}
+          ${metaPerProduct ? metaProductAcosCell(p.range.acos, p.rangeSales) : metaAcosCell(socialMedia.rangeAcos, i)}
           ${i === 0 ? `<td ${td}${socialSpan}>-</td>
           <td ${td}${socialSpan}>-</td>` : ""}
         </tr>`).join("")
@@ -189,21 +247,48 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
   const roasText = (v: number | null | undefined) => (v == null ? "–" : v.toFixed(2));
   const googleAcosCell = (v: number | null | undefined) =>
     googleAttributed ? `<td class="aspd-td ${acosClass(v ?? null)}">${acosPct(v ?? null)}</td>` : `<td ${td}>-</td>`;
-  const googleRowHtml = google
+  // deno-lint-ignore no-explicit-any
+  const gProducts: any[] = googleAttributed && Array.isArray(google?.products) ? google.products : [];
+  // deno-lint-ignore no-explicit-any
+  const gTotalCells = (b: any, first: boolean) => `<td ${first ? tdDiv : td}>${money(b.spend)}</td><td ${td}>${money(b.spendTax)}</td><td ${td}>${b.orders}</td><td ${td}>${b.orders}</td><td ${td}>-</td><td class="aspd-td ${b.acos == null ? "" : acosClass(b.acos)}"${b.acos == null ? ' style="color:#6b7280;font-weight:700;"' : ""}>${adAcosText(b)}${subLine(`Sales ${money(b.sales)}`)}</td>`;
+  // deno-lint-ignore no-explicit-any
+  const gSpendCells = (b: any, first: boolean) => `<td ${first ? tdDiv : td}>${money(b.spend)}</td><td ${td}>${money(b.spendTax)}</td><td ${td}>-</td><td ${td}>-</td><td ${td}>-</td><td ${td}>-</td>`;
+  const googleBlockHtml = () => {
+    const rows: string[] = [];
+    gProducts.forEach((p) => {
+      rows.push(`<tr><td ${tdName} colspan="15" style="font-weight:800;background:#ecfdf5;">${p.product}</td></tr>`);
+      // deno-lint-ignore no-explicit-any
+      p.campaigns.forEach((c: any, j: number) => rows.push(`<tr><td ${tdName}>Ad ${j + 1}: ${c.name}</td><td ${td}>-</td><td ${td}>-</td>${gSpendCells(c.day, false)}${gSpendCells(c.range, true)}</tr>`));
+      rows.push(`<tr style="font-weight:800;background:#f9fafb;"><td ${tdName}>Total &#8211; ${clip(p.product)}</td><td ${td}>-</td><td ${td}>${sellText(p.total.day.sellPrice)}</td>${gTotalCells(p.total.day, false)}${gTotalCells(p.total.range, true)}</tr>`);
+    });
+    const grandDay = { spend: google.daySpend, spendTax: google.daySpendTax, orders: google.totalUnits, acos: google.dayAcos, sales: google.dayAdSales ?? 0 };
+    const grandRange = { spend: google.rangeSpend, spendTax: google.rangeSpendTax, orders: google.rangeUnits ?? "-", acos: google.rangeAcos, sales: google.rangeAdSales ?? 0 };
+    const grandCells = (b: { spend: number; spendTax: number; orders: number | string; acos: number | null; sales: number }, ad: number | null | undefined, first: boolean) =>
+      `<td ${first ? tdDiv : td}>${money(b.spend)}</td><td ${td}>${money(b.spendTax)}</td><td ${td}>${b.orders}</td><td ${td}>${adOrdersText(ad)}</td><td ${td}>-</td><td class="aspd-td ${acosClass(b.acos)}">${acosPct(b.acos)}${subLine(`Ad sales ${money(b.sales)}`)}</td>`;
+    rows.push(`<tr style="font-weight:800;background:#f9fafb;"><td ${tdName}>Grand total &#8211; all Google</td><td ${td}>-</td><td ${td}>${google.totalUnits > 0 ? money(google.totalValue / google.totalUnits) : "-"}</td>${grandCells(grandDay, google.dayAdOrders, false)}${grandCells(grandRange, google.rangeAdOrders, true)}</tr>`);
+    const n = rows.length;
+    rows[0] = rows[0].replace("<tr>", `<tr><td ${td} rowspan="${n}" style="font-weight:800;border-left:3px solid ${GOOGLE_COLOR};">Google</td><td ${td} rowspan="${n}">${money(google.daySpend)}</td><td ${td} rowspan="${n}">${money(google.daySpendTax)}</td>`)
+      .replace(/<\/tr>$/, `<td ${td} rowspan="${n}">${google.totalUnits}</td><td ${td} rowspan="${n}">${money(google.totalValue)}</td></tr>`);
+    return rows.join("\n");
+  };
+  const googleRowHtml = google && gProducts.length ? googleBlockHtml() : google
     ? `
         <tr>
-          <td ${td} style="font-weight:800;border-left:3px solid #4285F4;">Google</td>
+          <td ${td} style="font-weight:800;border-left:3px solid ${GOOGLE_COLOR};">Google</td>
           <td ${td}>${money(google.daySpend)}</td>
           <td ${td}>${money(google.daySpendTax)}</td>
           <td ${tdName}>${google.daySpend > 0 || google.rangeSpend > 0 ? (googleAttributed ? "(Google Ads spend + website orders)" : "(Google Ads spend + B-Arm orders)") : "(Orders/Sales only — no Google Ads report for this window)"}${googleAttributed ? `<br>ROAS ${roasText(google.dayRoas)} day · ${roasText(google.rangeRoas)} range` : ""}</td>
           <td ${td}>-</td>
+          <td ${td}>-</td>
           <td ${td}>${money(google.daySpend)}</td>
           <td ${td}>${money(google.daySpendTax)}</td>
           <td ${td}>-</td>
           <td ${td}>-</td>
+          <td ${td}>-</td>
           ${googleAcosCell(google.dayAcos)}
-          <td ${td}>${money(google.rangeSpend)}</td>
+          <td ${tdDiv}>${money(google.rangeSpend)}</td>
           <td ${td}>${money(google.rangeSpendTax)}</td>
+          <td ${td}>-</td>
           <td ${td}>-</td>
           <td ${td}>-</td>
           ${googleAcosCell(google.rangeAcos)}
@@ -215,7 +300,7 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
   const platformRows = platforms.map((p) => {
     const products = p.topProducts.length
       ? p.topProducts
-      : [{ name: "(no ad spend in range)", price: 0, day: { spend: 0, spendTax: 0, orders: 0, cpc: 0, acos: 0 }, range: { spend: 0, spendTax: 0, orders: 0, cpc: 0, acos: 0 } }];
+      : [{ name: "(no ad spend in range)", price: 0, sellPrice: null, day: { spend: 0, spendTax: 0, orders: 0, cpc: 0, acos: 0, adOrders: null }, range: { spend: 0, spendTax: 0, orders: 0, cpc: 0, acos: 0, adOrders: null } }];
     const n = products.length;
     // deno-lint-ignore no-explicit-any
     return products.map((prod: any, i: number) => `
@@ -225,15 +310,18 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
           <td rowspan="${n}" ${td}>${money(p.daySpend)}</td>
           <td rowspan="${n}" ${td}>${money(p.daySpendTax)}</td>` : ""}
           <td ${tdName}>${clip(prod.name)}</td>
-          <td ${td}>${prod.price ? money(prod.price) : "-"}</td>
+          <td ${td}>${priceText(prod.price)}</td>
+          <td ${td}>${sellText(prod.sellPrice)}</td>
           <td ${td}>${money(prod.day.spend)}</td>
           <td ${td}>${money(prod.day.spendTax)}</td>
           <td ${td}>${prod.day.orders}</td>
+          <td ${td}>${adOrdersText(prod.day.adOrders)}</td>
           <td ${td}>${num(prod.day.cpc)}</td>
           <td class="aspd-td ${acosClass(prod.day.acos)}">${acosPct(prod.day.acos)}</td>
-          <td ${td}>${money(prod.range.spend)}</td>
+          <td ${tdDiv}>${money(prod.range.spend)}</td>
           <td ${td}>${money(prod.range.spendTax)}</td>
           <td ${td}>${prod.range.orders}</td>
+          <td ${td}>${adOrdersText(prod.range.adOrders)}</td>
           <td ${td}>${num(prod.range.cpc)}</td>
           <td class="aspd-td ${acosClass(prod.range.acos)}">${acosPct(prod.range.acos)}</td>
           ${i === 0 ? `
@@ -296,15 +384,18 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
     const rowsHtml = items.map((prod) => `
         <tr>
           <td ${tdName}>${clip(prod.name)}</td>
-          <td ${td}>${prod.price ? money(prod.price) : "-"}</td>
+          <td ${td}>${priceText(prod.price)}</td>
+          <td ${td}>${sellText(prod.sellPrice)}</td>
           <td ${td}>${money(prod.day.spend)}</td>
           <td ${td}>${money(prod.day.spendTax)}</td>
           <td ${td}>${prod.day.orders}</td>
+          <td ${td}>${adOrdersText(prod.day.adOrders)}</td>
           <td ${td}>${num(prod.day.cpc)}</td>
           <td class="aspd-td ${acosClass(prod.day.acos)}">${acosPct(prod.day.acos)}</td>
-          <td ${td}>${money(prod.range.spend)}</td>
+          <td ${tdDiv}>${money(prod.range.spend)}</td>
           <td ${td}>${money(prod.range.spendTax)}</td>
           <td ${td}>${prod.range.orders}</td>
+          <td ${td}>${adOrdersText(prod.range.adOrders)}</td>
           <td ${td}>${num(prod.range.cpc)}</td>
           <td class="aspd-td ${acosClass(prod.range.acos)}">${acosPct(prod.range.acos)}</td>
         </tr>`).join("");
@@ -314,23 +405,26 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
         </td></tr>
         <tr><td style="padding-top:6px;">
           <div style="overflow-x:auto;">
-          <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;min-width:900px;">
+          <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;min-width:1100px;">
             <thead>
               <tr>
                 <th rowspan="2" ${th}>Product Name</th>
                 <th rowspan="2" ${th}>Price</th>
-                <th colspan="5" ${th}>${data.dayLabel || "Day"}</th>
-                <th colspan="5" ${th}>${data.rangeLabel || "Range"}</th>
+                <th rowspan="2" ${th}>Sell price</th>
+                <th colspan="6" ${th}>${data.dayLabel || "Day"}</th>
+                <th colspan="6" class="aspd-th aspd-div">${data.rangeLabel || "Range"}</th>
               </tr>
               <tr>
                 <th ${th}>Spend</th>
                 <th ${th}>Spend(with tax)</th>
                 <th ${th}>Orders</th>
+                <th ${th}>Ad orders</th>
                 <th ${th}>CPC</th>
                 <th ${th}>ACOS</th>
-                <th ${th}>Spend</th>
+                <th class="aspd-th aspd-div">Spend</th>
                 <th ${th}>Spend(with tax)</th>
                 <th ${th}>Orders</th>
+                <th ${th}>Ad orders</th>
                 <th ${th}>CPC</th>
                 <th ${th}>ACOS</th>
               </tr>
@@ -356,28 +450,31 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
         ${spendWarningBanner}
         <tr><td style="padding-top:6px;">
           <div style="overflow-x:auto;">
-          <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;min-width:1100px;">
+          <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;min-width:1300px;">
             <thead>
               <tr>
                 <th rowspan="2" ${th}>Platform</th>
                 <th rowspan="2" ${th}>Ad spend<br/>(without tax)</th>
                 <th rowspan="2" ${th}>Ad spend<br/>(with tax)</th>
-                <th colspan="2" ${th}>High spending product</th>
-                <th colspan="5" ${th}>${data.dayLabel || "Day"}</th>
-                <th colspan="5" ${th}>${data.rangeLabel || "Range"}</th>
+                <th colspan="3" ${th}>High spending product</th>
+                <th colspan="6" ${th}>${data.dayLabel || "Day"}</th>
+                <th colspan="6" class="aspd-th aspd-div">${data.rangeLabel || "Range"}</th>
                 <th colspan="2" ${th}>Overall sales</th>
               </tr>
               <tr>
                 <th ${th}>Product</th>
                 <th ${th}>Price</th>
+                <th ${th}>Sell price</th>
                 <th ${th}>Spend</th>
                 <th ${th}>Spend(with tax)</th>
                 <th ${th}>Orders</th>
+                <th ${th}>Ad orders</th>
                 <th ${th}>CPC</th>
                 <th ${th}>ACOS</th>
-                <th ${th}>Spend</th>
+                <th class="aspd-th aspd-div">Spend</th>
                 <th ${th}>Spend(with tax)</th>
                 <th ${th}>Orders</th>
+                <th ${th}>Ad orders</th>
                 <th ${th}>CPC</th>
                 <th ${th}>ACOS</th>
                 <th ${th}>QTS</th>
@@ -398,7 +495,12 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
         <tr><td align="center" style="padding-top:24px;">
           <a href="${SITE_URL}/dashboard/reports" style="background:#6D5EF8;color:#ffffff;padding:13px 32px;border-radius:10px;text-decoration:none;font-size:14px;font-weight:800;display:inline-block;">Open Reports &#8594;</a>
         </td></tr>
-      </table>`, null, styleBlock);
+      </table>`, null, styleBlock)
+    // Whitespace between tags only (indentation of the row templates): keeps the mail under Gmail's
+    // ~102 KB clip limit now that every row has more columns. Rendering is unchanged.
+    .replace(/>\s+</g, "><")
+    // Short class names in the finished mail (CSS and cells together, so the look is unchanged).
+    .replace(/aspd-(name|div|mid|th|td|hi|lo)\b/g, (_m, k: string) => ({ name: "an", div: "av", mid: "am", th: "ah", td: "at", hi: "ax", lo: "al" } as Record<string, string>)[k]);
 }
 // --- end verbatim port ---
 
