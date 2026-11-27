@@ -181,10 +181,9 @@ function buildAdSpendDailyHtml(data: Record<string, any>, _toEmail: string): str
   // ad/product/grand-total sales sub-line label: "Meta-reported" when the summary uses Meta's own purchase value
   const metaAdSalesLabel = socialMedia?.adSalesSource === "meta_reported" ? "Meta-reported" : "Sales";
   const metaAdLayout = socialMedia?.adBreakdown === true && socialProducts.every((p) => Array.isArray(p.ads) && p.total);
-  // A Meta ad / total with no sales has ACOS = Spend ÷ 1 (26 Nov 2026, seller's rule): shown as that
-  // amount (277.25), the same as the Excel, not as a percentage (27725%).
   // deno-lint-ignore no-explicit-any
-  const adAcosText = (b: any) => (b.acos == null ? "N/A" : b.sales == null || b.sales <= 0 ? new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(b.acos) : acosPct(b.acos));
+  // No-sales ACOS (Spend ÷ 1) arrives as spend ÷ 100 since 27 Nov 2026, so it shows like any ACOS: ₹315.59 -> "316%".
+  const adAcosText = (b: any) => (b.acos == null ? "N/A" : acosPct(b.acos));
   // deno-lint-ignore no-explicit-any
   const adCells = (b: any, first: boolean) => `<td ${first ? tdDiv : td}>${money(b.spend)}</td><td ${td}>${money(b.spendTax)}</td><td ${td}>${b.orders == null ? "N/A" : b.orders}</td><td ${td}>${b.orders == null ? "N/A" : b.orders}</td><td ${td}>-</td><td class="aspd-td ${b.acos == null ? "" : acosClass(b.acos)}"${b.acos == null ? ' style="color:#6b7280;font-weight:700;"' : ""}>${adAcosText(b)}${subLine(`${metaAdSalesLabel} ${b.sales == null ? "N/A" : money(b.sales)}`)}</td>`;
   // deno-lint-ignore no-explicit-any

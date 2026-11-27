@@ -1,4 +1,4 @@
-// Bundled for deploy (26 Nov 2026 IST): src/lib/adSpendReportExport.ts of Vercel commit 7e22fa9 with its src/lib deps,
+// Bundled for deploy (26 Nov 2026 IST): src/lib/adSpendReportExport.ts of Vercel commit 96dea9c with its src/lib deps,
 // amazonReportUpload/siteUrl replaced by Deno stand-ins (same as v62). Source of truth = that commit.
 // src/lib/adSpendReportExport.ts
 import XLSX4 from "npm:xlsx-js-style@1.2.0";
@@ -1925,6 +1925,7 @@ var spendTax = (a) => a.spend * (a.gstMultiplier ?? DEFAULT_GST_MULTIPLIER);
 var computeCpc = (a) => a.units > 0 ? spendTax(a) / a.units : spendTax(a);
 var sellPriceCell = (a) => a.units > 0 && (a.revenue ?? 0) > 0 ? Math.round((a.revenue ?? 0) / a.units * 100) / 100 : "\u2013";
 var adOrdersCell = (a) => a.adOrders !== void 0 ? a.adOrders : "\u2013";
+var noSalesAcos = (spend) => Math.round(spend / 100 * 1e4) / 1e4;
 var adStatusHasSpend = (a) => spendTax(a) > 0;
 var ACOS_UNDEFINED_SENTINEL = 9.99;
 var acosCpcOverPrice = (a, price, listingPrice) => {
@@ -3504,7 +3505,7 @@ async function buildAdSpendReportWorkbook(opts) {
       sales: verified && sales != null ? round2(sales) : null,
       // ACOS = Spend (without tax) ÷ Sales; with no sales (0 or not reported) the divisor is 1, so
       // ACOS = Spend ÷ 1 (seller's rule, 26 Nov 2026, confirmed again 27 Nov).
-      acos: spend > 0 ? Math.round(spend / (verified && sales != null && sales > 0 ? sales : 1) * 1e4) / 1e4 : null
+      acos: spend > 0 ? verified && sales != null && sales > 0 ? Math.round(spend / sales * 1e4) / 1e4 : noSalesAcos(spend) : null
     });
     const adLabel = (c) => {
       const i = c.name.indexOf(META_AD_SEPARATOR);
@@ -3671,7 +3672,7 @@ async function buildAdSpendReportWorkbook(opts) {
         orders,
         round2(sales),
         "",
-        spend > 0 ? Math.round(spend / (sales > 0 ? sales : 1) * 1e4) / 1e4 : "",
+        spend > 0 ? sales > 0 ? Math.round(spend / sales * 1e4) / 1e4 : noSalesAcos(spend) : "",
         round2(sales)
       ];
       const pushGoogle = (label, day, range2, extra) => {
@@ -3709,7 +3710,7 @@ async function buildAdSpendReportWorkbook(opts) {
           round2(spendTax({ spend, units: 0 })),
           orders,
           "",
-          spend > 0 ? Math.round(spend / (sales > 0 ? sales : 1) * 1e4) / 1e4 : ""
+          spend > 0 ? sales > 0 ? Math.round(spend / sales * 1e4) / 1e4 : noSalesAcos(spend) : ""
         ];
         googleDetailRows.push({
           cells: [
@@ -3731,7 +3732,7 @@ async function buildAdSpendReportWorkbook(opts) {
           spendTax: round2(spendTax({ spend, units: 0 })),
           orders,
           sales: round2(sales),
-          acos: spend > 0 ? Math.round(spend / (sales > 0 ? sales : 1) * 1e4) / 1e4 : null,
+          acos: spend > 0 ? sales > 0 ? Math.round(spend / sales * 1e4) / 1e4 : noSalesAcos(spend) : null,
           sellPrice: units > 0 && sales > 0 ? round2(sales / units) : null
         });
         googleMailProducts.push({
@@ -3865,10 +3866,6 @@ async function buildAdSpendReportWorkbook(opts) {
     ...Object.fromEntries(Object.entries(sumFormats).map(([c, f]) => [sumCol(Number(c)), f])),
     5: CURRENCY_FMT
     // Sell price
-  });
-  sumPlainAcos.forEach(({ r, c }) => {
-    const cell = wsSummary[XLSX4.utils.encode_cell({ r, c: sumCol(c) })];
-    if (cell && typeof cell.v === "number") cell.z = "0.00";
   });
   for (let r = 5; r < sumAoa.length; r++) {
     const addr = XLSX4.utils.encode_cell({ r, c: 3 });
@@ -4035,10 +4032,6 @@ async function buildAdSpendReportWorkbook(opts) {
     ...Object.fromEntries(Object.entries(detailFormats).map(([c, f]) => [detCol(Number(c)), f])),
     3: CURRENCY_FMT
     // Sell price
-  });
-  detailPlainAcos.forEach(({ r, c }) => {
-    const cell = wsDetail[XLSX4.utils.encode_cell({ r, c: detCol(c) })];
-    if (cell && typeof cell.v === "number") cell.z = "0.00";
   });
   for (let r = 0; r < detailAoa.length; r++) {
     [0, 1].forEach((c) => {
@@ -4295,6 +4288,7 @@ export {
   flipkartRowRevenue,
   getDateWindow,
   groupProductsByName,
+  noSalesAcos,
   sellPriceCell,
   spendTax
 };
