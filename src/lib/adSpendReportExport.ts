@@ -2840,9 +2840,9 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       spendTax: round2(spendTax({ spend, units: 0 })),
       orders: verified ? orders : null,
       sales: verified && sales != null ? round2(sales) : null,
-      // ACOS = Spend (without tax) ÷ Sales; with no sales (0 or not reported) the divisor is 1, so
-      // ACOS = Spend ÷ 1 — same convention as CPC with 0 orders (seller's rule, 26 Nov 2026).
-      acos: spend > 0 ? Math.round((spend / (verified && sales != null && sales > 0 ? sales : 1)) * 10000) / 10000 : null,
+      // ACOS = Spend (without tax) ÷ attributed Sales; N/A (null) when there are no attributed sales
+      // (27 Nov 2026, seller's rule — replaces the 26 Nov "Spend ÷ 1").
+      acos: verified && sales != null && sales > 0 ? metaAcos(true, spend, sales) : null,
     });
     const adLabel = (c: WindowedCampaign) => {
       const i = c.name.indexOf(META_AD_SEPARATOR);
@@ -2892,7 +2892,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     ];
     const pushSocial = (label: string, price: number | "", day: (string | number)[], range: (string | number)[], extra?: (string | number)[]) => {
       if (extra) sumExtras.set(sumAoa.length, extra);
-      // A block with no sales has ACOS = Spend ÷ 1: shown as that plain amount (277.25), not a % (27725%).
+      // Since 27 Nov a block with no sales has ACOS N/A (a string), so this no longer marks any cell.
       ([[day, 10], [range, 17]] as const).forEach(([b, c]) => {
         if ((b[3] === "N/A" || b[3] === 0) && typeof b[5] === "number") sumPlainAcos.push({ r: sumAoa.length, c });
       });
@@ -2986,7 +2986,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       // Google Ads-click Shopify orders of that product (googleProductFor on the line's product title).
       // A product with two campaigns can't split its sales between them (the Google export has no
       // campaign ID), so orders/sales/ACOS sit on the product total. The grand total is the Google row as
-      // before, unchanged. ACOS = Spend ÷ Sales, or Spend ÷ 1 (shown as the amount) with no sales.
+      // before, unchanged. ACOS = Spend ÷ Sales, N/A with no attributed sales (27 Nov 2026).
       type GProduct = { campaigns: WindowedCampaign[]; daySales: number; rangeSales: number; dayUnits: number; rangeUnits: number; dayOrders: Set<string>; rangeOrders: Set<string> };
       const gProducts = new Map<string, GProduct>();
       const gAcc = (product: string) => {
@@ -3013,7 +3013,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       const spendCells = (spend: number) => [round2(spend), round2(spendTax({ spend, units: 0 })), "", "", "", "", ""];
       const totalCells = (spend: number, orders: number, sales: number) => [
         round2(spend), round2(spendTax({ spend, units: 0 })), orders, round2(sales), "",
-        spend > 0 ? Math.round((spend / (sales > 0 ? sales : 1)) * 10000) / 10000 : "", round2(sales),
+        spend > 0 && sales > 0 ? Math.round((spend / sales) * 10000) / 10000 : "N/A", round2(sales),
       ];
       const pushGoogle = (label: string, day: (string | number | null)[], range: (string | number | null)[], extra?: (string | number)[]) => {
         if (extra) sumExtras.set(sumAoa.length, extra);
@@ -3044,7 +3044,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
         // Ad spend report sheet: Campaign(s) | Product | Price | Spend, Spend(with tax), Orders, CPC, ACOS (x2).
         const detailBlock = (spend: number, orders: number, sales: number) => [
           round2(spend), round2(spendTax({ spend, units: 0 })), orders, "",
-          spend > 0 ? Math.round((spend / (sales > 0 ? sales : 1)) * 10000) / 10000 : "",
+          spend > 0 && sales > 0 ? Math.round((spend / sales) * 10000) / 10000 : "N/A",
         ];
         googleDetailRows.push({
           cells: [
