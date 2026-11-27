@@ -1,89 +1,1910 @@
-// Default import, not `import * as` — under Deno's npm compatibility layer,
-// `import * as XLSX from "npm:xlsx-js-style"` nests the real exports one
-// level deeper at `XLSX.default.utils` instead of `XLSX.utils`, unlike
-// Node's CJS interop. Confirmed by direct probe: `XLSX.utils` is undefined
-// with `import *`, but present with a default import. This is an import-
-// syntax-only fix — no formula/logic change.
-import XLSX from "npm:xlsx-js-style@1.2.0";
-import { fetchAllRows, isCancelledOrder, isStandardOrderId, istDayWindowUtc } from "./deps/amazonReportShared.ts";
-import { spCampaignDays, isSplitCoveredCampaignRow, unmappedCampaignSpend, campaignsMissingOnDay } from "./deps/amazonSpendRules.ts";
-import { dailyAmAdsReportRows } from "./deps/amazonAdSourceRules.ts";
-import { upsertInChunks, supabasePublic } from "./deps/amazonReportUpload.ts";
-import { mergeGoogleWebsiteOrders, googleAdsRatios, metaAdsAttributedSales, type DroppedCardRow, type ShopifyReportOrder } from "./deps/googleWebsiteOrders.ts";
-import { toDate as parseFlexibleDate } from "./deps/meeshoReportUpload.ts";
-import { resolveProductName } from "./deps/categoryMap.ts";
-import { fetchProductMasterMap, buildProductMasterResolver } from "./deps/productMasterUpload.ts";
-import { fetchMasterSkuidMap, buildMasterSkuidResolver, fetchMasterSkuidAmazonCatalog, fetchMasterSkuidsByName, gstMultiplierFromTax, DEFAULT_GST_MULTIPLIER } from "./deps/masterProductSkuid.ts";
-import { fetchProductMarketingMap, buildProductMarketingResolver } from "./deps/productMarketingUpload.ts";
-import { SITE_URL } from "./deps/siteUrl.ts";
+// Bundled for deploy (26 Nov 2026 IST): src/lib/adSpendReportExport.ts of Vercel commit d749702 with its src/lib deps,
+// amazonReportUpload/siteUrl replaced by Deno stand-ins (same as v62). Source of truth = that commit.
+// src/lib/adSpendReportExport.ts
+import XLSX4 from "npm:xlsx-js-style@1.2.0";
 
-// ── Ad Spend Report ──────────────────────────────────────────────────────────
-// Cross-marketplace (Amazon + Flipkart + Meesho) ad-spend snapshot: which
-// products are burning the most ad budget, at what CPC/ACOS, which advertised
-// products carry no live ads on another platform, and which campaigns are
-// barely spending anything. Modelled on a hand-built "Ad spend report"
-// workbook that pairs a single day's numbers with a trailing date range.
-//
-// Sourced entirely from manually-uploaded tables — no live API call anywhere.
-// Amazon/Flipkart read the same barm_amazon_*/barm_flipkart_* tables the
-// Historical Analysis Report reads; Meesho reads ad spend from barm_daily_ms_barm_ads
-// and orders from barm_daily_ms_barm_orders (combined upload sheets "MS BARM ads" /
-// "MS BARM ord"). Google Ads
-// and social-media (Meta) spend are not included — no sample export has been
-// seen for either yet, so there's no column layout to build a parser from.
-//
-// Definitions match historicalAnalysisReportExport.ts / flipkartHistoricalReportExport.ts:
-//   Spend(with tax) = raw ad spend x (1 + that product's own GST rate), applied
-//                      once after summing raw spend for the window — never a
-//                      per-row multiply. The rate comes from master_product_skuid's
-//                      per-SKU Tax column (most products are 5%, not the flat 18%
-//                      every report assumed before this was wired in); a SKU with
-//                      no Tax on file falls back to DEFAULT_GST_MULTIPLIER (18%).
-//   CPC  = Spend(with tax) / Orders        (Orders = 0 -> CPC = Spend(with tax))
-//   ACOS = Spend (WITHOUT tax) / that SKU's own ad-attributed sales figure, when one is on
-//          file for this window — Amazon's raw Sponsored Products Spend / "7 Day Total Sales"
-//          straight off the ad platform's own export whenever that SKU has a Sponsored Products
-//          row on file (per the seller's explicit request that ACOS match Amazon's own raw
-//          export number-for-number, even though that can disagree sharply with the Orders/CPC
-//          columns beside it), or Flipkart's ads-export "Total Revenue" / Meesho's ad-attributed
-//          order count x price otherwise (see computeAcos's adAttributedSales/adSales/adOrders
-//          branches). Falls back to Spend (WITHOUT tax) / Total Sales — real per-order revenue,
-//          NOT CPC/Price, which is tax-inclusive — only when none of the above is on file at all
-//          (an Amazon SKU with no Sponsored Products row, i.e. SB/SD-only spend; or a Flipkart/
-//          Meesho product with no ad-attributed sales data of its own).
-// "Orders" here means units sold of that product in the window (order-report
-// quantity, cancelled orders excluded) — not ad-click-attributed units and not
-// order records. This is a deliberate choice (see the Notes sheet) so the
-// figure means the same thing as the plain-English "Orders" column on the
-// hand-built workbook this report is modelled on.
+// supabase/edge-build/ad-spend-report-shims/amazonReportUpload.ts
+import { createClient } from "npm:@supabase/supabase-js@2.110.8";
+var supabasePublic = createClient(Deno.env.get("SUPABASE_URL"), Deno.env.get("SUPABASE_ANON_KEY"));
+async function upsertInChunks(table, rows, onConflict, chunkSize = 300) {
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, i + chunkSize);
+    const { error } = await supabasePublic.from(table).upsert(chunk, { onConflict });
+    if (error) throw new Error(`Upsert into ${table} failed: ${error.message}`);
+  }
+}
 
-export type Platform = "Amazon" | "Flipkart" | "Meesho";
+// src/lib/amazonSpendRules.ts
+var key = (campaign, date) => `${campaign}\0${date}`;
+function spCampaignDays(spRows) {
+  const out = /* @__PURE__ */ new Set();
+  for (const r of spRows) {
+    const c = String(r.campaign_name ?? "").trim();
+    const d = String(r.report_date ?? "").slice(0, 10);
+    if (c && d) out.add(key(c, d));
+  }
+  return out;
+}
+function isSplitCoveredCampaignRow(r, spDays) {
+  const c = String(r.campaign_name ?? "").trim();
+  const d = String(r.report_date ?? "").slice(0, 10);
+  return !!c && !!d && spDays.has(key(c, d));
+}
+function collectSkuLessSpend(rows) {
+  const byCampaign = /* @__PURE__ */ new Map();
+  const byDay = /* @__PURE__ */ new Map();
+  for (const r of rows) {
+    const d = String(r.report_date ?? "").slice(0, 10);
+    const spend = Number(r.spend) || 0;
+    if (!d || spend <= 0 || String(r.advertised_sku ?? "").trim()) continue;
+    const c = String(r.campaign_name ?? "").trim();
+    if (!c) {
+      const e2 = byDay.get(d) || { report_date: d, spend: 0, rows: 0 };
+      e2.spend += spend;
+      e2.rows += 1;
+      byDay.set(d, e2);
+      continue;
+    }
+    const adType = /^(sd|sponsored display)$/i.test(String(r.ad_type ?? "").trim()) ? "SD" : "SB";
+    const k = `${adType}|${key(c, d)}`;
+    const e = byCampaign.get(k) || { report_date: d, campaign_name: c, ad_type: adType, spend: 0, rows: 0 };
+    e.spend += spend;
+    e.rows += 1;
+    byCampaign.set(k, e);
+  }
+  const byDateThenName = (a, b) => a.report_date.localeCompare(b.report_date) || String(a.campaign_name ?? "").localeCompare(String(b.campaign_name ?? ""));
+  return { campaignDays: [...byCampaign.values()].sort(byDateThenName), unattributable: [...byDay.values()].sort(byDateThenName) };
+}
+function unmappedCampaignSpend(rows, isMapped) {
+  const out = /* @__PURE__ */ new Map();
+  for (const r of rows) {
+    const spend = Number(r.spend) || 0;
+    const c = String(r.campaign_name ?? "").trim();
+    if (spend <= 0 || isMapped(String(r.campaign_name ?? ""))) continue;
+    const e = out.get(c) || { campaign_name: c, spend: 0, dates: /* @__PURE__ */ new Set() };
+    e.spend += spend;
+    e.dates.add(String(r.report_date ?? "").slice(0, 10));
+    out.set(c, e);
+  }
+  return [...out.values()].map((e) => ({ campaign_name: e.campaign_name, spend: e.spend, dates: [...e.dates].sort() })).sort((a, b) => b.spend - a.spend);
+}
+function campaignsMissingOnDay(sbSdRows, spRows, day) {
+  const seenOnDay = /* @__PURE__ */ new Set();
+  const lastRow = /* @__PURE__ */ new Map();
+  const visit = (r) => {
+    const c = String(r.campaign_name ?? "").trim();
+    const d = String(r.report_date ?? "").slice(0, 10);
+    if (!c || !d) return;
+    if (d === day) {
+      seenOnDay.add(c);
+      return;
+    }
+    if (d > day) return;
+    const spend = Number(r.spend) || 0;
+    const prev = lastRow.get(c);
+    if (!prev || d > prev.date) lastRow.set(c, { date: d, spend });
+    else if (d === prev.date) prev.spend += spend;
+  };
+  sbSdRows.forEach(visit);
+  spRows.filter((r) => !String(r.ad_group_name ?? "").trim()).forEach(visit);
+  return [...lastRow.entries()].filter(([c, v]) => v.spend > 0 && !seenOnDay.has(c)).map(([campaign_name, v]) => ({ campaign_name, lastSpendDate: v.date, lastSpend: v.spend })).sort((a, b) => a.campaign_name.localeCompare(b.campaign_name));
+}
 
-// Campaigns spending at or under this on the single reporting day are flagged
-// on the "Low Spend Campaigns" sheet as candidates for pausing/pruning.
-const LOW_SPEND_THRESHOLD = 50;
-// A product needs more than this much range spend to be eligible for either
-// ACOS shortlist (Summary's "Worst ACOS product" or the Worst ACOS Products
-// sheet) — a separate, higher bar than LOW_SPEND_THRESHOLD above, since a
-// barely-cleared low-spend campaign can still show a misleading ACOS.
-const ACOS_SHORTLIST_MIN_SPEND = 100;
+// src/lib/amazonReportShared.ts
+async function fetchAllRows(table, apply, orderBy = "id") {
+  const all = [];
+  const PAGE = 1e3;
+  const orderCols = Array.isArray(orderBy) ? orderBy : [orderBy];
+  let from = 0;
+  for (let i = 0; i < 200; i++) {
+    let q = apply(supabasePublic.from(table).select("*"));
+    for (const col of orderCols) q = q.order(col, { ascending: true });
+    let error = null;
+    let rows = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await q.range(from, from + PAGE - 1);
+      error = res.error;
+      if (!error) {
+        rows = res.data || [];
+        break;
+      }
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+    }
+    if (error) throw new Error(`Fetch ${table} failed: ${error.message}`);
+    all.push(...rows);
+    if (rows.length < PAGE) break;
+    from += PAGE;
+  }
+  return all;
+}
+function isCancelledOrder(r) {
+  return String(r.order_status || "").trim().toLowerCase().startsWith("cancel");
+}
+function isStandardOrderId(orderId) {
+  return /^\d{3}-\d{7}-\d{7}$/.test(String(orderId || "").trim());
+}
+function istDayWindowUtc(start, end) {
+  const prevDay = (iso) => {
+    const d = /* @__PURE__ */ new Date(`${iso}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - 1);
+    return d.toISOString().slice(0, 10);
+  };
+  return { gte: `${prevDay(start)}T18:30:00.000Z`, lt: `${end}T18:30:00.000Z` };
+}
 
-export function getDateWindow(toDate: string, days: number): { start: string; end: string } {
-  const end = new Date(`${toDate}T00:00:00Z`);
+// src/lib/amazonAdSourceRules.ts
+var SKU_LESS_SOURCE = "AM ads (no Advertised SKU)";
+function firstRaw(r) {
+  const raw = Array.isArray(r?.raw) ? r.raw[0] : r?.raw;
+  return raw && typeof raw === "object" ? raw : null;
+}
+function isCampaignCardRow(r) {
+  return firstRaw(r)?.source !== SKU_LESS_SOURCE;
+}
+var dayCampaign = (date, campaign) => `${String(date ?? "").slice(0, 10)}|${String(campaign ?? "").trim()}`;
+var num = (v) => Number(v) || 0;
+function dailyAmAdsReportRows(dailyRows, cardSbRows, cardSdRows) {
+  const spRows = [];
+  const skuLessInput = [];
+  for (const r of dailyRows) {
+    const sku = String(r.sku ?? "").trim();
+    const report_date = r.report_date ? String(r.report_date).slice(0, 10) : null;
+    if (sku) {
+      spRows.push({
+        report_date,
+        campaign_name: String(r.campaign_name ?? ""),
+        ad_group_name: String(r.ad_group_name ?? ""),
+        advertised_sku: sku,
+        advertised_asin: String(r.asin ?? ""),
+        impressions: num(r.impressions),
+        clicks: num(r.clicks),
+        spend: num(r.spend),
+        sales_7d: num(r.sales_7d),
+        orders_7d: num(r.orders_7d),
+        units_7d: num(r.units_7d),
+        raw: r.raw
+      });
+    } else {
+      skuLessInput.push({
+        report_date,
+        campaign_name: String(r.campaign_name ?? ""),
+        ad_type: String(firstRaw(r)?.["Ad Type"] ?? ""),
+        advertised_sku: "",
+        spend: num(r.spend)
+      });
+    }
+  }
+  const sbCard = cardSbRows.filter(isCampaignCardRow);
+  const sdCard = cardSdRows.filter(isCampaignCardRow);
+  const onCard = new Set([...sbCard, ...sdCard].map((r) => dayCampaign(r.report_date, r.campaign_name)));
+  const sbRows = [...sbCard];
+  const sdRows = [...sdCard];
+  for (const d of collectSkuLessSpend(skuLessInput).campaignDays) {
+    if (onCard.has(dayCampaign(d.report_date, d.campaign_name))) continue;
+    const row = { report_date: d.report_date, campaign_name: d.campaign_name, spend: d.spend, raw: { source: SKU_LESS_SOURCE, ad_type: d.ad_type, rows: d.rows } };
+    (d.ad_type === "SD" ? sdRows : sbRows).push(row);
+  }
+  return { spRows, sbRows, sdRows };
+}
+
+// src/lib/socialMediaRules.ts
+var META_AD_SEPARATOR = " :: ";
+function metaCampaignPart(name) {
+  const i = name.indexOf(META_AD_SEPARATOR);
+  return i >= 0 ? name.slice(0, i) : name;
+}
+
+// src/lib/googleWebsiteOrders.ts
+var num2 = (v) => {
+  const n = Number(String(v ?? "").replace(/,/g, ""));
+  return Number.isFinite(n) ? n : 0;
+};
+var cents = (v) => Math.round(v * 100);
+var isShopifyExportRow = (r) => /^SHOPIFY-/i.test(String(r.invoice ?? ""));
+function mergeGoogleWebsiteOrders(cardRows, shopifyOrders) {
+  const shopifyFrom = shopifyOrders.reduce((m, o) => o.order_date && (!m || o.order_date < m) ? o.order_date : m, null);
+  const shopifyLines = [...shopifyOrders].sort((a, b) => a.order_name.localeCompare(b.order_name, void 0, { numeric: true })).flatMap(
+    (o) => o.items.map((i) => {
+      const quantity = num2(i.quantity);
+      const value = i.line_total == null || i.line_total === "" ? quantity * num2(i.price) : num2(i.line_total);
+      return { o, i, quantity, value, unitPrice: num2(i.price), used: false };
+    })
+  );
+  const matchKey = (date, unitPrice, quantity) => `${date}|${cents(unitPrice)}|${quantity}`;
+  const unmatched = /* @__PURE__ */ new Map();
+  shopifyLines.forEach((l) => {
+    const k = matchKey(l.o.order_date, l.unitPrice, l.quantity);
+    unmatched.set(k, [...unmatched.get(k) ?? [], l]);
+  });
+  const lines = [];
+  const dropped = [];
+  [...cardRows].sort((a, b) => num2(a.id) - num2(b.id)).forEach((r) => {
+    const date = r.order_date ?? "";
+    const quantity = num2(r.quantity);
+    const price = num2(r.price);
+    const value = quantity * price;
+    const covered = !!shopifyFrom && !!date && date >= shopifyFrom;
+    if (covered) {
+      const match = unmatched.get(matchKey(date, price, quantity))?.find((l) => !l.used);
+      if (match) match.used = true;
+      if (match || isShopifyExportRow(r)) {
+        dropped.push({ invoice: String(r.invoice ?? ""), date, value, matchedOrder: match ? match.o.order_name : null });
+        return;
+      }
+    }
+    lines.push({
+      date,
+      name: String(r.product_name ?? "").replace(/\s+/g, " ").trim() || "(no product name)",
+      quantity,
+      price,
+      value,
+      source: "card",
+      order: null,
+      googleAds: false
+    });
+  });
+  shopifyLines.filter((l) => !l.o.is_cancelled).forEach((l) => {
+    const title = String(l.i.title ?? "").replace(/\s+/g, " ").trim() || "(no product name)";
+    lines.push({
+      date: l.o.order_date,
+      name: title,
+      quantity: l.quantity,
+      price: l.quantity ? l.value / l.quantity : l.unitPrice,
+      value: l.value,
+      source: "shopify",
+      order: l.o.order_name,
+      googleAds: l.o.ad_channel === "google_ads"
+    });
+  });
+  return { lines, dropped, shopifyFrom };
+}
+function googleAdsRatios(spend, adSales) {
+  if (!(spend > 0)) return { acos: null, roas: null };
+  return {
+    acos: adSales > 0 ? spend / adSales : null,
+    roas: adSales / spend
+  };
+}
+function metaAdsAttributedSales(shopifyOrders, start, end) {
+  let value = 0;
+  let orders = 0;
+  shopifyOrders.filter((o) => !o.is_cancelled && o.ad_channel === "meta_ads" && o.order_date >= start && o.order_date <= end).forEach((o) => {
+    orders += 1;
+    value += o.items.reduce((s, i) => s + (i.line_total == null || i.line_total === "" ? num2(i.quantity) * num2(i.price) : num2(i.line_total)), 0);
+  });
+  return { value: Math.round(value * 100) / 100, orders };
+}
+
+// src/lib/meeshoReportUpload.ts
+import * as XLSX from "npm:xlsx@0.18.5";
+function str(v) {
+  if (v === null || v === void 0) return "";
+  return String(v).trim();
+}
+var MONTH_ABBR = {
+  jan: "01",
+  feb: "02",
+  mar: "03",
+  apr: "04",
+  may: "05",
+  jun: "06",
+  jul: "07",
+  aug: "08",
+  sep: "09",
+  oct: "10",
+  nov: "11",
+  dec: "12"
+};
+function toDate(v) {
+  if (typeof v === "number" && v > 0) {
+    const d = XLSX.SSF.parse_date_code(v);
+    if (!d) return null;
+    return `${d.y}-${String(d.m).padStart(2, "0")}-${String(d.d).padStart(2, "0")}`;
+  }
+  const s = str(v);
+  if (!s) return null;
+  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (iso) return iso[0];
+  const dmy = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})/.exec(s);
+  if (dmy) return `${dmy[3]}-${dmy[2].padStart(2, "0")}-${dmy[1].padStart(2, "0")}`;
+  const dMonY = /^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/.exec(s);
+  if (dMonY) {
+    const mon = MONTH_ABBR[dMonY[2].toLowerCase()];
+    if (mon) {
+      const year = dMonY[3].length === 2 ? `20${dMonY[3]}` : dMonY[3];
+      return `${year}-${mon}-${dMonY[1].padStart(2, "0")}`;
+    }
+  }
+  const monDY = /^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})$/.exec(s);
+  if (monDY) {
+    const mon = MONTH_ABBR[monDY[1].slice(0, 3).toLowerCase()];
+    if (mon) return `${monDY[3]}-${mon}-${monDY[2].padStart(2, "0")}`;
+  }
+  return null;
+}
+
+// src/lib/categoryMap.ts
+var CATEGORY_ENTRIES = [
+  ["Gluco Spark Bare Sugar test device (Inhouse& in FBA)", "General"],
+  ["gluco spark Meter With 10 Strips & 10 lancets", "General"],
+  ["gluco spark Meter With 25 Strips & 25 lancets", "General"],
+  ["gluco spark Meter With 50 Strips & 25 lancets", "General"],
+  ["gluco spark Meter With 50 Strips & 50 lancets", "General"],
+  ["Gluco spark (Pack of 25) Strips", "General"],
+  ["Gluco spark (Pack of 50) Strips", "General"],
+  ["Glucospark 50 strips and 100 lancets (without meter)", "General"],
+  ["Glucospark 100 strips and 100 lancets (without meter)", "General"],
+  ["Gluco spark (Pack of 100) Strips", "General"],
+  ["Lancing device", "General"],
+  ["Pack of 100 lancets", "General"],
+  ["Lactospark Lactate meter 25 strips and 25 lancets", "General"],
+  ["Lactospark Lactatemeter25 strips", "General"],
+  ["Lactospark Strips (Pack of 50)", "General"],
+  ["Mesh nebulizer MY123", "Pulmonology"],
+  ["Mesh Nebulizer MY135B (Grey)", "Pulmonology"],
+  ["Mesh nebulizer MY135B (Blue)", "Pulmonology"],
+  ["Meditubes Winset IV set pack of 25", "General"],
+  ["Neck traction pillow (Blue)", "General"],
+  ["Neck traction pillow (green)", "General"],
+  ["Sonmol Peak Flow meter (without BLE)", "Pulmonology"],
+  ["Sonmol Peak Flow meter (with BLE)", "Pulmonology"],
+  ["Sonmol RMT without manometer (Inhouse and FBA)", "Pulmonology"],
+  ["Sonmol RMT with manometer", "Pulmonology"],
+  ["Sonmol Mucus removal Device", "Pulmonology"],
+  ["MIR SmartOne", "Pulmonology"],
+  ["MIR Spirobank Oxi", "Pulmonology"],
+  ["MIR Spirobank Smart", "Pulmonology"],
+  ["Hemospark STD without strips", "General"],
+  ["Hemo meter whole KIT (50 Strips + STD incl 25 lancets)", "General"],
+  ["Hemospark 50 strips", "General"],
+  ["Hemospark 25 strips and 25 lancets", "General"],
+  ["Nascool nasal power suction irrigation system", "Pulmonology"],
+  ["Sonmol Anti Choking Device", "General"],
+  ["Nail cleaning device", "General"],
+  ["Insect bite healer", "General"],
+  ["Suture Practice Kit - combo 2", "General"],
+  ["Ovulation thermometer", "Gynaecology"],
+  ["Breast Shell (New Model)", "Gynaecology"],
+  ["Therapressure brush (White)", "Occupational Therapy"],
+  ["Sensory brush", "Occupational Therapy"],
+  ["Therapressure Brush (Green)", "Occupational Therapy"],
+  ["Freezer analog thermometer", "General"],
+  ["Suture Practice pad- Big size", "General"],
+  ["Baby nasal aspirator (hand pump-Pink)", "Pulmonology"],
+  ["Chewy tube MW (Green)", "Occupational Therapy"],
+  ["Chewy tube (Green - Spiral model)", "Occupational Therapy"],
+  ["Chewy tube (Yellow)", "Occupational Therapy"],
+  ["Chewy tube (Yellow) - Spiral model", "Occupational Therapy"],
+  ["Chewy tube (Blue)", "Occupational Therapy"],
+  ["Chewy tube (Blue) - Spiral model", "Occupational Therapy"],
+  ["Chewy tube (Red)", "Occupational Therapy"],
+  ["Chewy tube (Red) - Spiral model", "Occupational Therapy"],
+  ["Pelvic muscle floor trainer (screw type) - Blue", "Gynaecology"],
+  ["Pelvic muscle floor trainer (screw type) - Pink", "Gynaecology"],
+  ["Self Hook therapy stick Blue", "General"],
+  ["Pelvic muscle floor trainer (digital type) - Black", "Gynaecology"],
+  ["Pelvic muscle floor trainer (digital type) - Purple", "Gynaecology"],
+  ["Cradle Comb (Blue-Bear)", "General"],
+  ["Vaginal dilator", "Gynaecology"],
+  ["Chewy tube Combo (Pack of 4)", "Occupational Therapy"],
+  ["Chewy tube Combo (Pack of 3)", "Occupational Therapy"],
+  ["Nylon 19mm Suture Thread", "General"],
+  ["Nylon 24mm Suture Thread", "General"],
+  ["Silk 19mm Suture Thread", "General"],
+  ["Polypropylene 19mm Suture Thread", "General"],
+  ["Baby nasal aspirator - hand pump (white model)", "Pulmonology"],
+  ["Contact lens cleaner", "General"],
+  ["Cradle cap kit (Set of 3)", "Occupational Therapy"],
+  ["Cradle cap scrub", "Occupational Therapy"],
+  ["Cradle cap brush", "Occupational Therapy"],
+  ["Cradle cap comb - double sided", "General"],
+  ["Postpartum Recovery Essentials care kit (10 pcs kit)", "Gynaecology"],
+  ["Perineal Healing foam", "Gynaecology"],
+  ["Instant Ice Maxi Pad(Pack of 5)", "Gynaecology"],
+  ["Perineal Cooling Pad Liner", "Gynaecology"],
+  ["Postpartum Underwears", "Gynaecology"],
+  ["Postpartum Recovery Essentials care kit (6 pcs kit)", "Gynaecology"],
+  ["Nail fungus cleaning device (new)", "General"],
+  ["Choking rescue device", "General"],
+  ["Cutlery Holder with Plastic stand (Black)", "General"],
+  ["Cutlery Holder with Plastic stand (Brown)", "General"],
+  ["Cutlery Holder with Plastic stand (Peach)", "General"],
+  ["Cutlery Holder with Plastic stand (Ivory)", "General"],
+  ["Cutlery Holder with Plastic stand (Blue)", "General"],
+  ["Cutlery Holder with Plastic stand (Yellow)", "General"],
+  ["Respiratory Muscle Trainer (I6E6)", "Pulmonology"],
+  ["Nasal syringe aspirator pack of 2", "Pulmonology"],
+  ["Nasal syringe aspirator pack of 4", "Pulmonology"],
+  ["Silicone Tip", "General"],
+  ["Syringes for nasal aspirator", "Pulmonology"],
+  ["Nylon 2-0 19mm suture thread", "General"],
+  ["Silk 2-0 19mm suture thread", "General"],
+  ["Polypropylene 2-0 19mm suture thread", "General"],
+  ["Sensory Fidget toy", "Occupational Therapy"],
+  ["Venom extractor", "General"],
+  ["RMT (Black) - white print model", "Pulmonology"],
+  ["RMT (Black) - Black print model", "Pulmonology"],
+  ["Warming Lactation Massager (Dark Pink)", "Gynaecology"],
+  ["Warming Lactation Massager (Green)", "Gynaecology"],
+  ["Sensory Book", "Occupational Therapy"],
+  ["Sensory Brush-New Model", "Occupational Therapy"],
+  ["Electric baby nasal aspirator- Blue", "General"],
+  ["Electric baby nasal aspirator- Yellow", "General"],
+  ["Instant Breast warmers (Blue)", "Gynaecology"],
+  ["Instant Breast warmers (Red)", "Gynaecology"],
+  ["Wearable breast pump", "Gynaecology"],
+  ["Self Hook Therapy Stick Black", "General"],
+  ["Transparent Human Model", "General"],
+  ["Semi- Transparent Human Model", "General"],
+  ["Glow in the Dark Model", "General"],
+  ["Pregnancy kit combo without Ovulation thermometer", "Gynaecology"],
+  ["Pregnancy kit combo with Ovulation thermometer", "Gynaecology"],
+  ["Self Hook Therapy Stick (Pink)", "General"],
+  ["RMT with ERMT App", "Pulmonology"],
+  ["Digital pelvic muscle trainer- new model", "Gynaecology"],
+  ["Guasha Massager", "General"],
+  ["RMT with Jawline Exerciser", "Pulmonology"],
+  ["MRD with filter", "Pulmonology"],
+  ["MRD Grey", "Pulmonology"],
+  ["IQ puzzles (normal)", "Occupational Therapy"],
+  ["IQ puzzles (Autism)", "Occupational Therapy"],
+  ["Kids Microscope pink", "General"],
+  ["Kids Microscope White", "General"],
+  ["Wearable lactation massager (Purple)", "Gynaecology"],
+  ["Wearable lactation massager (Grey)", "Gynaecology"],
+  ["IR therpy lamp and holder", "General"],
+  ["Anti- cellulite massager", "General"],
+  ["Headache Relief tool pack of 2", "General"],
+  ["Headache Relief tool pack of 3", "General"],
+  ["Headache Relief tool pack of 4", "General"],
+  ["Headache Relief tool pack of 5", "General"],
+  ["Headache Relief tool pack of 1", "General"],
+  ["Electric guasha massager", "General"],
+  ["Insemination kit (Pack of 2)", "Gynaecology"],
+  ["Insemination kit (Pack of 5)", "Gynaecology"],
+  ["IUI Catheter and Syringes(Insemination kit)", "Gynaecology"],
+  ["Collection Cup (Insemination kit)", "Gynaecology"],
+  ["Suture Practice Kit - combo 3", "General"],
+  ["Suture Practice Kit - combo 1", "General"],
+  ["Breast shell 50ML Capacity (Model 3)", "Gynaecology"],
+  ["Sensory fidget toy large model", "Occupational Therapy"],
+  ["Breast shell SS model", "Gynaecology"],
+  ["Hydrogel nipple pad pack of 2", "Gynaecology"],
+  ["Hydrogel nipple pad pack of 4", "Gynaecology"],
+  ["Hydrogel nipple pad", "Gynaecology"],
+  ["Suture pad Defective", "General"],
+  ["Soft Vaginal Dilator", "Gynaecology"],
+  ["Jaw grading bite blocks (Pack of 1)", "Occupational Therapy"],
+  ["Jaw grading bite blocks (Pack of 2)", "Occupational Therapy"],
+  ["Postpartum Belt - Grey", "Gynaecology"],
+  ["Oral swabs pack of 50", "General"],
+  ["Oral swabs pack of 100", "General"],
+  ["Wearable breast pump bottle type", "Gynaecology"],
+  ["Electric guasha massager (Pink)", "General"],
+  ["IR thermometer White", "General"],
+  ["IR thermometer Black", "General"],
+  ["Wearable Breast pump with Base", "Gynaecology"],
+  ["BP monitor with Bluetooth", "General"],
+  ["BP monitor without Bluetooth", "General"],
+  ["RMT Black pack of 2", "Pulmonology"],
+  ["Bulb Syringe IUI applicator -8cm(Pack of 5)", "Gynaecology"],
+  ["Ovulation cassette (Pack of 5)", "Gynaecology"],
+  ["Ovulation Strips (Pack of 5)", "Gynaecology"],
+  ["Articulation Spoon", "Occupational Therapy"],
+  ["MRD Blue", "Pulmonology"],
+  ["MRD Violet", "Pulmonology"],
+  ["MRD Pink", "Pulmonology"],
+  ["Postpartum Belt- Green lines", "Gynaecology"],
+  ["Lip Muscle Trainer", "Occupational Therapy"],
+  ["Hand therapy putty- Blue", "Occupational Therapy"],
+  ["Male Fertility Kit", "Gynaecology"],
+  ["Mesh nebulizer - 3 modes", "Pulmonology"],
+  ["Conception Cup", "Gynaecology"],
+  ["Soft and Plastic VD combo", "Gynaecology"],
+  ["Air purifier", "General"],
+  ["Jaw trainer tool- red", "Occupational Therapy"],
+  ["Pregnancy Kit (1 Early 1 Normal 2 Pee Cup)", "Gynaecology"],
+  ["Oral Muscle trainer- 3 heads", "Occupational Therapy"],
+  ["Insemination Dual kit (Pack of 4)", "Gynaecology"],
+  ["Insemination Dual kit (Pack of 10)", "Gynaecology"],
+  ["Oral Muscle trainer- 4 heads", "Occupational Therapy"],
+  ["Male fertility kit supplier 1", "Gynaecology"],
+  ["Tongue tip exerciser", "Occupational Therapy"],
+  ["Oral muscle trainer- 5 heads", "Occupational Therapy"],
+  ["Anti choking device- Red & Black", "General"],
+  ["Anti choking device- Yellow & Blue", "General"],
+  ["Automatic Choking device", "General"],
+  ["Polyglactin suture thread", "General"],
+  ["Polyglycolic suture thread", "General"],
+  ["IR therapy lamp Red on glass", "General"],
+  ["Mini Portable Bidet attachment", "Gynaecology"],
+  ["Pregnancy soak salt", "Gynaecology"],
+  ["Epsom salt - 250 grams", "General"],
+  ["Epsom salt - 400 grams", "General"],
+  ["Epsom salt - 900 grams", "General"],
+  ["Ovulation strips (Pack of 10)", "Gynaecology"],
+  ["Ovulation strips (Pack of 20)", "Gynaecology"],
+  ["Eye patch Skin color- Pack of 10", "General"],
+  ["Eye patch Skin color- Pack of 20", "General"],
+  ["Eye patch Skin color- Pack of 30", "General"],
+  ["Eye patch White color- Pack of 10", "General"],
+  ["Eye patch White color- Pack of 20", "General"],
+  ["Eye patch White color- Pack of 30", "General"],
+  ["Nasal suction irrigator- Rechargeable", "Pulmonology"],
+  ["C-Section Recovery kit- 15 pcs", "Gynaecology"],
+  ["Hanging thermometer", "General"],
+  ["Fertility-friendly lubricant", "Gynaecology"],
+  ["Teething Tube Combo (Green Red Yellow)", "Occupational Therapy"],
+  ["Refrigerator thermometer", "General"],
+  ["Sitz bath tub", "Gynaecology"],
+  ["Bulb Syringe IUI applicator (10.5 cm)(Pack of 5)", "Gynaecology"],
+  ["Insemination Kit- Catheter type-12cm (Pack of 2)", "Gynaecology"],
+  ["Insemination Kit- Catheter type-12cm (Pack of 5)", "Gynaecology"],
+  ["Bulb Syringe IUI applicator (10.5 cm)(Pack of 2)", "Gynaecology"],
+  ["Bulb Syringe IUI applicator -8cm(Pack of 2)", "Gynaecology"],
+  ["Sitz Bath salt- 400 Grams", "Gynaecology"],
+  ["Insemination Kit- Catheter type-15cm (Pack of 2)", "Gynaecology"],
+  ["Insemination Kit- Catheter type-15cm (Pack of 5)", "Gynaecology"],
+  ["Digital stethescope", "General"],
+  ["Nylon suture thread 2-0 - 30MM", "General"],
+  ["Nylon suture thread 2-0 - 24MM", "General"],
+  ["Nylon Suture thread 4-0 - 30MM", "General"],
+  ["Silk Suture thread 2-0- 30MM", "General"],
+  ["Silk Suture thread 4-0- 30MM", "General"],
+  ["Polypropylene suture thread 2-0 - 30MM", "General"],
+  ["Polypropylene suture thread 4-0 - 30MM", "General"],
+  ["Manual Breast pump", "Gynaecology"],
+  ["IR Bulb", "General"],
+  ["Guasha massage- Second Quality", "General"],
+  ["Car Seat Belt adjuster for pregnant women", "Gynaecology"],
+  ["Fetal Doppler", "Gynaecology"],
+  ["Anti cellulite massager- Green", "General"],
+  ["Nasal Wash Salt- 400 grams", "Pulmonology"],
+  ["Cracked Nipple Spray", "Gynaecology"],
+  ["Chewy tube combo- Red and green", "Occupational Therapy"],
+  ["Chewy tube green- Pack of 2", "Occupational Therapy"],
+  ["Speech Therapy Combo with 3 heads", "Occupational Therapy"],
+  ["Postpartum Mini Kit", "Gynaecology"],
+  ["Perineal Massage Wand- White", "Gynaecology"],
+  ["Suture Practice Pad- Normal", "General"],
+  ["Oral Swabs-White (Pack of 50)", "General"],
+  ["Oral Swabs- White (Pack of 100)", "General"],
+  ["Menopause test Cassette pack of 3", "Gynaecology"],
+  ["Perineal Healing foam and padliners combo", "Gynaecology"],
+  ["Insemination kit-17cm Supplier 2 (Pack of 2)", "Gynaecology"],
+  ["Insemination kit-17cm Supplier 2 (Pack of 5)", "Gynaecology"],
+  ["Rechargeble PeakFlow meter with Memory & Bluetooth", "Pulmonology"],
+  ["Silver Nursing Cup- Regular", "Gynaecology"],
+  ["Speech Therapy Combo with 5 heads", "Occupational Therapy"],
+  ["Breastfeeding Essential Kit", "Gynaecology"],
+  ["Silver Nursing Cup- Large", "Gynaecology"],
+  ["Menopause Test Strips (Pack of 4)", "Gynaecology"],
+  ["Chewy tube Green (Bump model New)", "Occupational Therapy"],
+  ["UTI Test Strips (Pack of 4)", "Gynaecology"],
+  ["Flange Finder Kit", "Gynaecology"],
+  ["Human Anatomy Cube", "General"],
+  ["Inflatable Donut Pillow", "Gynaecology"],
+  ["Neem Wood Comb", "Gynaecology"],
+  ["Flange Inserts for Breast Pump", "Gynaecology"],
+  ["GlucoSpark Strips (Pack of 200)", "General"],
+  ["GlucoSpark Strips (Pack of 150)", "General"],
+  ["Eye Patch - Dark Colour (Pack of 10)", "General"]
+];
+var SKU_NAME_MAP = {
+  "SCGSB1": "Gluco Spark Bare Sugar test device (Inhouse& in FBA)",
+  "SCG-B-1": "Gluco Spark Bare Sugar test device (Inhouse& in FBA)",
+  "SCGSB1-1": "Gluco Spark Bare Sugar test device (Inhouse& in FBA)",
+  "GS-BARE": "Gluco Spark Bare Sugar test device (Inhouse& in FBA)",
+  "SC-GLUCO-BARE-1": "Gluco Spark Bare Sugar test device (Inhouse& in FBA)",
+  "SCG-B-2": "Gluco Spark Bare Sugar test device (Inhouse& in FBA)",
+  "SCG-B-3": "Gluco Spark Bare Sugar test device (Inhouse& in FBA)",
+  "GSB01": "Gluco Spark Bare Sugar test device (Inhouse& in FBA)",
+  "SCGSB": "Gluco Spark Bare Sugar test device (Inhouse& in FBA)",
+  "SC-GLUCO-BARE": "Gluco Spark Bare Sugar test device (Inhouse& in FBA)",
+  "SCB": "Gluco Spark Bare Sugar test device (Inhouse& in FBA)",
+  "SCB(1MG)": "Gluco Spark Bare Sugar test device (Inhouse& in FBA)",
+  "SCGSB1-S": "Gluco Spark Bare Sugar test device (Inhouse& in FBA)",
+  "GS10S10L": "gluco spark Meter With 10 Strips & 10 lancets",
+  "GS10S10L-1": "gluco spark Meter With 10 Strips & 10 lancets",
+  "GS10S10L-2": "gluco spark Meter With 10 Strips & 10 lancets",
+  "GS10S10L-3": "gluco spark Meter With 10 Strips & 10 lancets",
+  "GS10S10L-4": "gluco spark Meter With 10 Strips & 10 lancets",
+  "GS10S10L-5": "gluco spark Meter With 10 Strips & 10 lancets",
+  "GS10S10L-S": "gluco spark Meter With 10 Strips & 10 lancets",
+  "SCGS25SL": "gluco spark Meter With 25 Strips & 25 lancets",
+  "SCGS25SL-1": "gluco spark Meter With 25 Strips & 25 lancets",
+  "SCGS25SL-2": "gluco spark Meter With 25 Strips & 25 lancets",
+  "SC3": "gluco spark Meter With 25 Strips & 25 lancets",
+  "glucospark-glucometer-blue": "gluco spark Meter With 25 Strips & 25 lancets",
+  "SCGS25SL-S": "gluco spark Meter With 25 Strips & 25 lancets",
+  "SC-GLUCO-50S25L": "gluco spark Meter With 50 Strips & 25 lancets",
+  "SC-GLUCO-50S25L-1": "gluco spark Meter With 50 Strips & 25 lancets",
+  "SC-GLUCO-50S25L-2": "gluco spark Meter With 50 Strips & 25 lancets",
+  "SC-GLUCO-50S25L-3": "gluco spark Meter With 50 Strips & 25 lancets",
+  "SC-GLUCO-50S25L-4": "gluco spark Meter With 50 Strips & 25 lancets",
+  "SC-GLUCO-50S25L-S": "gluco spark Meter With 50 Strips & 25 lancets",
+  "GS50S50L": "gluco spark Meter With 50 Strips & 50 lancets",
+  "GS50S50L-2": "gluco spark Meter With 50 Strips & 50 lancets",
+  "GS50S50L-1": "gluco spark Meter With 50 Strips & 50 lancets",
+  "GS50S50L-3": "gluco spark Meter With 50 Strips & 50 lancets",
+  "GS50S50L-4": "gluco spark Meter With 50 Strips & 50 lancets",
+  "GS50S50L-5": "gluco spark Meter With 50 Strips & 50 lancets",
+  "GS50S50L-S": "gluco spark Meter With 50 Strips & 50 lancets",
+  "SC25": "Gluco spark (Pack of 25) Strips",
+  "GLUCO-STRIPS-PK25": "Gluco spark (Pack of 25) Strips",
+  "GLUCO-STRIPS-PK25-1": "Gluco spark (Pack of 25) Strips",
+  "SC25-S-1": "Gluco spark (Pack of 25) Strips",
+  "SC25-S-2": "Gluco spark (Pack of 25) Strips",
+  "GS25": "Gluco spark (Pack of 25) Strips",
+  "SC25-1": "Gluco spark (Pack of 25) Strips",
+  "SC25-2": "Gluco spark (Pack of 25) Strips",
+  "SC25-3": "Gluco spark (Pack of 25) Strips",
+  "SC-GLUCO-STR-PK25": "Gluco spark (Pack of 25) Strips",
+  "GLUCO-STRIPS-PK50": "Gluco spark (Pack of 50) Strips",
+  "SC50": "Gluco spark (Pack of 50) Strips",
+  "SC50-S-1": "Gluco spark (Pack of 50) Strips",
+  "SC50-S-2": "Gluco spark (Pack of 50) Strips",
+  "SC50-S-3": "Gluco spark (Pack of 50) Strips",
+  "SC50-1": "Gluco spark (Pack of 50) Strips",
+  "SC50-2": "Gluco spark (Pack of 50) Strips",
+  "SC50-3": "Gluco spark (Pack of 50) Strips",
+  "SCGS50": "Gluco spark (Pack of 50) Strips",
+  "SC-GLUCO-STR-PK50": "Gluco spark (Pack of 50) Strips",
+  "SCG-50S100L": "Glucospark 50 strips and 100 lancets (without meter)",
+  "SCG-50S100L-1": "Glucospark 50 strips and 100 lancets (without meter)",
+  "SCG-50S100L-S": "Glucospark 50 strips and 100 lancets (without meter)",
+  "SCG-100S100L": "Glucospark 100 strips and 100 lancets (without meter)",
+  "SCG-100S100L-1": "Glucospark 100 strips and 100 lancets (without meter)",
+  "SCG-100S100L-2": "Glucospark 100 strips and 100 lancets (without meter)",
+  "SCG-100S100L-3": "Glucospark 100 strips and 100 lancets (without meter)",
+  "SCG-100S100L-4": "Glucospark 100 strips and 100 lancets (without meter)",
+  "SCG-100S100L-5": "Glucospark 100 strips and 100 lancets (without meter)",
+  "SCG-100S100L-S": "Glucospark 100 strips and 100 lancets (without meter)",
+  "SCG-100S100L-1-S": "Glucospark 100 strips and 100 lancets (without meter)",
+  "GLUCO-STRIPS-PK100": "Gluco spark (Pack of 100) Strips",
+  "GLUCO-STRIPS-PK100-1": "Gluco spark (Pack of 100) Strips",
+  "GLUCO-STRIPS-PK100-2": "Gluco spark (Pack of 100) Strips",
+  "GLUCO-STRIPS-PK100-3": "Gluco spark (Pack of 100) Strips",
+  "GLUCO-STRIPS-PK100-4": "Gluco spark (Pack of 100) Strips",
+  "GLUCO-STRIPS-PK100-5": "Gluco spark (Pack of 100) Strips",
+  "GLUCO-STRIPS-PK100-S": "Gluco spark (Pack of 100) Strips",
+  "GLUCO-STRIPS-PK100-1-S": "Gluco spark (Pack of 100) Strips",
+  "SCGLD": "Lancing device",
+  "SC-LACTO-25S25L": "Lactospark Lactate meter 25 strips and 25 lancets",
+  "SC-LACTO-25S25L-1": "Lactospark Lactate meter 25 strips and 25 lancets",
+  "SC-LACTO-25S25L-2": "Lactospark Lactate meter 25 strips and 25 lancets",
+  "SC-LACTO-25S25L-3": "Lactospark Lactate meter 25 strips and 25 lancets",
+  "SC-LACTO-25S25L-4": "Lactospark Lactate meter 25 strips and 25 lancets",
+  "SC-LACTO-25S25L-5": "Lactospark Lactate meter 25 strips and 25 lancets",
+  "SC-LACTO-25S25L-6": "Lactospark Lactate meter 25 strips and 25 lancets",
+  "LSLM-1": "Lactospark Lactate meter 25 strips and 25 lancets",
+  "SC-LACTO-25S25L-S": "Lactospark Lactate meter 25 strips and 25 lancets",
+  "SC-LACTO-STR-PK25": "Lactospark Lactatemeter25 strips",
+  "SC-LACTO-STR-PK25-1": "Lactospark Lactatemeter25 strips",
+  "SC-LACTO-STR-PK25-S-1": "Lactospark Lactatemeter25 strips",
+  "SC-LACTO-STR-PK50": "Lactospark Strips (Pack of 50)",
+  "SC-LACTO-STR-PK50-1": "Lactospark Strips (Pack of 50)",
+  "SC-LACTO-STR-PK50-S": "Lactospark Strips (Pack of 50)",
+  "BMN123": "Mesh nebulizer MY123",
+  "BMN123-1": "Mesh nebulizer MY123",
+  "BMN123-2": "Mesh nebulizer MY123",
+  "BMN123-3": "Mesh nebulizer MY123",
+  "BMN123-4": "Mesh nebulizer MY123",
+  "BMN123-5": "Mesh nebulizer MY123",
+  "BMN123-6": "Mesh nebulizer MY123",
+  "BMN123-S": "Mesh nebulizer MY123",
+  "BMN123-1-S": "Mesh nebulizer MY123",
+  "BMN132": "Mesh Nebulizer MY135B (Grey)",
+  "BMN132-1": "Mesh Nebulizer MY135B (Grey)",
+  "BMN132-2": "Mesh Nebulizer MY135B (Grey)",
+  "BMN132-3": "Mesh Nebulizer MY135B (Grey)",
+  "BMN132-4": "Mesh Nebulizer MY135B (Grey)",
+  "BMN132-5": "Mesh Nebulizer MY135B (Grey)",
+  "BMN132-1-S": "Mesh Nebulizer MY135B (Grey)",
+  "BMN132-S": "Mesh Nebulizer MY135B (Grey)",
+  "BMN132B": "Mesh nebulizer MY135B (Blue)",
+  "BMN132B-1": "Mesh nebulizer MY135B (Blue)",
+  "BMN132B-2": "Mesh nebulizer MY135B (Blue)",
+  "BMN132B-3": "Mesh nebulizer MY135B (Blue)",
+  "BMN132B-4": "Mesh nebulizer MY135B (Blue)",
+  "BMN132B-S": "Mesh nebulizer MY135B (Blue)",
+  "MT-IV-PK25-1": "Meditubes Winset IV set pack of 25",
+  "MT-IV-PK25-3": "Meditubes Winset IV set pack of 25",
+  "MT-IV-PK25-4": "Meditubes Winset IV set pack of 25",
+  "MT-IV-PK25-5": "Meditubes Winset IV set pack of 25",
+  "MP03-2": "Neck traction pillow (Blue)",
+  "MP04": "Neck traction pillow (Blue)",
+  "MP03-1": "Neck traction pillow (Blue)",
+  "NSRCTD": "Neck traction pillow (green)",
+  "NRCTD1": "Neck traction pillow (green)",
+  "NRCTD4": "Neck traction pillow (green)",
+  "NRCTD3": "Neck traction pillow (green)",
+  "RNP": "Neck traction pillow (green)",
+  "SMPF-01": "Sonmol Peak Flow meter (without BLE)",
+  "SMPF-01-1": "Sonmol Peak Flow meter (without BLE)",
+  "SMPF-01-2": "Sonmol Peak Flow meter (without BLE)",
+  "SMPF-01-3": "Sonmol Peak Flow meter (without BLE)",
+  "SMPF-01-4": "Sonmol Peak Flow meter (without BLE)",
+  "SMPF-01-5": "Sonmol Peak Flow meter (without BLE)",
+  "SMPF-01-6": "Sonmol Peak Flow meter (without BLE)",
+  "SONM-PKFLW-W/O-BLE": "Sonmol Peak Flow meter (without BLE)",
+  "SMPF-01-S": "Sonmol Peak Flow meter (without BLE)",
+  "SMPF-01-1-S": "Sonmol Peak Flow meter (without BLE)",
+  "SONM-PKFLW-W-BLE": "Sonmol Peak Flow meter (with BLE)",
+  "SONM-PKFLW-W-BLE-1": "Sonmol Peak Flow meter (with BLE)",
+  "SONM-PKFLW-W-BLE-2": "Sonmol Peak Flow meter (with BLE)",
+  "SONM-PKFLW-W-BLE-3": "Sonmol Peak Flow meter (with BLE)",
+  "SONM-PKFLW-W-BLE-4": "Sonmol Peak Flow meter (with BLE)",
+  "SONM-PKFLW-W-BLE-5": "Sonmol Peak Flow meter (with BLE)",
+  "SONM-PKFLW-W-BLE-6": "Sonmol Peak Flow meter (with BLE)",
+  "SONM-PKFLW-W-BLE-7": "Sonmol Peak Flow meter (with BLE)",
+  "SONM-PKFLW-W-BLE-8": "Sonmol Peak Flow meter (with BLE)",
+  "SMPF-01-B": "Sonmol Peak Flow meter (with BLE)",
+  "SONM-PKFLW-W-BLE-S": "Sonmol Peak Flow meter (with BLE)",
+  "SMPF-012B": "Sonmol Peak Flow meter (with BLE)",
+  "SonmolRmtz": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "BSonmolRmtz": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "BRmtz": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "Bsonmol-2": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "Bsonmol": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "BRmtz-1": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "BRmtz-2": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "BRmtz-3": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "BRmtz-4": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "BRmtz-5": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "BRmtz-6": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "BRmtz-7": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "BRmtz-8": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "Bsonmol-1": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "Sonmol": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "SonmolRmt2": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "SONM-RMT-W/O-MANO": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "SonmolRmtz(1MG)": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "SonmolRMT1": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "RMT007": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "BRmtz-S": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "BRmtz-1-S": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "SonmolRmtz-S": "Sonmol RMT without manometer (Inhouse and FBA)",
+  "SRMT1": "Sonmol RMT with manometer",
+  "BSRMT": "Sonmol RMT with manometer",
+  "BSRMT-1": "Sonmol RMT with manometer",
+  "BSRMT-2": "Sonmol RMT with manometer",
+  "BSRMT-3": "Sonmol RMT with manometer",
+  "BSRMT-4": "Sonmol RMT with manometer",
+  "BSRMT-5": "Sonmol RMT with manometer",
+  "SRMT": "Sonmol RMT with manometer",
+  "BSRMT-S": "Sonmol RMT with manometer",
+  "SRMT-S": "Sonmol RMT with manometer",
+  "BSMRD": "Sonmol Mucus removal Device",
+  "BSMRD-1": "Sonmol Mucus removal Device",
+  "SMRD": "Sonmol Mucus removal Device",
+  "BSMRD-2": "Sonmol Mucus removal Device",
+  "BSMRD-3": "Sonmol Mucus removal Device",
+  "BSMRD-4": "Sonmol Mucus removal Device",
+  "BSMRD-5": "Sonmol Mucus removal Device",
+  "BSMRD-6": "Sonmol Mucus removal Device",
+  "BSMRD-7": "Sonmol Mucus removal Device",
+  "MUCUS-REM1": "Sonmol Mucus removal Device",
+  "MUCUS-REM2": "Sonmol Mucus removal Device",
+  "SMRD-1": "Sonmol Mucus removal Device",
+  "BSMRD(1MG)": "Sonmol Mucus removal Device",
+  "BSMRD-S": "Sonmol Mucus removal Device",
+  "BSMRD-1-S": "Sonmol Mucus removal Device",
+  "SMRD-S": "Sonmol Mucus removal Device",
+  "MIR_SMRT1": "MIR SmartOne",
+  "AA-S6RI-AWL7": "MIR SmartOne",
+  "SMRT1SPIRO": "MIR SmartOne",
+  "AA-S6RI-AWL5": "MIR SmartOne",
+  "MIR-SMRTONE": "MIR SmartOne",
+  "MIR_SPIROBANK_SMART_SPL": "MIR SmartOne",
+  "SMRT1SPIRO(1MG)": "MIR SmartOne",
+  "MIR_BANKOXI": "MIR Spirobank Oxi",
+  "MSBO": "MIR Spirobank Oxi",
+  "MIR_SPIROBANK_SMART": "MIR Spirobank Smart",
+  "MIRSBS": "MIR Spirobank Smart",
+  "SBST": "MIR Spirobank Smart",
+  "SC6": "Hemospark STD without strips",
+  "SC6-1": "Hemospark 25 strips and 25 lancets",
+  "HSHM": "Hemospark STD without strips",
+  "SC-HEMO-STD-S-1": "Hemospark STD without strips",
+  "SC-HEMO-STD-S": "Hemospark STD without strips",
+  "SC-HEMO-KIT50S25L": "Hemo meter whole KIT (50 Strips + STD incl 25 lancets)",
+  "HSHM50TS": "Hemo meter whole KIT (50 Strips + STD incl 25 lancets)",
+  "SC-HEMO-50S25L-S-1": "Hemo meter whole KIT (50 Strips + STD incl 25 lancets)",
+  "SC8": "Hemospark 50 strips",
+  "SC8-1": "Hemospark 50 strips",
+  "SC8-S": "Hemospark 50 strips",
+  "SC-HEMO-KIT25S25L": "Hemospark 25 strips and 25 lancets",
+  "SC-HEMO-KIT25S25L-2": "Hemospark 25 strips and 25 lancets",
+  "SC-HEMO-KIT25S25L-4": "Hemospark 25 strips and 25 lancets",
+  "SC-HEMO-KIT25S25L-1": "Hemospark 25 strips and 25 lancets",
+  "SC-HEMO-KIT25S25L-3": "Hemospark 25 strips and 25 lancets",
+  "SC-HEMO-KIT25S25L(Del)": "Hemospark 25 strips and 25 lancets",
+  "SC-HEMO-25S25L-S-1": "Hemospark 25 strips and 25 lancets",
+  "SC-HEMO-KIT25S25L-S": "Hemospark 25 strips and 25 lancets",
+  "NASCOOL-SUCSYS-1": "Nascool nasal power suction irrigation system",
+  "NASCOOL-SUCSYS-2": "Nascool nasal power suction irrigation system",
+  "NASCOOL-SUCSYS-3": "Nascool nasal power suction irrigation system",
+  "NASCOOL-SUCSYS-4": "Nascool nasal power suction irrigation system",
+  "NASCOOL-SUCSYS-5": "Nascool nasal power suction irrigation system",
+  "NASCOOL-SUCSYS-6": "Nascool nasal power suction irrigation system",
+  "NASCOOL-SUCSYS-7": "Nascool nasal power suction irrigation system",
+  "NASCOOL-SUCSYS-S": "Nascool nasal power suction irrigation system",
+  "SONM-ANTICHOK-1": "Sonmol Anti Choking Device",
+  "SONM-ANTICHOK-2": "Sonmol Anti Choking Device",
+  "NASCOOL-ANTICHOK-1": "Sonmol Anti Choking Device",
+  "SONM-ANTICHOK-3": "Sonmol Anti Choking Device",
+  "SONM-ANTICHOK-4": "Sonmol Anti Choking Device",
+  "SONM-ANTICHOK-5": "Sonmol Anti Choking Device",
+  "SONM-ANTICHOK-6": "Sonmol Anti Choking Device",
+  "SONM-ANTICHOK-7": "Sonmol Anti Choking Device",
+  "SONM-ANTICHOK-S": "Sonmol Anti Choking Device",
+  "B-NCD-RK-6000FL-1": "Nail cleaning device",
+  "B-NCD-RK-6000FL-2": "Nail cleaning device",
+  "B-NCD-RK-6000FL-S": "Nail cleaning device",
+  "B-IBHEAL-1": "Insect bite healer",
+  "B-IBHEAL-2": "Insect bite healer",
+  "B-IBHEAL-3": "Insect bite healer",
+  "B-IBHEAL-4": "Insect bite healer",
+  "B-IBHEAL-5": "Insect bite healer",
+  "B-IBHEAL-S": "Insect bite healer",
+  "B-SUTPRAC-KIT-1": "Suture Practice Kit - combo 2",
+  "B-SUTPRAC-KIT": "Suture Practice Kit - combo 2",
+  "B-SUTPRAC-KIT-2": "Suture Practice Kit - combo 2",
+  "B-SUTPRAC-KIT-3": "Suture Practice Kit - combo 2",
+  "B-SUTPRAC-KIT-4": "Suture Practice Kit - combo 2",
+  "B-SUTPRAC-KIT-5": "Suture Practice Kit - combo 2",
+  "B-SUTPRAC-KIT-S": "Suture Practice Kit - combo 2",
+  "B-OT-DT12-1": "Ovulation thermometer",
+  "B-OT-DT12-2": "Ovulation thermometer",
+  "B-OT-DT12-3": "Ovulation thermometer",
+  "B-OT-DT12-4": "Ovulation thermometer",
+  "B-OT-DT12-5": "Ovulation thermometer",
+  "B-OT-DT12-6": "Ovulation thermometer",
+  "B-OT-DT12-2-S": "Ovulation thermometer",
+  "B-OT-DT12-S": "Ovulation thermometer",
+  "A006": "Breast Shell (New Model)",
+  "A006-1": "Breast Shell (New Model)",
+  "A006-2": "Breast Shell (New Model)",
+  "A006-3": "Breast Shell (New Model)",
+  "A006-4": "Breast Shell (New Model)",
+  "A006-5": "Breast Shell (New Model)",
+  "A006-1-S": "Breast Shell (New Model)",
+  "A006-S": "Breast Shell (New Model)",
+  "A015": "Therapressure brush (White)",
+  "A015-1": "Therapressure brush (White)",
+  "A015-2": "Therapressure brush (White)",
+  "A015-3": "Therapressure brush (White)",
+  "A015-S-1": "Therapressure brush (White)",
+  "A015-S": "Therapressure brush (White)",
+  "A016": "Sensory brush",
+  "A016-1": "Sensory brush",
+  "A016-2": "Sensory brush",
+  "A016-3": "Sensory brush",
+  "A016-4": "Sensory brush",
+  "A016-5": "Sensory brush",
+  "A016-S": "Sensory brush",
+  "B-TB-G": "Therapressure Brush (Green)",
+  "B-TB-G-2": "Therapressure Brush (Green)",
+  "B-TB-G-3": "Therapressure Brush (Green)",
+  "B-TB-G-1": "Therapressure Brush (Green)",
+  "B-TB-G-S": "Therapressure Brush (Green)",
+  "B-FAT-L1E-1": "Freezer analog thermometer",
+  "B-FAT-L1E-2": "Freezer analog thermometer",
+  "B-FAT-L1E-3": "Freezer analog thermometer",
+  "B-FAT-L1E-4": "Freezer analog thermometer",
+  "B-FAT-L1E-5": "Freezer analog thermometer",
+  "B-FAT-L1E-6": "Freezer analog thermometer",
+  "B-FAT-L1E": "Freezer analog thermometer",
+  "B-FAT-L1E-S": "Freezer analog thermometer",
+  "B-SUTPRAC-PAD-1": "Suture Practice pad- Big size",
+  "B-SUTPRAC-PAD-2": "Suture Practice pad- Big size",
+  "B-SUTPRAC-PAD-3": "Suture Practice pad- Big size",
+  "B-SUTPRAC-PAD-5": "Suture Practice pad- Big size",
+  "M-SUTPRAC-PAD": "Suture Practice pad- Big size",
+  "B-SUTPRAC-PAD": "Suture Practice pad- Big size",
+  "B-SUTPRAC-PAD-S": "Suture Practice pad- Big size",
+  "B-SUTPRAC-PAD-4": "Suture Practice pad- Big size",
+  "B-SUTPRAC-PAD-S-2": "Suture Practice pad- Big size",
+  "B-BBYASP-HP-1": "Baby nasal aspirator (hand pump-Pink)",
+  "B-BBYASP-HP-2": "Baby nasal aspirator (hand pump-Pink)",
+  "B-BBYASP-HP-3": "Baby nasal aspirator (hand pump-Pink)",
+  "B-BBYASP-HP-S": "Baby nasal aspirator (hand pump-Pink)",
+  "B-CT-G-1(Old)": "Chewy tube MW (Green)",
+  "B-CT-G-2(Old)": "Chewy tube MW (Green)",
+  "B-CT-G-3(Old)": "Chewy tube MW (Green)",
+  "B-CT-G-5": "Chewy tube MW (Green)",
+  "B-CT-G-6(Old)": "Chewy tube MW (Green)",
+  "B-CT-G-7": "Chewy tube MW (Green)",
+  "B-CT-G-8(Old)": "Chewy tube MW (Green)",
+  "B-CT-G-9(Old)": "Chewy tube MW (Green)",
+  "B-CT-G": "Chewy tube (Green - Spiral model)",
+  "B-CT-G-S": "Chewy tube MW (Green)",
+  "B-CT-SPIRAL-G": "Chewy tube (Green - Spiral model)",
+  "B-CT-G-1": "Chewy tube (Green - Spiral model)",
+  "B-CT-G-2": "Chewy tube (Green - Spiral model)",
+  "B-CT-G-3": "Chewy tube (Green - Spiral model)",
+  "B-CT-G-6": "Chewy tube (Green - Spiral model)",
+  "B-CT-G-8": "Chewy tube (Green - Spiral model)",
+  "B-CT-G-9": "Chewy tube (Green - Spiral model)",
+  "M-CT-G": "Chewy tube (Green - Spiral model)",
+  "B-CT-Y-1": "Chewy tube (Yellow) - Spiral model",
+  "B-CT-Y-1(Old)": "Chewy tube (Yellow)",
+  "B-CT-Y-2": "Chewy tube (Yellow)",
+  "B-CT-Y-3(Old)": "Chewy tube (Yellow)",
+  "B-CT-Y-4(Old)": "Chewy tube (Yellow)",
+  "B-CT-Y-5": "Chewy tube (Yellow)",
+  "B-CT-Y-6(Old)": "Chewy tube (Yellow)",
+  "B-CT-Y(Old)": "Chewy tube (Yellow)",
+  "B-CT-Y-S": "Chewy tube (Yellow)",
+  "B-CT-Y": "Chewy tube (Yellow) - Spiral model",
+  "B-CT-SPIRAL-Y": "Chewy tube (Yellow) - Spiral model",
+  "B-CT-Y-4": "Chewy tube (Yellow) - Spiral model",
+  "B-CT-Y-3": "Chewy tube (Yellow) - Spiral model",
+  "B-CT-Y-6": "Chewy tube (Yellow) - Spiral model",
+  "M-CT-Y": "Chewy tube (Yellow) - Spiral model",
+  "B-CT-B-1(Old)": "Chewy tube (Blue)",
+  "B-CT-B-1": "Chewy tube (Blue) - Spiral model",
+  "B-CT-B-3(Old)": "Chewy tube (Blue)",
+  "B-CT-B-2": "Chewy tube (Blue)",
+  "B-CT-B-4": "Chewy tube (Blue)",
+  "B-CT-B-5": "Chewy tube (Blue)",
+  "B-CT-B-6(Old)": "Chewy tube (Blue)",
+  "B-CT-B-S": "Chewy tube (Blue)",
+  "B-CT-B": "Chewy tube (Blue)",
+  "B-CT-B-3": "Chewy tube (Blue) - Spiral model",
+  "B-CT-B-6": "Chewy tube (Blue) - Spiral model",
+  "M-CT-B": "Chewy tube (Blue) - Spiral model",
+  "B-CT-R-1(Old)": "Chewy tube (Red)",
+  "B-CT-R-2(Old)": "Chewy tube (Red)",
+  "B-CT-R-3": "Chewy tube (Red)",
+  "B-CT-R-4(Old)": "Chewy tube (Red)",
+  "B-CT-R-5": "Chewy tube (Red)",
+  "B-CT-R-6(Old)": "Chewy tube (Red)",
+  "B-CT-R-7(Old)": "Chewy tube (Red)",
+  "B-CT-R-S": "Chewy tube (Red)",
+  "B-CT-R": "Chewy tube (Red)",
+  "B-CT-R-1": "Chewy tube (Red) - Spiral model",
+  "B-CT-R-2": "Chewy tube (Red) - Spiral model",
+  "B-CT-R-4": "Chewy tube (Red) - Spiral model",
+  "B-CT-R-6": "Chewy tube (Red) - Spiral model",
+  "B-CT-R-7": "Chewy tube (Red) - Spiral model",
+  "M-CT-R": "Chewy tube (Red) - Spiral model",
+  "BARM-PLVFLRMUS-SCR-B-1": "Pelvic muscle floor trainer (screw type) - Blue",
+  "BARM-PLVFLRMUS-SCR-B-S": "Pelvic muscle floor trainer (screw type) - Blue",
+  "BARM-PLVFLRMUS-SCR-P-1": "Pelvic muscle floor trainer (screw type) - Pink",
+  "BARM-PLVFLRMUS-SCR-P-2": "Pelvic muscle floor trainer (screw type) - Pink",
+  "BARM-PLVFLRMUS-SCR-P-3": "Pelvic muscle floor trainer (screw type) - Pink",
+  "BARM-PLVFLRMUS-SCR-P-4": "Pelvic muscle floor trainer (screw type) - Pink",
+  "BARM-PLVFLRMUS-SCR-P-S": "Pelvic muscle floor trainer (screw type) - Pink",
+  "B-SHTS-B": "Self Hook therapy stick Blue",
+  "B-SHTS-B-1": "Self Hook therapy stick Blue",
+  "B-SHTS-B-2": "Self Hook therapy stick Blue",
+  "B-SHTS-B-3": "Self Hook therapy stick Blue",
+  "B-SHTS-B-4": "Self Hook therapy stick Blue",
+  "B-SHTS-B-5": "Self Hook therapy stick Blue",
+  "B-SHTS-B-6": "Self Hook therapy stick Blue",
+  "B-SHTS-B-7": "Self Hook therapy stick Blue",
+  "B-SHTS-B-8": "Self Hook therapy stick Blue",
+  "B-SHTS-B-9": "Self Hook therapy stick Blue",
+  "B-SHTS-B-S": "Self Hook therapy stick Blue",
+  "BARM-PLVFLRMUS-DG-1": "Pelvic muscle floor trainer (digital type) - Black",
+  "BARM-PLVFLRMUS-DG-2": "Pelvic muscle floor trainer (digital type) - Black",
+  "BARM-PLVFLRMUS-DG-3": "Pelvic muscle floor trainer (digital type) - Black",
+  "BARM-PLVFLRMUS-DG-S": "Pelvic muscle floor trainer (digital type) - Black",
+  "BARM-PLVFLRMUS-DGP-1": "Pelvic muscle floor trainer (digital type) - Purple",
+  "BARM-PLVFLRMUS-DGP-2": "Pelvic muscle floor trainer (digital type) - Purple",
+  "BARM-PLVFLRMUS-DGP-3": "Pelvic muscle floor trainer (digital type) - Purple",
+  "BARM-PLVFLRMUS-DGP-4": "Pelvic muscle floor trainer (digital type) - Purple",
+  "BARM-PLVFLRMUS-DGP-S": "Pelvic muscle floor trainer (digital type) - Purple",
+  "A010": "Cradle Comb (Blue-Bear)",
+  "A010-1": "Cradle Comb (Blue-Bear)",
+  "A010-2": "Cradle Comb (Blue-Bear)",
+  "A010-3": "Cradle Comb (Blue-Bear)",
+  "A010-1-S": "Cradle Comb (Blue-Bear)",
+  "A010-S": "Cradle Comb (Blue-Bear)",
+  "A019": "Vaginal dilator",
+  "A019-1": "Vaginal dilator",
+  "A019-2": "Vaginal dilator",
+  "A019-3": "Vaginal dilator",
+  "A019-4": "Vaginal dilator",
+  "A019-5": "Vaginal dilator",
+  "A019-6": "Vaginal dilator",
+  "A019-7": "Vaginal dilator",
+  "A019-8": "Vaginal dilator",
+  "A019-9": "Vaginal dilator",
+  "A019-10": "Vaginal dilator",
+  "A019-11": "Vaginal dilator",
+  "A019-12": "Vaginal dilator",
+  "A019-13": "Vaginal dilator",
+  "A019-14": "Vaginal dilator",
+  "A019-15": "Vaginal dilator",
+  "A019-1-S": "Vaginal dilator",
+  "A019-S": "Vaginal dilator",
+  "A017": "Chewy tube Combo (Pack of 4)",
+  "A017-S": "Chewy tube Combo (Pack of 4)",
+  "A018": "Chewy tube Combo (Pack of 3)",
+  "A018-1": "Chewy tube Combo (Pack of 3)",
+  "A018-S": "Chewy tube Combo (Pack of 3)",
+  "A011": "Nylon 19mm Suture Thread",
+  "A011-M": "Nylon 19mm Suture Thread",
+  "A011-1": "Nylon 19mm Suture Thread",
+  "A011-2": "Nylon 19mm Suture Thread",
+  "A011-S": "Nylon 19mm Suture Thread",
+  "A011-M-S": "Nylon 19mm Suture Thread",
+  "A012": "Nylon 24mm Suture Thread",
+  "A012-M": "Nylon 24mm Suture Thread",
+  "A012-S": "Nylon 24mm Suture Thread",
+  "A012-M-S": "Nylon 24mm Suture Thread",
+  "A013": "Silk 19mm Suture Thread",
+  "A013-M": "Silk 19mm Suture Thread",
+  "A013-1": "Silk 19mm Suture Thread",
+  "A013-M-1": "Silk 19mm Suture Thread",
+  "A013-S": "Silk 19mm Suture Thread",
+  "A013-M-S": "Silk 19mm Suture Thread",
+  "A014": "Polypropylene 19mm Suture Thread",
+  "A014-M": "Polypropylene 19mm Suture Thread",
+  "A014-M-1": "Polypropylene 19mm Suture Thread",
+  "A014-S": "Polypropylene 19mm Suture Thread",
+  "A014-M-S": "Polypropylene 19mm Suture Thread",
+  "A008": "Baby nasal aspirator - hand pump (white model)",
+  "A008-S": "Baby nasal aspirator - hand pump (white model)",
+  "B-CLC-W": "Contact lens cleaner",
+  "B-CLC-W-S": "Contact lens cleaner",
+  "B-CCS3-1": "Cradle cap kit (Set of 3)",
+  "B-CCS3-2": "Cradle cap kit (Set of 3)",
+  "B-CCS3-3": "Cradle cap kit (Set of 3)",
+  "B-CCS3-4": "Cradle cap kit (Set of 3)",
+  "B-CCS3": "Cradle cap kit (Set of 3)",
+  "A001": "Postpartum Recovery Essentials care kit (10 pcs kit)",
+  "A001-1": "Postpartum Recovery Essentials care kit (10 pcs kit)",
+  "A001-2": "Postpartum Recovery Essentials care kit (10 pcs kit)",
+  "A001-3": "Postpartum Recovery Essentials care kit (10 pcs kit)",
+  "A001-4": "Postpartum Recovery Essentials care kit (10 pcs kit)",
+  "A001-5": "Postpartum Recovery Essentials care kit (10 pcs kit)",
+  "A001-S": "Postpartum Recovery Essentials care kit (10 pcs kit)",
+  "A003": "Perineal Healing foam",
+  "A003-1": "Perineal Healing foam",
+  "A003-3": "Perineal Healing foam",
+  "A003-4": "Perineal Healing foam",
+  "A003-5": "Perineal Healing foam",
+  "A003-6": "Perineal Healing foam",
+  "A003-7": "Perineal Healing foam",
+  "A003-8": "Perineal Healing foam",
+  "A003-9": "Perineal Healing foam",
+  "A003-S": "Perineal Healing foam",
+  "A005": "Instant Ice Maxi Pad(Pack of 5)",
+  "A005-1": "Instant Ice Maxi Pad(Pack of 5)",
+  "B-ICEMAXI-PADSICLES": "Instant Ice Maxi Pad(Pack of 5)",
+  "B-ICEMAXI-PADSICLES-1": "Instant Ice Maxi Pad(Pack of 5)",
+  "A005-S": "Instant Ice Maxi Pad(Pack of 5)",
+  "A004": "Perineal Cooling Pad Liner",
+  "A004-1": "Perineal Cooling Pad Liner",
+  "A004-2": "Perineal Cooling Pad Liner",
+  "A004-3": "Perineal Cooling Pad Liner",
+  "A004-4": "Perineal Cooling Pad Liner",
+  "A004-5": "Perineal Cooling Pad Liner",
+  "A004-S": "Perineal Cooling Pad Liner",
+  "A002": "Postpartum Recovery Essentials care kit (6 pcs kit)",
+  "A002-1": "Postpartum Recovery Essentials care kit (6 pcs kit)",
+  "A002-2": "Postpartum Recovery Essentials care kit (6 pcs kit)",
+  "A002-3": "Postpartum Recovery Essentials care kit (6 pcs kit)",
+  "A002-4": "Postpartum Recovery Essentials care kit (6 pcs kit)",
+  "A002-5": "Postpartum Recovery Essentials care kit (6 pcs kit)",
+  "A002-S": "Postpartum Recovery Essentials care kit (6 pcs kit)",
+  "B-NCD-L2202-A": "Nail fungus cleaning device (new)",
+  "B-NCD-L2202-A-2": "Nail fungus cleaning device (new)",
+  "B-NCD-L2202-A-3": "Nail fungus cleaning device (new)",
+  "B-NCD-L2202-A-4": "Nail fungus cleaning device (new)",
+  "B-NCD-L2202-A-S": "Nail fungus cleaning device (new)",
+  "B-CRD": "Choking rescue device",
+  "B-CRD-2": "Choking rescue device",
+  "B-CRD-3": "Choking rescue device",
+  "B-CRD-4": "Choking rescue device",
+  "B-CRD-5": "Choking rescue device",
+  "B-CRD-6": "Choking rescue device",
+  "B-CRD-S": "Choking rescue device",
+  "B-CH-PS-B": "Cutlery Holder with Plastic stand (Black)",
+  "B-CH-PS-B-1": "Cutlery Holder with Plastic stand (Black)",
+  "B-CH-PS-B-2": "Cutlery Holder with Plastic stand (Black)",
+  "B-CH-PS-B-3": "Cutlery Holder with Plastic stand (Black)",
+  "B-CH-PS-B-S-1": "Cutlery Holder with Plastic stand (Black)",
+  "B-CH-PS-B-S": "Cutlery Holder with Plastic stand (Black)",
+  "B-CH-PS-Br": "Cutlery Holder with Plastic stand (Brown)",
+  "B-CH-PS-Br-1": "Cutlery Holder with Plastic stand (Brown)",
+  "B-CH-PS-Br-2": "Cutlery Holder with Plastic stand (Brown)",
+  "B-CH-PS-Br-3": "Cutlery Holder with Plastic stand (Brown)",
+  "B-CH-PS-Br-4": "Cutlery Holder with Plastic stand (Brown)",
+  "B-CH-PS-Br-5": "Cutlery Holder with Plastic stand (Brown)",
+  "B-CH-PS-Br-S": "Cutlery Holder with Plastic stand (Brown)",
+  "B-CH-PS-P": "Cutlery Holder with Plastic stand (Peach)",
+  "B-CH-PS-P-1": "Cutlery Holder with Plastic stand (Peach)",
+  "B-CH-PS-P-2": "Cutlery Holder with Plastic stand (Peach)",
+  "B-CH-PS-P-3": "Cutlery Holder with Plastic stand (Peach)",
+  "B-CH-PS-P-4": "Cutlery Holder with Plastic stand (Peach)",
+  "B-CH-PS-P-5": "Cutlery Holder with Plastic stand (Peach)",
+  "B-CH-PS-P-S-1": "Cutlery Holder with Plastic stand (Peach)",
+  "B-CH-PS-P-S": "Cutlery Holder with Plastic stand (Peach)",
+  "B-CH-PS-Iv": "Cutlery Holder with Plastic stand (Ivory)",
+  "B-CH-PS-Iv-1": "Cutlery Holder with Plastic stand (Ivory)",
+  "B-CH-PS-Iv-2": "Cutlery Holder with Plastic stand (Ivory)",
+  "B-CH-PS-Iv-3": "Cutlery Holder with Plastic stand (Ivory)",
+  "B-CH-PS-Iv-4": "Cutlery Holder with Plastic stand (Ivory)",
+  "B-CH-PS-Iv-5": "Cutlery Holder with Plastic stand (Ivory)",
+  "B-CH-PS-Iv-S-1": "Cutlery Holder with Plastic stand (Ivory)",
+  "B-CH-PS-Iv-S": "Cutlery Holder with Plastic stand (Ivory)",
+  "B-CH-PS-Bl": "Cutlery Holder with Plastic stand (Blue)",
+  "B-CH-PS-Bl-1": "Cutlery Holder with Plastic stand (Blue)",
+  "B-CH-PS-Bl-2": "Cutlery Holder with Plastic stand (Blue)",
+  "B-CH-PS-Bl-3": "Cutlery Holder with Plastic stand (Blue)",
+  "B-CH-PS-Bl-S-1": "Cutlery Holder with Plastic stand (Blue)",
+  "B-CH-PS-Bl-S": "Cutlery Holder with Plastic stand (Blue)",
+  "B-CH-PS-Y": "Cutlery Holder with Plastic stand (Yellow)",
+  "B-CH-PS-Y-1": "Cutlery Holder with Plastic stand (Yellow)",
+  "B-CH-PS-Y-2": "Cutlery Holder with Plastic stand (Yellow)",
+  "B-CH-PS-Y-3": "Cutlery Holder with Plastic stand (Yellow)",
+  "B-CH-PS-Y-S-1": "Cutlery Holder with Plastic stand (Yellow)",
+  "B-CH-PS-Y-S": "Cutlery Holder with Plastic stand (Yellow)",
+  "RMT-I6E6": "Respiratory Muscle Trainer (I6E6)",
+  "RMT-I6E6-1": "Respiratory Muscle Trainer (I6E6)",
+  "RMT-I6E6-2": "Respiratory Muscle Trainer (I6E6)",
+  "RMT-I6E6-3": "Respiratory Muscle Trainer (I6E6)",
+  "RMT-I6E6-S": "Respiratory Muscle Trainer (I6E6)",
+  "B-BBYASP-SYR": "Nasal syringe aspirator pack of 2",
+  "B-BBYASP-SYR-1": "Nasal syringe aspirator pack of 2",
+  "B-BBYASP-SYR-2": "Nasal syringe aspirator pack of 2",
+  "B-BBYASP-SYR-3": "Nasal syringe aspirator pack of 2",
+  "B-BBYASP-SYR-4": "Nasal syringe aspirator pack of 2",
+  "B-BBYASP-SYR-PK2": "Nasal syringe aspirator pack of 2",
+  "B-BBYASP-SYR-PK2-1": "Nasal syringe aspirator pack of 2",
+  "B-BBYASP-1": "Nasal syringe aspirator pack of 2",
+  "B-BBYASP-SYR-S": "Nasal syringe aspirator pack of 2",
+  "B-BBYASP-SYR-1-S": "Nasal syringe aspirator pack of 2",
+  "B-BBYASP-SYR-PK4": "Nasal syringe aspirator pack of 4",
+  "B-BBYASP-SYR-PK4-1": "Nasal syringe aspirator pack of 4",
+  "B-BBYASP-SYR-PK4-2": "Nasal syringe aspirator pack of 4",
+  "B-BBYASP-SYR-PK4-3": "Nasal syringe aspirator pack of 4",
+  "B-BBYASP-SYR-PK4-S": "Nasal syringe aspirator pack of 4",
+  "B-ST-NY": "Nylon 2-0 19mm suture thread",
+  "B-ST-NY-M": "Nylon 2-0 19mm suture thread",
+  "B-ST-NY-1": "Nylon 2-0 19mm suture thread",
+  "B-ST-NY-2": "Nylon 2-0 19mm suture thread",
+  "B-ST-NY-M-1": "Nylon 2-0 19mm suture thread",
+  "B-ST-NY-M-2": "Nylon 2-0 19mm suture thread",
+  "B-ST-NY-S": "Nylon 2-0 19mm suture thread",
+  "B-ST-NY-M-S": "Nylon 2-0 19mm suture thread",
+  "B-ST-SK": "Silk 2-0 19mm suture thread",
+  "B-ST-SK-M": "Silk 2-0 19mm suture thread",
+  "B-ST-SK-1": "Silk 2-0 19mm suture thread",
+  "B-ST-SK-M-1": "Silk 2-0 19mm suture thread",
+  "B-ST-SK-S": "Silk 2-0 19mm suture thread",
+  "B-ST-SK-M-S": "Silk 2-0 19mm suture thread",
+  "B-ST-PP": "Polypropylene 2-0 19mm suture thread",
+  "B-ST-PP-M": "Polypropylene 2-0 19mm suture thread",
+  "B-ST-PP-1": "Polypropylene 2-0 19mm suture thread",
+  "B-ST-PP-S": "Polypropylene 2-0 19mm suture thread",
+  "B-ST-PP-M-S": "Polypropylene 2-0 19mm suture thread",
+  "B-SENFDT": "Sensory Fidget toy",
+  "B-SENFDT-1": "Sensory Fidget toy",
+  "B-SENFDT-2": "Sensory Fidget toy",
+  "B-SENFDT-3": "Sensory Fidget toy",
+  "B-SENFDT-4": "Sensory Fidget toy",
+  "B-SENFDT-5": "Sensory Fidget toy",
+  "M-SENFDT": "Sensory Fidget toy",
+  "B-SENFDT-S": "Sensory Fidget toy",
+  "B-VENEXT": "Venom extractor",
+  "B-VENEXT-1": "Venom extractor",
+  "B-VENEXT-2": "Venom extractor",
+  "B-VENEXT-3": "Venom extractor",
+  "B-VENEXT-4": "Venom extractor",
+  "B-VENEXT-S": "Venom extractor",
+  "B-BT-B1": "RMT (Black) - white print model",
+  "B-BT-B1-1": "RMT (Black) - white print model",
+  "B-RMT-SPORTS-US": "RMT (Black) - white print model",
+  "B-RMT-SPORTS-US-1": "RMT (Black) - white print model",
+  "B-BT-B1-S": "RMT (Black) - white print model",
+  "B-BT-B2": "RMT (Black) - Black print model",
+  "B-BT-B2-1": "RMT (Black) - Black print model",
+  "B-BT-B2-2": "RMT (Black) - Black print model",
+  "B-BT-B2-S": "RMT (Black) - Black print model",
+  "B-BLACMAS-DP": "Warming Lactation Massager (Dark Pink)",
+  "B-BLACMAS-DP-1": "Warming Lactation Massager (Dark Pink)",
+  "B-BLACMAS-DP-S": "Warming Lactation Massager (Dark Pink)",
+  "B-BLACMAS-G": "Warming Lactation Massager (Green)",
+  "B-BLACMAS-G-1": "Warming Lactation Massager (Green)",
+  "B-BLACMAS-G-S": "Warming Lactation Massager (Green)",
+  "B-SENBK-INS": "Sensory Book",
+  "B-SENBK-INS-1": "Sensory Book",
+  "B-SENBK-INS-2": "Sensory Book",
+  "B-SENBK-INS-3": "Sensory Book",
+  "B-SENBK-INS-S": "Sensory Book",
+  "B-SENBR": "Sensory Brush-New Model",
+  "B-SENBR-1": "Sensory Brush-New Model",
+  "B-SENBR-2": "Sensory Brush-New Model",
+  "B-SENBR-S": "Sensory Brush-New Model",
+  "B-BBYASP-E-ZLY-Bl": "Electric baby nasal aspirator- Blue",
+  "B-BBYASP-E-ZLY-Bl-1": "Electric baby nasal aspirator- Blue",
+  "B-BBYASP-E-ZLY-Bl-2": "Electric baby nasal aspirator- Blue",
+  "B-BBYASP-E-ZLY-Bl-3": "Electric baby nasal aspirator- Blue",
+  "B-BBYASP-E-ZLY-Bl-S": "Electric baby nasal aspirator- Blue",
+  "B-BBYASP-E-ZLY-Y": "Electric baby nasal aspirator- Yellow",
+  "B-BBYASP-E-ZLY-Y-1": "Electric baby nasal aspirator- Yellow",
+  "B-BBYASP-E-ZLY-Y-2": "Electric baby nasal aspirator- Yellow",
+  "B-BBYASP-E-ZLY-Y-S": "Electric baby nasal aspirator- Yellow",
+  "B-INST-BW-Bl": "Instant Breast warmers (Blue)",
+  "B-INST-BW-Bl-1": "Instant Breast warmers (Blue)",
+  "B-INST-BW-Bl-2": "Instant Breast warmers (Blue)",
+  "B-INST-BW-Bl-3": "Instant Breast warmers (Blue)",
+  "B-INST-BW-Bl-4": "Instant Breast warmers (Blue)",
+  "B-INST-BW-Bl-5": "Instant Breast warmers (Blue)",
+  "B-INST-BW-Bl-S": "Instant Breast warmers (Blue)",
+  "B-INST-BW-R": "Instant Breast warmers (Red)",
+  "B-INST-BW-R-1": "Instant Breast warmers (Red)",
+  "B-INST-BW-R-S": "Instant Breast warmers (Red)",
+  "B-EWBP": "Wearable breast pump",
+  "B-EWBP-2": "Wearable breast pump",
+  "B-EWBP-1": "Wearable breast pump",
+  "B-EWBP-3": "Wearable breast pump",
+  "B-EWBP-4": "Wearable breast pump",
+  "B-EWBP-S": "Wearable breast pump",
+  "B-SHTS-BLK": "Self Hook Therapy Stick Black",
+  "B-SHTS-BLK-1": "Self Hook Therapy Stick Black",
+  "B-SHTS-BLK-2": "Self Hook Therapy Stick Black",
+  "B-SHTS-BLK-3": "Self Hook Therapy Stick Black",
+  "B-SHTS-BLK-4": "Self Hook Therapy Stick Black",
+  "B-SHTS-BLK-5": "Self Hook Therapy Stick Black",
+  "B-SHTS-BLK-6": "Self Hook Therapy Stick Black",
+  "B-SHTS-BLK-7": "Self Hook Therapy Stick Black",
+  "B-SHTS-BLK-S": "Self Hook Therapy Stick Black",
+  "B-THM": "Transparent Human Model",
+  "B-THM-1": "Transparent Human Model",
+  "B-THM-S": "Transparent Human Model",
+  "B-STHM": "Semi- Transparent Human Model",
+  "B-STHM-1": "Semi- Transparent Human Model",
+  "B-STHM-S": "Semi- Transparent Human Model",
+  "B-GDTHM": "Glow in the Dark Model",
+  "B-GDTHM-1": "Glow in the Dark Model",
+  "B-GDTHM-S": "Glow in the Dark Model",
+  "B-NEPREG-CB": "Pregnancy kit combo without Ovulation thermometer",
+  "B-NEPREG-CB-1": "Pregnancy kit combo without Ovulation thermometer",
+  "B-NEPREG-CB-S": "Pregnancy kit combo without Ovulation thermometer",
+  "B-NEPREG-CB-OT": "Pregnancy kit combo with Ovulation thermometer",
+  "B-NEPREG-CB-OT-1": "Pregnancy kit combo with Ovulation thermometer",
+  "B-SHTS-PK": "Self Hook Therapy Stick (Pink)",
+  "B-SHTS-PK-1": "Self Hook Therapy Stick (Pink)",
+  "B-SHTS-PK-2": "Self Hook Therapy Stick (Pink)",
+  "B-SHTS-PK-3": "Self Hook Therapy Stick (Pink)",
+  "B-SHTS-PK-S": "Self Hook Therapy Stick (Pink)",
+  "B-ERMT-DM": "RMT with ERMT App",
+  "B-ERMT-DM-1": "RMT with ERMT App",
+  "B-ERMT-DM-2": "RMT with ERMT App",
+  "B-ERMT-DM-3": "RMT with ERMT App",
+  "B-ERMT-DM-S": "RMT with ERMT App",
+  "BMINI-DPT-P": "Digital pelvic muscle trainer- new model",
+  "BMINI-DPT-P-1": "Digital pelvic muscle trainer- new model",
+  "BMINI-DPT-P-S": "Digital pelvic muscle trainer- new model",
+  "B-GSM": "Guasha Massager",
+  "B-GSM-1": "Guasha Massager",
+  "B-GSM-S": "Guasha Massager",
+  "B-BTJW-B1": "RMT with Jawline Exerciser",
+  "B-BTJW-B2": "RMT with Jawline Exerciser",
+  "B-BTJW-B2-1": "RMT with Jawline Exerciser",
+  "B-BTJW-B1-1": "RMT with Jawline Exerciser",
+  "B-BTJW-B1-S": "RMT with Jawline Exerciser",
+  "B-MRD-FIL": "MRD with filter",
+  "B-MRD-FIL-1": "MRD with filter",
+  "B-MRD-FIL-2": "MRD with filter",
+  "B-MRD-FIL-3": "MRD with filter",
+  "B-MRD-FIL-S": "MRD with filter",
+  "B-MRD-WT": "MRD Grey",
+  "B-MRD-WT-1": "MRD Grey",
+  "B-MRD-WT-2": "MRD Grey",
+  "B-MRD-WT-S": "MRD Grey",
+  "M-IQ-PZ": "IQ puzzles (normal)",
+  "M-IQ-PZ-1": "IQ puzzles (normal)",
+  "B-IQ-PZ": "IQ puzzles (normal)",
+  "B-IQ-PZ-1": "IQ puzzles (normal)",
+  "M-IQ-PZ-S": "IQ puzzles (normal)",
+  "M-IQ-PZ-A": "IQ puzzles (Autism)",
+  "M-IQ-PZ-A-1": "IQ puzzles (Autism)",
+  "M-IQ-PZ-A-S": "IQ puzzles (Autism)",
+  "M-KIDMICRO-PK": "Kids Microscope pink",
+  "M-KIDMICRO-PK-1": "Kids Microscope pink",
+  "M-KIDMICRO-PK-2": "Kids Microscope pink",
+  "M-KIDMICRO-PK-3": "Kids Microscope pink",
+  "M-KIDMICRO-PK-4": "Kids Microscope pink",
+  "M-KIDMICRO-PK-5": "Kids Microscope pink",
+  "M-KIDMICRO-PK-6": "Kids Microscope pink",
+  "M-KIDMICRO-PK-S": "Kids Microscope pink",
+  "M-KIDMICRO-WT": "Kids Microscope White",
+  "M-KIDMICRO-WT-1": "Kids Microscope White",
+  "M-KIDMICRO-WT-S": "Kids Microscope White",
+  "B-LACBRA-P": "Wearable lactation massager (Purple)",
+  "B-LACBRA-P-1": "Wearable lactation massager (Purple)",
+  "B-LACBRA-P-S": "Wearable lactation massager (Purple)",
+  "B-LACBRA-G": "Wearable lactation massager (Grey)",
+  "B-LACBRA-G-1": "Wearable lactation massager (Grey)",
+  "B-LACBRA-G-S": "Wearable lactation massager (Grey)",
+  "B-IR-LP-200": "IR therpy lamp and holder",
+  "B-IR-LP-200-1": "IR therpy lamp and holder",
+  "B-IR-LP-200-S": "IR therpy lamp and holder",
+  "B-ANTI-C-MASS": "Anti- cellulite massager",
+  "B-ANTI-C-MASS-1": "Anti- cellulite massager",
+  "B-ANTI-C-MASS-S": "Anti- cellulite massager",
+  "M-HRC-PK2": "Headache Relief tool pack of 2",
+  "M-HRC-PK2-1": "Headache Relief tool pack of 2",
+  "M-HRC-PK2-2": "Headache Relief tool pack of 2",
+  "M-HRC-PK2-3": "Headache Relief tool pack of 2",
+  "M-HRC-PK2-MOQ2": "Headache Relief tool pack of 2",
+  "M-HRC-PK2-MOQ2-1": "Headache Relief tool pack of 2",
+  "B-HRC-PK2": "Headache Relief tool pack of 2",
+  "B-HRC-PK2-1": "Headache Relief tool pack of 2",
+  "B-HRC-PK2-MOQ2": "Headache Relief tool pack of 2",
+  "B-HRC-PK2-MOQ2-1": "Headache Relief tool pack of 2",
+  "M-HRC-PK2-S": "Headache Relief tool pack of 2",
+  "M-HRC-PK3": "Headache Relief tool pack of 3",
+  "M-HRC-PK3-1": "Headache Relief tool pack of 3",
+  "M-HRC-PK3-2": "Headache Relief tool pack of 3",
+  "M-HRC-PK3-3": "Headache Relief tool pack of 3",
+  "B-HRC-PK3": "Headache Relief tool pack of 3",
+  "B-HRC-PK3-1": "Headache Relief tool pack of 3",
+  "M-HRC-PK3-S": "Headache Relief tool pack of 3",
+  "M-HRC-PK4": "Headache Relief tool pack of 4",
+  "M-HRC-PK4-1": "Headache Relief tool pack of 4",
+  "M-HRC-PK4-2": "Headache Relief tool pack of 4",
+  "M-HRC-PK4-3": "Headache Relief tool pack of 4",
+  "M-HRC-PK4-4": "Headache Relief tool pack of 4",
+  "M-HRC-PK4-5": "Headache Relief tool pack of 4",
+  "B-HRC-PK4": "Headache Relief tool pack of 4",
+  "B-HRC-PK4-1": "Headache Relief tool pack of 4",
+  "M-HRC-PK4-S": "Headache Relief tool pack of 4",
+  "M-HRC-PK5": "Headache Relief tool pack of 5",
+  "M-HRC-PK5-1": "Headache Relief tool pack of 5",
+  "M-HRC-PK5-2": "Headache Relief tool pack of 5",
+  "M-HRC-PK5-3": "Headache Relief tool pack of 5",
+  "M-HRC-PK5-4": "Headache Relief tool pack of 5",
+  "M-HRC-PK5-5": "Headache Relief tool pack of 5",
+  "B-HRC-PK5": "Headache Relief tool pack of 5",
+  "B-HRC-PK5-1": "Headache Relief tool pack of 5",
+  "M-HRC-PK5-S": "Headache Relief tool pack of 5",
+  "M-HRC-PK1": "Headache Relief tool pack of 1",
+  "M-HRC-PK1-1": "Headache Relief tool pack of 1",
+  "B-HRC-PK1": "Headache Relief tool pack of 1",
+  "B-HRC-PK1-1": "Headache Relief tool pack of 1",
+  "B-EGSM": "Electric guasha massager",
+  "B-EGSM-1": "Electric guasha massager",
+  "B-EGSM-S": "Electric guasha massager",
+  "B-INSEM-KIT-PK2": "Insemination kit (Pack of 2)",
+  "B-INSEM-KIT-PK2-1": "Insemination kit (Pack of 2)",
+  "B-INSEM-KIT-PK2-S": "Insemination kit (Pack of 2)",
+  "B-INSEM-KIT-PK5": "Insemination kit (Pack of 5)",
+  "B-INSEM-KIT-PK5-1": "Insemination kit (Pack of 5)",
+  "B-INSEM-KIT-PK5-2": "Insemination kit (Pack of 5)",
+  "B-INSEM-KIT-PK5-3": "Insemination kit (Pack of 5)",
+  "B-INSEM-KIT-PK5-4": "Insemination kit (Pack of 5)",
+  "B-INSEM-KIT-PK5-S": "Insemination kit (Pack of 5)",
+  "B-SUTPRAC-KIT-GL": "Suture Practice Kit - combo 3",
+  "B-SUTPRAC-KIT-GL-1": "Suture Practice Kit - combo 3",
+  "B-SUTPRAC-KIT-GL-2": "Suture Practice Kit - combo 3",
+  "B-SUTPRAC-KIT-GL-3": "Suture Practice Kit - combo 3",
+  "B-SUTPRAC-KIT-GL-4": "Suture Practice Kit - combo 3",
+  "B-SUTPRAC-KIT-GL-S": "Suture Practice Kit - combo 3",
+  "B-SUTPRAC-KIT-3TOOL": "Suture Practice Kit - combo 1",
+  "B-SUTPRAC-KIT-3TOOL-1": "Suture Practice Kit - combo 1",
+  "B-SUTPRAC-KIT-3TOOL-2": "Suture Practice Kit - combo 1",
+  "B-SUTPRAC-KIT-3TOOL-3": "Suture Practice Kit - combo 1",
+  "B-SUTPRAC-KIT-3TOOL-4": "Suture Practice Kit - combo 1",
+  "B-SUTPRAC-KIT-3TOOL-S": "Suture Practice Kit - combo 1",
+  "B-BRESHE-50ML": "Breast shell 50ML Capacity (Model 3)",
+  "B-BRESHE-50ML-1": "Breast shell 50ML Capacity (Model 3)",
+  "B-BRESHE-50ML-S": "Breast shell 50ML Capacity (Model 3)",
+  "B-SENFDT-L": "Sensory fidget toy large model",
+  "B-SENFDT-L-1": "Sensory fidget toy large model",
+  "B-SENFDT-L-2": "Sensory fidget toy large model",
+  "B-SENFDT-L-3": "Sensory fidget toy large model",
+  "B-SENFDT-L-4": "Sensory fidget toy large model",
+  "B-SENFDT-L-5": "Sensory fidget toy large model",
+  "B-SENFDT-L-S": "Sensory fidget toy large model",
+  "B-BRESHE-SNOW": "Breast shell SS model",
+  "B-BRESHE-SNOW-1": "Breast shell SS model",
+  "B-BRESHE-SNOW-S": "Breast shell SS model",
+  "B-HYDRO-PAD-PK2": "Hydrogel nipple pad pack of 2",
+  "B-HYDRO-PAD-PK2-1": "Hydrogel nipple pad pack of 2",
+  "B-HYDRO-PAD-PK2-2": "Hydrogel nipple pad pack of 2",
+  "B-HYDRO-PAD-PK2-3": "Hydrogel nipple pad pack of 2",
+  "B-HYDRO-PAD-PK2-S": "Hydrogel nipple pad pack of 2",
+  "B-HYDRO-PAD-PK4": "Hydrogel nipple pad pack of 4",
+  "B-HYDRO-PAD-PK4-1": "Hydrogel nipple pad pack of 4",
+  "B-HYDRO-PAD-PK4-S": "Hydrogel nipple pad pack of 4",
+  "B-SUTPRAC-PAD-DEFECT": "Suture pad Defective",
+  "B-VD-TPE-PK5": "Soft Vaginal Dilator",
+  "B-VD-TPE-PK5-1": "Soft Vaginal Dilator",
+  "B-VD-TPE-PK5-2": "Soft Vaginal Dilator",
+  "B-VD-TPE-PK5-3": "Soft Vaginal Dilator",
+  "B-VD-TPE-PK5-S": "Soft Vaginal Dilator",
+  "B-JAWBITE-PK1": "Jaw grading bite blocks (Pack of 1)",
+  "B-JAWBITE-PK1-1": "Jaw grading bite blocks (Pack of 1)",
+  "B-JAWBITE-PK1-S": "Jaw grading bite blocks (Pack of 1)",
+  "B-JAWBITE-PK2": "Jaw grading bite blocks (Pack of 2)",
+  "B-JAWBITE-PK2-1": "Jaw grading bite blocks (Pack of 2)",
+  "B-JAWBITE-PK2-2": "Jaw grading bite blocks (Pack of 2)",
+  "B-JAWBITE-PK2-3": "Jaw grading bite blocks (Pack of 2)",
+  "B-JAWBITE-PK2-S": "Jaw grading bite blocks (Pack of 2)",
+  "B-PPBELT-GREY": "Postpartum Belt - Grey",
+  "B-PPBELT-GREY-1": "Postpartum Belt - Grey",
+  "B-PPBELT-GREY-S": "Postpartum Belt - Grey",
+  "B-ORALSWAB-PK50": "Oral swabs pack of 50",
+  "B-ORALSWAB-PK50-1": "Oral swabs pack of 50",
+  "B-ORAL-SWAB-PK50-2": "Oral swabs pack of 50",
+  "B-ORAL-SWAB-PK50-3": "Oral swabs pack of 50",
+  "B-ORALSWAB-PK50-S": "Oral swabs pack of 50",
+  "B-ORALSWAB-PK100": "Oral swabs pack of 100",
+  "B-ORALSWAB-PK100-1": "Oral swabs pack of 100",
+  "B-ORALSWAB-PK100-S": "Oral swabs pack of 100",
+  "B-EWBP-BOT-TYP": "Wearable breast pump bottle type",
+  "B-EWBP-TNK": "Wearable breast pump bottle type",
+  "B-EWBP-BOT-TYP-1": "Wearable breast pump bottle type",
+  "B-EWBP-TNK-1": "Wearable breast pump bottle type",
+  "B-EGSM-PK": "Electric guasha massager (Pink)",
+  "B-IR-THERMO-WT": "IR thermometer White",
+  "B-IR-THERMO-WT-1": "IR thermometer White",
+  "B-IR-THERMO-BK": "IR thermometer Black",
+  "B-IR-THERMO-BK-1": "IR thermometer Black",
+  "B-EWBP-BASE-PK": "Wearable Breast pump with Base",
+  "B-EWBP-BASE-PK-1": "Wearable Breast pump with Base",
+  "B-BP-MON-W-BLE": "BP monitor with Bluetooth",
+  "B-BP-MON-W-BLE-1": "BP monitor with Bluetooth",
+  "B-BP-MON": "BP monitor without Bluetooth",
+  "B-BP-MON-1": "BP monitor without Bluetooth",
+  "B-BP-MON-2": "BP monitor without Bluetooth",
+  "B-BP-MON-3": "BP monitor without Bluetooth",
+  "B-BT-B-PK2": "RMT Black pack of 2",
+  "B-BT-B-PK2-1": "RMT Black pack of 2",
+  "B-BULB-INSEM-KIT-PK5": "Bulb Syringe IUI applicator -8cm(Pack of 5)",
+  "B-BULB-INSEM-KIT-PK5-1": "Bulb Syringe IUI applicator -8cm(Pack of 5)",
+  "B-OVU-CASSETTE-PK5": "Ovulation cassette (Pack of 5)",
+  "B-OVU-CASSETTE-PK5-1": "Ovulation cassette (Pack of 5)",
+  "B-OVU-STRIPS-PK5": "Ovulation Strips (Pack of 5)",
+  "B-OVU-STRIPS-PK5-1": "Ovulation Strips (Pack of 5)",
+  "B-ARTI-SPOON": "Articulation Spoon",
+  "B-ARTI-SPOON-1": "Articulation Spoon",
+  "B-MRD-Bl": "MRD Blue",
+  "B-MRD-VIO": "MRD Violet",
+  "B-MRD-PK": "MRD Pink",
+  "B-PPBELT-GREEN": "Postpartum Belt- Green lines",
+  "B-PPBELT-GREEN-1": "Postpartum Belt- Green lines",
+  "B-LIPTRAINER-G": "Lip Muscle Trainer",
+  "B-LIPTRAINER-G-1": "Lip Muscle Trainer",
+  "B-THERA-PUTTY-Bl": "Hand therapy putty- Blue",
+  "B-THERA-PUTTY-Bl-1": "Hand therapy putty- Blue",
+  "B-MALE-FERTILITY-KIT": "Male Fertility Kit",
+  "B-MALE-FERTILITY-KIT-1": "Male Fertility Kit",
+  "B-MALE-FERTILITY-KIT-2": "Male Fertility Kit",
+  "B-MALE-FERTILITY-KIT-3": "Male Fertility Kit",
+  "B-MALE-FERTILITY-KIT-4": "Male Fertility Kit",
+  "B-MALE-FERTILITY-KIT-5": "Male Fertility Kit",
+  "B-MESHNEB-3MODES": "Mesh nebulizer - 3 modes",
+  "B-MESHNEB-3MODES-1": "Mesh nebulizer - 3 modes",
+  "B-CONCEP-CUP": "Conception Cup",
+  "B-CONCEP-CUP-1": "Conception Cup",
+  "B-VD-PLAS-TPE": "Soft and Plastic VD combo",
+  "B-VD-PLAS-TPE-1": "Soft and Plastic VD combo",
+  "B-AIR-PURIFIER": "Air purifier",
+  "B-AIR-PURIFIER-1": "Air purifier",
+  "B-JAW-TRAINER-CLIP": "Jaw trainer tool- red",
+  "B-JAW-TRAINER-CLIP-1": "Jaw trainer tool- red",
+  "B-JAW-TRAINER-CLIP-2": "Jaw trainer tool- red",
+  "B-JAW-TRAINER-CLIP-3": "Jaw trainer tool- red",
+  "B-NEPREG-CB-1PK": "Pregnancy Kit (1 Early 1 Normal 2 Pee Cup)",
+  "B-NEPREG-CB-1PK-1": "Pregnancy Kit (1 Early 1 Normal 2 Pee Cup)",
+  "B-NEPREG-CB-1PK-2": "Pregnancy Kit (1 Early 1 Normal 2 Pee Cup)",
+  "B-NEPREG-CB-1PK-3": "Pregnancy Kit (1 Early 1 Normal 2 Pee Cup)",
+  "B-ORAL-TRAINER-3HEAD": "Oral Muscle trainer- 3 heads",
+  "B-ORAL-TRAINER-3HEAD-1": "Oral Muscle trainer- 3 heads",
+  "B-BULB-CATH-PK4": "Insemination Dual kit (Pack of 4)",
+  "B-BULB-CATH-PK4-1": "Insemination Dual kit (Pack of 4)",
+  "B-BULB-CATH-PK4-2": "Insemination Dual kit (Pack of 4)",
+  "B-BULB-CATH-PK4-3": "Insemination Dual kit (Pack of 4)",
+  "B-BULB-CATH-PK10": "Insemination Dual kit (Pack of 10)",
+  "B-BULB-CATH-PK10-1": "Insemination Dual kit (Pack of 10)",
+  "B-BULB-CATH-PK10-2": "Insemination Dual kit (Pack of 10)",
+  "B-BULB-CATH-PK10-3": "Insemination Dual kit (Pack of 10)",
+  "B-ORAL-TRAINER-4HEAD": "Oral Muscle trainer- 4 heads",
+  "B-ORAL-TRAINER-4HEAD-1": "Oral Muscle trainer- 4 heads",
+  "B-MALE-FERTILITY-KIT-SUP1": "Male fertility kit supplier 1",
+  "B-MALE-FERTILITY-KIT-SUP1-1": "Male fertility kit supplier 1",
+  "B-MALE-FERTILITY-KIT-SUP1-2": "Male fertility kit supplier 1",
+  "B-MALE-FERTILITY-KIT-SUP1-3": "Male fertility kit supplier 1",
+  "B-TONGUE-TIP-3PC": "Tongue tip exerciser",
+  "B-TONGUE-TIP-3PC-1": "Tongue tip exerciser",
+  "B-ORAL-TRAINER-5HEAD": "Oral muscle trainer- 5 heads",
+  "B-ORAL-TRAINER-5HEAD-1": "Oral muscle trainer- 5 heads",
+  "B-ORAL-TRAINER-5HEAD-2": "Oral muscle trainer- 5 heads",
+  "B-ORAL-TRAINER-5HEAD-3": "Oral muscle trainer- 5 heads",
+  "M-ANTICHOK-RED&BLACK": "Anti choking device- Red & Black",
+  "M-ANTICHOK-RED&BLACK-1": "Anti choking device- Red & Black",
+  "B-ANTI-CHOK-BLK&RED-1": "Anti choking device- Red & Black",
+  "B-ANTI-CHOK-BLK&RED-2": "Anti choking device- Red & Black",
+  "M-ANTICHOK-YEL&BLUE": "Anti choking device- Yellow & Blue",
+  "M-ANTICHOK-YEL&BLUE-1": "Anti choking device- Yellow & Blue",
+  "B-ANTICHOK-YEL&BLUE-1": "Anti choking device- Yellow & Blue",
+  "B-ANTICHOK-YEL&BLUE-2": "Anti choking device- Yellow & Blue",
+  "M-ANTICHOK-AUTO": "Automatic Choking device",
+  "M-ANTICHOK-AUTO-1": "Automatic Choking device",
+  "B-ANTICHOK-AUTO-1": "Automatic Choking device",
+  "B-ANTICHOK-AUTO-2": "Automatic Choking device",
+  "B-ST-POLYGLACTIN": "Polyglactin suture thread",
+  "B-ST-POLYGLACTIN-1": "Polyglactin suture thread",
+  "B-ST-POLYGLYCOLIC": "Polyglycolic suture thread",
+  "B-ST-POLYGLYCOLIC-1": "Polyglycolic suture thread",
+  "B-IR-ROG-LP-200": "IR therapy lamp Red on glass",
+  "B-IR-ROG-LP-200-1": "IR therapy lamp Red on glass",
+  "B-IR-ROG-LP-200-2": "IR therapy lamp Red on glass",
+  "B-IR-ROG-LP-200-3": "IR therapy lamp Red on glass",
+  "B-BIDET-ATTACHMENT": "Mini Portable Bidet attachment",
+  "B-BIDET-ATTACHMENT-1": "Mini Portable Bidet attachment",
+  "B-PREG-SALT-400G": "Pregnancy soak salt",
+  "B-PREG-SALT-400G-1": "Pregnancy soak salt",
+  "B-EPSOM-250G": "Epsom salt - 250 grams",
+  "B-EPSOM-250G-1": "Epsom salt - 250 grams",
+  "M-EPSOM-250G": "Epsom salt - 250 grams",
+  "B-EPSOM-400G": "Epsom salt - 400 grams",
+  "B-EPSOM-400G-1": "Epsom salt - 400 grams",
+  "M-EPSOM-400G": "Epsom salt - 400 grams",
+  "B-EPSOM-900G": "Epsom salt - 900 grams",
+  "B-EPSOM-900G-1": "Epsom salt - 900 grams",
+  "M-EPSOM-900G": "Epsom salt - 900 grams",
+  "B-OVU-STRIPS-PK10": "Ovulation strips (Pack of 10)",
+  "B-OVU-STRIPS-PK10-1": "Ovulation strips (Pack of 10)",
+  "B-OVU-STRIPS-PK10-2": "Ovulation strips (Pack of 10)",
+  "B-OVU-STRIPS-PK10-3": "Ovulation strips (Pack of 10)",
+  "B-OVU-STRIPS-PK20": "Ovulation strips (Pack of 20)",
+  "B-OVU-STRIPS-PK20-1": "Ovulation strips (Pack of 20)",
+  "B-OVU-STRIPS-PK20-2": "Ovulation strips (Pack of 20)",
+  "B-OVU-STRIPS-PK20-3": "Ovulation strips (Pack of 20)",
+  "B-EYE-PATCH-PK10": "Eye patch Skin color- Pack of 10",
+  "B-EYE-PATCH-PK10-1": "Eye patch Skin color- Pack of 10",
+  "B-EYE-PATCH-PK20": "Eye patch Skin color- Pack of 20",
+  "B-EYE-PATCH-PK20-1": "Eye patch Skin color- Pack of 20",
+  "B-EYE-PATCH-PK30": "Eye patch Skin color- Pack of 30",
+  "B-EYE-PATCH-PK30-1": "Eye patch Skin color- Pack of 30",
+  "B-EYE-PATCH-WT-PK10": "Eye patch White color- Pack of 10",
+  "B-EYE-PATCH-WT-PK10-1": "Eye patch White color- Pack of 10",
+  "B-EYE-PATCH-WT-PK20": "Eye patch White color- Pack of 20",
+  "B-EYE-PATCH-WT-PK20-1": "Eye patch White color- Pack of 20",
+  "B-EYE-PATCH-WT-PK30": "Eye patch White color- Pack of 30",
+  "B-EYE-PATCH-WT-PK30-1": "Eye patch White color- Pack of 30",
+  "M-NASALSUC-RECHARGE": "Nasal suction irrigator- Rechargeable",
+  "M-NASALSUC-RECHARGE-1": "Nasal suction irrigator- Rechargeable",
+  "M-NASALSUC-RECHARGE-2": "Nasal suction irrigator- Rechargeable",
+  "B-NASALSUC-RECHARGE": "Nasal suction irrigator- Rechargeable",
+  "B-NASALSUC-RECHARGE-1": "Nasal suction irrigator- Rechargeable",
+  "B-CSECTION-KIT-15PCS": "C-Section Recovery kit- 15 pcs",
+  "B-CSECTION-KIT-15PCS-1": "C-Section Recovery kit- 15 pcs",
+  "B-CSECTION-KIT-15PCS-2": "C-Section Recovery kit- 15 pcs",
+  "B-CSECTION-KIT-15PCS-3": "C-Section Recovery kit- 15 pcs",
+  "B-HANG-THERMO": "Hanging thermometer",
+  "B-HANG-THERMO-1": "Hanging thermometer",
+  "B-FER-LUBRICANT-50ML": "Fertility-friendly lubricant",
+  "B-FER-LUBRICANT-50ML-1": "Fertility-friendly lubricant",
+  "B-TEETHTUBE-GYR": "Teething Tube Combo (Green Red Yellow)",
+  "B-TEETHTUBE-GYR-1": "Teething Tube Combo (Green Red Yellow)",
+  "B-REF-THERMO": "Refrigerator thermometer",
+  "B-REF-THERMO-1": "Refrigerator thermometer",
+  "B-SITZ-TUB": "Sitz bath tub",
+  "B-SITZ-TUB-1": "Sitz bath tub",
+  "B-BULB-10.5-INSEM-PK5": "Bulb Syringe IUI applicator (10.5 cm)(Pack of 5)",
+  "B-BULB-10.5-INSEM-PK5-1": "Bulb Syringe IUI applicator (10.5 cm)(Pack of 5)",
+  "B-INSEM-12CM-KIT-PK2": "Insemination Kit- Catheter type-12cm (Pack of 2)",
+  "B-INSEM-12CM-PK2-KIT-3": "Insemination Kit- Catheter type-12cm (Pack of 2)",
+  "B-INSEM-12CM-KIT-PK2-1": "Insemination Kit- Catheter type-12cm (Pack of 2)",
+  "B-INSEM-12CM-KIT-PK5": "Insemination Kit- Catheter type-12cm (Pack of 5)",
+  "B-INSEM-12CM-KIT-PK5-1": "Insemination Kit- Catheter type-12cm (Pack of 5)",
+  "B-BULB-10.5-INSEM-PK2": "Bulb Syringe IUI applicator (10.5 cm)(Pack of 2)",
+  "B-BULB-10.5-INSEM-PK2-1": "Bulb Syringe IUI applicator (10.5 cm)(Pack of 2)",
+  "B-BULB-INSEM-KIT-PK2": "Bulb Syringe IUI applicator -8cm(Pack of 2)",
+  "B-BULB-INSEM-KIT-PK2-1": "Bulb Syringe IUI applicator -8cm(Pack of 2)",
+  "B-SITZ-SALT-400G": "Sitz Bath salt- 400 Grams",
+  "B-SITZ-SALT-400G-1": "Sitz Bath salt- 400 Grams",
+  "B-INSEM-15CM-KIT-PK2": "Insemination Kit- Catheter type-15cm (Pack of 2)",
+  "B-INSEM-15CM-KIT-PK2-1": "Insemination Kit- Catheter type-15cm (Pack of 2)",
+  "B-INSEM-15CM-KIT-PK5": "Insemination Kit- Catheter type-15cm (Pack of 5)",
+  "B-INSEM-15CM-KIT-PK5-1": "Insemination Kit- Catheter type-15cm (Pack of 5)",
+  "B-DIGITAL-STETHOSCOPE": "Digital stethescope",
+  "B-DIGITAL-STETHOSCOPE-1": "Digital stethescope",
+  "B-ST-NY-2-0-30MM": "Nylon suture thread 2-0 - 30MM",
+  "B-ST-NY-2-0-30MM-1": "Nylon suture thread 2-0 - 30MM",
+  "B-ST-NY-2-0-24MM": "Nylon suture thread 2-0 - 24MM",
+  "B-ST-NY-2-0-24MM-1": "Nylon suture thread 2-0 - 24MM",
+  "B-ST-NY-4-0-30MM": "Nylon Suture thread 4-0 - 30MM",
+  "B-ST-NY-4-0-30MM-1": "Nylon Suture thread 4-0 - 30MM",
+  "B-ST-SK-2-0-30MM": "Silk Suture thread 2-0- 30MM",
+  "B-ST-SK-2-0-30MM-1": "Silk Suture thread 2-0- 30MM",
+  "B-ST-SK-4-0-30MM": "Silk Suture thread 4-0- 30MM",
+  "B-ST-SK-4-0-30MM-1": "Silk Suture thread 4-0- 30MM",
+  "B-ST-PP-2-0-30MM": "Polypropylene suture thread 2-0 - 30MM",
+  "B-ST-PP-2-0-30MM-1": "Polypropylene suture thread 2-0 - 30MM",
+  "B-ST-PP-4-0-30MM": "Polypropylene suture thread 4-0 - 30MM",
+  "B-ST-PP-4-0-30MM-1": "Polypropylene suture thread 4-0 - 30MM",
+  "B-MANUAL-BREAST-PUMP": "Manual Breast pump",
+  "B-MANUAL-BREAST-PUMP-1": "Manual Breast pump",
+  "B-MANUAL-BREAST-PUMP-2": "Manual Breast pump",
+  "B-MANUAL-BREAST-PUMP-3": "Manual Breast pump",
+  "B-IR-BULB": "IR Bulb",
+  "B-GSM-2-QUALITY": "Guasha massage- Second Quality",
+  "B-SEAT-BELT-ADJUSTER": "Car Seat Belt adjuster for pregnant women",
+  "B-FETAL-DOPPLER": "Fetal Doppler",
+  "B-FETAL-DOPPLER-1": "Fetal Doppler",
+  "B-ANTI-C-MASS-GREEN": "Anti cellulite massager- Green",
+  "B-ANTI-C-MASS-GREEN-1": "Anti cellulite massager- Green",
+  "B-NASAL-WASH-POWDER": "Nasal Wash Salt- 400 grams",
+  "B-NASAL-WASH-POWDER-1": "Nasal Wash Salt- 400 grams",
+  "B-CRACKNIP-SPRAY-100ML": "Cracked Nipple Spray",
+  "B-CRACKNIP-SPRAY-100ML-1": "Cracked Nipple Spray",
+  "B-CT-G-R": "Chewy tube combo- Red and green",
+  "B-CT-G-R-1": "Chewy tube combo- Red and green",
+  "B-CT-G-PK2": "Chewy tube green- Pack of 2",
+  "B-CT-G-PK2-1": "Chewy tube green- Pack of 2",
+  "B-SPEECH-COMBO-3HEADS": "Speech Therapy Combo with 3 heads",
+  "B-SPEECH-COMBO-3HEADS-1": "Speech Therapy Combo with 3 heads",
+  "B-POSTPARTUM-MINI-KIT": "Postpartum Mini Kit",
+  "B-POSTPARTUM-MINI-KIT-1": "Postpartum Mini Kit",
+  "B-PERI-WAND-MAS": "Perineal Massage Wand- White",
+  "B-PERI-WAND-MAS-1": "Perineal Massage Wand- White",
+  "B-SUTPRAC-PAD-NORMAL": "Suture Practice Pad- Normal",
+  "B-SUTPRAC-PAD-NORMAL-1": "Suture Practice Pad- Normal",
+  "B-ORALSWAB-WT-PK50": "Oral Swabs-White (Pack of 50)",
+  "B-ORALSWAB-WT-PK50-1": "Oral Swabs-White (Pack of 50)",
+  "B-ORALSWAB-WT-PK100": "Oral Swabs- White (Pack of 100)",
+  "B-ORALSWAB-WT-PK100-1": "Oral Swabs- White (Pack of 100)",
+  "B-MENO-CASSETTE-PK3": "Menopause test Cassette pack of 3",
+  "B-MENO-CASSETTE-PK3-1": "Menopause test Cassette pack of 3",
+  "B-FOAM-LINER-COMBO": "Perineal Healing foam and padliners combo",
+  "B-FOAM-LINER-COMBO-1": "Perineal Healing foam and padliners combo",
+  "B-FOAM-LINER-COMBO-2": "Perineal Healing foam and padliners combo",
+  "B-FOAM-LINER-COMBO-3": "Perineal Healing foam and padliners combo",
+  "B-INS-KIT-17CM-SUP2-PK2": "Insemination kit-17cm Supplier 2 (Pack of 2)",
+  "B-INS-KIT-17CM-SUP2-PK2-1": "Insemination kit-17cm Supplier 2 (Pack of 2)",
+  "B-INS-KIT-17CM-SUP2-PK5": "Insemination kit-17cm Supplier 2 (Pack of 5)",
+  "B-INS-KIT-17CM-SUP2-PK5-1": "Insemination kit-17cm Supplier 2 (Pack of 5)",
+  "B-PFM-BLW-MEM": "Rechargeble PeakFlow meter with Memory & Bluetooth",
+  "B-PFM-BLW-MEM-1": "Rechargeble PeakFlow meter with Memory & Bluetooth",
+  "B-SILVER-NURCUP-R": "Silver Nursing Cup- Regular",
+  "B-SILVER-NURCUP-R-1": "Silver Nursing Cup- Regular",
+  "B-SPEECH-COMBO-5HEADS": "Speech Therapy Combo with 5 heads",
+  "B-SPEECH-COMBO-5HEADS-1": "Speech Therapy Combo with 5 heads",
+  "B-BRE-ESSEN-KIT": "Breastfeeding Essential Kit",
+  "B-BRE-ESSEN-KIT-1": "Breastfeeding Essential Kit",
+  "B-BRE-ESSEN-KIT-2": "Breastfeeding Essential Kit",
+  "B-SILVER-NURCUP-L": "Silver Nursing Cup- Large",
+  "B-SILVER-NURCUP-L-1": "Silver Nursing Cup- Large",
+  "B-MENO-STRIPS-PK4": "Menopause Test Strips (Pack of 4)",
+  "B-MENO-STRIPS-PK4-1": "Menopause Test Strips (Pack of 4)",
+  "B-CT-G-BUMP": "Chewy tube Green (Bump model New)",
+  "B-CT-G-BUMP-1": "Chewy tube Green (Bump model New)",
+  "B-UTI-3PARA-PK3": "UTI Test Strips (Pack of 4)",
+  "B-UTI-3PARA-PK3-1": "UTI Test Strips (Pack of 4)",
+  "B-FLANGE-FINDER-KIT": "Flange Finder Kit",
+  "B-FLANGE-FINDER-KIT-1": "Flange Finder Kit",
+  "B-HUMAN-CUBE": "Human Anatomy Cube",
+  "B-HUMAN-CUBE-1": "Human Anatomy Cube",
+  "B-INFLATE-DONUT-PLW": "Inflatable Donut Pillow",
+  "B-INFLATE-DONUT-PLW-1": "Inflatable Donut Pillow",
+  "B-NEEMWOOD-COMB": "Neem Wood Comb",
+  "B-NEEMWOOD-COMB-1": "Neem Wood Comb",
+  "B-5FLANGE-INSERTS": "Flange Inserts for Breast Pump",
+  "B-5FLANGE-INSERTS-1": "Flange Inserts for Breast Pump",
+  "GLUCO-STRIPS-PK200": "GlucoSpark Strips (Pack of 200)",
+  "GLUCO-STRIPS-PK200-1": "GlucoSpark Strips (Pack of 200)",
+  "GLUCO-STRIPS-PK150": "GlucoSpark Strips (Pack of 150)",
+  "GLUCO-STRIPS-PK150-1": "GlucoSpark Strips (Pack of 150)",
+  "B-EYE-PATCH-DK-PK10": "Eye Patch - Dark Colour (Pack of 10)",
+  "B-EYE-PATCH-DK-PK10-1": "Eye Patch - Dark Colour (Pack of 10)"
+};
+function resolveProductName(rawName, sku) {
+  if (sku) {
+    for (const candidate of sku.split(",").map((s) => s.trim()).filter(Boolean)) {
+      if (SKU_NAME_MAP[candidate]) return SKU_NAME_MAP[candidate];
+    }
+  }
+  return rawName || "";
+}
+var SUPPLEMENTAL_ENTRIES = [
+  ["3M Littmann Classic III Monitoring Stethoscope, Rainbow-Finish, Raspberry Tube, 27 inch, 5806", "General"],
+  ["B-Arm Gua sha Facial Tool for Face, Neck, Eye |Non-Glossy Body Scraping Tool for Foot, Shoulder & Lymphatic Drainage |Skin Care Tool |Stainless Steel Gua Sha for Glowing Skin & Reducing Eye Puffiness", "General"],
+  ["Glucospark kit with 10 Strips and 10 Lancets - Sugar Test Machine for Home Use (B-Arm)", "General"],
+  ["B-Arm USP/Pharma Grade Epsom Salt(900g) for Bath, Foot Soak, Muscle Pain Relief, Skin Care| 100% Natural, Unscented, Easy Dissolve Magnesium Sulfate Crystal salts for bath, Dry Skin, Swelling", "General"],
+  ["Glucospark Digital Glucometer kit with 10 Strips And 10 Lancets | Blood Glucose Monitor And Accurate Blood Sugar Test Machine For Home (B-Arm)", "General"],
+  ["Glucospark Blood glucose Test Strips | Pack of 25 strips | Sugar Test Strips compatible with Glucospark glucose meter only and not with any other glucose meters", "General"],
+  ["Glucospark Glucometer Test Strips (Pack of 25) Suitable Only with Glucospark Sugar Test Machine \u2013 Fast & Accurate Results | Minimum Order: 2 Packs (2 x 25 Strips) | Sugar Test Strips (B-Arm)", "General"],
+  ["B-Arm USP/Pharma Grade Epsom Salt(400g) for Bath, Foot Soak, Muscle Pain Relief, Skin Care| 100% Natural, Unscented, Easy Dissolve Magnesium Sulfate Crystal salts for bath, Dry Skin, Swelling", "General"],
+  ["B-Arm Applicator for Menstrual Cup And Tampon- Make Insertion & Removal Easy | Menstruation Cup And Tampon Inserter Compatible with Most Period Cups And Tampons | Reusable Period Cup Applicator And Easy To Use", "Discontinued"],
+  ["B-Arm Menstrual Cup Inserter Tool \u2013 Easier Application/Removal of Period Cup | Compatible with most of the Menstrual Cups | Reusable Menstruation Cup Applicator", "Discontinued"],
+  ["B-Arm USP/Pharma Grade Epsom Salt(250g) for Bath, Foot Soak, Muscle Pain Relief, Skin Care| 100% Natural, Unscented, Easy Dissolve Magnesium Sulfate Crystal salts for bath, Dry Skin, Swelling", "General"],
+  ["Millwright 4X Mini Microscope with Adjustable Focus|1000X Scientist Toy with 8 LED & 2-Inch Screen|Cloth Samples Included|Handheld Microscope with Memory & Camera|Science Experiment Toy for 3+ Years", "General"],
+  ["B-Arm Digital Infrared Thermometer with 1 Sec Quick Reading", "General"]
+];
+var STOPWORDS = /* @__PURE__ */ new Set(["pack", "of", "with", "without", "and", "the", "for", "a", "an", "in", "kit", "new", "model", "type", "size"]);
+var tokenize = (s) => s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((t) => t.length > 1 && !STOPWORDS.has(t)).map((t) => t.length > 3 && t.endsWith("s") && !t.endsWith("ss") ? t.slice(0, -1) : t);
+var ENTRY_TOKENS = [...CATEGORY_ENTRIES, ...SUPPLEMENTAL_ENTRIES].map(([name, category]) => ({
+  tokens: tokenize(name),
+  category
+}));
+
+// src/lib/productMasterUpload.ts
+import * as XLSX2 from "npm:xlsx@0.18.5";
+var TABLE = "barm_product_master";
+async function fetchProductMasterMap() {
+  try {
+    const { data, error } = await supabasePublic.from(TABLE).select("sku, product_name, category");
+    if (error || !data) return /* @__PURE__ */ new Map();
+    const map = /* @__PURE__ */ new Map();
+    data.forEach((r) => {
+      if (r.sku && r.product_name) map.set(r.sku, { name: r.product_name, category: r.category || "" });
+    });
+    return map;
+  } catch {
+    return /* @__PURE__ */ new Map();
+  }
+}
+function skuBase(sku) {
+  return sku.trim().toUpperCase().replace(/\((AM|FK|MS)\)$/i, "").replace(/-\d+$/, "").replace(/-S$/i, "").replace(/[\s_]+/g, "");
+}
+function buildProductMasterResolver(master) {
+  const byBase = /* @__PURE__ */ new Map();
+  master.forEach((entry, sku) => {
+    const base = skuBase(sku);
+    if (!byBase.has(base)) byBase.set(base, entry);
+  });
+  const lookup = (sku) => master.get(sku) || byBase.get(skuBase(sku));
+  return {
+    resolveName: (sku, fallback) => lookup(sku)?.name || fallback,
+    resolveCategory: (sku, fallback) => lookup(sku)?.category || fallback
+  };
+}
+
+// src/lib/masterProductSkuid.ts
+var TABLE2 = "master_product_skuid";
+var CATEGORY_ALIASES = {
+  gynecology: "Gynaecology"
+};
+function normalizeCategory(raw) {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  return CATEGORY_ALIASES[trimmed.toLowerCase()] || trimmed;
+}
+function toNullableNumber(v) {
+  if (v === null || v === void 0 || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+async function fetchMasterSkuidMap() {
+  try {
+    const data = await fetchAllRows(TABLE2, (q) => q);
+    const map = /* @__PURE__ */ new Map();
+    data.forEach((r) => {
+      const sku = String(r["SKU ID"] ?? "").trim();
+      const name = String(r["Product Name"] ?? "").trim();
+      if (!sku || !name || map.has(sku)) return;
+      map.set(sku, {
+        name,
+        category: normalizeCategory(String(r["Category"] ?? "")),
+        tax: toNullableNumber(r["Tax"]),
+        costPrice: toNullableNumber(r["Cost Price"])
+      });
+    });
+    return map;
+  } catch {
+    return /* @__PURE__ */ new Map();
+  }
+}
+async function fetchMasterSkuidsByName() {
+  try {
+    const data = await fetchAllRows(TABLE2, (q) => q);
+    const out = /* @__PURE__ */ new Map();
+    data.forEach((r) => {
+      const sku = String(r["SKU ID"] ?? "").trim();
+      const name = String(r["Product Name"] ?? "").trim();
+      const platform = String(r["Platform"] ?? "").trim();
+      if (!sku || !name || !platform) return;
+      const key2 = name.toLowerCase();
+      let byPlatform = out.get(key2);
+      if (!byPlatform) {
+        byPlatform = /* @__PURE__ */ new Map();
+        out.set(key2, byPlatform);
+      }
+      const list = byPlatform.get(platform) || [];
+      if (!list.includes(sku)) list.push(sku);
+      byPlatform.set(platform, list);
+    });
+    return out;
+  } catch {
+    return /* @__PURE__ */ new Map();
+  }
+}
+async function fetchMasterSkuidAmazonCatalog() {
+  try {
+    const data = await fetchAllRows(TABLE2, (q) => q.eq("Platform", "Amazon"));
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    data.forEach((r) => {
+      const sku = String(r["SKU ID"] ?? "").trim();
+      const name = String(r["Product Name"] ?? "").trim();
+      if (!sku || !name || seen.has(sku)) return;
+      seen.add(sku);
+      out.push({ sku, name, category: normalizeCategory(String(r["Category"] ?? "")) });
+    });
+    return out;
+  } catch {
+    return [];
+  }
+}
+function buildMasterSkuidResolver(master) {
+  const byBase = /* @__PURE__ */ new Map();
+  master.forEach((entry, sku) => {
+    const base = skuBase(sku);
+    if (!byBase.has(base)) byBase.set(base, entry);
+  });
+  const lookup = (sku) => master.get(sku) || byBase.get(skuBase(sku));
+  return {
+    resolveName: (sku, fallback) => lookup(sku)?.name || fallback,
+    resolveCategory: (sku, fallback) => lookup(sku)?.category || fallback,
+    resolveTax: (sku) => lookup(sku)?.tax ?? null,
+    resolveCostPrice: (sku) => lookup(sku)?.costPrice ?? null
+  };
+}
+var DEFAULT_GST_MULTIPLIER = 1.18;
+function gstMultiplierFromTax(_tax) {
+  return DEFAULT_GST_MULTIPLIER;
+}
+
+// src/lib/productMarketingUpload.ts
+import * as XLSX3 from "npm:xlsx@0.18.5";
+var TABLE3 = "master_product_marketing";
+async function fetchProductMarketingMap() {
+  try {
+    const data = await fetchAllRows(TABLE3, (q) => q);
+    const map = /* @__PURE__ */ new Map();
+    data.forEach((r) => {
+      const sku = String(r.sku ?? "").trim();
+      const name = String(r.product_name ?? "").trim();
+      if (!sku || !name || map.has(sku)) return;
+      map.set(sku, { name, category: String(r.category ?? "").trim() });
+    });
+    return map;
+  } catch {
+    return /* @__PURE__ */ new Map();
+  }
+}
+function buildProductMarketingResolver(marketing) {
+  const byBase = /* @__PURE__ */ new Map();
+  marketing.forEach((entry, sku) => {
+    const base = skuBase(sku);
+    if (!byBase.has(base)) byBase.set(base, entry);
+  });
+  const lookup = (sku) => marketing.get(sku) || byBase.get(skuBase(sku));
+  return {
+    resolveName: (sku, fallback) => lookup(sku)?.name || fallback,
+    resolveCategory: (sku, fallback) => lookup(sku)?.category || fallback
+  };
+}
+
+// supabase/edge-build/ad-spend-report-shims/siteUrl.ts
+var SITE_URL = Deno.env.get("NEXT_PUBLIC_SITE_URL") || "https://amazon-ppc-analytics-dashboard.vercel.app";
+
+// src/lib/adSpendReportExport.ts
+var LOW_SPEND_THRESHOLD = 50;
+var ACOS_SHORTLIST_MIN_SPEND = 100;
+function getDateWindow(toDate2, days) {
+  const end = /* @__PURE__ */ new Date(`${toDate2}T00:00:00Z`);
   const start = new Date(end.getTime());
   start.setUTCDate(start.getUTCDate() - (days - 1));
   return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
 }
-// Every ad platform's own "last N days" export reports with roughly a 1-day
-// lag (today's spend isn't final/downloadable until tomorrow), so a report
-// generated same-day is silently missing its most recent day's spend unless
-// that gap is surfaced. This lists every date in [start, endDate] that has
-// zero raw ad-spend rows for a platform, so the caller can warn instead of
-// quietly under-counting.
-function missingDates(datesPresent: Set<string>, start: string, endDate: string): string[] {
-  const missing: string[] = [];
-  const cur = new Date(`${start}T00:00:00Z`);
-  const end = new Date(`${endDate}T00:00:00Z`);
+function missingDates(datesPresent, start, endDate) {
+  const missing = [];
+  const cur = /* @__PURE__ */ new Date(`${start}T00:00:00Z`);
+  const end = /* @__PURE__ */ new Date(`${endDate}T00:00:00Z`);
   while (cur.getTime() <= end.getTime()) {
     const iso = cur.toISOString().slice(0, 10);
     if (!datesPresent.has(iso)) missing.push(iso);
@@ -91,246 +1912,59 @@ function missingDates(datesPresent: Set<string>, start: string, endDate: string)
   }
   return missing;
 }
-function dotDate(iso: string): string {
+function dotDate(iso) {
   const [y, m, d] = iso.split("-");
   return `${d}-${m}-${y}`;
 }
-function num(v: unknown): number {
+function num3(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 }
-
-// ── per-product aggregate (raw spend, pre-tax) ──────────────────────────────
-// gstMultiplier travels with the aggregate (set once per product from its own
-// master_product_skuid Tax rate — see the tagging pass in
-// generateAdSpendReportWorkbook below) rather than living as a single global
-// constant, since different products carry different real GST slabs (5%/18%/0%).
-// adAttributedSpend/adAttributedSales carry Amazon's own Sponsored Products
-// numbers (raw spend and "7 Day Total Sales", both un-adjusted for GST) for
-// the ACOS column specifically — per the seller's explicit request that ACOS
-// match Amazon's own ad-attributed report number-for-number, even though that
-// number can read very differently from this report's Orders/CPC (which stay
-// on real order-report units — see computeAcos below and its call sites).
-// Left undefined for a SKU with no Sponsored Products row at all (e.g.
-// SB/SD-only spend, or Flipkart/Meesho), so computeAcos falls back to the
-// real-order-based formula for it instead of reading as a false 0% ACOS.
-// revenue: real per-order revenue for this SKU/window — SUM(item-price x quantity) for Amazon,
-// SUM(Invoice Amount) for Flipkart, over non-cancelled order rows. Plainly additive across a
-// merged product's SKU variants (groupProductsByName just sums it, no dead-spend-style special
-// case — unlike adAttributedSpend/Sales, real order revenue from two different real SKUs of one
-// product is honestly combinable). Left undefined for Meesho, which still uses the flat
-// Price x units estimate everywhere (Summary sheet, SKU Wise Report) per the seller's choice.
-// adOrders: ad-attributed order/unit count, for the SKU Wise Report's "Total Ad Orders" column —
-// Meesho: "Orders by ad" straight off its own ad report (barm_daily_ms_barm_ads), i.e. ad-attributed
-// order count (Meesho's ad export has no ₹ sales figure the way Amazon's does, only this count) —
-// also what Summary's "Ad Sales" column for Meesho multiplies by price, and computeAcos's real
-// fallback denominator for Meesho, since Meesho never sets adSales. Amazon: Sponsored Products'
-// own "7 Day Total Orders (#)" (orders_7d), gated behind the same hasSpRow check as
-// adAttributedSpend/Sales (left undefined for an SB/SD-only SKU, same reasoning as those two) —
-// inert for ACOS itself, since computeAcos's adAttributedSales branch already resolves Amazon's
-// ACOS first. Flipkart: ads-export direct_units_sold + indirect_units_sold, always defined (never
-// gated) since Flipkart's own adSales is always defined too and always wins computeAcos's
-// adSalesFigure ternary — also purely a display figure here, inert for ACOS. Plainly additive
-// across a merged product's SKU variants, same reasoning as revenue above.
-// adSales: Flipkart-only — "Total Revenue" straight off its own ads export (fsnRows,
-// barm_flipkart_fsn_report), i.e. the ad platform's own reported revenue for that SKU/window.
-// Deliberately separate from adAttributedSpend/adAttributedSales (which drive Amazon's ACOS
-// formula in computeAcos) — Flipkart's ACOS stays on the real-order CPC/Price formula per the
-// existing design, this field is display-only for Summary's Ad Sales column. Also separate from
-// revenue (real per-order revenue from FK ord) — the two can legitimately differ, same as
-// Amazon's attributed sales vs. its real order revenue can. Plainly additive across a merged
-// product's SKU variants, same reasoning as revenue/adOrders above.
-export interface WindowAgg { spend: number; units: number; gstMultiplier?: number; adAttributedSpend?: number; adAttributedSales?: number; revenue?: number; adOrders?: number; adSales?: number; }
-const emptyAgg = (): WindowAgg => ({ spend: 0, units: 0 });
-export const spendTax = (a: WindowAgg): number => a.spend * (a.gstMultiplier ?? DEFAULT_GST_MULTIPLIER);
-export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) / a.units : spendTax(a));
-// Ad Status Report's per-platform 1/0 indicator: real ad Spend (with tax) this range window,
-// strictly — per the seller's later, explicit instruction, confirmed a second time after review:
-// "spend aakirtha 1, illana 0, avlaotha" (ad spend happened -> 1, otherwise -> 0, nothing else
-// factored in). This deliberately supersedes an earlier, since-reverted version of this same rule
-// that instead keyed on real Orders/Sales (a.units) — a product with real ad spend but zero orders
-// that window now correctly reads as 1 again, and a product with real orders but zero ad spend on
-// a given platform now correctly reads as 0, even though it may genuinely be selling there.
-export const adStatusHasSpend = (a: WindowAgg): boolean => spendTax(a) > 0;
-// ACOS = Ad Spend / Ad-Attributed Sales, final answer, per the seller's explicit instruction
-// after reconciling a real example against raw data ("Chewy tube (Green - Spiral model)",
-// Flipkart, 11-to-17-09-2026: Spend 1,504.01 / Ad Sales 7,587 = 19.8%, matching the seller's own
-// manual math exactly). Every platform prefers its own ad-attributed sales figure whenever one is
-// on file: Amazon's raw Sponsored Products spend/sales (adAttributedSpend/adAttributedSales, no
-// GST added, matching the raw export exactly), Flipkart's ads-export "Total Revenue" (adSales), or
-// Meesho's ad-attributed order count x price (adOrders x price — Meesho's ad export has no
-// currency sales figure directly, only that count, same convention the Summary sheet's own
-// summaryAcosCell already used for Flipkart/Meesho). Only when NONE of these are on file at all
-// (Amazon SB/SD-only spend with no Sponsored Products row, e.g.) does it fall back to an
-// ESTIMATED/PROXY ACOS: raw spend, no GST, over this window's own Total Sales figure (real
-// per-order revenue where it's tracked, i.e. Amazon/Flipkart's `revenue`; the flat Price x units
-// estimate otherwise, i.e. Meesho, which never populates `revenue` on its WindowAgg).
-//
-// History: this same ad-attributed-sales branch was added (6f32888), reverted (cd333b5), restored
-// (a real SP row with 0 attributed sales WAS meant to blank), and is now superseded again by the
-// seller's final, explicit rule below: ACOS should never blank out just because a specific
-// ad-attribution figure happens to be 0 when a real, computable CPC/Price ratio is available —
-// confirmed directly after review of a live generated report (SKU A001-5 and others: real Orders,
-// real Spend, Total Ad Sales 0, ACOS rendering blank when it should read as a real percentage).
-//
-// The sentinel below is deliberately reused (not Infinity/NaN) for internal comparisons — sorting
-// "worst ACOS first" and the Action Sheet's >14% threshold both still want a very-high-but-finite
-// number here. Only the user-visible cell/JSON writers (acosCell below) treat it specially,
-// blanking it out instead of showing "999%". With every fallback below now routing through
-// acosCpcOverPrice, the sentinel is reachable only for a genuinely unpriced row (no price and no
-// listingPrice on file at all) with real spend — there is truly nothing to divide by.
-export const ACOS_UNDEFINED_SENTINEL = 9.99;
-// CPC/Price, with the same "genuinely unpriced -> sentinel, else 0" fallback every computeAcos
-// branch below shares — factored out once several call sites started needing it, both the
-// Orders=0 gate and every ad-attribution branch's own "attribution is exactly 0" case.
-const acosCpcOverPrice = (a: WindowAgg, price: number, listingPrice?: number): number => {
+var emptyAgg = () => ({ spend: 0, units: 0 });
+var spendTax = (a) => a.spend * (a.gstMultiplier ?? DEFAULT_GST_MULTIPLIER);
+var computeCpc = (a) => a.units > 0 ? spendTax(a) / a.units : spendTax(a);
+var sellPriceCell = (a) => a.units > 0 && (a.revenue ?? 0) > 0 ? Math.round((a.revenue ?? 0) / a.units * 100) / 100 : "\u2013";
+var adOrdersCell = (a) => a.adOrders !== void 0 ? a.adOrders : "\u2013";
+var adStatusHasSpend = (a) => spendTax(a) > 0;
+var ACOS_UNDEFINED_SENTINEL = 9.99;
+var acosCpcOverPrice = (a, price, listingPrice) => {
   const p = listingPrice && listingPrice > 0 ? listingPrice : price;
   if (!p || p <= 0) return a.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
   const cpc = computeCpc(a);
   return cpc > 0 ? cpc / p : 0;
 };
-// Real-Orders gate (a.units, the same denominator computeCpc itself uses — NOT Total Ad Orders/
-// a.adOrders), per the seller's explicit instruction, confirmed after being shown it overrides the
-// earlier Amazon exception on purpose: whenever a SKU/window's real Orders are 0, ACOS is ALWAYS
-// CPC/Price — never the blank sentinel, and never the Ad Spend/Ad-Attributed Sales ratio, even for
-// a genuine Amazon Sponsored Products row or real Flipkart/Meesho ad-order data on file for that
-// same SKU/window.
-export const computeAcos = (a: WindowAgg, price: number, listingPrice?: number): number => {
+var computeAcos = (a, price, listingPrice) => {
   if (a.units === 0) return acosCpcOverPrice(a, price, listingPrice);
-  // Orders > 0 below this point.
-  // Amazon: prefer its own Ad Spend/Ad-Attributed Sales ratio whenever there's a real (>0)
-  // attributed sales figure to divide by; when attribution is defined but exactly 0 (real ad
-  // spend, zero attributed sales this window), that used to be the ACOS_UNDEFINED_SENTINEL — per
-  // the seller's later, confirmed instruction (see this function's own comment above), it now
-  // falls back to CPC/Price instead, the same as every other "can't use ad-attribution" case.
-  if (a.adAttributedSales !== undefined) {
+  if (a.adAttributedSales !== void 0) {
     if (a.adAttributedSales > 0) return (a.adAttributedSpend ?? 0) / a.adAttributedSales;
     return acosCpcOverPrice(a, price, listingPrice);
   }
-  // Flipkart/Meesho: same treatment — a genuine ad-attributed-orders count with a real (>0)
-  // ad-sales figure keeps its own ratio; adSalesFigure exactly 0 falls back to CPC/Price too.
   if ((a.adOrders ?? 0) > 0) {
-    const adSalesFigure = a.adSales !== undefined ? a.adSales : a.adOrders! * price;
+    const adSalesFigure = a.adSales !== void 0 ? a.adSales : a.adOrders * price;
     if (adSalesFigure > 0) return a.spend / adSalesFigure;
     return acosCpcOverPrice(a, price, listingPrice);
   }
-  // No ad-attribution data of any kind for this SKU/window -> CPC/Price, same fallback as above.
   return acosCpcOverPrice(a, price, listingPrice);
 };
-
-// Action Sheet only. Unlike computeAcos above, this keeps its own separate Spend(no tax)/Total
-// Sales fallback (not CPC/Price) for a Sponsored Products row with 0 attributed sales — the Action
-// Sheet is different: it's a worksheet
-// built to be ACTED on, and per the seller's explicit report against a real export (a Suture
-// thread-KT row: Orders 1, Spend without tax ₹436.86, Price ₹721, Total Sales ₹721 — a fully
-// computable 60.59% — still rendered as the sentinel's literal "999%"), a SKU with real
-// Orders/Spend/Price/Total Sales on file should never show that raw sentinel: it reads as a data
-// error, not a signal to act on, and (via actionFor below) was also corrupting the recommended
-// bid-cut text with a fabricated "7-day ACOS 999%". So here, ANY non-positive Sponsored Products
-// attribution (undefined OR present-but-zero) falls back to the same Spend(no tax)/Total Sales
-// proxy computeAcos's own SB/SD-only branch already uses — only when that fallback's own
-// denominator (Total Sales) is itself 0 does this still return the sentinel, exactly the
-// "genuinely nothing to compute from" case the existing >14% threshold check was written to keep
-// surfacing (see its own comment below).
-export function actionSheetAcos(a: WindowAgg, price: number): number {
-  if (a.adAttributedSales !== undefined && a.adAttributedSales > 0) {
+function actionSheetAcos(a, price) {
+  if (a.adAttributedSales !== void 0 && a.adAttributedSales > 0) {
     return (a.adAttributedSpend ?? 0) / a.adAttributedSales;
   }
   const totalSales = a.revenue ?? a.units * price;
   if (totalSales > 0) return a.spend / totalSales;
   return a.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
 }
-
-// Platform-wide "Overall sales" figures (units sold + realised sale value) —
-// unrelated to ad spend, so kept as its own shape rather than overloading
-// WindowAgg.spend to mean two different things depending on context.
-interface SalesAgg { units: number; value: number; }
-const emptySales = (): SalesAgg => ({ units: 0, value: 0 });
-
-export interface ProductRow {
-  platform: Platform;
-  sku: string;
-  name: string;
-  price: number;
-  day: WindowAgg;
-  range: WindowAgg;
-}
-
-interface CampaignSpendRow {
-  platform: Platform;
-  campaign: string;
-  spend: number;
-}
-
-// Multiple SKU codes for the same physical product are normal — a product can
-// carry several SKU variants (different pack sizes, a re-listing, a spelling
-// change) that the product-master table (see resolveName below) already maps
-// to one approved product name. Without this, each SKU variant printed as its
-// own report row with that same name repeated 4-5x instead of one combined
-// row. `p.name` has already been resolved against the master table by the
-// time this runs, so grouping on it (rather than on raw SKU) merges every SKU
-// variant of one product into a single row, summing its spend/units. The
-// merged row keeps every contributing SKU (comma-joined) so it can still be
-// traced back to the exact SKUs behind the numbers.
-// A SKU code carrying either of these two suffixes is the exact same physical SKU as its base
-// counterpart, just tagged for a reason internal to the seller's own listing/master-table setup:
-//   - "(Old)" (e.g. "B-CT-Y(Old)") is the same SKU as its current, un-tagged counterpart
-//     ("B-CT-Y") — the master table just renamed the product at some point (e.g. "Chewy tube
-//     (Yellow)" became "Chewy tube (Yellow) - Spiral model") without changing the underlying SKU.
-//   - "-S" (e.g. "A015-S", "B-CT-G-BUMP-S") has no entry of its own in master_product_skuid at
-//     all, so it resolves through a different fallback path than its base SKU ("A015",
-//     "B-CT-G-BUMP") and lands on a different display name — splitting one product into two
-//     incomplete rows even though it's the identical physical SKU.
-// Stripped here so groupProductsByName can recognize either overlap and fold the tagged row into
-// the base one, instead of printing two near-duplicate rows for one product — per the seller's
-// explicit instruction that same name OR same SKU (after stripping either suffix) means one row.
-const stripLegacySkuSuffix = (sku: string): string =>
-  sku.trim().toLowerCase().replace(/\s*\(old\)\s*$/i, "").replace(/-s$/i, "");
-const isLiveSku = (sku: string): boolean => sku.trim().toLowerCase() === stripLegacySkuSuffix(sku);
-
-// Sums two WindowAgg.adAttributedSpend/adAttributedSales values across a merge, keeping the
-// "undefined = no Sponsored Products row on file" distinction from computeAcos intact: only
-// when both sides are undefined does the merged value stay undefined (falls back to the
-// real-order ACOS formula), otherwise a missing side counts as 0 spend/sales contributed.
-// Used for BOTH the single reporting day and the range/week window — a product with 2+ SKU/
-// ad-group variants gets its day ACOS from the plain total of every variant's own attributed
-// spend and sales that day, exactly like the range window already worked and exactly like Spend/
-// Orders/CPC already do elsewhere on this same row. (An earlier version of this function picked a
-// single "worst" raw row instead of summing, to make day ACOS match one exact row of Amazon's raw
-// per-campaign export — reverted per the seller's explicit request: summing is the "obviously
-// correct" reading of a merged row's own displayed Spend total, and a displayed Spend that's a sum
-// across every variant next to an ACOS computed from only one of them read as self-contradictory,
-// which mattered more than preserving an exact single-row match once a product spans more than one
-// SKU/ad-group that day.)
-const sumOptional = (a?: number, b?: number): number | undefined =>
-  a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0);
-
-export function groupProductsByName(
-  products: ProductRow[],
-  // name -> Platform -> full master SKU list (fetchMasterSkuidsByName). When a
-  // grouped row's resolved name+platform has an entry here, its "SKU(s)" list
-  // comes from the master instead of the window's own transactional SKUs —
-  // the master's list is the complete, stable set (e.g. all 5 known variants
-  // of a product), while the window-derived set only ever contains whichever
-  // SKUs actually had ad spend or orders in that specific day/range.
-  masterSkuidsByName?: Map<string, Map<string, string[]>>,
-  // sku -> master_product_skuid's own "Product Name" (fetchMasterSkuidMap). A product's own
-  // display name (p.name) goes through a resolver chain — master_product_marketing first,
-  // then master_product_skuid, then barm_product_master, then a raw fallback — so two sibling
-  // SKUs of the exact same physical product can land on two DIFFERENT final display names if
-  // only one of them has a master_product_marketing entry. Grouping on p.name alone then prints
-  // that one product as two separate rows, each with an incomplete SKU subset and therefore
-  // wrong Spend/Orders/ACOS. This second identity source lets the union-find below fold those
-  // apart-by-name groups back together whenever master_product_skuid says their SKUs belong to
-  // the same product, regardless of what each one's own resolved display name ended up being.
-  skuToMasterSkuidName?: Map<string, string>
-): ProductRow[] {
-  const byName = new Map<string, ProductRow & { skuSet: Set<string> }>();
+var emptySales = () => ({ units: 0, value: 0 });
+var stripLegacySkuSuffix = (sku) => sku.trim().toLowerCase().replace(/\s*\(old\)\s*$/i, "").replace(/-s$/i, "");
+var isLiveSku = (sku) => sku.trim().toLowerCase() === stripLegacySkuSuffix(sku);
+var sumOptional = (a, b) => a === void 0 && b === void 0 ? void 0 : (a ?? 0) + (b ?? 0);
+function groupProductsByName(products, masterSkuidsByName, skuToMasterSkuidName) {
+  const byName = /* @__PURE__ */ new Map();
   products.forEach((p) => {
-    const key = p.name.trim().toLowerCase();
-    const existing = byName.get(key);
+    const key2 = p.name.trim().toLowerCase();
+    const existing = byName.get(key2);
     if (!existing) {
-      byName.set(key, { ...p, day: { ...p.day }, range: { ...p.range }, skuSet: new Set([p.sku]) });
+      byName.set(key2, { ...p, day: { ...p.day }, range: { ...p.range }, skuSet: /* @__PURE__ */ new Set([p.sku]) });
       return;
     }
     existing.day.spend += p.day.spend;
@@ -350,28 +1984,23 @@ export function groupProductsByName(
     if (!existing.price && p.price) existing.price = p.price;
     existing.skuSet.add(p.sku);
   });
-
-  // Second pass — fold one name-group into another when a SKU in one, once its
-  // "(Old)" tag is stripped, matches a SKU in the other: same physical product,
-  // just renamed in the master table, so it must not print as two rows. Union-
-  // find over the name-keys above, joined whenever a normalized SKU is shared.
-  const parent = new Map<string, string>([...byName.keys()].map((k) => [k, k]));
-  const find = (k: string): string => {
+  const parent = new Map([...byName.keys()].map((k) => [k, k]));
+  const find = (k) => {
     let root = k;
-    while (parent.get(root) !== root) root = parent.get(root)!;
+    while (parent.get(root) !== root) root = parent.get(root);
     let cur = k;
     while (parent.get(cur) !== root) {
-      const next = parent.get(cur)!;
+      const next = parent.get(cur);
       parent.set(cur, root);
       cur = next;
     }
     return root;
   };
-  const skuNormToKeys = new Map<string, string[]>();
-  byName.forEach((group, key) => {
+  const skuNormToKeys = /* @__PURE__ */ new Map();
+  byName.forEach((group, key2) => {
     group.skuSet.forEach((s) => {
       const norm = stripLegacySkuSuffix(s);
-      skuNormToKeys.set(norm, [...(skuNormToKeys.get(norm) ?? []), key]);
+      skuNormToKeys.set(norm, [...skuNormToKeys.get(norm) ?? [], key2]);
     });
   });
   skuNormToKeys.forEach((keys) => {
@@ -381,18 +2010,13 @@ export function groupProductsByName(
       if (ra !== rb) parent.set(ra, rb);
     }
   });
-
-  // Third union rule — fold groups together whenever a SKU in each carries the same
-  // master_product_skuid "Product Name", even though their own resolved p.name strings
-  // differ (see skuToMasterSkuidName's param comment above). Same union-find machinery,
-  // just keyed on the master table's identity instead of a normalized SKU string.
   if (skuToMasterSkuidName) {
-    const masterNameToKeys = new Map<string, string[]>();
-    byName.forEach((group, key) => {
+    const masterNameToKeys = /* @__PURE__ */ new Map();
+    byName.forEach((group, key2) => {
       group.skuSet.forEach((s) => {
         const masterName = skuToMasterSkuidName.get(s)?.trim().toLowerCase();
         if (!masterName) return;
-        masterNameToKeys.set(masterName, [...(masterNameToKeys.get(masterName) ?? []), key]);
+        masterNameToKeys.set(masterName, [...masterNameToKeys.get(masterName) ?? [], key2]);
       });
     });
     masterNameToKeys.forEach((keys) => {
@@ -403,10 +2027,9 @@ export function groupProductsByName(
       }
     });
   }
-
-  const merged = new Map<string, ProductRow & { skuSet: Set<string>; hasLiveSku: boolean }>();
-  byName.forEach((group, key) => {
-    const root = find(key);
+  const merged = /* @__PURE__ */ new Map();
+  byName.forEach((group, key2) => {
+    const root = find(key2);
     const groupHasLive = [...group.skuSet].some(isLiveSku);
     const existing = merged.get(root);
     if (!existing) {
@@ -429,71 +2052,25 @@ export function groupProductsByName(
     existing.range.adAttributedSales = sumOptional(existing.range.adAttributedSales, group.range.adAttributedSales);
     if (!existing.price && group.price) existing.price = group.price;
     group.skuSet.forEach((s) => existing.skuSet.add(s));
-    // Prefer the currently-active (non-"(Old)") naming as the merged row's display name — an
-    // all-"(Old)" group only keeps its own name if the group it merged with has no live SKU either.
     if (!existing.hasLiveSku && groupHasLive) {
       existing.name = group.name;
       existing.hasLiveSku = true;
     }
   });
-
   return [...merged.values()].map(({ skuSet, hasLiveSku, ...p }) => {
     const masterSkus = masterSkuidsByName?.get(p.name.trim().toLowerCase())?.get(p.platform);
     const sku = masterSkus && masterSkus.length ? [...masterSkus].sort().join(", ") : [...skuSet].join(", ");
     return { ...p, sku };
   });
 }
-
-export interface AdSpendReportOpts {
-  /** 'YYYY-MM-DD' — the single reporting day. */
-  endDate: string;
-  /** Trailing window ending on endDate, inclusive. Defaults to 7 (matches the
-   *  hand-built workbook's "Last 7 days" date-range columns). */
-  rangeDays?: number;
-  accountName?: string;
-  /** Upsert this run's per-product figures into barm_ad_spend_history. Off unless a caller asks:
-   *  only the real generations (the Reports-page download and the daily generate-ad-spend-report
-   *  job) pass true, so a preview/audit build can never overwrite production history. */
-  persistHistory?: boolean;
-  /** Upsert ONLY the 30D figures into barm_ad_spend_history_30d, leaving barm_ad_spend_history
-   *  untouched — for backfilling past report dates (supabase/scripts/backfill_ad_spend_history_30d.ts).
-   *  Implied by persistHistory. */
-  persistHistory30dOnly?: boolean;
-  /** Ask Gemini to word the Action Sheet suggestions (the rule-based text is always written first).
-   *  Defaults to true; audits pass false so a build makes no external calls. */
-  aiSuggestions?: boolean;
-}
-
-// Amazon/Flipkart order data used to come straight from barm_amazon_am_orders
-// / barm_flipkart_order_report, then got redirected to the external MIS
-// (SellerMate) pipeline tables via misAdapters.ts's fetchMisAmazonOrders/
-// fetchMisFkOrders. That pipeline lags real uploads by days — verified
-// directly against Supabase: its amazon_orders/fk_orders tables stopped
-// syncing at 27 Aug while the seller's own "Last 7 days" workbook already
-// covered through 31 Aug — so Overall sales went blank for every day past
-// whatever the MIS pipeline last synced. Reading straight from
-// barm_daily_am_orders/barm_daily_fk_orders instead — the per-sheet archival
-// mirror combinedAdSpendUpload.ts's one-file upload writes on every run —
-// keeps this report in step with whatever was actually uploaded. Trade-off:
-// a standalone per-report Orders upload (not the one-file workbook) does NOT
-// reach these two mirror tables, only the real barm_amazon_am_orders/
-// barm_flipkart_order_report ones — so Overall sales here still needs the
-// one-file "Last 7 days" upload to run, not just any Orders upload.
-async function fetchDailyAmazonOrders(range: { start: string; end: string }, endDate: string) {
-  // Ordered by (report_date, id) instead of fetchAllRows's default "id" — report_date has its own
-  // index (barm_daily_am_orders_date_idx) and is what this query filters on, so Postgres can
-  // satisfy the ORDER BY directly from that index scan. Ordering by "id" instead forced a separate
-  // Sort over every row in the date range on each paginated page, which grew slow enough to hit a
-  // statement timeout as the table grew with months of daily uploads. "id" stays as a tiebreaker
-  // for .range() pagination stability, same reasoning as fetchAllRows's own comment on ordering.
+async function fetchDailyAmazonOrders(range, endDate) {
   const rows = await fetchAllRows(
     "barm_daily_am_orders",
     (q) => q.gte("report_date", range.start).lte("report_date", endDate),
     ["report_date", "id"]
   );
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (rows as any[]).map((r) => {
-    const raw = (r.raw as Record<string, unknown>) || {};
+  return rows.map((r) => {
+    const raw = r.raw || {};
     return {
       amazon_order_id: r.order_id,
       order_item_id: String(raw["order-item-id"] ?? r.order_id),
@@ -504,71 +2081,32 @@ async function fetchDailyAmazonOrders(range: { start: string; end: string }, end
       product_name: r.product_name,
       quantity: r.quantity,
       item_price: r.item_price,
-      raw,
+      raw
     };
   });
 }
-
-// A handful of rows from an old (since-fixed) upload bug have a null
-// report_date in barm_daily_fk_orders despite a perfectly good "Ordered On"
-// value sitting in raw — recovered here so those orders aren't silently
-// dropped. (Confirmed those nulls only affect a couple of days from a mid-
-// August upload; current/recent report windows are unaffected.)
-async function fetchDailyFlipkartOrders(range: { start: string; end: string }, endDate: string) {
-  // See fetchDailyAmazonOrders's comment — same fix, ordered by the indexed report_date column
-  // (barm_daily_fk_orders_date_idx) instead of "id" to avoid the same statement-timeout risk.
+async function fetchDailyFlipkartOrders(range, endDate) {
   const rows = await fetchAllRows(
     "barm_daily_fk_orders",
     (q) => q.gte("report_date", range.start).lte("report_date", endDate),
     ["report_date", "id"]
   );
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (rows as any[]).map((r) => {
-    const raw = (r.raw as Record<string, unknown>) || {};
+  return rows.map((r) => {
+    const raw = r.raw || {};
     return {
       order_item_id: r.order_item_id,
       order_id: r.order_id,
-      order_date: r.report_date || parseFlexibleDate(raw["Ordered On"]),
+      order_date: r.report_date || toDate(raw["Ordered On"]),
       order_item_status: r.order_status,
       sku: r.sku,
       fsn: r.fsn,
       product_title: r.product_name,
       quantity: r.quantity,
-      raw,
+      raw
     };
   });
 }
-
-// ── Amazon ───────────────────────────────────────────────────────────────────
-export async function fetchAmazonProducts(
-  range: { start: string; end: string },
-  endDate: string
-): Promise<{
-  products: Map<string, ProductRow>;
-  overallDay: SalesAgg;
-  overallRange: SalesAgg;
-  campaigns: CampaignSpendRow[];
-  unmappedSpend: number;
-  /** Unmapped SB/SD spend on the reporting day alone (part of unmappedSpend, which covers the range). */
-  unmappedSpendDay: number;
-  /** unmappedSpend broken down per campaign, biggest first — the Notes sheet names each one. */
-  unmappedCampaigns: { campaign_name: string; spend: number; dates: string[] }[];
-  /** Brand/Display campaigns that spent earlier in the range but have no row at all on the reporting day. */
-  campaignsMissingOnEndDate: { campaign_name: string; lastSpendDate: string; lastSpend: number }[];
-  reportDates: Set<string>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  spRows: any[];
-  /** Every fetched SP row, unfiltered — only for the raw "Amazon Spend" dump sheet. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  spRowsRaw: any[];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  orderRows: any[];
-  revenueRangeBySku: Map<string, number>;
-}> {
-  // Amazon ads come from the daily combined upload's own copy, barm_daily_am_ads — this report is the
-  // only one allowed to use that upload (27 Oct 2026; every other report reads the Upload-page cards).
-  // The SB/SD card rows are still read: a Brand/Display campaign-day the "AM ads" sheet carries
-  // neither split per SKU nor as a SKU-less row is only known from them (amazonAdSourceRules.ts).
+async function fetchAmazonProducts(range, endDate) {
   const [dailyAdRows, sbCardRows, sdCardRows, mapRows, orderRowsRaw, priceRows] = await Promise.all([
     fetchAllRows("barm_daily_am_ads", (q) => q.gte("report_date", range.start).lte("report_date", endDate), ["report_date", "id"]),
     fetchAllRows("barm_amazon_sb_campaign", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
@@ -577,219 +2115,150 @@ export async function fetchAmazonProducts(
     // natural key instead (fetchAllRows would otherwise error on "id").
     fetchAllRows("barm_amazon_campaign_sku_map", (q) => q, ["campaign_name", "sku"]),
     fetchDailyAmazonOrders(range, endDate),
-    fetchAllRows("barm_amazon_price_listing", (q) => q),
+    fetchAllRows("barm_amazon_price_listing", (q) => q)
   ]);
   const { spRows: spRowsRaw, sbRows, sdRows } = dailyAmAdsReportRows(dailyAdRows, sbCardRows, sdCardRows);
-  // Every "AM ads" row with an Advertised SKU counts (plain raw sum), including the seller's per-SKU
-  // split of Brand/Display spend — the SKU attribution the seller wants (24 Sep 2026). An SB/SD
-  // campaign-day already split that way is dropped from the SB/SD rows below, so it is never counted twice.
   const spRows = spRowsRaw;
   const splitDays = spCampaignDays(spRows);
   const sbSdRows = [...sbRows, ...sdRows].filter((r) => !isSplitCoveredCampaignRow(r, splitDays));
-  // Amazon's own orders export can carry a literal duplicate line (every
-  // column identical), and a duplicate could already be sitting in Supabase
-  // from an upload made before combinedAdSpendUpload.ts's replaceRangeRows
-  // started deduping exact-duplicate rows on insert — filtered here
-  // defensively (same natural key Flipkart's fetchFlipkartProducts already
-  // uses below) so a leftover duplicate doesn't double-count units sold until
-  // the next full re-upload flushes it out of the table.
-  const seenOrderRow = new Set<string>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const orderRows = (orderRowsRaw as any[]).filter((r) => {
-    const key = `${r.order_item_id}|${r.item_status}|${r.quantity}`;
-    if (seenOrderRow.has(key)) return false;
-    seenOrderRow.add(key);
+  const seenOrderRow = /* @__PURE__ */ new Set();
+  const orderRows = orderRowsRaw.filter((r) => {
+    const key2 = `${r.order_item_id}|${r.item_status}|${r.quantity}`;
+    if (seenOrderRow.has(key2)) return false;
+    seenOrderRow.add(key2);
     return true;
   });
-
-  // Sponsored Brands / Display carry no SKU column — split each campaign's
-  // spend across the SKUs mapped to it on the Upload page, same as the
-  // Historical Analysis Report.
-  const campaignSkuMap = new Map<string, { sku: string; weight: number }[]>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  mapRows.forEach((r: any) => {
+  const campaignSkuMap = /* @__PURE__ */ new Map();
+  mapRows.forEach((r) => {
     const weight = Number(r.weight);
     const list = campaignSkuMap.get(r.campaign_name) || [];
     list.push({ sku: r.sku, weight: Number.isFinite(weight) && weight > 0 ? weight : 1 });
     campaignSkuMap.set(r.campaign_name, list);
   });
-  const campaignShares = (campaignName: string): { sku: string; share: number }[] | null => {
+  const campaignShares = (campaignName) => {
     const list = campaignSkuMap.get(campaignName);
     if (!list || !list.length) return null;
     const total = list.reduce((s, e) => s + e.weight, 0);
     if (total <= 0) return null;
     return list.map((e) => ({ sku: e.sku, share: e.weight / total }));
   };
-
-  const priceBySku = new Map<string, number>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  priceRows.forEach((r: any) => { if (r.seller_sku && num(r.price) > 0) priceBySku.set(r.seller_sku, num(r.price)); });
-
-  const nameBySku = new Map<string, string>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  orderRows.forEach((r: any) => { if (r.sku && r.product_name && !nameBySku.has(r.sku)) nameBySku.set(r.sku, r.product_name); });
-  // A SKU with ad spend but no order in this window has no name from orderRows
-  // above — Price (All Listings report) covers every active listing whether
-  // or not it sold, so it fills most of that gap. Without this, those rows
-  // print the raw SKU code instead of a product name (e.g. "B-INSEM-15CM-KIT-PK5-1").
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  priceRows.forEach((r: any) => { if (r.seller_sku && r.item_name && !nameBySku.has(r.seller_sku)) nameBySku.set(r.seller_sku, r.item_name); });
-
-  const spendBySku = new Map<string, WindowAgg>();
-  const ensureSpend = (sku: string): WindowAgg => {
+  const priceBySku = /* @__PURE__ */ new Map();
+  priceRows.forEach((r) => {
+    if (r.seller_sku && num3(r.price) > 0) priceBySku.set(r.seller_sku, num3(r.price));
+  });
+  const listedSkus = /* @__PURE__ */ new Set();
+  priceRows.forEach((r) => {
+    if (r.seller_sku && (num3(r.price) > 0 || num3(r.mrp) > 0)) listedSkus.add(r.seller_sku);
+  });
+  const nameBySku = /* @__PURE__ */ new Map();
+  orderRows.forEach((r) => {
+    if (r.sku && r.product_name && !nameBySku.has(r.sku)) nameBySku.set(r.sku, r.product_name);
+  });
+  priceRows.forEach((r) => {
+    if (r.seller_sku && r.item_name && !nameBySku.has(r.seller_sku)) nameBySku.set(r.seller_sku, r.item_name);
+  });
+  const spendBySku = /* @__PURE__ */ new Map();
+  const ensureSpend = (sku) => {
     let a = spendBySku.get(sku);
-    if (!a) { a = emptyAgg(); spendBySku.set(sku, a); }
+    if (!a) {
+      a = emptyAgg();
+      spendBySku.set(sku, a);
+    }
     return a;
   };
   let unmappedSpend = 0;
-
-  const campaignSpendByDay = new Map<string, number>();
-  const addCampaignSpend = (campaign: string, spend: number) => {
+  const campaignSpendByDay = /* @__PURE__ */ new Map();
+  const addCampaignSpend = (campaign, spend) => {
     if (!campaign) return;
     campaignSpendByDay.set(campaign, (campaignSpendByDay.get(campaign) || 0) + spend);
   };
-
-  // Per the seller's explicit choice, Amazon SP spend is always the plain sum of the
-  // raw export's own Spend column, per SKU — no correction applied for deleted/archived
-  // campaigns whose rows come back with campaign_name and ad_group_name both blank
-  // (Amazon repeats that campaign's full daily spend on every SKU it used to target once
-  // it's gone, rather than splitting it across them). An earlier version of this code
-  // divided such rows evenly across same-day/same-spend clusters to avoid double-counting
-  // that repetition, but the seller asked for the report to always match a straight sum
-  // of the raw file instead, even though that means a re-surfaced deleted campaign can
-  // inflate the total.
-  // Amazon's own ad-attributed spend/sales (raw "Spend" and "7 Day Total
-  // Sales" columns, un-adjusted for GST), tracked alongside the real-order
-  // aggregate above purely so the ACOS column can match the raw Sponsored
-  // Products export number-for-number — see computeAcos's adAttributedSales
-  // branch. Sponsored Products only (sbRows/sdRows carry no per-SKU sales
-  // figure), matching the raw file this is meant to reproduce, which is
-  // itself a Sponsored Products Advertised Product report.
-  const adSpendRangeBySku = new Map<string, number>();
-  const adSalesRangeBySku = new Map<string, number>();
-  const adSpendDayBySku = new Map<string, number>();
-  const adSalesDayBySku = new Map<string, number>();
-  // SKU Wise Report's "Total Ad Orders" column: Amazon's own raw Sponsored Products "7 Day Total
-  // Orders (#)" (orders_7d), already stored per-row on barm_amazon_sp_advertised_product but never
-  // read anywhere in this function before — summed the same way as adSpend/adSalesRangeBySku above.
-  const adOrdersRangeBySku = new Map<string, number>();
-  const adOrdersDayBySku = new Map<string, number>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  spRows.forEach((r: any) => {
+  const adSpendRangeBySku = /* @__PURE__ */ new Map();
+  const adSalesRangeBySku = /* @__PURE__ */ new Map();
+  const adSpendDayBySku = /* @__PURE__ */ new Map();
+  const adSalesDayBySku = /* @__PURE__ */ new Map();
+  const adOrdersRangeBySku = /* @__PURE__ */ new Map();
+  const adOrdersDayBySku = /* @__PURE__ */ new Map();
+  spRows.forEach((r) => {
     if (!r.advertised_sku) return;
-    const spend = num(r.spend);
+    const spend = num3(r.spend);
     const a = ensureSpend(r.advertised_sku);
     a.spend += spend;
     if (r.report_date === endDate) addCampaignSpend(r.campaign_name || "", spend);
-
     const sku = r.advertised_sku;
-    const sales7d = num(r.sales_7d);
-    const orders7d = num(r.orders_7d);
+    const sales7d = num3(r.sales_7d);
+    const orders7d = num3(r.orders_7d);
     adSpendRangeBySku.set(sku, (adSpendRangeBySku.get(sku) || 0) + spend);
     adSalesRangeBySku.set(sku, (adSalesRangeBySku.get(sku) || 0) + sales7d);
     adOrdersRangeBySku.set(sku, (adOrdersRangeBySku.get(sku) || 0) + orders7d);
     if (r.report_date === endDate) {
-      // A single SKU can itself carry 2+ Sponsored Products rows for the exact same day (seen in
-      // practice as a second, otherwise-blank row — no campaign/ad-group/sales columns — sitting
-      // alongside the real one). Summed here exactly like the range-window maps two lines above —
-      // per the seller's explicit request, day ACOS for a SKU/product is the plain total of every
-      // one of its rows' spend and sales that day, matching its own displayed (summed) Spend cell.
       adSpendDayBySku.set(sku, (adSpendDayBySku.get(sku) || 0) + spend);
       adSalesDayBySku.set(sku, (adSalesDayBySku.get(sku) || 0) + sales7d);
       adOrdersDayBySku.set(sku, (adOrdersDayBySku.get(sku) || 0) + orders7d);
     }
   });
-  sbSdRows.forEach((r: { campaign_name?: string; spend?: number; report_date?: string }) => {
-    const spend = num(r.spend);
+  sbSdRows.forEach((r) => {
+    const spend = num3(r.spend);
     if (r.report_date === endDate) addCampaignSpend(r.campaign_name || "", spend);
     if (spend <= 0) return;
     const shares = campaignShares(r.campaign_name || "");
-    if (!shares) { unmappedSpend += spend; return; }
-    shares.forEach(({ sku, share }) => { ensureSpend(sku).spend += spend * share; });
-  });
-  // Named per campaign so a gap never reads as a bare (or ₹0) total — see the Notes sheet's warnings.
-  const unmappedCampaigns = unmappedCampaignSpend(sbSdRows, (c) => !!campaignShares(c));
-  const unmappedSpendDay = unmappedCampaignSpend(sbSdRows.filter((r: { report_date?: string }) => r.report_date === endDate), (c) => !!campaignShares(c))
-    .reduce((s, c) => s + c.spend, 0);
-  // Every SB/SD row, split-covered ones included: a split day still means the campaign has a row that day.
-  const campaignsMissingOnEndDate = campaignsMissingOnDay([...sbRows, ...sdRows], spRows, endDate);
-
-  // "day" spend is the same rows filtered to report_date === endDate, summed
-  // through the identical apportioning logic — recomputed rather than
-  // subtracted, so an unmapped-campaign row never leaks into a SKU's day figure.
-  const spendBySkuDay = new Map<string, number>();
-  const addDay = (sku: string, spend: number) => spendBySkuDay.set(sku, (spendBySkuDay.get(sku) || 0) + spend);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  spRows.filter((r: any) => r.report_date === endDate).forEach((r: any) => { if (r.advertised_sku) addDay(r.advertised_sku, num(r.spend)); });
-  sbSdRows
-    .filter((r: { report_date?: string }) => r.report_date === endDate)
-    .forEach((r: { campaign_name?: string; spend?: number }) => {
-      const spend = num(r.spend);
-      if (spend <= 0) return;
-      const shares = campaignShares(r.campaign_name || "");
-      if (!shares) return;
-      shares.forEach(({ sku, share }) => addDay(sku, spend * share));
+    if (!shares) {
+      unmappedSpend += spend;
+      return;
+    }
+    shares.forEach(({ sku, share }) => {
+      ensureSpend(sku).spend += spend * share;
     });
-
+  });
+  const unmappedCampaigns = unmappedCampaignSpend(sbSdRows, (c) => !!campaignShares(c));
+  const unmappedSpendDay = unmappedCampaignSpend(sbSdRows.filter((r) => r.report_date === endDate), (c) => !!campaignShares(c)).reduce((s, c) => s + c.spend, 0);
+  const campaignsMissingOnEndDate = campaignsMissingOnDay([...sbRows, ...sdRows], spRows, endDate);
+  const spendBySkuDay = /* @__PURE__ */ new Map();
+  const addDay = (sku, spend) => spendBySkuDay.set(sku, (spendBySkuDay.get(sku) || 0) + spend);
+  spRows.filter((r) => r.report_date === endDate).forEach((r) => {
+    if (r.advertised_sku) addDay(r.advertised_sku, num3(r.spend));
+  });
+  sbSdRows.filter((r) => r.report_date === endDate).forEach((r) => {
+    const spend = num3(r.spend);
+    if (spend <= 0) return;
+    const shares = campaignShares(r.campaign_name || "");
+    if (!shares) return;
+    shares.forEach(({ sku, share }) => addDay(sku, spend * share));
+  });
   const dayIst = istDayWindowUtc(endDate, endDate);
   const dayGte = Date.parse(dayIst.gte);
   const dayLt = Date.parse(dayIst.lt);
-
-  const unitsBySku = new Map<string, WindowAgg>();
-  const ensureUnits = (sku: string): WindowAgg => {
+  const unitsBySku = /* @__PURE__ */ new Map();
+  const ensureUnits = (sku) => {
     let a = unitsBySku.get(sku);
-    if (!a) { a = emptyAgg(); unitsBySku.set(sku, a); }
+    if (!a) {
+      a = emptyAgg();
+      unitsBySku.set(sku, a);
+    }
     return a;
   };
-  // SKU Wise Report's own "Total Sales" column, per the seller's explicit request: real
-  // per-order revenue (SUM of item-price x quantity across this SKU's own order rows in the
-  // range window) instead of one flat listing Price x total range units — the flat-price
-  // version was only ever an estimate and could disagree with what the SKU actually sold for
-  // across the week (discounts, mid-week price changes). Scoped to the exact same
-  // non-cancelled/standard-order-ID rows as unitsBySku just below, so Total Sales and Orders
-  // on that sheet always describe the same set of real sales.
-  const revenueBySku = new Map<string, number>();
+  const revenueBySku = /* @__PURE__ */ new Map();
   const overallDay = emptySales();
   const overallRange = emptySales();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  orderRows.forEach((r: any) => {
-    const qty = num(r.quantity);
-    // Overall sales QTS/Value: a straight SUM of the Order report's own
-    // Quantity/item-price columns for the window — unrelated to ad data, and
-    // with no status filter (matches the seller's own manual workbook, which
-    // SUMs every order status as-is rather than excluding cancelled/pending
-    // ones — those net out on their own once the order settles).
+  orderRows.forEach((r) => {
+    const qty = num3(r.quantity);
     overallRange.units += qty;
-    overallRange.value += num(r.item_price);
+    overallRange.value += num3(r.item_price);
     const ts = Date.parse(String(r.purchase_datetime || ""));
     if (Number.isFinite(ts) && ts >= dayGte && ts < dayLt) {
       overallDay.units += qty;
-      overallDay.value += num(r.item_price);
+      overallDay.value += num3(r.item_price);
     }
-
-    // Per-SKU Orders (feeds the Ad spend report's per-product Orders/CPC/ACOS
-    // columns) stays scoped to real, non-cancelled sales — ad-attribution
-    // math, a different question from the Overall sales total above.
     if (!r.sku || isCancelledOrder(r) || !isStandardOrderId(r.amazon_order_id)) return;
     ensureUnits(r.sku).units += qty;
-    // item-price is already that line's full total (verified against AM ord: a qty-2 row's
-    // item-price is exactly double a qty-1 row's, for the same SKU) — never multiply by qty here.
-    revenueBySku.set(r.sku, (revenueBySku.get(r.sku) || 0) + num(r.item_price));
+    revenueBySku.set(r.sku, (revenueBySku.get(r.sku) || 0) + num3(r.item_price));
   });
-
-  const skus = new Set<string>([...spendBySku.keys(), ...unitsBySku.keys(), ...priceBySku.keys()].filter(Boolean));
-  const products = new Map<string, ProductRow>();
+  const skus = new Set([...spendBySku.keys(), ...unitsBySku.keys(), ...priceBySku.keys(), ...listedSkus].filter(Boolean));
+  const products = /* @__PURE__ */ new Map();
   skus.forEach((sku) => {
     const rangeSpend = spendBySku.get(sku)?.spend || 0;
     const daySpend = spendBySkuDay.get(sku) || 0;
     const rangeUnits = unitsBySku.get(sku)?.units || 0;
-    // adAttributedSpend/Sales stay undefined for a SKU with no Sponsored
-    // Products row at all (SB/SD-only spend) rather than defaulting to 0, so
-    // computeAcos falls back to the real-order formula for it instead of
-    // reading as a false 0% ACOS.
     const hasSpRow = adSalesRangeBySku.has(sku) || adSpendRangeBySku.has(sku);
-    // Day units aren't tracked per-SKU above (only the overall total) — derive
-    // them with the same IST-day filter, scoped to this one SKU.
     products.set(sku, {
       platform: "Amazon",
       sku,
@@ -805,95 +2274,46 @@ export async function fetchAmazonProducts(
         // adOrders whenever hasSpRow is true, so this only matters for an SB/SD-only SKU (no SP
         // row) — there it MUST stay undefined so computeAcos falls through to its real-revenue
         // fallback, not a false adOrders=0-driven blank.
-        ...(hasSpRow ? { adAttributedSpend: adSpendDayBySku.get(sku) || 0, adAttributedSales: adSalesDayBySku.get(sku) || 0, adOrders: adOrdersDayBySku.get(sku) || 0 } : {}),
+        ...hasSpRow ? { adAttributedSpend: adSpendDayBySku.get(sku) || 0, adAttributedSales: adSalesDayBySku.get(sku) || 0, adOrders: adOrdersDayBySku.get(sku) || 0 } : {}
       },
       range: {
         spend: rangeSpend,
         units: rangeUnits,
         revenue: revenueBySku.get(sku) || 0,
-        ...(hasSpRow ? { adAttributedSpend: adSpendRangeBySku.get(sku) || 0, adAttributedSales: adSalesRangeBySku.get(sku) || 0, adOrders: adOrdersRangeBySku.get(sku) || 0 } : {}),
-      },
+        ...hasSpRow ? { adAttributedSpend: adSpendRangeBySku.get(sku) || 0, adAttributedSales: adSalesRangeBySku.get(sku) || 0, adOrders: adOrdersRangeBySku.get(sku) || 0 } : {}
+      }
     });
   });
-  // Fill in day units/revenue per SKU (separate pass — keeps the loop above simple).
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  orderRows.forEach((r: any) => {
+  orderRows.forEach((r) => {
     if (!r.sku || isCancelledOrder(r) || !isStandardOrderId(r.amazon_order_id)) return;
     const ts = Date.parse(String(r.purchase_datetime || ""));
     if (!(Number.isFinite(ts) && ts >= dayGte && ts < dayLt)) return;
     const p = products.get(r.sku);
     if (!p) return;
-    const qty = num(r.quantity);
+    const qty = num3(r.quantity);
     p.day.units += qty;
-    // item-price is already that line's full total — never multiply by qty (see revenueBySku above).
-    p.day.revenue = (p.day.revenue || 0) + num(r.item_price);
+    p.day.revenue = (p.day.revenue || 0) + num3(r.item_price);
   });
-
-  const campaigns: CampaignSpendRow[] = [...campaignSpendByDay.entries()]
-    .filter(([, spend]) => spend > 0)
-    .map(([campaign, spend]) => ({ platform: "Amazon" as const, campaign, spend }));
-
-  const reportDates = new Set<string>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  [...spRows, ...sbRows, ...sdRows].forEach((r: any) => { if (r.report_date) reportDates.add(r.report_date); });
-
+  const campaigns = [...campaignSpendByDay.entries()].filter(([, spend]) => spend > 0).map(([campaign, spend]) => ({ platform: "Amazon", campaign, spend }));
+  const reportDates = /* @__PURE__ */ new Set();
+  [...spRows, ...sbRows, ...sdRows].forEach((r) => {
+    if (r.report_date) reportDates.add(r.report_date);
+  });
   return { products, overallDay, overallRange, campaigns, unmappedSpend, unmappedSpendDay, unmappedCampaigns, campaignsMissingOnEndDate, reportDates, spRows, spRowsRaw, orderRows, revenueRangeBySku: revenueBySku };
 }
-
-// Amazon's current live listing price, straight off barm_amazon_price_listing (scripts/
-// price_listing_tables.sql) — used ONLY as computeAcos's new listingPrice argument for the
-// zero-Total-Ad-Orders ACOS gate (see computeAcos's own comment). Kept as its own fetch/map,
-// separate from fetchAmazonProducts's own priceBySku (which drives ProductRow.price, the display
-// Price column, and can in principle be overridden by a merge/seed step before it reaches a
-// computeAcos call site) — a listing-table miss here must fall back to whatever `price` argument
-// the caller already has, not silently read as 0.
-export async function fetchAmazonListingPriceMap(): Promise<Map<string, number>> {
+async function fetchAmazonListingPriceMap() {
   const rows = await fetchAllRows("barm_amazon_price_listing", (q) => q);
-  const map = new Map<string, number>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (rows as any[]).forEach((r) => { if (r.seller_sku && num(r.price) > 0) map.set(r.seller_sku, num(r.price)); });
+  const map = /* @__PURE__ */ new Map();
+  rows.forEach((r) => {
+    if (r.seller_sku && num3(r.price) > 0) map.set(r.seller_sku, num3(r.price));
+  });
   return map;
 }
-
-// ── Flipkart ─────────────────────────────────────────────────────────────────
-// A Flipkart order row's own real revenue for the window, with a fallback for when the uploaded
-// order report has no Invoice Amount at all: some Flipkart "Orders" exports are a logistics/
-// returns-style report (delivery SLAs, dispatch dates, cancellation reasons) with no price/amount
-// column under any name, rather than the report type this was designed against — confirmed directly
-// against Supabase, not a parsing bug (raw genuinely has no such field on those rows). Mirrors the
-// existing Meesho exception's pattern (see fetchMeeshoProducts below / this file's Notes-sheet
-// comment): real order-report data wins when present, a live/current listing-table price fills the
-// gap only for what it doesn't have. Exported as its own pure function — both call sites below run
-// through it so they can't drift, and it's directly unit-testable without a live Supabase fetch.
-export function flipkartRowRevenue(rawInvoiceAmount: number, quantity: number, listingPrice: number | undefined): number {
+function flipkartRowRevenue(rawInvoiceAmount, quantity, listingPrice) {
   if (rawInvoiceAmount > 0) return rawInvoiceAmount;
   return quantity * (listingPrice && listingPrice > 0 ? listingPrice : 0);
 }
-export async function fetchFlipkartProducts(
-  range: { start: string; end: string },
-  endDate: string,
-  // Current live selling price per SKU (barm_flipkart_listings — the same map fetched by
-  // fetchFlipkartListingPriceMap below, which also builds computeAcos's new listingPrice
-  // argument), reused here ONLY as flipkartRowRevenue's fallback for a row with no real Invoice
-  // Amount — never touches this function's own `price` variable (still real-invoice-average first,
-  // falling through to priceBySku/priceListBySku/aspAcc exactly as before), which stays the
-  // separate, existing "display Price" concern. Defaults to an empty map (not required) so an
-  // existing caller that doesn't have this map handy (e.g. the Daily Ad Spend Insights page) still
-  // compiles and behaves exactly as before — an empty map's .get() is always undefined, same as
-  // the fallback never firing.
-  flipkartListingPriceMap: Map<string, number> = new Map()
-): Promise<{
-  products: Map<string, ProductRow>;
-  overallDay: SalesAgg;
-  overallRange: SalesAgg;
-  campaigns: CampaignSpendRow[];
-  reportDates: Set<string>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  fsnRows: any[];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  orderRows: any[];
-  revenueRangeBySku: Map<string, number>;
-}> {
+async function fetchFlipkartProducts(range, endDate, flipkartListingPriceMap = /* @__PURE__ */ new Map()) {
   const [fsnRows, orderRowsRaw, earnRows, listingRows, priceListRows] = await Promise.all([
     fetchAllRows("barm_flipkart_fsn_report", (q) => q.gte("report_date", range.start).lte("report_date", endDate)),
     fetchDailyFlipkartOrders(range, endDate),
@@ -907,71 +2327,59 @@ export async function fetchFlipkartProducts(
     // Wrapped in .catch(() => []) like the tables above: if this table
     // hasn't been created yet, Flipkart just falls through to the existing
     // Earn More ASP fallback rather than breaking the report.
-    fetchAllRows("flipkart_price_list", (q) => q).catch(() => []),
+    fetchAllRows("flipkart_price_list", (q) => q).catch(() => [])
   ]);
-
-  // Same dedup key the Flipkart Historical Analysis Report uses, for rows
-  // already sitting in Supabase from an earlier upload of an overlapping file.
-  const seen = new Set<string>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const orderRows = (orderRowsRaw as any[]).filter((r) => {
-    const key = `${r.order_item_id}|${r.order_item_status}|${r.quantity}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
+  const seen = /* @__PURE__ */ new Set();
+  const orderRows = orderRowsRaw.filter((r) => {
+    const key2 = `${r.order_item_id}|${r.order_item_status}|${r.quantity}`;
+    if (seen.has(key2)) return false;
+    seen.add(key2);
     return true;
   });
-
-  const priceBySku = new Map<string, number>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  listingRows.forEach((r: any) => { if (r.seller_sku_id && num(r.selling_price) > 0) priceBySku.set(r.seller_sku_id, num(r.selling_price)); });
-  const priceListBySku = new Map<string, number>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  priceListRows.forEach((r: any) => { if (r.sku_id && num(r.price) > 0) priceListBySku.set(r.sku_id, num(r.price)); });
-  // Fall back to the window's realised average selling price where there's no
-  // listing row, so ACOS still has a denominator.
-  const aspAcc = new Map<string, { amount: number; units: number }>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  earnRows.forEach((r: any) => {
+  const priceBySku = /* @__PURE__ */ new Map();
+  listingRows.forEach((r) => {
+    if (r.seller_sku_id && num3(r.selling_price) > 0) priceBySku.set(r.seller_sku_id, num3(r.selling_price));
+  });
+  const priceListBySku = /* @__PURE__ */ new Map();
+  priceListRows.forEach((r) => {
+    if (r.sku_id && num3(r.price) > 0) priceListBySku.set(r.sku_id, num3(r.price));
+  });
+  const aspAcc = /* @__PURE__ */ new Map();
+  earnRows.forEach((r) => {
     if (!r.sku_id) return;
     const a = aspAcc.get(r.sku_id) || { amount: 0, units: 0 };
-    a.amount += num(r.final_sale_amount);
-    a.units += num(r.final_sale_units) || num(r.gross_units);
+    a.amount += num3(r.final_sale_amount);
+    a.units += num3(r.final_sale_units) || num3(r.gross_units);
     aspAcc.set(r.sku_id, a);
   });
-
-  const nameBySku = new Map<string, string>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  fsnRows.forEach((r: any) => { if (r.sku_id && r.product_name && !nameBySku.has(r.sku_id)) nameBySku.set(r.sku_id, r.product_name); });
-  orderRows.forEach((r) => { if (r.sku && r.product_title && !nameBySku.has(r.sku)) nameBySku.set(r.sku, r.product_title); });
-
-  const spendBySku = new Map<string, WindowAgg>();
-  const spendBySkuDay = new Map<string, number>();
-  const campaignSpendDay = new Map<string, number>();
-  const ensureSpend = (sku: string): WindowAgg => {
+  const nameBySku = /* @__PURE__ */ new Map();
+  fsnRows.forEach((r) => {
+    if (r.sku_id && r.product_name && !nameBySku.has(r.sku_id)) nameBySku.set(r.sku_id, r.product_name);
+  });
+  orderRows.forEach((r) => {
+    if (r.sku && r.product_title && !nameBySku.has(r.sku)) nameBySku.set(r.sku, r.product_title);
+  });
+  const spendBySku = /* @__PURE__ */ new Map();
+  const spendBySkuDay = /* @__PURE__ */ new Map();
+  const campaignSpendDay = /* @__PURE__ */ new Map();
+  const ensureSpend = (sku) => {
     let a = spendBySku.get(sku);
-    if (!a) { a = emptyAgg(); spendBySku.set(sku, a); }
+    if (!a) {
+      a = emptyAgg();
+      spendBySku.set(sku, a);
+    }
     return a;
   };
-  // Summary sheet's "Ad Sales" column for Flipkart, per the seller's explicit request: the ads
-  // export's own "Total Revenue" figure (fsnRows.total_revenue) — the ad platform's own reported
-  // revenue, not the real per-order revenue used for Total Sales (see revenueBySku below).
-  const adSalesRangeBySku = new Map<string, number>();
-  const adSalesDayBySku = new Map<string, number>();
-  // SKU Wise Report's "Total Ad Orders" column: Flipkart's own ads-export ad-attributed unit
-  // count — direct_units_sold + indirect_units_sold, already stored per-row on
-  // barm_flipkart_fsn_report but never read anywhere in this function before. Always defined
-  // (never gated like Amazon's adOrders above) since Flipkart's WindowAgg always sets adSales too,
-  // which computeAcos's adSalesFigure ternary already prefers over adOrders unconditionally — this
-  // is purely a display figure here, inert for ACOS.
-  const adOrdersRangeBySku = new Map<string, number>();
-  const adOrdersDayBySku = new Map<string, number>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  fsnRows.forEach((r: any) => {
+  const adSalesRangeBySku = /* @__PURE__ */ new Map();
+  const adSalesDayBySku = /* @__PURE__ */ new Map();
+  const adOrdersRangeBySku = /* @__PURE__ */ new Map();
+  const adOrdersDayBySku = /* @__PURE__ */ new Map();
+  fsnRows.forEach((r) => {
     if (!r.sku_id) return;
-    const spend = num(r.ad_spend);
+    const spend = num3(r.ad_spend);
     ensureSpend(r.sku_id).spend += spend;
-    const adSales = num(r.total_revenue);
-    const adOrders = num(r.direct_units_sold) + num(r.indirect_units_sold);
+    const adSales = num3(r.total_revenue);
+    const adOrders = num3(r.direct_units_sold) + num3(r.indirect_units_sold);
     adSalesRangeBySku.set(r.sku_id, (adSalesRangeBySku.get(r.sku_id) || 0) + adSales);
     adOrdersRangeBySku.set(r.sku_id, (adOrdersRangeBySku.get(r.sku_id) || 0) + adOrders);
     if (r.report_date === endDate) {
@@ -981,43 +2389,22 @@ export async function fetchFlipkartProducts(
       adOrdersDayBySku.set(r.sku_id, (adOrdersDayBySku.get(r.sku_id) || 0) + adOrders);
     }
   });
-
-  const unitsBySku = new Map<string, WindowAgg>();
-  const ensureUnits = (sku: string): WindowAgg => {
+  const unitsBySku = /* @__PURE__ */ new Map();
+  const ensureUnits = (sku) => {
     let a = unitsBySku.get(sku);
-    if (!a) { a = emptyAgg(); unitsBySku.set(sku, a); }
+    if (!a) {
+      a = emptyAgg();
+      unitsBySku.set(sku, a);
+    }
     return a;
   };
   const overallDay = emptySales();
   const overallRange = emptySales();
-  // Real per-unit price each SKU actually sold for this window, straight from its own
-  // Invoice Amount rows — the seller's explicit preference over the static
-  // barm_flipkart_listings snapshot below, which goes stale between re-uploads (found via
-  // Chewy tube green- Pack of 2: listed ₹345 in barm_flipkart_listings vs a real ₹351
-  // Invoice Amount on every one of its orders this window). Used as the primary Flipkart
-  // price source; the listing price / Earn More average only fill in for a SKU with no
-  // real (non-cancelled) orders in this window.
-  const invoiceAcc = new Map<string, { amount: number; units: number }>();
-  // Overall Sales Value / Total Sales revenue, WITH the barm_flipkart_listings fallback (see
-  // flipkartRowRevenue above) for a row whose order report has no Invoice Amount at all — kept as
-  // its own accumulator, separate from invoiceAcc just above/below, which must stay real-Invoice-
-  // Amount-only: invoiceAcc alone drives this SKU's own display Price a few lines down, and that
-  // must not absorb this per-row fallback (only Overall Sales Value/Total Sales should) per the
-  // seller's explicit instruction that this fallback stay scoped to the Value/revenue figures.
-  const rangeRevenueBySku = new Map<string, number>();
+  const invoiceAcc = /* @__PURE__ */ new Map();
+  const rangeRevenueBySku = /* @__PURE__ */ new Map();
   orderRows.forEach((r) => {
-    const qty = num(r.quantity);
-    // Overall sales QTS/Value: a straight SUM of the Order report's own
-    // Quantity/Invoice Amount columns for the window — unrelated to ad data
-    // or the separate Earn More report, and with no status filter (matches
-    // the seller's own manual workbook, which SUMs every order status as-is).
-    // Invoice Amount isn't a structured column on barm_flipkart_order_report
-    // (see FlipkartOrderRow in flipkartReportUpload.ts) — every original
-    // column from the upload survives in this row's own `raw` JSONB, so it's
-    // read from there instead.
-    const invoiceAmount = num((r as { raw?: Record<string, unknown> }).raw?.["Invoice Amount"]);
-    // See flipkartRowRevenue's own comment — falls back to qty x this row's SKU's current
-    // barm_flipkart_listings price only when this row itself has no real Invoice Amount.
+    const qty = num3(r.quantity);
+    const invoiceAmount = num3(r.raw?.["Invoice Amount"]);
     const revenueAmount = flipkartRowRevenue(invoiceAmount, qty, flipkartListingPriceMap.get(r.sku || ""));
     overallRange.units += qty;
     overallRange.value += revenueAmount;
@@ -1025,10 +2412,6 @@ export async function fetchFlipkartProducts(
       overallDay.units += qty;
       overallDay.value += revenueAmount;
     }
-
-    // Per-SKU Orders (feeds the Ad spend report's per-product Orders/CPC/ACOS
-    // columns) stays scoped to real, non-cancelled sales — a different
-    // question from the Overall sales total above.
     if (!r.sku) return;
     const status = String(r.order_item_status || "").toUpperCase();
     if (status.startsWith("CANCEL")) return;
@@ -1043,9 +2426,8 @@ export async function fetchFlipkartProducts(
       rangeRevenueBySku.set(r.sku, (rangeRevenueBySku.get(r.sku) || 0) + revenueAmount);
     }
   });
-
-  const skus = new Set<string>([...spendBySku.keys(), ...unitsBySku.keys(), ...priceBySku.keys()].filter(Boolean));
-  const products = new Map<string, ProductRow>();
+  const skus = new Set([...spendBySku.keys(), ...unitsBySku.keys(), ...priceBySku.keys()].filter(Boolean));
+  const products = /* @__PURE__ */ new Map();
   skus.forEach((sku) => {
     const inv = invoiceAcc.get(sku);
     let price = inv && inv.units > 0 ? inv.amount / inv.units : 0;
@@ -1061,7 +2443,7 @@ export async function fetchFlipkartProducts(
       name: resolveProductName(nameBySku.get(sku), sku) || nameBySku.get(sku) || sku,
       price,
       day: { spend: spendBySkuDay.get(sku) || 0, units: 0, revenue: 0, adSales: adSalesDayBySku.get(sku) || 0, adOrders: adOrdersDayBySku.get(sku) || 0 },
-      range: { spend: spendBySku.get(sku)?.spend || 0, units: unitsBySku.get(sku)?.units || 0, revenue: rangeRevenueBySku.get(sku) || 0, adSales: adSalesRangeBySku.get(sku) || 0, adOrders: adOrdersRangeBySku.get(sku) || 0 },
+      range: { spend: spendBySku.get(sku)?.spend || 0, units: unitsBySku.get(sku)?.units || 0, revenue: rangeRevenueBySku.get(sku) || 0, adSales: adSalesRangeBySku.get(sku) || 0, adOrders: adOrdersRangeBySku.get(sku) || 0 }
     });
   });
   orderRows.forEach((r) => {
@@ -1070,83 +2452,39 @@ export async function fetchFlipkartProducts(
     if (status.startsWith("CANCEL")) return;
     const p = products.get(r.sku);
     if (!p) return;
-    const qty = num(r.quantity);
+    const qty = num3(r.quantity);
     p.day.units += qty;
-    // Same Invoice-Amount-missing fallback as the range window above (see flipkartRowRevenue).
-    const invoiceAmount = num((r as { raw?: Record<string, unknown> }).raw?.["Invoice Amount"]);
+    const invoiceAmount = num3(r.raw?.["Invoice Amount"]);
     p.day.revenue = (p.day.revenue || 0) + flipkartRowRevenue(invoiceAmount, qty, flipkartListingPriceMap.get(r.sku));
   });
-
-  const campaigns: CampaignSpendRow[] = [...campaignSpendDay.entries()]
-    .filter(([, spend]) => spend > 0)
-    .map(([campaign, spend]) => ({ platform: "Flipkart" as const, campaign, spend }));
-
-  const reportDates = new Set<string>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  fsnRows.forEach((r: any) => { if (r.report_date) reportDates.add(r.report_date); });
-
-  // SKU Wise Report's "Total Sales" per the seller's explicit request: real per-order revenue
-  // (with the barm_flipkart_listings fallback above) instead of flat Price x range units —
-  // rangeRevenueBySku already sums exactly this across each SKU's own non-cancelled order rows in
-  // this window, reused directly here rather than re-summing orderRows.
+  const campaigns = [...campaignSpendDay.entries()].filter(([, spend]) => spend > 0).map(([campaign, spend]) => ({ platform: "Flipkart", campaign, spend }));
+  const reportDates = /* @__PURE__ */ new Set();
+  fsnRows.forEach((r) => {
+    if (r.report_date) reportDates.add(r.report_date);
+  });
   const revenueRangeBySku = rangeRevenueBySku;
   return { products, overallDay, overallRange, campaigns, reportDates, fsnRows, orderRows, revenueRangeBySku };
 }
-
-// Flipkart's current live listing price, straight off barm_flipkart_listings (scripts/
-// price_listing_tables.sql) — used both as computeAcos's new listingPrice argument (the zero-Total-
-// Ad-Orders ACOS gate, see computeAcos's own comment) and as fetchFlipkartProducts's own Invoice-
-// Amount-missing revenue fallback (see flipkartRowRevenue above). Kept as its own fetch/map for the
-// same reason as fetchAmazonListingPriceMap: a miss here must fall back to whatever the caller
-// already has (computeAcos's `price` argument, or 0 for flipkartRowRevenue), not read as 0 outright.
-export async function fetchFlipkartListingPriceMap(): Promise<Map<string, number>> {
+async function fetchFlipkartListingPriceMap() {
   const rows = await fetchAllRows("barm_flipkart_listings", (q) => q);
-  const map = new Map<string, number>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (rows as any[]).forEach((r) => { if (r.seller_sku_id && num(r.selling_price) > 0) map.set(r.seller_sku_id, num(r.selling_price)); });
+  const map = /* @__PURE__ */ new Map();
+  rows.forEach((r) => {
+    if (r.seller_sku_id && num3(r.selling_price) > 0) map.set(r.seller_sku_id, num3(r.selling_price));
+  });
   return map;
 }
-
-// ── Meesho ───────────────────────────────────────────────────────────────────
-// barm_daily_ms_barm_ads is filled by the combined upload (combinedAdSpendUpload.ts) from the
-// seller's own hand-assembled workbook column names (see that file's header
-// comment), and so is barm_daily_ms_barm_orders (see fetchMeeshoDailyOrderRows). A
-// failed fetch doesn't take down the Amazon/Flipkart report, but it is never
-// passed off as "no Meesho data" either: each failure is kept in loadErrors and
-// shown on the Summary, the Meesho sheets, Notes, the dashboard and the email.
-// Meesho orders for this report: the "MS BARM ord" sheet the combined upload writes to
-// barm_daily_ms_barm_orders every day — by the seller's choice of 30 Sep 2026, since
-// meesho_barm_ord is loaded from outside the app and ran days behind (it stopped at 24 Sep
-// while the daily upload had orders through 29 Sep). Renamed to the column names used below.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function fetchMeeshoDailyOrderRows(start: string, end: string): Promise<any[]> {
+async function fetchMeeshoDailyOrderRows(start, end) {
   const rows = await fetchAllRows("barm_daily_ms_barm_orders", (q) => q.gte("report_date", start).lte("report_date", end));
   return rows.map((r) => ({
     ...r,
     order_date: r.report_date,
     supplier_listed_price: r.listed_price,
-    supplier_discounted_price: r.discounted_price,
+    supplier_discounted_price: r.discounted_price
   }));
 }
-
-export async function fetchMeeshoProducts(
-  range: { start: string; end: string },
-  endDate: string
-): Promise<{
-  products: Map<string, ProductRow>;
-  overallDay: SalesAgg;
-  overallRange: SalesAgg;
-  campaigns: CampaignSpendRow[];
-  reportDates: Set<string>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  adsRows: any[];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  orderRows: any[];
-  revenueRangeBySku: Map<string, number>;
-  loadErrors: string[];
-}> {
-  const loadErrors: string[] = [];
-  const loadFailed = (table: string) => (e: unknown): never[] => {
+async function fetchMeeshoProducts(range, endDate) {
+  const loadErrors = [];
+  const loadFailed = (table) => (e) => {
     loadErrors.push(`${table}: ${e instanceof Error ? e.message : String(e)}`);
     return [];
   };
@@ -1161,60 +2499,45 @@ export async function fetchMeeshoProducts(
     // platforms. A failure is recorded like the tables above, and Meesho
     // falls back to its order-derived price below rather than breaking the
     // report.
-    fetchAllRows("meesho_price_marketing", (q) => q).catch(loadFailed("meesho_price_marketing")),
+    fetchAllRows("meesho_price_marketing", (q) => q).catch(loadFailed("meesho_price_marketing"))
   ]);
-
-  const isCancelled = (status: unknown) => String(status || "").toUpperCase().startsWith("CANCEL");
-  // Order-derived fallback price, used only for a SKU meesho_price_marketing
-  // doesn't have a price for yet (not scraped, or currently out of stock on
-  // Meesho). Discounted price (post-commission net) is the closer analog to
-  // Amazon's item_price / Flipkart's selling_price; listed price is the
-  // fallback for a SKU whose orders never carry a discounted figure.
-  const orderPriceOf = (r: { supplier_discounted_price?: unknown; supplier_listed_price?: unknown }) =>
-    num(r.supplier_discounted_price) || num(r.supplier_listed_price);
-
-  const nameBySku = new Map<string, string>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  orderRows.forEach((r: any) => { if (r.sku && r.product_name && !nameBySku.has(r.sku)) nameBySku.set(r.sku, r.product_name); });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  adsRows.forEach((r: any) => { if (r.sku && r.product_name && !nameBySku.has(r.sku)) nameBySku.set(r.sku, r.product_name); });
-
-  // Price precedence: meesho_price_marketing's live listing price first
-  // (independent of whether the SKU had any orders in this window, same as
-  // Amazon/Flipkart's listing tables), then each SKU's own order rows as a
-  // fallback for SKUs not in that table yet.
-  const priceBySku = new Map<string, number>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  marketingRows.forEach((r: any) => {
-    const price = num(r.price);
+  const isCancelled = (status) => String(status || "").toUpperCase().startsWith("CANCEL");
+  const orderPriceOf = (r) => num3(r.supplier_discounted_price) || num3(r.supplier_listed_price);
+  const nameBySku = /* @__PURE__ */ new Map();
+  orderRows.forEach((r) => {
+    if (r.sku && r.product_name && !nameBySku.has(r.sku)) nameBySku.set(r.sku, r.product_name);
+  });
+  adsRows.forEach((r) => {
+    if (r.sku && r.product_name && !nameBySku.has(r.sku)) nameBySku.set(r.sku, r.product_name);
+  });
+  const priceBySku = /* @__PURE__ */ new Map();
+  marketingRows.forEach((r) => {
+    const price = num3(r.price);
     if (r.sku_id && price > 0) priceBySku.set(r.sku_id, price);
   });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  orderRows.forEach((r: any) => {
+  orderRows.forEach((r) => {
     if (!r.sku || priceBySku.has(r.sku)) return;
     const price = orderPriceOf(r);
     if (price > 0) priceBySku.set(r.sku, price);
   });
-
-  const spendBySku = new Map<string, WindowAgg>();
-  const spendBySkuDay = new Map<string, number>();
-  const campaignSpendDay = new Map<string, number>();
-  const ensureSpend = (sku: string): WindowAgg => {
+  const spendBySku = /* @__PURE__ */ new Map();
+  const spendBySkuDay = /* @__PURE__ */ new Map();
+  const campaignSpendDay = /* @__PURE__ */ new Map();
+  const ensureSpend = (sku) => {
     let a = spendBySku.get(sku);
-    if (!a) { a = emptyAgg(); spendBySku.set(sku, a); }
+    if (!a) {
+      a = emptyAgg();
+      spendBySku.set(sku, a);
+    }
     return a;
   };
-  // Summary sheet's "Ad Sales" column for Meesho, per the seller's explicit request: "Orders by
-  // ad" straight off Meesho's own ad report (its export has no ₹ sales figure the way Amazon's
-  // does), multiplied by price when the Summary sheet is built below.
-  const adOrdersRangeBySku = new Map<string, number>();
-  const adOrdersDayBySku = new Map<string, number>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  adsRows.forEach((r: any) => {
+  const adOrdersRangeBySku = /* @__PURE__ */ new Map();
+  const adOrdersDayBySku = /* @__PURE__ */ new Map();
+  adsRows.forEach((r) => {
     if (!r.sku) return;
-    const spend = num(r.spend);
+    const spend = num3(r.spend);
     ensureSpend(r.sku).spend += spend;
-    const adOrders = num(r.orders_by_ad);
+    const adOrders = num3(r.orders_by_ad);
     adOrdersRangeBySku.set(r.sku, (adOrdersRangeBySku.get(r.sku) || 0) + adOrders);
     if (r.report_date === endDate) {
       spendBySkuDay.set(r.sku, (spendBySkuDay.get(r.sku) || 0) + spend);
@@ -1222,35 +2545,21 @@ export async function fetchMeeshoProducts(
       adOrdersDayBySku.set(r.sku, (adOrdersDayBySku.get(r.sku) || 0) + adOrders);
     }
   });
-
-  const unitsBySku = new Map<string, WindowAgg>();
-  const ensureUnits = (sku: string): WindowAgg => {
+  const unitsBySku = /* @__PURE__ */ new Map();
+  const ensureUnits = (sku) => {
     let a = unitsBySku.get(sku);
-    if (!a) { a = emptyAgg(); unitsBySku.set(sku, a); }
+    if (!a) {
+      a = emptyAgg();
+      unitsBySku.set(sku, a);
+    }
     return a;
   };
-  // SKU Wise Report's "Total Sales" per the seller's explicit request: real per-order revenue
-  // instead of flat Price x range units — see the Amazon/Flipkart fetch functions' matching
-  // comment. Scoped to the same non-cancelled rows as unitsBySku just below.
-  const revenueBySku = new Map<string, number>();
+  const revenueBySku = /* @__PURE__ */ new Map();
   const overallDay = emptySales();
   const overallRange = emptySales();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  orderRows.forEach((r: any) => {
-    const qty = num(r.quantity);
-    // Order Value (feeds Overall Sales QTS/Value below and revenueBySku, the
-    // SKU Wise Report's "Total Sales" column) — per the seller's explicit,
-    // later instruction: Quantity x this row's own "Supplier Listed Price
-    // (Incl. GST + Commission)" ONLY. Deliberately NOT priceBySku (which
-    // still prefers meesho_price_marketing's live price, falling back to
-    // orderPriceOf's discounted-then-listed precedence) and NOT Supplier
-    // Discounted Price — the seller confirmed Listed Price is the direct,
-    // primary source for this one calculation, full stop, superseding the
-    // earlier "prefer the live scraped price" rule that priceBySku still
-    // implements for other uses below (the display "Price" column and the
-    // ACOS CPC/Price fallback both still use priceBySku/meesho_price_marketing
-    // as before — only this Order Value figure changed).
-    const price = num(r.supplier_listed_price);
+  orderRows.forEach((r) => {
+    const qty = num3(r.quantity);
+    const price = num3(r.supplier_listed_price);
     const value = price * qty;
     overallRange.units += qty;
     overallRange.value += value;
@@ -1258,17 +2567,12 @@ export async function fetchMeeshoProducts(
       overallDay.units += qty;
       overallDay.value += value;
     }
-
-    // Per-SKU Orders (feeds the Ad spend report's per-product columns) stays
-    // scoped to real, non-cancelled sales — a different question from the
-    // Overall sales total above.
     if (!r.sku || isCancelled(r.order_status)) return;
     ensureUnits(r.sku).units += qty;
     revenueBySku.set(r.sku, (revenueBySku.get(r.sku) || 0) + value);
   });
-
-  const skus = new Set<string>([...spendBySku.keys(), ...unitsBySku.keys(), ...priceBySku.keys()].filter(Boolean));
-  const products = new Map<string, ProductRow>();
+  const skus = new Set([...spendBySku.keys(), ...unitsBySku.keys(), ...priceBySku.keys()].filter(Boolean));
+  const products = /* @__PURE__ */ new Map();
   skus.forEach((sku) => {
     products.set(sku, {
       platform: "Meesho",
@@ -1282,223 +2586,147 @@ export async function fetchMeeshoProducts(
       // the flat Price(meesho_price_marketing) x Orders estimate this used to fall back to. The
       // display "Price" column (priceBySku above) and the ACOS CPC/Price fallback are unaffected —
       // both still read meesho_price_marketing as before; only Total Sales changed.
-      range: { spend: spendBySku.get(sku)?.spend || 0, units: unitsBySku.get(sku)?.units || 0, revenue: revenueBySku.get(sku) || 0, adOrders: adOrdersRangeBySku.get(sku) || 0 },
+      range: { spend: spendBySku.get(sku)?.spend || 0, units: unitsBySku.get(sku)?.units || 0, revenue: revenueBySku.get(sku) || 0, adOrders: adOrdersRangeBySku.get(sku) || 0 }
     });
   });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  orderRows.forEach((r: any) => {
+  orderRows.forEach((r) => {
     if (!r.sku || r.order_date !== endDate || isCancelled(r.order_status)) return;
     const p = products.get(r.sku);
     if (!p) return;
-    p.day.units += num(r.quantity);
-    p.day.revenue = (p.day.revenue || 0) + num(r.quantity) * num(r.supplier_listed_price);
+    p.day.units += num3(r.quantity);
+    p.day.revenue = (p.day.revenue || 0) + num3(r.quantity) * num3(r.supplier_listed_price);
   });
-
-  const campaigns: CampaignSpendRow[] = [...campaignSpendDay.entries()]
-    .filter(([, spend]) => spend > 0)
-    .map(([campaign, spend]) => ({ platform: "Meesho" as const, campaign, spend }));
-
-  const reportDates = new Set<string>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  adsRows.forEach((r: any) => { if (r.report_date) reportDates.add(r.report_date); });
-
+  const campaigns = [...campaignSpendDay.entries()].filter(([, spend]) => spend > 0).map(([campaign, spend]) => ({ platform: "Meesho", campaign, spend }));
+  const reportDates = /* @__PURE__ */ new Set();
+  adsRows.forEach((r) => {
+    if (r.report_date) reportDates.add(r.report_date);
+  });
   return { products, overallDay, overallRange, campaigns, reportDates, adsRows, orderRows, revenueRangeBySku: revenueBySku, loadErrors };
 }
-
-// ── Social Media (Meta Ads) ──────────────────────────────────────────────────
-// Lightweight add-on, NOT a full `Platform` — Meta ad spend only feeds one
-// extra Summary-sheet row (see the "Social Media" row built in
-// buildAdSpendReportWorkbook below), not its own Ad spend report / SKU Wise
-// Report / Ad Status Report / Action Sheet / Low Spend Campaigns entries —
-// there's exactly one product running Meta ads today and no per-SKU campaign
-// breakdown the way the three real platforms above have, so those sheets
-// don't have anything meaningful to add for it (per the seller's own choice).
-//
-// Every uploaded row (see socialMediaReportUpload.ts) carries its own
-// [report_start, report_end] window rather than a single report_date, since
-// Meta's own export can be either a single day or a multi-day range — and in
-// practice the same campaign can end up with BOTH a daily row (today's
-// export) and a wider row covering the whole trailing week for the very same
-// days (a "last 7 days" export pulled separately), which must never both be
-// summed for the same campaign or the range total would double-count. So the
-// range total is resolved per campaign: a row whose window exactly matches
-// [range.start, endDate] is that campaign's authoritative whole-window total
-// and wins outright over any narrower row for the same campaign (which is
-// necessarily a subset of it); only when no such row exists does it fall
-// back to summing whatever narrower (typically daily) rows that campaign has
-// inside the window. The single reporting day's own figure only ever comes
-// from a literal daily row for that exact date — a range row can't tell us
-// one day's specific share of its total.
-//
-// Google Ads spend (barm_daily_google_ad_spend, see googleAdSpendRules.ts) is stored the same way
-// — one row per [report_start, report_end] window and campaign — so it goes through this same
-// day/range resolution, via fetchWindowedAdSpend.
-async function fetchSocialMediaAdSpend(
-  range: { start: string; end: string },
-  endDate: string
-): Promise<WindowedAdSpend> {
-  return fetchWindowedAdSpend("barm_daily_social_media", range, endDate);
+async function fetchSocialMediaAdSpend(range, endDate) {
+  return fetchWindowedAdSpend("barm_daily_social_media", range, endDate, { fullWindowOnly: true });
 }
-
-// Meta campaign name → the Amazon product (master Product Name) it promotes. Meta's export has no
-// SKU/product column, so the campaign name is the only link; first match wins. Several campaigns
-// for the same product (e.g. a new dated campaign replacing an old one) land on one Summary row.
-// A campaign matching none of these still gets its own row, under its campaign name, with no price.
-const SOCIAL_MEDIA_CAMPAIGN_PRODUCTS: { match: RegExp; product: string }[] = [
+var SOCIAL_MEDIA_CAMPAIGN_PRODUCTS = [
   { match: /peak\s*flow/i, product: "Sonmol Peak Flow meter (without BLE)" },
   { match: /insemin/i, product: "Insemination kit (Pack of 5)" },
-  { match: /post\s*pa/i, product: "Postpartum Recovery Essentials care kit (10 pcs kit)" },
+  // Pack-size split (24 Nov 2026): a postpartum campaign/ad naming "6 pcs" or "10 pcs" lands on that
+  // kit. These two must stay before the generic postpartum rule (no pack size → the 10 pcs kit).
+  { match: /post\s*pa.*(?:^|[^0-9])6\s*-?\s*(?:pcs|pc|pieces|piece)\b/i, product: "Postpartum Recovery Essentials care kit (6 pcs kit)" },
+  { match: /post\s*pa.*(?:^|[^0-9])10\s*-?\s*(?:pcs|pc|pieces|piece)\b/i, product: "Postpartum Recovery Essentials care kit (10 pcs kit)" },
+  { match: /post\s*pa/i, product: "Postpartum Recovery Essentials care kit (10 pcs kit)" }
 ];
-
-function socialMediaProductFor(campaign: string): string {
-  return SOCIAL_MEDIA_CAMPAIGN_PRODUCTS.find((m) => m.match.test(campaign))?.product ?? campaign;
+var GOOGLE_CAMPAIGN_PRODUCTS = [
+  ...SOCIAL_MEDIA_CAMPAIGN_PRODUCTS,
+  { match: /\bv\.?\s?d\b|dilator/i, product: "Vaginal Dilator" },
+  { match: /lacto/i, product: "Lacto Spark lactate meter" }
+];
+function googleProductFor(name) {
+  const clean = name.replace(/\s+/g, " ").trim();
+  return GOOGLE_CAMPAIGN_PRODUCTS.find((m) => m.match.test(clean))?.product ?? clean;
 }
-
-interface WindowedAdSpend {
-  daySpend: number;
-  rangeSpend: number;
-  /** Same day/range resolution as the totals, split per campaign (spelling of the first row seen). */
-  campaigns: { name: string; daySpend: number; rangeSpend: number }[];
+function socialMediaProductFor(campaign) {
+  const campaignPart = metaCampaignPart(campaign);
+  return SOCIAL_MEDIA_CAMPAIGN_PRODUCTS.find((m) => m.match.test(campaignPart))?.product ?? campaignPart;
 }
-
-async function fetchWindowedAdSpend(
-  table: string,
-  range: { start: string; end: string },
-  endDate: string
-): Promise<WindowedAdSpend> {
-  const rows = (await fetchAllRows(
+var META_AD_SALES_SOURCE = "meta_reported";
+async function fetchWindowedAdSpend(table, range, endDate, opts = {}) {
+  const rows = await fetchAllRows(
     table,
     (q) => q.lte("report_start", endDate).gte("report_end", range.start)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ).catch(() => [])) as any[];
-
-  // Same campaign matched ignoring case/spacing (same rule as the upload, socialMediaRules.ts),
-  // so "Camp A" daily rows and a "camp a" whole-window row are never both summed.
-  const campaignKey = (r: { campaign_name?: string }) => String(r.campaign_name || "").replace(/\s+/g, " ").trim().toLowerCase();
-  const campaigns = new Map<string, { name: string; daySpend: number; rangeSpend: number }>();
-  const campaignFor = (r: { campaign_name?: string }) => {
-    const key = campaignKey(r);
-    const hit = campaigns.get(key) ?? { name: String(r.campaign_name || "").replace(/\s+/g, " ").trim(), daySpend: 0, rangeSpend: 0 };
-    campaigns.set(key, hit);
+  ).catch(() => []);
+  const campaignKey = (r) => String(r.campaign_name || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const campaigns = /* @__PURE__ */ new Map();
+  const campaignFor = (r) => {
+    const key2 = campaignKey(r);
+    const hit = campaigns.get(key2) ?? {
+      name: String(r.campaign_name || "").replace(/\s+/g, " ").trim(),
+      daySpend: 0,
+      rangeSpend: 0,
+      adNames: [],
+      dayMetaValue: null,
+      rangeMetaValue: null,
+      dayMetaPurchases: null,
+      rangeMetaPurchases: null
+    };
+    campaigns.set(key2, hit);
     return hit;
   };
-
-  rows
-    .filter((r) => r.report_start === endDate && r.report_end === endDate)
-    .forEach((r) => { campaignFor(r).daySpend += num(r.spend); });
-
-  const byCampaign = new Map<string, typeof rows>();
-  rows
-    .filter((r) => r.report_start >= range.start && r.report_end <= endDate) // fully inside the window only
-    .forEach((r) => {
-      const key = campaignKey(r);
-      const list = byCampaign.get(key) ?? [];
-      list.push(r);
-      byCampaign.set(key, list);
+  const adNamesOf = (r) => String(r.raw?.["Ad name"] ?? "").split(";").map((a) => a.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const rawNum = (r, col) => r.raw && col in r.raw ? num3(r.raw[col]) : null;
+  const addNum = (a, b) => a == null && b == null ? null : (a ?? 0) + (b ?? 0);
+  rows.filter((r) => r.report_start === endDate && r.report_end === endDate).forEach((r) => {
+    const c = campaignFor(r);
+    c.daySpend += num3(r.spend);
+    c.dayMetaValue = addNum(c.dayMetaValue, rawNum(r, "Meta purchase value"));
+    c.dayMetaPurchases = addNum(c.dayMetaPurchases, rawNum(r, "Meta purchases"));
+    if (num3(r.spend) > 0) adNamesOf(r).forEach((a) => {
+      if (!c.adNames.includes(a)) c.adNames.push(a);
     });
+  });
+  const byCampaign = /* @__PURE__ */ new Map();
+  rows.filter((r) => r.report_start >= range.start && r.report_end <= endDate).forEach((r) => {
+    const key2 = campaignKey(r);
+    const list2 = byCampaign.get(key2) ?? [];
+    list2.push(r);
+    byCampaign.set(key2, list2);
+  });
+  const hasFullWindowExport = !!opts.fullWindowOnly && rows.some((r) => r.report_start === range.start && r.report_end === endDate);
   byCampaign.forEach((campaignRows) => {
     const wideRows = campaignRows.filter((r) => r.report_start === range.start && r.report_end === endDate);
-    campaignFor(campaignRows[0]).rangeSpend += (wideRows.length ? wideRows : campaignRows).reduce((s, r) => s + num(r.spend), 0);
+    if (hasFullWindowExport && !wideRows.length) return;
+    const used = wideRows.length ? wideRows : campaignRows;
+    const c = campaignFor(campaignRows[0]);
+    c.rangeSpend += used.reduce((s, r) => s + num3(r.spend), 0);
+    used.forEach((r) => {
+      c.rangeMetaValue = addNum(c.rangeMetaValue, rawNum(r, "Meta purchase value"));
+      c.rangeMetaPurchases = addNum(c.rangeMetaPurchases, rawNum(r, "Meta purchases"));
+    });
   });
-
-  const list = [...campaigns.values()]
-    .map((c) => ({ name: c.name, daySpend: round2(c.daySpend), rangeSpend: round2(c.rangeSpend) }))
-    .filter((c) => c.daySpend > 0 || c.rangeSpend > 0);
+  const list = [...campaigns.values()].map((c) => ({
+    name: c.name,
+    daySpend: round2(c.daySpend),
+    rangeSpend: round2(c.rangeSpend),
+    adNames: c.adNames,
+    dayMetaValue: c.dayMetaValue == null ? null : round2(c.dayMetaValue),
+    rangeMetaValue: c.rangeMetaValue == null ? null : round2(c.rangeMetaValue),
+    dayMetaPurchases: c.dayMetaPurchases,
+    rangeMetaPurchases: c.rangeMetaPurchases
+  })).filter((c) => c.daySpend > 0 || c.rangeSpend > 0);
   return {
     daySpend: round2(list.reduce((s, c) => s + c.daySpend, 0)),
     rangeSpend: round2(list.reduce((s, c) => s + c.rangeSpend, 0)),
-    campaigns: list,
+    campaigns: list
   };
 }
-
-// ── Google (direct/website) orders ──────────────────────────────────────────
-// Like Social Media above, a lightweight add-on, NOT a real `Platform` — this
-// channel has no ad campaign export of any kind (no Spend/CPC/ACOS to show),
-// only realised Orders and Sales (Quantity x Price), from the seller's own
-// hand-kept "B-Arm Orders" workbook (see googleOrdersUpload.ts). Feeds one
-// extra Summary-sheet row and a small Product/Quantity/Price/Sales section
-// at the end of the "Ad spend report" sheet — never the SKU Wise Report, Ad
-// Status Report, Action Sheet or Low Spend Campaigns, none of which have
-// anything meaningful to add for a channel with no ad spend.
-//
-// Day + range split (fixed — this channel used to return only a single
-// [range.start, range.end] total with no day/range distinction, and that
-// range total was written straight into the Summary sheet's "Overall sales
-// (<single day>)" column: a real SKU with 7 days of orders printed as if it
-// were one day's sales, exactly the "Overall sales written as the 7-day
-// range instead of the single reporting day" defect class the Ad Spend
-// Report reconciliation skill already documents for the other platforms —
-// Google just never got the same fix). `perProduct` stays scoped to the
-// full range (unchanged) since the Ad spend report sheet's Google detail
-// table is meant to list every product active across the window, not just
-// today's; only the Summary sheet's own Total Orders/Total Sales (both the
-// day block and the range block) and Overall Sales QTS/Value change.
-//
-// Shopify (24 Oct 2026, seller's approval): the website moved to Shopify, whose orders now arrive by
-// webhook. Order lines = the Google card rows merged with those Shopify orders by the rules in
-// googleWebsiteOrders.ts (Shopify exports and hand-typed copies of a Shopify order are left out from
-// the first Shopify day; cancelled orders never count). Google Ads gets credit (Ad Sales, ACOS,
-// ROAS) only for Shopify orders whose visit came from a Google Ads click.
-async function fetchGoogleOrders(range: { start: string; end: string }, endDate: string): Promise<{
-  perProduct: { name: string; quantity: number; price: number }[];
-  // One row per (order_date, product) across the full 7-day range — for the "B Arm orders" sheet,
-  // which (per the seller's later, explicit instruction) now shows Google's orders exclusively,
-  // replacing the Amazon/Flipkart/Meesho merge that used to live there, spanning the full range
-  // window with its own Date column rather than a single-day or a date-less range total. Kept
-  // separate from `perProduct` above (still range-scoped but aggregated across every date into one
-  // row per product, unchanged) since that one still feeds the Ad spend report sheet's own Google
-  // detail table.
-  dailyPerProduct: { name: string; date: string; quantity: number; price: number }[];
-  dayUnits: number;
-  dayValue: number;
-  rangeUnits: number;
-  rangeValue: number;
-  /** Google Ads-attributed Shopify sales (line value) and order counts. */
-  adDayValue: number;
-  adRangeValue: number;
-  adDayOrders: number;
-  adRangeOrders: number;
-  /** Meta Ads-attributed Shopify sales (fbclid) and order counts — see metaAdsAttributedSales. */
-  metaAdDayValue: number;
-  metaAdRangeValue: number;
-  metaAdDayOrders: number;
-  metaAdRangeOrders: number;
-  /** Card rows in the range left out as Shopify duplicates (kept in the table, not counted). */
-  dropped: DroppedCardRow[];
-  /** Set when the Shopify orders could not be read — card rows are then used alone. */
-  shopifyLoadError: string | null;
-  /** First day with Shopify orders on file (null = none) — reports before it have no attribution. */
-  shopifyFrom: string | null;
-}> {
+async function fetchGoogleOrders(range, endDate) {
   const [cardRows, shopify] = await Promise.all([
-    fetchAllRows("barm_daily_google_orders", (q) =>
-      q.gte("order_date", range.start).lte("order_date", range.end)
+    fetchAllRows(
+      "barm_daily_google_orders",
+      (q) => q.gte("order_date", range.start).lte("order_date", range.end)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ).catch(() => []) as Promise<any[]>,
+    ).catch(() => []),
     // Every real Shopify order (small), so the first Shopify day is known — see googleWebsiteOrders.ts.
     // GET: the function is read-only, and a report build must send no writes (readonly.test.ts).
     supabasePublic.rpc("barm_shopify_orders_summary", {}, { get: true }).then(
-      ({ data, error }) => (error ? { orders: [] as ShopifyReportOrder[], error: error.message } : { orders: (data ?? []) as ShopifyReportOrder[], error: null }),
-      (e: unknown) => ({ orders: [] as ShopifyReportOrder[], error: e instanceof Error ? e.message : String(e) })
-    ),
+      ({ data, error }) => error ? { orders: [], error: error.message } : { orders: data ?? [], error: null },
+      (e) => ({ orders: [], error: e instanceof Error ? e.message : String(e) })
+    )
   ]);
   const merged = mergeGoogleWebsiteOrders(cardRows, shopify.orders);
   const rows = merged.lines.filter((l) => l.date >= range.start && l.date <= range.end);
-  const byProduct = new Map<string, { name: string; quantity: number; priceSum: number; priceCount: number }>();
-  const byDateProduct = new Map<string, { date: string; name: string; quantity: number; priceSum: number; priceCount: number }>();
+  const byProduct = /* @__PURE__ */ new Map();
+  const byDateProduct = /* @__PURE__ */ new Map();
   let dayUnits = 0;
   let dayValue = 0;
   let rangeUnits = 0;
   let rangeValue = 0;
   let adDayValue = 0;
   let adRangeValue = 0;
-  const adDayOrders = new Set<string>();
-  const adRangeOrders = new Set<string>();
+  const adDayOrders = /* @__PURE__ */ new Set();
+  const adRangeOrders = /* @__PURE__ */ new Set();
   rows.forEach((r) => {
     const name = r.name;
-    // The B-Arm workbook is hand-typed: the same SKU on two lines ("10PIC KIT" 1 + "10pickit" 1)
-    // must add up to one 2-unit line, not two 1-unit lines — so lines are grouped by the SKU
-    // ignoring case, spaces, "-", "_" and ".", shown under the first spelling seen. Google-only rule.
     const nameKey = name.toLowerCase().replace(/[\s\-_.]+/g, "");
     const date = r.date;
     const qty = r.quantity;
@@ -1516,410 +2744,299 @@ async function fetchGoogleOrders(range: { start: string; end: string }, endDate:
     }
     const acc = byProduct.get(nameKey) || { name, quantity: 0, priceSum: 0, priceCount: 0 };
     acc.quantity += qty;
-    if (price > 0) { acc.priceSum += price; acc.priceCount += 1; }
+    if (price > 0) {
+      acc.priceSum += price;
+      acc.priceCount += 1;
+    }
     byProduct.set(nameKey, acc);
     if (r.date === endDate) {
       dayUnits += qty;
       dayValue += value;
     }
-    const dateKey = `${date}\u0000${nameKey}`;
+    const dateKey = `${date}\0${nameKey}`;
     const dateAcc = byDateProduct.get(dateKey) || { date, name, quantity: 0, priceSum: 0, priceCount: 0 };
     dateAcc.quantity += qty;
-    if (price > 0) { dateAcc.priceSum += price; dateAcc.priceCount += 1; }
+    if (price > 0) {
+      dateAcc.priceSum += price;
+      dateAcc.priceCount += 1;
+    }
     byDateProduct.set(dateKey, dateAcc);
   });
   const metaDay = metaAdsAttributedSales(shopify.orders, endDate, endDate);
   const metaRange = metaAdsAttributedSales(shopify.orders, range.start, range.end);
-  const dailyPerProduct = [...byDateProduct.values()]
-    .map((acc) => ({ name: acc.name, date: acc.date, quantity: acc.quantity, price: acc.priceCount ? acc.priceSum / acc.priceCount : 0 }))
-    .sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
+  const dailyPerProduct = [...byDateProduct.values()].map((acc) => ({ name: acc.name, date: acc.date, quantity: acc.quantity, price: acc.priceCount ? acc.priceSum / acc.priceCount : 0 })).sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
   return {
-    perProduct: [...byProduct.values()]
-      .map((acc) => ({ name: acc.name, quantity: acc.quantity, price: acc.priceCount ? acc.priceSum / acc.priceCount : 0 }))
-      .sort((a, b) => b.quantity * b.price - a.quantity * a.price),
+    perProduct: [...byProduct.values()].map((acc) => ({ name: acc.name, quantity: acc.quantity, price: acc.priceCount ? acc.priceSum / acc.priceCount : 0 })).sort((a, b) => b.quantity * b.price - a.quantity * a.price),
     dailyPerProduct,
-    dayUnits, dayValue: Math.round(dayValue * 100) / 100,
-    rangeUnits, rangeValue: Math.round(rangeValue * 100) / 100,
+    dayUnits,
+    dayValue: Math.round(dayValue * 100) / 100,
+    rangeUnits,
+    rangeValue: Math.round(rangeValue * 100) / 100,
     adDayValue: Math.round(adDayValue * 100) / 100,
     adRangeValue: Math.round(adRangeValue * 100) / 100,
     adDayOrders: adDayOrders.size,
     adRangeOrders: adRangeOrders.size,
+    adLines: rows.filter((r) => r.googleAds).map((r) => ({ date: r.date, name: r.name, quantity: r.quantity, value: r.value, order: r.order })),
     metaAdDayValue: metaDay.value,
     metaAdRangeValue: metaRange.value,
     metaAdDayOrders: metaDay.orders,
     metaAdRangeOrders: metaRange.orders,
+    metaAdOrders: shopify.orders.filter((o) => !o.is_cancelled && o.ad_channel === "meta_ads" && o.order_date >= range.start && o.order_date <= range.end),
     dropped: merged.dropped.filter((d) => d.date >= range.start && d.date <= range.end),
     shopifyLoadError: shopify.error,
-    shopifyFrom: merged.shopifyFrom,
+    shopifyFrom: merged.shopifyFrom
   };
 }
-
-// ── workbook ─────────────────────────────────────────────────────────────────
-
-function styleHeader(ws: XLSX.WorkSheet, row: number, cols: number, fill: string, colStart = 0): void {
+function styleHeader(ws, row, cols, fill, colStart = 0) {
   for (let c = colStart; c < colStart + cols; c++) {
-    const addr = XLSX.utils.encode_cell({ r: row, c });
+    const addr = XLSX4.utils.encode_cell({ r: row, c });
     if (!ws[addr]) ws[addr] = { t: "s", v: "" };
     ws[addr].s = {
       font: { bold: true, color: { rgb: "FFFFFF" }, sz: 10 },
       fill: { fgColor: { rgb: fill } },
-      alignment: { horizontal: "center", vertical: "center", wrapText: true },
+      alignment: { horizontal: "center", vertical: "center", wrapText: true }
     };
   }
 }
-function styleLabel(ws: XLSX.WorkSheet, addr: string, fill: string): void {
+function styleLabel(ws, addr, fill) {
   if (!ws[addr]) ws[addr] = { t: "s", v: "" };
   ws[addr].s = { font: { bold: true, color: { rgb: "FFFFFF" }, sz: 11 }, fill: { fgColor: { rgb: fill } } };
 }
-const CURRENCY_FMT = '"₹"#,##0.00';
-const PERCENT_FMT = "0%";
-// Every value in this workbook is written as a plain number — Excel shows it
-// as a bare decimal (0.7645, 16778.91) unless a display format is set on the
-// cell. Applies one to every numeric cell in the given columns, over
-// [rowStart, rowEnd) — currency (₹#,##0.00) or percent (0%), matching the
-// hand-built workbook's own formatting.
-function applyNumberFormats(ws: XLSX.WorkSheet, rowStart: number, rowEnd: number, colFormats: Record<number, string>): void {
+function blockDivider(ws, col, rows) {
+  rows.forEach((r) => {
+    const addr = XLSX4.utils.encode_cell({ r, c: col });
+    const cell = ws[addr] ?? (ws[addr] = { t: "s", v: "" });
+    cell.s = { ...cell.s ?? {}, border: { ...cell.s?.border ?? {}, left: { style: "thick", color: { rgb: "1F2937" } } } };
+  });
+}
+var CURRENCY_FMT = '"\u20B9"#,##0.00';
+var PERCENT_FMT = "0%";
+function applyNumberFormats(ws, rowStart, rowEnd, colFormats) {
   for (let r = rowStart; r < rowEnd; r++) {
     for (const [colStr, fmt] of Object.entries(colFormats)) {
-      const addr = XLSX.utils.encode_cell({ r, c: Number(colStr) });
+      const addr = XLSX4.utils.encode_cell({ r, c: Number(colStr) });
       const cell = ws[addr];
       if (cell && typeof cell.v === "number") cell.z = fmt;
     }
   }
 }
-
-// Strips a ```json ... ``` fence if Gemini wrapped its answer in one — same helper as
-// uploadAcosAlert.ts's extractJsonBlock, duplicated here rather than imported since that file is
-// written for the browser-side upload flow (relative fetch() calls) and this one runs server-side.
-function extractJsonBlock(text: string): string {
+function extractJsonBlock(text) {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
   return fenced ? fenced[1] : text;
 }
-
-// Direct server-side call to the Gemini API — mirrors src/app/api/gemini-insights/route.ts's
-// model cascade and generationConfig exactly, but calls generativelanguage.googleapis.com
-// directly instead of going through that route: this code runs inside buildAdSpendReportWorkbook,
-// which has no request host to build a relative-fetch URL from (it's a plain lib function, not an
-// API handler) and also runs on the unattended daily cron with no browser origin at all. Returns
-// null (never throws) on any failure so a Gemini outage never breaks report generation.
-async function callGeminiText(prompt: string): Promise<string | null> {
+async function callGeminiText(prompt) {
   const apiKey = Deno.env.get("GEMINI_API_KEY");
   if (!apiKey) return null;
   const models = ["gemini-flash-latest", "gemini-flash-lite-latest", "gemini-2.0-flash"];
   for (const model of models) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      const timeoutId = setTimeout(() => controller.abort(), 8e3);
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 2048, temperature: 0.5, thinkingConfig: { thinkingBudget: 256 } },
+          generationConfig: { maxOutputTokens: 2048, temperature: 0.5, thinkingConfig: { thinkingBudget: 256 } }
         }),
-        signal: controller.signal,
+        signal: controller.signal
       });
       clearTimeout(timeoutId);
-      if (!response.ok) continue; // 404 (retired model)/429 (rate limit)/other — try the next model
+      if (!response.ok) continue;
       const data = await response.json();
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
       if (text) return text;
     } catch {
-      // Timeout or network failure on this model — try the next one.
     }
   }
   return null;
 }
-
-// Optimization suggestions (Amazon + Flipkart) — one Gemini call per platform covering every
-// campaign whose trailing-7-day ACOS exceeds 14% (same threshold as the Action Sheet), then
-// patches those campaigns' products' actionRows entries with the real suggestion in place of the
-// generic tiered text. Amazon's version is sourced from barm_amazon_sp_advertised_product (the
-// same table/fields uploadAcosAlert.ts's weekly high-ACOS email already uses), Flipkart's from
-// barm_flipkart_fsn_report — both carry ad-group and SKU detail, so a suggestion can name a
-// specific ad group. Neither can name an actual search term/keyword to negate: no search-term-
-// level report is uploaded for Flipkart anywhere in this dashboard, and Amazon's real keyword
-// data only exists live in SellerMate, which this server-side report code has no access to (only
-// an interactive chat session can pull that, on request — see the Action Sheet's own comment).
-const OPT_MIN_SPEND = 100;
-const OPT_ACOS_THRESHOLD = 0.14;
-interface OptAdGroupAgg { name: string; spend: number; revenue: number; units: number; skus: Map<string, number> }
-interface OptCampaignAgg { name: string; spend: number; revenue: number; units: number; adGroups: Map<string, OptAdGroupAgg> }
-
-// Which campaign a SKU is associated with, scanning EVERY row across the full 7-day range (not
-// just one day) — deliberately separate from aggregateForOptimization's campaign-level spend/
-// revenue analysis below, which must stay scoped to a single day for Amazon (see
-// enrichAmazonActionRows's own comment on why summing sales_7d/orders_7d across days would
-// double-count). Summing each row's own per-day `spend` field across many days is safe here since
-// that field isn't a rolling window — this only decides identity ("which campaign"), not amounts.
-// Without this, a SKU whose only Sponsored Products spend fell on a day other than the report's
-// end date never matched any campaign at all, showing "no matching campaign found" even though a
-// real one exists in the uploaded data — this is exactly that gap, closed.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildSkuCampaignMap(rows: any[], f: { campaign: string; sku: string; spend: string }): Map<string, string> {
-  const bySku = new Map<string, Map<string, number>>();
+var OPT_MIN_SPEND = 100;
+var OPT_ACOS_THRESHOLD = 0.14;
+function buildSkuCampaignMap(rows, f) {
+  const bySku = /* @__PURE__ */ new Map();
   rows.forEach((r) => {
-    const campaignName: string = r[f.campaign];
-    const sku: string = r[f.sku];
+    const campaignName = r[f.campaign];
+    const sku = r[f.sku];
     if (!campaignName || !sku) return;
-    const perCampaign = bySku.get(sku) || new Map<string, number>();
-    perCampaign.set(campaignName, (perCampaign.get(campaignName) || 0) + num(r[f.spend]));
+    const perCampaign = bySku.get(sku) || /* @__PURE__ */ new Map();
+    perCampaign.set(campaignName, (perCampaign.get(campaignName) || 0) + num3(r[f.spend]));
     bySku.set(sku, perCampaign);
   });
-  const result = new Map<string, string>();
+  const result = /* @__PURE__ */ new Map();
   bySku.forEach((perCampaign, sku) => {
-    let best: string | null = null;
+    let best = null;
     let bestSpend = -1;
-    perCampaign.forEach((spend, name) => { if (spend > bestSpend) { bestSpend = spend; best = name; } });
+    perCampaign.forEach((spend, name) => {
+      if (spend > bestSpend) {
+        bestSpend = spend;
+        best = name;
+      }
+    });
     if (best) result.set(sku, best);
   });
   return result;
 }
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function aggregateForOptimization(rows: any[], f: { campaign: string; adGroup: string; sku: string; spend: string; revenue: string; units: string[] }): Map<string, OptCampaignAgg> {
-  const campaigns = new Map<string, OptCampaignAgg>();
+function aggregateForOptimization(rows, f) {
+  const campaigns = /* @__PURE__ */ new Map();
   rows.forEach((r) => {
-    const campaignName: string = r[f.campaign];
+    const campaignName = r[f.campaign];
     if (!campaignName) return;
-    const spend = num(r[f.spend]);
-    const revenue = num(r[f.revenue]);
-    const units = f.units.reduce((s, field) => s + num(r[field]), 0);
+    const spend = num3(r[f.spend]);
+    const revenue = num3(r[f.revenue]);
+    const units = f.units.reduce((s, field) => s + num3(r[field]), 0);
     let c = campaigns.get(campaignName);
-    if (!c) { c = { name: campaignName, spend: 0, revenue: 0, units: 0, adGroups: new Map() }; campaigns.set(campaignName, c); }
-    c.spend += spend; c.revenue += revenue; c.units += units;
-    const agName: string = r[f.adGroup] || "(no ad group)";
+    if (!c) {
+      c = { name: campaignName, spend: 0, revenue: 0, units: 0, adGroups: /* @__PURE__ */ new Map() };
+      campaigns.set(campaignName, c);
+    }
+    c.spend += spend;
+    c.revenue += revenue;
+    c.units += units;
+    const agName = r[f.adGroup] || "(no ad group)";
     let ag = c.adGroups.get(agName);
-    if (!ag) { ag = { name: agName, spend: 0, revenue: 0, units: 0, skus: new Map() }; c.adGroups.set(agName, ag); }
-    ag.spend += spend; ag.revenue += revenue; ag.units += units;
+    if (!ag) {
+      ag = { name: agName, spend: 0, revenue: 0, units: 0, skus: /* @__PURE__ */ new Map() };
+      c.adGroups.set(agName, ag);
+    }
+    ag.spend += spend;
+    ag.revenue += revenue;
+    ag.units += units;
     const sku = r[f.sku];
     if (sku) ag.skus.set(sku, (ag.skus.get(sku) || 0) + spend);
   });
   return campaigns;
 }
-
-async function enrichOptimizationActionRows(
-  actionRows: { platform: Platform; name: string; sku: string; campaign?: string; acos: number; action: string }[],
-  platform: Platform,
-  campaigns: Map<string, OptCampaignAgg>,
-  skuToCampaignName: Map<string, string>,
-  platformLabel: string,
-  searchTermTool: string,
-  aiSuggestions: boolean
-): Promise<void> {
-  // Same sentinel convention as computeAcos/actionSheetAcos above: a real campaign/ad-group with
-  // spend but zero attributed revenue is a genuinely unknown ratio, not a literal 999% — see
-  // acosLabel below, which is what actually reaches the seller-visible suggestion text and the
-  // Gemini prompt (an AI asked to reason about a fabricated "999%" tends to echo it back verbatim).
-  const acosOf = (c: OptCampaignAgg) => (c.revenue > 0 ? c.spend / c.revenue : c.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0);
-  const acosLabel = (frac: number): string => (frac === ACOS_UNDEFINED_SENTINEL ? "unavailable" : `${Math.round(frac * 100)}%`);
-  const flagged = [...campaigns.values()]
-    .filter((c) => c.spend >= OPT_MIN_SPEND && acosOf(c) >= OPT_ACOS_THRESHOLD)
-    .sort((a, b) => b.spend - a.spend)
-    .slice(0, 15); // caps prompt size/cost — the daily cron runs this unattended every day
-
-  const suggestionByCampaign = new Map<string, string>();
-  // Rule-based fallback first (same shape/spirit as uploadAcosAlert.ts's fallbackSuggestion) —
-  // Gemini's answer merges on top of this below, so a Gemini outage/bad response never leaves a
-  // flagged campaign with no suggestion at all.
+async function enrichOptimizationActionRows(actionRows, platform, campaigns, skuToCampaignName, platformLabel, searchTermTool, aiSuggestions) {
+  const acosOf = (c) => c.revenue > 0 ? c.spend / c.revenue : c.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
+  const acosLabel = (frac) => frac === ACOS_UNDEFINED_SENTINEL ? "unavailable" : `${Math.round(frac * 100)}%`;
+  const flagged = [...campaigns.values()].filter((c) => c.spend >= OPT_MIN_SPEND && acosOf(c) >= OPT_ACOS_THRESHOLD).sort((a, b) => b.spend - a.spend).slice(0, 15);
+  const suggestionByCampaign = /* @__PURE__ */ new Map();
   flagged.forEach((c) => {
     const worst = [...c.adGroups.values()].sort((a, b) => b.spend - a.spend)[0];
     const acosFrac = acosOf(c);
-    // The bid-cut tier still treats "unknown" as the worst case (real spend, no signal at all) —
-    // only the DISPLAYED number changes; Math.round(9.99 * 100) already clears the 90 bar below.
     const cut = Math.round(acosFrac * 100) >= 90 ? 50 : Math.round(acosFrac * 100) >= 60 ? 35 : 20;
-    // Zero units sold on real spend is the worst case — call for the maximum bid cut rather than
-    // saying "pause", per the seller's explicit instruction that this sheet always give a concrete
-    // % to act on, never a blanket pause instruction.
-    const pauseNote = worst && worst.units === 0 ? ` Cut this ad group's bids as close to 80% as the platform allows — zero units sold on ₹${round2(worst.spend)} spend.` : "";
+    const pauseNote = worst && worst.units === 0 ? ` Cut this ad group's bids as close to 80% as the platform allows \u2014 zero units sold on \u20B9${round2(worst.spend)} spend.` : "";
     suggestionByCampaign.set(
       c.name,
-      `Cut bids ${cut}% on ad group "${worst?.name || c.name}" (ACOS ${acosLabel(acosFrac)}, ₹${round2(worst?.spend ?? c.spend)} spend).${pauseNote} Open that ad group's search-term report in ${searchTermTool} first to add negative keywords for zero-conversion terms.`
+      `Cut bids ${cut}% on ad group "${worst?.name || c.name}" (ACOS ${acosLabel(acosFrac)}, \u20B9${round2(worst?.spend ?? c.spend)} spend).${pauseNote} Open that ad group's search-term report in ${searchTermTool} first to add negative keywords for zero-conversion terms.`
     );
   });
-
   if (flagged.length && aiSuggestions) {
-    const promptLines = flagged
-      .map((c) => {
-        const topAdGroups = [...c.adGroups.values()].sort((a, b) => b.spend - a.spend).slice(0, 5);
-        const agLines = topAdGroups
-          .map((ag) => {
-            const agAcosFrac = ag.revenue > 0 ? ag.spend / ag.revenue : ag.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
-            const topSkus = [...ag.skus.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([sku]) => sku);
-            return `    - Ad group "${ag.name}" (top SKUs: ${topSkus.join(", ") || "n/a"}): spend ₹${round2(ag.spend)}, revenue ₹${round2(ag.revenue)}, ACOS ${acosLabel(agAcosFrac)}, units sold ${ag.units}`;
-          })
-          .join("\n");
-        return `- Campaign "${c.name}": spend ₹${round2(c.spend)}, revenue ₹${round2(c.revenue)}, ACOS ${acosLabel(acosOf(c))}, units sold ${c.units}\n  Ad groups within this campaign:\n${agLines}`;
-      })
-      .join("\n");
-    const prompt =
-      `You are a ${platformLabel} PPC analyst. Over the trailing 7 days, these campaigns exceeded the 14% ACOS threshold, broken down by ad group and top SKU:\n\n${promptLines}\n\n` +
-      `Return ONLY a JSON object, no markdown fences, no text outside the JSON, of this exact shape:\n` +
-      `{"campaigns":[{"name":"<exact campaign name as given above>","suggestion":"<1-2 sentences: a specific bid or budget cut % on a named ad group — never tell the seller to pause or stop a campaign, always give a concrete % cut instead (use an aggressive cut like 70-80% for an ad group with 0 units sold); end by naming which ad group to open ${searchTermTool}'s search-term report for first to add negative keywords — never invent a specific search term or keyword, since none is available in this data>"}]}\n` +
-      `Include every one of the ${flagged.length} campaigns listed above, using their exact name string.`;
+    const promptLines = flagged.map((c) => {
+      const topAdGroups = [...c.adGroups.values()].sort((a, b) => b.spend - a.spend).slice(0, 5);
+      const agLines = topAdGroups.map((ag) => {
+        const agAcosFrac = ag.revenue > 0 ? ag.spend / ag.revenue : ag.spend > 0 ? ACOS_UNDEFINED_SENTINEL : 0;
+        const topSkus = [...ag.skus.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([sku]) => sku);
+        return `    - Ad group "${ag.name}" (top SKUs: ${topSkus.join(", ") || "n/a"}): spend \u20B9${round2(ag.spend)}, revenue \u20B9${round2(ag.revenue)}, ACOS ${acosLabel(agAcosFrac)}, units sold ${ag.units}`;
+      }).join("\n");
+      return `- Campaign "${c.name}": spend \u20B9${round2(c.spend)}, revenue \u20B9${round2(c.revenue)}, ACOS ${acosLabel(acosOf(c))}, units sold ${c.units}
+  Ad groups within this campaign:
+${agLines}`;
+    }).join("\n");
+    const prompt = `You are a ${platformLabel} PPC analyst. Over the trailing 7 days, these campaigns exceeded the 14% ACOS threshold, broken down by ad group and top SKU:
 
+${promptLines}
+
+Return ONLY a JSON object, no markdown fences, no text outside the JSON, of this exact shape:
+{"campaigns":[{"name":"<exact campaign name as given above>","suggestion":"<1-2 sentences: a specific bid or budget cut % on a named ad group \u2014 never tell the seller to pause or stop a campaign, always give a concrete % cut instead (use an aggressive cut like 70-80% for an ad group with 0 units sold); end by naming which ad group to open ${searchTermTool}'s search-term report for first to add negative keywords \u2014 never invent a specific search term or keyword, since none is available in this data>"}]}
+Include every one of the ${flagged.length} campaigns listed above, using their exact name string.`;
     try {
       const geminiText = await callGeminiText(prompt);
       if (geminiText) {
         const parsed = JSON.parse(extractJsonBlock(geminiText));
-        const entries: Array<{ name?: string; suggestion?: string }> = parsed?.campaigns || [];
+        const entries = parsed?.campaigns || [];
         entries.forEach((e) => {
           if (e.name && e.suggestion && suggestionByCampaign.has(e.name)) suggestionByCampaign.set(e.name, e.suggestion);
         });
       }
     } catch {
-      // JSON.parse or fetch failure — the rule-based suggestionByCampaign map stands as-is.
     }
   }
-
   actionRows.forEach((r) => {
     if (r.platform !== platform) return;
     const skus = r.sku ? r.sku.split(",").map((s) => s.trim()).filter(Boolean) : [];
-    let bestCampaign: string | null = null;
+    let bestCampaign = null;
     for (const sku of skus) {
       const hit = skuToCampaignName.get(sku);
-      if (hit) { bestCampaign = hit; break; }
+      if (hit) {
+        bestCampaign = hit;
+        break;
+      }
     }
-    if (!bestCampaign) return; // no identity match anywhere in the range — leave the product-ACOS fallback set earlier
+    if (!bestCampaign) return;
     r.campaign = bestCampaign;
     const suggestion = suggestionByCampaign.get(bestCampaign);
     if (suggestion) {
       r.action = suggestion;
       return;
     }
-    // Campaign identified, but its own aggregate spend/ACOS didn't clear the analysis threshold
-    // (or fell outside the top-15 prompt cap) — name it rather than claim no match was found.
-    // r.acos is already actionSheetAcos's own value (real fallback wherever one's computable) —
-    // acosLabel only still matters for the rare residual case where even that's unavailable.
     const acosPct = Math.round(r.acos * 100);
     const cut = acosPct >= 90 ? 50 : acosPct >= 60 ? 35 : 20;
     r.action = `Cut bids ~${cut}% on campaign "${bestCampaign}" (this SKU's 7-day ACOS ${acosLabel(r.acos)}). Open ${searchTermTool}'s search-term report for this campaign to add negative keywords for zero-conversion terms.`;
   });
 }
-
-async function enrichFlipkartActionRows(
-  actionRows: { platform: Platform; name: string; sku: string; campaign?: string; acos: number; action: string }[],
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  fsnRows: any[],
-  aiSuggestions: boolean
-): Promise<void> {
+async function enrichFlipkartActionRows(actionRows, fsnRows, aiSuggestions) {
   const campaigns = aggregateForOptimization(fsnRows, {
-    campaign: "campaign_name", adGroup: "adgroup_name", sku: "sku_id",
-    spend: "ad_spend", revenue: "total_revenue", units: ["direct_units_sold", "indirect_units_sold"],
+    campaign: "campaign_name",
+    adGroup: "adgroup_name",
+    sku: "sku_id",
+    spend: "ad_spend",
+    revenue: "total_revenue",
+    units: ["direct_units_sold", "indirect_units_sold"]
   });
-  // fsnRows already spans the full 7-day range (see fetchFlipkartAdSpendData) — no day-filtering
-  // to widen here, unlike Amazon below.
   const skuToCampaignName = buildSkuCampaignMap(fsnRows, { campaign: "campaign_name", sku: "sku_id", spend: "ad_spend" });
   await enrichOptimizationActionRows(actionRows, "Flipkart", campaigns, skuToCampaignName, "Flipkart Ads", "Flipkart Ads Manager", aiSuggestions);
 }
-
-// Amazon's sp_advertised_product carries Amazon's own trailing-7-day sales_7d/orders_7d per row
-// (as of that row's report_date), not a per-day figure — summing those across multiple days'
-// rows would multiply-count the same rolling window. Scoped to report_date === endDate only, so
-// each campaign/ad-group/SKU's sales_7d/orders_7d is read exactly once, already representing the
-// trailing 7 days as of the report's own end date (spend on that row is that single day's spend,
-// same mismatched-but-intentional pairing uploadAcosAlert.ts's ACOS calc already relies on).
-// SB/SD campaign reports are excluded — they carry no ad-group/SKU column (see uploadAcosAlert.ts's
-// file header), so a suggestion for them couldn't name anything more specific than sp_advertised_
-// product already does, and are usually the smaller share of total Amazon ad spend anyway.
-async function enrichAmazonActionRows(
-  actionRows: { platform: Platform; name: string; sku: string; campaign?: string; acos: number; action: string }[],
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  spRows: any[],
-  endDate: string,
-  aiSuggestions: boolean
-): Promise<void> {
+async function enrichAmazonActionRows(actionRows, spRows, endDate, aiSuggestions) {
   const dayRows = spRows.filter((r) => r.report_date === endDate);
   const campaigns = aggregateForOptimization(dayRows, {
-    campaign: "campaign_name", adGroup: "ad_group_name", sku: "advertised_sku",
-    spend: "spend", revenue: "sales_7d", units: ["orders_7d"],
+    campaign: "campaign_name",
+    adGroup: "ad_group_name",
+    sku: "advertised_sku",
+    spend: "spend",
+    revenue: "sales_7d",
+    units: ["orders_7d"]
   });
-  // Identity mapping (which campaign is this SKU in) scans the FULL spRows across all 7 days, not
-  // just endDate — a SKU whose only spend fell on an earlier day in the range still resolves to
-  // its real campaign this way, even though its severity/Gemini analysis above stays day-scoped.
   const skuToCampaignName = buildSkuCampaignMap(spRows, { campaign: "campaign_name", sku: "advertised_sku", spend: "spend" });
   await enrichOptimizationActionRows(actionRows, "Amazon", campaigns, skuToCampaignName, "Amazon Ads", "Amazon Ads Console", aiSuggestions);
 }
-
-// Every uploaded row keeps its original file's columns verbatim in a `raw`
-// JSONB field (see *ReportUpload.ts) — dumping that, rather than the parsed
-// snake_case fields, gives the seller back exactly the sheet shape they
-// uploaded (their own headers, their own column order), matching the raw
-// "Amazon Spend" / "Flipkart Orders" / etc. sheets in their hand-built
-// workbook instead of inventing a different layout.
-// Product/Quantity/Price/Sales leaderboard written one blank column to the
-// right of a raw dump sheet's own columns (see rawRowsToSheet's sideBlock
-// param) — matches the seller's own hand-built workbook's Meesho orders tab,
-// which pairs the raw export with exactly this per-product summary on the
-// same sheet rather than a separate one.
-interface SideBlock {
-  header: (string | number)[];
-  rows: (string | number)[][];
-  /** Column indexes within `rows` (0-based, relative to the block's own
-   *  first column) that hold currency values — Price/Sales here — so they
-   *  get the same ₹ format the rest of the report uses. */
-  currencyCols: number[];
-}
-
-function rawRowsToSheet(
-  wb: XLSX.WorkBook,
-  sheetName: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  rows: any[],
-  sideBlock?: SideBlock,
-  emptyText = "(no data in range)"
-): void {
-  const rawRows: Record<string, unknown>[] = rows.map((r) => r?.raw).filter((r): r is Record<string, unknown> => !!r);
-  const writeSideBlock = (ws: XLSX.WorkSheet, colStart: number) => {
+function rawRowsToSheet(wb, sheetName, rows, sideBlock, emptyText = "(no data in range)") {
+  const rawRows = rows.map((r) => r?.raw).filter((r) => !!r);
+  const writeSideBlock = (ws2, colStart) => {
     if (!sideBlock) return;
-    XLSX.utils.sheet_add_aoa(ws, [sideBlock.header, ...sideBlock.rows], { origin: { r: 0, c: colStart } });
-    styleHeader(ws, 0, sideBlock.header.length, "6B7280", colStart);
+    XLSX4.utils.sheet_add_aoa(ws2, [sideBlock.header, ...sideBlock.rows], { origin: { r: 0, c: colStart } });
+    styleHeader(ws2, 0, sideBlock.header.length, "6B7280", colStart);
     applyNumberFormats(
-      ws, 1, sideBlock.rows.length + 1,
+      ws2,
+      1,
+      sideBlock.rows.length + 1,
       Object.fromEntries(sideBlock.currencyCols.map((c) => [colStart + c, CURRENCY_FMT]))
     );
-    if (!ws["!cols"]) ws["!cols"] = [];
-    const wsCols = ws["!cols"] as { wch: number }[];
+    if (!ws2["!cols"]) ws2["!cols"] = [];
+    const wsCols = ws2["!cols"];
     while (wsCols.length < colStart) wsCols.push({ wch: 16 });
     wsCols.push({ wch: 40 }, ...sideBlock.header.slice(1).map(() => ({ wch: 12 })));
   };
   if (!rawRows.length) {
-    const ws = XLSX.utils.aoa_to_sheet([[emptyText]]);
-    writeSideBlock(ws, 2);
-    XLSX.utils.book_append_sheet(wb, ws, sheetName);
+    const ws2 = XLSX4.utils.aoa_to_sheet([[emptyText]]);
+    writeSideBlock(ws2, 2);
+    XLSX4.utils.book_append_sheet(wb, ws2, sheetName);
     return;
   }
-  const cols: string[] = [];
-  const seen = new Set<string>();
-  rawRows.forEach((r) => Object.keys(r).forEach((k) => { if (!seen.has(k)) { seen.add(k); cols.push(k); } }));
-
-  // A column named e.g. "Date"/"Order Date"/"Start Date" whose raw value is a plain number is an
-  // Excel date SERIAL (the sheet cell was typed as a date when the seller's file was uploaded,
-  // and the upload parser stored that serial number as-is into this row's `raw` JSONB rather than
-  // converting it) — written straight into a new cell with no date number format, it displays as
-  // a bare integer like "46276" instead of a date. Amazon's own "purchase-date" is unaffected
-  // (already an ISO string in `raw`, not a number) — this only fires for a genuinely numeric date
-  // cell. Confirmed against this exact bug: 46276/46282 parse to 2026-09-11/2026-09-17, this
-  // report's own date window, not some unrelated number that happens to share a "date" header.
+  const cols = [];
+  const seen = /* @__PURE__ */ new Set();
+  rawRows.forEach((r) => Object.keys(r).forEach((k) => {
+    if (!seen.has(k)) {
+      seen.add(k);
+      cols.push(k);
+    }
+  }));
   const DATE_HEADER_RE = /date/i;
-  // Flipkart's "Invoice Date (mm/dd/yy)" column is a special case within that: whenever the
-  // seller's uploaded file had that cell typed as a genuine Excel date (rather than left as plain
-  // text like "09/13/26"), day and month come out swapped — proven by cross-checking against the
-  // same row's "Dispatch by date": every single numeric-typed cell in this column, 234/234 in one
-  // report, has its month matching Dispatch's DAY instead of its month once mapped this way, e.g.
-  // a real 11-Sep dispatch stores as the serial for 9-Nov (day 11/month 9 read back as day 9/month
-  // 11). That happens upstream, in whatever tool auto-converted the seller's ambiguous "9/11/26"
-  // text into a real Date cell using day-first instead of month-first — not in our upload code,
-  // which never reinterprets an already-numeric cell's value. Swapping day/month back on read (and
-  // reformatting the still-plain-text cells the same way, since they're already correct as
-  // stored) keeps this one column internally consistent instead of half dash-DD-MM/half
-  // slash-MM-DD.
   const SWAPPED_DM_HEADER_RE = /\(mm\/dd\/yy\)/i;
-  const excelSerialToDmy = (v: number, swapDayMonth: boolean): string | null => {
-    // Guarded, not called blind: a formatting nicety must never crash report generation over it —
-    // worse than leaving the original bare-number cell in place, which is what a null return does.
+  const excelSerialToDmy = (v, swapDayMonth) => {
     try {
-      const d = XLSX.SSF?.parse_date_code(v);
+      const d = XLSX4.SSF?.parse_date_code(v);
       if (!d || !d.y) return null;
       const day = swapDayMonth ? d.m : d.d;
       const month = swapDayMonth ? d.d : d.m;
@@ -1928,21 +3045,18 @@ function rawRowsToSheet(
       return null;
     }
   };
-  // "9/13/26" -> "13-09-2026" (already correct day/month order per this column's own MM/DD/YY
-  // convention, just reformatted to match the numeric cells above and the rest of this report).
-  const mdyTextToDmy = (v: string): string | null => {
+  const mdyTextToDmy = (v) => {
     const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2})$/.exec(v.trim());
     if (!m) return null;
     const [, mm, dd, yy] = m;
     return `${dd.padStart(2, "0")}-${mm.padStart(2, "0")}-20${yy}`;
   };
-
-  const aoa: (string | number | null)[][] = [cols];
+  const aoa = [cols];
   rawRows.forEach((r) => {
     aoa.push(
       cols.map((c) => {
         const v = r[c];
-        if (v === null || v === undefined) return "";
+        if (v === null || v === void 0) return "";
         if (typeof v === "number" && DATE_HEADER_RE.test(c)) {
           const formatted = excelSerialToDmy(v, SWAPPED_DM_HEADER_RE.test(c));
           if (formatted) return formatted;
@@ -1955,189 +3069,53 @@ function rawRowsToSheet(
       })
     );
   });
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const ws = XLSX4.utils.aoa_to_sheet(aoa);
   styleHeader(ws, 0, cols.length, "6B7280");
   ws["!views"] = [{ state: "frozen", ySplit: 1 }];
   ws["!cols"] = cols.map(() => ({ wch: 16 }));
-  // Amazon's own export has ACOS/Conversion Rate/CTR as a plain fraction (0.15 for 15%), which the
-  // upload parser stores as-is into `raw` — reads back here as a bare "0.15" with no format applied,
-  // instead of the "15.00%" it showed in the seller's original upload. ROAS/ROI are deliberately left
-  // alone: those are genuine ratios (Sales/Spend), not percentages, so "1.58" is already correct.
   const PERCENT_HEADER_RE = /ACOS|Conversion Rate|Click-?Thru Rate|\bCTR\b/i;
-  const percentCols: Record<number, string> = {};
-  cols.forEach((c, i) => { if (PERCENT_HEADER_RE.test(c)) percentCols[i] = "0.00%"; });
+  const percentCols = {};
+  cols.forEach((c, i) => {
+    if (PERCENT_HEADER_RE.test(c)) percentCols[i] = "0.00%";
+  });
   if (Object.keys(percentCols).length) applyNumberFormats(ws, 1, aoa.length, percentCols);
   writeSideBlock(ws, cols.length + 1);
-  XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  XLSX4.utils.book_append_sheet(wb, ws, sheetName);
 }
-
-const PLATFORM_FILL: Record<Platform, string> = { Amazon: "FF9900", Flipkart: "2874F0", Meesho: "9F2089" };
-// listingPrice: this SKU's current live listing-table price (Amazon: barm_amazon_price_listing,
-// Flipkart: barm_flipkart_listings — see fetchAmazonListingPriceMap/fetchFlipkartListingPriceMap),
-// threaded through to computeAcos's own listingPrice parameter untouched. Omitted for Meesho (no
-// listing table exists) and for a merged multi-SKU row whose comma-joined p.sku isn't a key in
-// either map — both cases fall back to computeAcos's own `price` argument automatically.
-const productAoaRow = (p: ProductRow, listingPrice?: number): (string | number | null)[] => [
-  p.name, p.price,
-  round2(p.day.spend), round2(spendTax(p.day)), p.day.units, round2(computeCpc(p.day)), acosCell(p.day, p.price, listingPrice),
-  round2(p.range.spend), round2(spendTax(p.range)), p.range.units, round2(computeCpc(p.range)), acosCell(p.range, p.price, listingPrice),
+var PLATFORM_FILL = { Amazon: "FF9900", Flipkart: "2874F0", Meesho: "9F2089" };
+var META_FILL = "0E7490";
+var GOOGLE_FILL = "34A853";
+var priceCell = (price) => price > 0 ? price : "N/A";
+var productAoaRow = (p, listingPrice) => [
+  p.name,
+  priceCell(p.price),
+  round2(p.day.spend),
+  round2(spendTax(p.day)),
+  p.day.units,
+  round2(computeCpc(p.day)),
+  acosCell(p.day, p.price, listingPrice),
+  round2(p.range.spend),
+  round2(spendTax(p.range)),
+  p.range.units,
+  round2(computeCpc(p.range)),
+  acosCell(p.range, p.price, listingPrice)
 ];
-function round2(n: number): number { return Math.round(n * 100) / 100; }
-function pct(n: number): number { return Math.round(n * 10000) / 10000; }
-// Every user-visible ACOS cell/field goes through this instead of computeAcos(...)
-// directly: the ACOS_UNDEFINED_SENTINEL means "ad spend with zero attributed sales", a
-// genuinely undefined ratio, and rendering it as "999%" reads as a data error rather than
-// "no signal" — this blanks it out (null: an empty xlsx cell, an empty DB column, and a
-// dash in the email template) instead, matching the raw Sponsored Products export's own
-// convention of leaving ACOS blank when Total Sales is 0. The Action Sheet's own >14%
-// threshold check still uses computeAcos's raw sentinel value directly (a genuinely
-// unknown ACOS with real spend should still clear that bar) — but see acosSortRank
-// below for every "worst ACOS first" ordering, which treats it differently.
-export function acosCell(a: WindowAgg, price: number, listingPrice?: number): number | null {
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+function pct(n) {
+  return Math.round(n * 1e4) / 1e4;
+}
+function acosCell(a, price, listingPrice) {
   const v = computeAcos(a, price, listingPrice);
   return v === ACOS_UNDEFINED_SENTINEL ? null : pct(v);
 }
-// "Worst ACOS first" sort ordering only (the Summary sheet's per-platform shortlist, the
-// email's top-3 table, and the full Ad spend report tab's row order) — a known, finite
-// ACOS ranks ABOVE the sentinel here, not below. A blank "Amazon attributed zero sales"
-// row is genuinely less informative than a concrete 136%, so burying every real number
-// under a pile of blanks (the sentinel is numerically huge) defeats the point of a
-// worst-first list. The Action Sheet's own threshold check is unaffected — it doesn't
-// sort, it just filters every product against >14% independently of this ranking.
-export function acosSortRank(a: WindowAgg, price: number, listingPrice?: number): number {
+function acosSortRank(a, price, listingPrice) {
   const v = computeAcos(a, price, listingPrice);
   return v === ACOS_UNDEFINED_SENTINEL ? -1 : v;
 }
-
-// One product's day/range Spend, Spend(with tax), Orders, CPC, ACOS — the same
-// five metrics as METRIC_NAMES/productAoaRow above, just as a named object
-// instead of a positional row, for the daily email summary (see
-// PlatformEmailSummary below) rather than a spreadsheet cell.
-export interface ProductMetricBlock {
-  spend: number;
-  spendTax: number;
-  orders: number;
-  cpc: number;
-  // null when computeAcos hit the ACOS_UNDEFINED_SENTINEL (ad spend with zero
-  // attributed sales) — see acosCell. Renders as a blank cell/dash, never "999%".
-  acos: number | null;
-}
-
-// Mirrors exactly the Summary sheet's per-platform block (platform totals +
-// its top-N-by-range-spend product shortlist + overall sales), so the daily
-// email table and the "Summary" sheet in the attached workbook always agree —
-// this is captured from the very same `shortlist`/`rows` computation below,
-// not recomputed separately.
-export interface PlatformEmailSummary {
-  platform: Platform;
-  daySpend: number;
-  daySpendTax: number;
-  rangeSpend: number;
-  rangeSpendTax: number;
-  overallDayUnits: number;
-  overallDayValue: number;
-  overallRangeUnits: number;
-  overallRangeValue: number;
-  topProducts: { name: string; price: number; day: ProductMetricBlock; range: ProductMetricBlock }[];
-  // Every product with any range spend (not just the top-3 shortlist), sorted worst-day-ACOS-first —
-  // same population and order as topProducts, just unsliced. Mirrors the full per-platform
-  // "Here is the Amazon/Flipkart platform's ad spend report" tables in the manual daily mail,
-  // which list every advertised product rather than only the top 3.
-  allProducts: { name: string; price: number; day: ProductMetricBlock; range: ProductMetricBlock }[];
-}
-
-// Kept as its own type instead of widening Platform/PlatformEmailSummary to include "Social Media",
-// since it's deliberately not a real platform (see the comment where socialMediaRows is built in
-// buildAdSpendReportWorkbook). daySpend/daySpendTax are the channel totals; `products` has one entry
-// per promoted product (Meta campaigns grouped by SOCIAL_MEDIA_CAMPAIGN_PRODUCTS). product/price/
-// day/range repeat the first entry, for an email function deployed before `products` existed.
-export interface SocialMediaEmailSummary {
-  daySpend: number;
-  daySpendTax: number;
-  product: string;
-  price: number;
-  day: ProductMetricBlock;
-  range: ProductMetricBlock;
-  products: { product: string; campaigns: string[]; price: number; day: ProductMetricBlock; range: ProductMetricBlock }[];
-  /** Meta channel ACOS (Spend without tax ÷ Meta-attributed Shopify sales) and those sales, per
-   *  window; null = N/A (attribution unverified, no spend or no attributed sales). Absent on a
-   *  summary built before Meta ACOS existed — the email then renders the row as before. */
-  dayAcos?: number | null;
-  rangeAcos?: number | null;
-  dayAdSales?: number | null;
-  rangeAdSales?: number | null;
-}
-
-// Google — the reporting day's B-Arm orders (totalUnits/totalValue, the Summary row's Overall
-// sales QTS/Value) plus its Google Ads spend for the day and the range (0 when no Google Ads
-// report is on file for that window).
-export interface GoogleEmailSummary {
-  totalUnits: number;
-  totalValue: number;
-  daySpend: number;
-  daySpendTax: number;
-  rangeSpend: number;
-  rangeSpendTax: number;
-  /** False for a reporting day before the first Shopify day: no attribution exists, the ad fields
-   *  below are null and the email shows the row exactly as before. */
-  attributed: boolean;
-  /** Google Ads-attributed Shopify sales, and Spend (without tax) ÷ / into them; null = nothing to divide by. */
-  dayAdSales: number | null;
-  rangeAdSales: number | null;
-  dayAcos: number | null;
-  rangeAcos: number | null;
-  dayRoas: number | null;
-  rangeRoas: number | null;
-}
-
-export interface AdSpendReportResult {
-  wb: XLSX.WorkBook;
-  filename: string;
-  endDate: string;
-  rangeStart: string;
-  productCount: number;
-  platformTotals: { platform: Platform; daySpendTax: number; rangeSpendTax: number }[];
-  platformSummaries: PlatformEmailSummary[];
-  // null when there's no Social Media spend for this window — same condition that skips the
-  // Summary sheet's own "Social Media" row.
-  socialMediaSummary: SocialMediaEmailSummary | null;
-  // null when there's no Google Orders data on file at all — same condition that skips the
-  // Summary sheet's own "Google" row.
-  googleSummary: GoogleEmailSummary | null;
-  unmappedAmazonSpend: number;
-  /** One line per Amazon Brand/Display spend problem (unmapped campaign, campaign with no row on the
-   *  reporting day) — shown in the Notes sheet, on the download message and in the email, so spend that
-   *  never reached a product can't pass as ₹0. Empty when there's nothing to flag. */
-  amazonSpendWarnings: string[];
-  lowSpendCampaignCount: number;
-  historyRowsSaved: number;
-  // Every platform's own ad-spend export lags ~1 day (today's spend isn't
-  // downloadable until tomorrow), so a report run same-day is silently short
-  // its most recent day unless that gap is surfaced. Only populated for a
-  // platform with SOME data in range but a gap inside it — a platform with
-  // zero rows at all (Meesho not yet onboarded, say) is a different problem
-  // and not reported here.
-  incompleteDates: { platform: Platform; missingDates: string[] }[];
-  // A platform table that failed to load (query/database error) — kept apart from "no data" so a
-  // broken read is never mistaken for a quiet day. Only Meesho reports these today.
-  dataLoadErrors: { platform: Platform; error: string }[];
-}
-
-// Persists one row per product per platform into barm_ad_spend_history (see
-// scripts/ad_spend_history_table.sql) — a running record independent of any
-// single downloaded .xlsx, queryable/chartable later ("how has this SKU's
-// ACOS trended"). Runs on every generation, whether triggered by the Download
-// page's "Generate & Download" button or the daily cron
-// (src/pages/api/cron/ad-spend-history.ts), so both paths build the same
-// history without duplicating this logic. Products with no activity in
-// either window are skipped — no point storing an all-zero row every day.
-async function saveAdSpendHistory(
-  platforms: { platform: Platform; products: Map<string, ProductRow> }[],
-  endDate: string,
-  rangeStart: string,
-  listingPriceFor: (platform: Platform, sku: string) => number | undefined
-): Promise<number> {
-  const rows: Record<string, unknown>[] = [];
+async function saveAdSpendHistory(platforms, endDate, rangeStart, listingPriceFor) {
+  const rows = [];
   platforms.forEach(({ platform, products }) => {
     products.forEach((p) => {
       if (spendTax(p.range) <= 0 && p.range.units <= 0) return;
@@ -2158,7 +3136,7 @@ async function saveAdSpendHistory(
         range_spend_tax: round2(spendTax(p.range)),
         range_orders: p.range.units,
         range_cpc: round2(computeCpc(p.range)),
-        range_acos: acosCell(p.range, p.price, listingPrice),
+        range_acos: acosCell(p.range, p.price, listingPrice)
       });
     });
   });
@@ -2167,81 +3145,55 @@ async function saveAdSpendHistory(
     await upsertInChunks("barm_ad_spend_history", rows, "report_date,platform,sku");
     return rows.length;
   } catch (err) {
-    // A missing table (scripts/ad_spend_history_table.sql not run yet) or a
-    // transient Supabase error must not break report generation — the
-    // downloaded workbook is unaffected by whether its history got persisted.
     console.error("[adSpendReportExport] Failed to save ad spend history:", err);
     return 0;
   }
 }
-
-// The 30-day companion to saveAdSpendHistory, stored in barm_ad_spend_history_30d (see
-// scripts/ad_spend_history_30d_table.sql) and read by acos_interval_summary_v. Summing
-// barm_ad_spend_history's day_* columns can't stand in for this: a report saved before that day's
-// ad data was uploaded stores Day = 0. So the same per-platform fetchers run again over the 30
-// days ending on endDate, with the same name/GST resolution (resolveProducts) and the same
-// spendTax/computeCpc/acosCell formulas as the 7D range. Only runs on persisted generations.
-async function saveAdSpendHistory30d(
-  endDate: string,
-  flipkartListingPriceMap: Map<string, number>,
-  resolveProducts: (products: Map<string, ProductRow>) => void,
-  listingPriceFor: (platform: Platform, sku: string) => number | undefined
-): Promise<number> {
+async function saveAdSpendHistory30d(endDate, flipkartListingPriceMap, resolveProducts, listingPriceFor) {
   try {
     const range30 = getDateWindow(endDate, 30);
     const [amz, fk, ms] = await Promise.all([
       fetchAmazonProducts(range30, endDate),
       fetchFlipkartProducts(range30, endDate, flipkartListingPriceMap),
-      fetchMeeshoProducts(range30, endDate),
+      fetchMeeshoProducts(range30, endDate)
     ]);
-    const rows: Record<string, unknown>[] = [];
-    ([["Amazon", amz.products], ["Flipkart", fk.products], ["Meesho", ms.products]] as [Platform, Map<string, ProductRow>][])
-      .forEach(([platform, products]) => {
-        resolveProducts(products);
-        products.forEach((p) => {
-          if (spendTax(p.range) <= 0 && p.range.units <= 0) return;
-          rows.push({
-            report_date: endDate,
-            range30_start: range30.start,
-            platform,
-            sku: p.sku,
-            product_name: p.name,
-            price: p.price,
-            spend: round2(p.range.spend),
-            spend_tax: round2(spendTax(p.range)),
-            orders: p.range.units,
-            cpc: round2(computeCpc(p.range)),
-            acos: acosCell(p.range, p.price, listingPriceFor(platform, p.sku)),
-          });
+    const rows = [];
+    [["Amazon", amz.products], ["Flipkart", fk.products], ["Meesho", ms.products]].forEach(([platform, products]) => {
+      resolveProducts(products);
+      products.forEach((p) => {
+        if (spendTax(p.range) <= 0 && p.range.units <= 0) return;
+        rows.push({
+          report_date: endDate,
+          range30_start: range30.start,
+          platform,
+          sku: p.sku,
+          product_name: p.name,
+          price: p.price,
+          spend: round2(p.range.spend),
+          spend_tax: round2(spendTax(p.range)),
+          orders: p.range.units,
+          cpc: round2(computeCpc(p.range)),
+          acos: acosCell(p.range, p.price, listingPriceFor(platform, p.sku))
         });
       });
+    });
     if (!rows.length) return 0;
     await upsertInChunks("barm_ad_spend_history_30d", rows, "report_date,platform,sku");
     return rows.length;
   } catch (err) {
-    // Same as saveAdSpendHistory: never break report generation over the 30D history.
     console.error("[adSpendReportExport] Failed to save 30D ad spend history:", err);
     return 0;
   }
 }
-
-export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promise<AdSpendReportResult> {
+async function buildAdSpendReportWorkbook(opts) {
   const { endDate, accountName } = opts;
   const aiSuggestions = opts.aiSuggestions !== false;
   const rangeDays = opts.rangeDays && opts.rangeDays > 0 ? opts.rangeDays : 7;
   const range = getDateWindow(endDate, rangeDays);
-
-  // Amazon/Flipkart's current live listing-table prices — fetched ahead of everything else below
-  // since fetchFlipkartProducts itself now needs flipkartListingPriceMap (its Invoice-Amount-
-  // missing revenue fallback, see flipkartRowRevenue's own comment) as an argument, not just this
-  // function's own later computeAcos call sites (the zero-Total-Ad-Orders ACOS gate).
   const [amazonListingPriceMap, flipkartListingPriceMap] = await Promise.all([
     fetchAmazonListingPriceMap(),
-    fetchFlipkartListingPriceMap(),
+    fetchFlipkartListingPriceMap()
   ]);
-  // Fetched once and shared across all three platforms — the seller's own
-  // approved SKU -> product name list, checked first before falling back to
-  // whatever name shows up on an order/price-listing row (see resolveName).
   const [master, masterSkuid, masterSkuidCatalog, masterSkuidsByName, productMarketing, amz, fk, ms, socialMedia, googleOrders, googleAdSpend] = await Promise.all([
     fetchProductMasterMap(),
     fetchMasterSkuidMap(),
@@ -2254,65 +3206,32 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     fetchSocialMediaAdSpend(range, endDate),
     fetchGoogleOrders(range, endDate),
     // Google Ads spend — same windowed table shape and day/range rule as Meta's.
-    fetchWindowedAdSpend("barm_daily_google_ad_spend", range, endDate),
+    fetchWindowedAdSpend("barm_daily_google_ad_spend", range, endDate)
   ]);
-  // Per-platform listing-price lookup for every computeAcos call site below (via acosCell/
-  // acosSortRank's own listingPrice parameter) — Meesho has no listing table, so it's omitted
-  // there and computeAcos's own gate falls back to its `price` argument, unchanged from before
-  // this feature. A merged multi-SKU row's comma-joined p.sku (see groupProductsByName) is never a
-  // key in either map, so it degrades the same way — falls back to `price`, not a crash or a 0.
-  const listingPriceOne = (platform: Platform, sku: string): number | undefined =>
-    platform === "Amazon" ? amazonListingPriceMap.get(sku) : platform === "Flipkart" ? flipkartListingPriceMap.get(sku) : undefined;
-  // A merged product row carries its SKUs joined ("A, B"); look each one up, first hit wins. The
-  // joined string itself never matched, so a merged row fell back to its blended price and its
-  // ACOS disagreed with the Summary sheet's for the same product.
-  const listingPriceFor = (platform: Platform, sku: string): number | undefined => {
+  const listingPriceOne = (platform, sku) => platform === "Amazon" ? amazonListingPriceMap.get(sku) : platform === "Flipkart" ? flipkartListingPriceMap.get(sku) : void 0;
+  const listingPriceFor = (platform, sku) => {
     const direct = listingPriceOne(platform, sku);
-    if (direct !== undefined || !sku.includes(",")) return direct;
+    if (direct !== void 0 || !sku.includes(",")) return direct;
     for (const part of sku.split(",")) {
       const p = listingPriceOne(platform, part.trim());
-      if (p !== undefined) return p;
+      if (p !== void 0) return p;
     }
-    return undefined;
+    return void 0;
   };
-  // The master lists one SKU spelling per product (e.g. "B-BULB-...-PK5(FK)"),
-  // but ad/order data carries whatever variant spelling that platform export
-  // used (e.g. "B-BULB-...-PK5-1") — a real, different string, not a typo.
-  // buildProductMasterResolver falls back to matching on the SKU's base (see
-  // skuBase in productMasterUpload.ts) for these. This only changes which
-  // NAME gets displayed — every spend/order figure stays keyed on the exact SKU.
-  // master_product_marketing is the marketing team's freshest, most current master — checked
-  // first; master_product_skuid and barm_product_master only fill in a SKU it doesn't have.
   const { resolveName: resolveBarmName } = buildProductMasterResolver(master);
   const { resolveName: resolveSkuidName, resolveTax: resolveSkuidTax } = buildMasterSkuidResolver(masterSkuid);
   const { resolveName: resolveMarketingName } = buildProductMarketingResolver(productMarketing);
-  const resolveName = (sku: string, fallback: string) =>
-    resolveMarketingName(sku, resolveSkuidName(sku, resolveBarmName(sku, fallback)));
-  // sku -> master_product_skuid's own "Product Name", passed to every groupProductsByName call
-  // below as its third argument so sibling SKUs of one product never split into separate report
-  // rows just because only some of them have a master_product_marketing entry (see
-  // groupProductsByName's skuToMasterSkuidName param comment for the full explanation).
-  const skuToMasterSkuidName = new Map<string, string>([...masterSkuid.entries()].map(([sku, entry]) => [sku, entry.name]));
-  // Also applied to the 30D history fetch (saveAdSpendHistory30d), so its names and GST match.
-  const resolveProducts = (products: Map<string, ProductRow>) => {
+  const resolveName = (sku, fallback) => resolveMarketingName(sku, resolveSkuidName(sku, resolveBarmName(sku, fallback)));
+  const skuToMasterSkuidName = new Map([...masterSkuid.entries()].map(([sku, entry]) => [sku, entry.name]));
+  const resolveProducts = (products) => {
     products.forEach((p) => {
       p.name = resolveName(p.sku, p.name);
-      // Tagged onto both windows here, once per product, rather than looked up
-      // inside spendTax on every call — the same SKU's rate never changes
-      // within a single report run.
       const gst = gstMultiplierFromTax(resolveSkuidTax(p.sku));
       p.day.gstMultiplier = gst;
       p.range.gstMultiplier = gst;
     });
   };
   [amz.products, fk.products, ms.products].forEach(resolveProducts);
-
-  // Seed a zero-activity row for every known Amazon catalog SKU with no spend/order data at all
-  // this window, so "B Arm orders" (the one sheet here that isn't ad-spend-scoped — see its own
-  // comment) can show what ISN'T selling, at the bottom. Flipkart/Meesho aren't seeded — there's
-  // no equivalent full-catalog source for them yet. The ad-spend-scoped sheets (Ad spend report,
-  // Low Spend Campaigns) deliberately still exclude these: they proved a real "purely-organic
-  // rows inflate Orders" bug when zero-spend rows were included, so this doesn't touch them.
   masterSkuidCatalog.forEach((entry) => {
     if (amz.products.has(entry.sku)) return;
     amz.products.set(entry.sku, {
@@ -2321,157 +3240,88 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       name: resolveName(entry.sku, entry.name),
       price: 0,
       day: { spend: 0, units: 0, gstMultiplier: gstMultiplierFromTax(resolveSkuidTax(entry.sku)) },
-      range: { spend: 0, units: 0, gstMultiplier: gstMultiplierFromTax(resolveSkuidTax(entry.sku)) },
+      range: { spend: 0, units: 0, gstMultiplier: gstMultiplierFromTax(resolveSkuidTax(entry.sku)) }
     });
   });
-
   if (!amz.products.size && !fk.products.size && !ms.products.size) {
     throw new Error(
-      `No uploaded Amazon, Flipkart or Meesho ad/order data in ${dotDate(range.start)} to ${dotDate(endDate)}. ` +
-        `Upload the reports for that period on the Upload pages first.` +
-        (ms.loadErrors.length ? ` Meesho data could not be loaded: ${ms.loadErrors.join("; ")}` : "")
+      `No uploaded Amazon, Flipkart or Meesho ad/order data in ${dotDate(range.start)} to ${dotDate(endDate)}. Upload the reports for that period on the Upload pages first.` + (ms.loadErrors.length ? ` Meesho data could not be loaded: ${ms.loadErrors.join("; ")}` : "")
     );
   }
-
-  const platforms: { platform: Platform; products: Map<string, ProductRow>; overallDay: SalesAgg; overallRange: SalesAgg; campaigns: CampaignSpendRow[]; revenueRangeBySku: Map<string, number> }[] = [
+  const platforms = [
     { platform: "Amazon", products: amz.products, overallDay: amz.overallDay, overallRange: amz.overallRange, campaigns: amz.campaigns, revenueRangeBySku: amz.revenueRangeBySku },
     { platform: "Flipkart", products: fk.products, overallDay: fk.overallDay, overallRange: fk.overallRange, campaigns: fk.campaigns, revenueRangeBySku: fk.revenueRangeBySku },
-    { platform: "Meesho", products: ms.products, overallDay: ms.overallDay, overallRange: ms.overallRange, campaigns: ms.campaigns, revenueRangeBySku: ms.revenueRangeBySku },
+    { platform: "Meesho", products: ms.products, overallDay: ms.overallDay, overallRange: ms.overallRange, campaigns: ms.campaigns, revenueRangeBySku: ms.revenueRangeBySku }
   ];
-  // Ad-performance view (seller's request, 26 Sep 2026): every Meesho ad metric — Summary, Ad spend
-  // report, SKU Wise Report, Action Sheet and the emailed tables (platformSummaries) — counts
-  // Meesho's own "Orders by ad" (WindowAgg.adOrders, 1:1 with the "Meesho (B Arm) Spend" sheet) as
-  // Orders, with Total Sales = Ad Orders x Price, so CPC = Spend (with tax) ÷ Ad Orders and
-  // computeAcos's CPC ÷ Price fallback uses that same CPC. NOT the orders sheet's "Order source =
-  // Ad order" tag, which Meesho's two exports disagree on. Overall sales QTS/Value, the Meesho
-  // orders leaderboard, the Ad Status Report and ad-spend history keep reading `platforms` (every
-  // real order). Amazon/Flipkart entries pass through as the very same objects.
-  const meeshoAdView = (p: ProductRow): ProductRow => {
-    const view = (a: WindowAgg): WindowAgg => ({ ...a, units: a.adOrders || 0, revenue: (a.adOrders || 0) * p.price });
+  const meeshoAdView = (p) => {
+    const view = (a) => ({ ...a, units: a.adOrders || 0, revenue: (a.adOrders || 0) * p.price });
     return { ...p, day: view(p.day), range: view(p.range) };
   };
   const adPlatforms = platforms.map((pl) => {
     if (pl.platform !== "Meesho") return pl;
-    const products = new Map([...pl.products].map(([sku, p]) => [sku, meeshoAdView(p)] as [string, ProductRow]));
-    return { ...pl, products, revenueRangeBySku: new Map([...products].map(([sku, p]) => [sku, p.range.revenue || 0] as [string, number])) };
+    const products = new Map([...pl.products].map(([sku, p]) => [sku, meeshoAdView(p)]));
+    return { ...pl, products, revenueRangeBySku: new Map([...products].map(([sku, p]) => [sku, p.range.revenue || 0])) };
   });
-
-  const incompleteDates: AdSpendReportResult["incompleteDates"] = [
-    { platform: "Amazon" as const, reportDates: amz.reportDates },
-    { platform: "Flipkart" as const, reportDates: fk.reportDates },
-    { platform: "Meesho" as const, reportDates: ms.reportDates },
-  ]
-    .filter(({ reportDates }) => reportDates.size > 0)
-    .map(({ platform, reportDates }) => ({ platform, missingDates: missingDates(reportDates, range.start, endDate) }))
-    .filter(({ missingDates }) => missingDates.length > 0);
-
-  const amazonSpendWarnings: string[] = [
-    ...amz.unmappedCampaigns.map((c) =>
-      `Amazon "${c.campaign_name}": ₹${round2(c.spend).toFixed(2)} (₹${round2(c.spend * DEFAULT_GST_MULTIPLIER).toFixed(2)} with tax) of Brand/Display spend on ${c.dates.map(dotDate).join(", ")} has no SKU split and no SKU mapping — NOT in any product's figures or the Amazon totals. Map the campaign on the Upload page (or split it per SKU in AM ads), then regenerate.`),
-    ...amz.campaignsMissingOnEndDate.map((c) =>
-      `Amazon "${c.campaign_name}": spent ₹${round2(c.lastSpend).toFixed(2)} on ${dotDate(c.lastSpendDate)} but has no row at all for ${dotDate(endDate)} — if it was still running, that day's spend is missing (not ₹0). Upload its ${dotDate(endDate)} data (AM ads, or the Sponsored Brands/Display campaign report), then regenerate.`),
+  const incompleteDates = [
+    { platform: "Amazon", reportDates: amz.reportDates },
+    { platform: "Flipkart", reportDates: fk.reportDates },
+    { platform: "Meesho", reportDates: ms.reportDates }
+  ].filter(({ reportDates }) => reportDates.size > 0).map(({ platform, reportDates }) => ({ platform, missingDates: missingDates(reportDates, range.start, endDate) })).filter(({ missingDates: missingDates2 }) => missingDates2.length > 0);
+  const amazonSpendWarnings = [
+    ...amz.unmappedCampaigns.map((c) => `Amazon "${c.campaign_name}": \u20B9${round2(c.spend).toFixed(2)} (\u20B9${round2(c.spend * DEFAULT_GST_MULTIPLIER).toFixed(2)} with tax) of Brand/Display spend on ${c.dates.map(dotDate).join(", ")} has no SKU split and no SKU mapping \u2014 NOT in any product's figures or the Amazon totals. Map the campaign on the Upload page (or split it per SKU in AM ads), then regenerate.`),
+    ...amz.campaignsMissingOnEndDate.map((c) => `Amazon "${c.campaign_name}": spent \u20B9${round2(c.lastSpend).toFixed(2)} on ${dotDate(c.lastSpendDate)} but has no row at all for ${dotDate(endDate)} \u2014 if it was still running, that day's spend is missing (not \u20B90). Upload its ${dotDate(endDate)} data (AM ads, or the Sponsored Brands/Display campaign report), then regenerate.`)
   ];
-
   const [historyRowsSaved] = await Promise.all([
     opts.persistHistory ? saveAdSpendHistory(platforms, endDate, range.start, listingPriceFor) : 0,
-    opts.persistHistory || opts.persistHistory30dOnly
-      ? saveAdSpendHistory30d(endDate, flipkartListingPriceMap, resolveProducts, listingPriceFor)
-      : 0,
+    opts.persistHistory || opts.persistHistory30dOnly ? saveAdSpendHistory30d(endDate, flipkartListingPriceMap, resolveProducts, listingPriceFor) : 0
   ]);
-
-  const wb = XLSX.utils.book_new();
-
-  // Both sheets below mirror the hand-built "Ad spend report" workbook's own
-  // grid exactly (see its Summary/"Ad spend report" sheets): a two-row group
-  // header — a spanning date/range label over five repeated Spend/Spend(with
-  // tax)/Orders/CPC/ACOS columns, once for the single day and once for the
-  // range — then one row per product, with per-platform labels/totals merged
-  // down the left (and, on Summary, QTS/Value merged down the right) instead
-  // of repeated on every row.
+  const wb = XLSX4.utils.book_new();
   const dayLabel = dotDate(endDate);
   const rangeLabel = `${dotDate(range.start)} to ${dotDate(endDate)}`;
   const METRIC_NAMES = ["Spend", "Spend(with tax)", "Orders", "CPC", "ACOS"];
-
-  // ── Summary sheet ──
-  // 21 columns: A Platform, B/C Ad spend without/with tax (range total), D/E
-  // Product/price, F-L day metrics, M-S range metrics — both blocks now
-  // Spend, Spend(with tax), Total Orders, Total Sales, CPC, ACOS, Ad Sales
-  // (Total Sales is real per-order revenue for Amazon/Flipkart (see
-  // WindowAgg.revenue), the flat Price x Total Orders estimate for Meesho
-  // per the seller's choice; Ad Sales is Amazon's own ad-attributed Sales
-  // figure — computeAcos's adAttributedSales — blank for Flipkart/Meesho,
-  // which have no such data; both added at the seller's explicit request,
-  // in both the day and range blocks), T/U Overall sales QTS/Value (single
-  // reporting day, matching the dayLabel header — NOT the 7-day range, see
-  // the day-vs-range note where these cells are written below) —
-  // A,B,C,T,U merge down across however many product rows that platform gets.
   const SUM_COLS = 21;
-  // Both the day and range blocks get the extra Total Sales/Ad Sales columns here — the "Ad
-  // spend report" sheet's day/range blocks still use the shared METRIC_NAMES/productAoaRow
-  // below, unchanged, so that sheet's layout isn't affected by this Summary-only addition.
   const SUMMARY_METRIC_NAMES = ["Spend", "Spend(with tax)", "Total Orders", "Total Sales", "CPC", "ACOS", "Ad Sales"];
-  const sumAoa: (string | number | null)[][] = [
+  const sumAoa = [
     Array(SUM_COLS).fill(""),
     ["Summary", ...Array(SUM_COLS - 1).fill("")],
     Array(SUM_COLS).fill(""),
     ["Platform", "Ad spend (without tax)", "Ad spend (with tax)", "Worst ACOS product", "", dayLabel, "", "", "", "", "", "", rangeLabel, "", "", "", "", "", "", `Overall sales (${dayLabel})`, ""],
-    ["", "", "", "Product", "price", ...SUMMARY_METRIC_NAMES, ...SUMMARY_METRIC_NAMES, "QTS", "Value"],
+    ["", "", "", "Product", "price", ...SUMMARY_METRIC_NAMES, ...SUMMARY_METRIC_NAMES, "QTS", "Value"]
   ];
-  const sumMerges: XLSX.Range[] = [
+  const sumMerges = [
     { s: { r: 1, c: 0 }, e: { r: 1, c: SUM_COLS - 1 } },
-    { s: { r: 3, c: 0 }, e: { r: 4, c: 0 } }, { s: { r: 3, c: 1 }, e: { r: 4, c: 1 } }, { s: { r: 3, c: 2 }, e: { r: 4, c: 2 } },
-    { s: { r: 3, c: 3 }, e: { r: 3, c: 4 } }, { s: { r: 3, c: 5 }, e: { r: 3, c: 11 } }, { s: { r: 3, c: 12 }, e: { r: 3, c: 18 } },
-    { s: { r: 3, c: 19 }, e: { r: 3, c: 20 } },
+    { s: { r: 3, c: 0 }, e: { r: 4, c: 0 } },
+    { s: { r: 3, c: 1 }, e: { r: 4, c: 1 } },
+    { s: { r: 3, c: 2 }, e: { r: 4, c: 2 } },
+    { s: { r: 3, c: 3 }, e: { r: 3, c: 4 } },
+    { s: { r: 3, c: 5 }, e: { r: 3, c: 11 } },
+    { s: { r: 3, c: 12 }, e: { r: 3, c: 18 } },
+    { s: { r: 3, c: 19 }, e: { r: 3, c: 20 } }
   ];
   const sumHeaderRowsStyled = [3, 4];
-  const sumLabelCells: { row: number; platform: Platform }[] = [];
-  const platformTotals: AdSpendReportResult["platformTotals"] = [];
-  const platformSummaries: PlatformEmailSummary[] = [];
-  // Action Sheet — every product whose trailing 7-day (range) ACOS clears 14%, tiered into a
-  // recommended action by how bad it is: 14-25% ACOS is early warning ("Monitor"), 25-50% is a
-  // real problem ("Reduce bid"), above 50% is urgent ("Reduce bid urgently"). No tier ever says
-  // "Pause" — the seller explicitly asked that every row carry a concrete bid-cut % to act on
-  // instead of a blanket pause instruction (this reverses an earlier version of this sheet that
-  // did use "Pause" wording for the worst tier). Range ACOS specifically (not the
-  // single reporting day) per the seller's request — a one-day spike is noisy, and this sheet
-  // should reflect the week-long picture (the Summary sheet nearby still shows both Day and Range
-  // ACOS per product unchanged). Flipkart rows get their generic tier text replaced below with a
-  // real per-campaign Gemini suggestion where one's available — see "Flipkart Optimization
-  // suggestions" further down. Amazon has no automated equivalent: real keyword-level bid/negative
-  // -keyword suggestions there only exist via SellerMate's live API, which this server-side report
-  // code has no access to (only an interactive chat session can pull that, on request).
+  const sumExtras = /* @__PURE__ */ new Map([[4, ["Sell price", "Ad orders", "Ad orders"]]]);
+  const sumPlainAcos = [];
+  const sumLabelCells = [];
+  const platformTotals = [];
+  const platformSummaries = [];
   const ACTION_ACOS_THRESHOLD = 0.14;
-  const actionRows: { platform: Platform; name: string; sku: string; campaign?: string; price: number; spend: number; spendTax: number; orders: number; acos: number; action: string }[] = [];
-  // Fallback action for a row with no matched campaign (see enrichOptimizationActionRows below,
-  // which overwrites this with a campaign-specific suggestion when one is found) — still gives a
-  // concrete bid-cut % based on the SKU's own 7-day ACOS, rather than leaving it a vague tier label,
-  // per the seller's own request that every row carry a number.
-  const bidCutPct = (acosPct: number): number => (acosPct >= 90 ? 50 : acosPct >= 60 ? 35 : 20);
-  const actionFor = (acosFrac: number): string => {
+  const actionRows = [];
+  const bidCutPct = (acosPct) => acosPct >= 90 ? 50 : acosPct >= 60 ? 35 : 20;
+  const actionFor = (acosFrac) => {
     const note = "No matching campaign found in the uploaded ad data to confirm which ad group/keyword to open.";
-    // The residual sentinel — actionSheetAcos still returns it, but only when even the Spend/Total
-    // Sales fallback's own denominator is 0 (no order data at all this window to estimate from) —
-    // gets an honest "ACOS unavailable" instead of a fabricated "(7-day ACOS 999%)"; the row still
-    // clears the >14% threshold and needs a bid cut, so the highest tier still applies.
     if (acosFrac === ACOS_UNDEFINED_SENTINEL) {
-      return `Reduce bid urgently — cut bids ~50% (7-day ACOS unavailable — real ad spend with no order data to estimate sales from this window). ${note}`;
+      return `Reduce bid urgently \u2014 cut bids ~50% (7-day ACOS unavailable \u2014 real ad spend with no order data to estimate sales from this window). ${note}`;
     }
     const acosPct = Math.round(acosFrac * 100);
     const cut = bidCutPct(acosPct);
-    if (acosPct > 50) return `Reduce bid urgently — cut bids ~${cut}% (7-day ACOS ${acosPct}%). ${note}`;
+    if (acosPct > 50) return `Reduce bid urgently \u2014 cut bids ~${cut}% (7-day ACOS ${acosPct}%). ${note}`;
     if (acosPct > 25) return `Reduce bid ~${cut}% (7-day ACOS ${acosPct}%). ${note}`;
-    return `Monitor / review keywords — trim bids ~${cut}% (7-day ACOS ${acosPct}%). ${note}`;
+    return `Monitor / review keywords \u2014 trim bids ~${cut}% (7-day ACOS ${acosPct}%). ${note}`;
   };
-  const TOP_N = 3; // shortlist length — worst (highest) DAY ACOS first, matching the visible ACOS column, not range ACOS or spend
+  const TOP_N = 3;
   adPlatforms.forEach(({ platform, products, overallDay, overallRange }) => {
-    // All products with any spend at all — totals must include every rupee,
-    // not just the ones that clear the shortlist bar below. Grouped by
-    // resolved product name first, so a product's 4-5 SKU variants sum into
-    // one row instead of showing up as separate near-duplicate rows.
-    const rows = groupProductsByName([...products.values()], undefined, skuToMasterSkuidName).filter((p) => spendTax(p.range) > 0);
+    const rows = groupProductsByName([...products.values()], void 0, skuToMasterSkuidName).filter((p) => spendTax(p.range) > 0);
     rows.forEach((p) => {
-      // Meesho uses the same ACOS as its Summary / SKU Wise cells (Spend ÷ Ad Sales, else CPC ÷ Price
-      // on the ad-orders CPC — see adPlatforms), not actionSheetAcos's Spend ÷ Total Sales proxy.
       const rangeAcos = platform === "Meesho" ? computeAcos(p.range, p.price, listingPriceFor(platform, p.sku)) : actionSheetAcos(p.range, p.price);
       if (rangeAcos > ACTION_ACOS_THRESHOLD) {
         actionRows.push({
@@ -2488,29 +3338,16 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           spendTax: round2(spendTax(p.range)),
           orders: p.range.units,
           acos: pct(rangeAcos),
-          action: actionFor(rangeAcos),
+          action: actionFor(rangeAcos)
         });
       }
     });
     const rangeSpendRaw = rows.reduce((s, p) => s + p.range.spend, 0);
     const daySpendRaw = rows.reduce((s, p) => s + p.day.spend, 0);
-    // Summed from each product's own already-tax-adjusted spendTax() rather than
-    // (blended raw total x one flat rate) — products on the same platform can carry
-    // different real GST rates, so there's no single multiplier that applies to a
-    // combined sum across all of them.
     const daySpendTaxTotal = rows.reduce((s, p) => s + spendTax(p.day), 0);
     const rangeSpendTaxTotal = rows.reduce((s, p) => s + spendTax(p.range), 0);
     platformTotals.push({ platform, daySpendTax: daySpendTaxTotal, rangeSpendTax: rangeSpendTaxTotal });
-
-    // A product that's barely spent anything can show a misleadingly great
-    // (or terrible) ACOS from sheer small-sample noise — one lucky/unlucky
-    // sale swings the ratio wildly. Require real spend before a product is
-    // eligible for "worst ACOS," so the shortlist highlights genuine problem
-    // products, not noise.
-    const shortlist = rows
-      .filter((p) => spendTax(p.range) > ACOS_SHORTLIST_MIN_SPEND)
-      .sort((a, b) => acosSortRank(b.day, b.price, listingPriceFor(platform, b.sku)) - acosSortRank(a.day, a.price, listingPriceFor(platform, a.sku)))
-      .slice(0, TOP_N);
+    const shortlist = rows.filter((p) => spendTax(p.range) > ACOS_SHORTLIST_MIN_SPEND).sort((a, b) => acosSortRank(b.day, b.price, listingPriceFor(platform, b.sku)) - acosSortRank(a.day, a.price, listingPriceFor(platform, a.sku))).slice(0, TOP_N);
     platformSummaries.push({
       platform,
       daySpend: round2(daySpendRaw),
@@ -2527,168 +3364,227 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
           name: p.name,
           price: p.price,
           day: { spend: round2(p.day.spend), spendTax: round2(spendTax(p.day)), orders: p.day.units, cpc: round2(computeCpc(p.day)), acos: acosCell(p.day, p.price, listingPrice) },
-          range: { spend: round2(p.range.spend), spendTax: round2(spendTax(p.range)), orders: p.range.units, cpc: round2(computeCpc(p.range)), acos: acosCell(p.range, p.price, listingPrice) },
+          range: { spend: round2(p.range.spend), spendTax: round2(spendTax(p.range)), orders: p.range.units, cpc: round2(computeCpc(p.range)), acos: acosCell(p.range, p.price, listingPrice) }
         };
       }),
-      allProducts: [...rows]
-        .sort((a, b) => acosSortRank(b.day, b.price, listingPriceFor(platform, b.sku)) - acosSortRank(a.day, a.price, listingPriceFor(platform, a.sku)))
-        .map((p) => {
-          const listingPrice = listingPriceFor(platform, p.sku);
-          return {
-            name: p.name,
-            price: p.price,
-            day: { spend: round2(p.day.spend), spendTax: round2(spendTax(p.day)), orders: p.day.units, cpc: round2(computeCpc(p.day)), acos: acosCell(p.day, p.price, listingPrice) },
-            range: { spend: round2(p.range.spend), spendTax: round2(spendTax(p.range)), orders: p.range.units, cpc: round2(computeCpc(p.range)), acos: acosCell(p.range, p.price, listingPrice) },
-          };
-        }),
+      allProducts: [...rows].sort((a, b) => acosSortRank(b.day, b.price, listingPriceFor(platform, b.sku)) - acosSortRank(a.day, a.price, listingPriceFor(platform, a.sku))).map((p) => {
+        const listingPrice = listingPriceFor(platform, p.sku);
+        return {
+          name: p.name,
+          price: p.price,
+          day: { spend: round2(p.day.spend), spendTax: round2(spendTax(p.day)), orders: p.day.units, cpc: round2(computeCpc(p.day)), acos: acosCell(p.day, p.price, listingPrice) },
+          range: { spend: round2(p.range.spend), spendTax: round2(spendTax(p.range)), orders: p.range.units, cpc: round2(computeCpc(p.range)), acos: acosCell(p.range, p.price, listingPrice) }
+        };
+      })
     });
-
     const blockStart = sumAoa.length;
     const blockRows = Math.max(shortlist.length, 1);
     sumLabelCells.push({ row: blockStart, platform });
     if (shortlist.length) {
       shortlist.forEach((p, i) => {
-        // Total Sales, per the seller's explicit request: every platform (Amazon/Flipkart/Meesho
-        // alike) uses real per-order revenue (WindowAgg.revenue — see
-        // fetchAmazonProducts/fetchFlipkartProducts/fetchMeeshoProducts and groupProductsByName's
-        // plain sum of it across a product's SKU variants), not a flat Price x Orders estimate.
-        // Meesho's revenue is Quantity x each order row's own raw Supplier Listed Price (same
-        // source as the Order Value fix), NOT priceBySku/meesho_price_marketing — per the seller's
-        // later, confirmed instruction that this figure must match raw data too. The B Arm orders /
-        // Meesho leaderboard sheets elsewhere in this workbook still use the flat Price x Orders
-        // estimate deliberately, unaffected by this. Computed once for the day's Orders and once
-        // for the range's, so each block gets its own Total Sales next to its own Orders count.
         const dayTotalSales = round2(p.day.revenue || 0);
         const rangeTotalSales = round2(p.range.revenue || 0);
-        // Ad Sales, per the seller's explicit request: Amazon uses its own ad-attributed Sales
-        // figure (the same adAttributedSales computeAcos uses for Amazon's ACOS); Flipkart uses
-        // its own ads export's "Total Revenue" figure (WindowAgg.adSales, from fsnRows —
-        // deliberately NOT the real per-order revenue used for Total Sales above, since this
-        // column is meant to mirror the ad platform's own reported number, same idea as Amazon's);
-        // Meesho uses its own ad report's "Orders by ad" count x Price (Meesho's ad export has no
-        // ₹ sales figure the way Amazon's/Flipkart's do, only an ad-attributed order count).
-        const dayAdSales =
-          platform === "Amazon" ? (p.day.adAttributedSales !== undefined ? round2(p.day.adAttributedSales) : null)
-          : platform === "Flipkart" ? round2(p.day.adSales || 0)
-          : round2((p.day.adOrders || 0) * p.price);
-        const rangeAdSales =
-          platform === "Amazon" ? (p.range.adAttributedSales !== undefined ? round2(p.range.adAttributedSales) : null)
-          : platform === "Flipkart" ? round2(p.range.adSales || 0)
-          : round2((p.range.adOrders || 0) * p.price);
-        // Summary sheet ACOS follows the same 23 Sep 2026 rule as every other ACOS cell and the
-        // emailed table, for all three platforms: Spend ÷ Ad Sales only when real Orders > 0 and
-        // ad sales > 0, otherwise CPC ÷ Price (acosCell). The Flipkart/Meesho Summary cells used
-        // Spend ÷ Ad Sales unconditionally and blanked on zero Ad Sales, so they disagreed with the
-        // email for the same product and day.
+        const dayAdSales = platform === "Amazon" ? p.day.adAttributedSales !== void 0 ? round2(p.day.adAttributedSales) : null : platform === "Flipkart" ? round2(p.day.adSales || 0) : round2((p.day.adOrders || 0) * p.price);
+        const rangeAdSales = platform === "Amazon" ? p.range.adAttributedSales !== void 0 ? round2(p.range.adAttributedSales) : null : platform === "Flipkart" ? round2(p.range.adSales || 0) : round2((p.range.adOrders || 0) * p.price);
         const listingPrice = listingPriceFor(platform, p.sku);
         const daySummaryAcos = acosCell(p.day, p.price, listingPrice);
         const rangeSummaryAcos = acosCell(p.range, p.price, listingPrice);
+        sumExtras.set(sumAoa.length, [sellPriceCell(p.day), adOrdersCell(p.day), adOrdersCell(p.range)]);
         sumAoa.push([
           // "Ad spend (without/with tax)" here is the SINGLE-DAY total, matching
           // the seller's own manual workbook's Summary sheet convention — the
           // 7-day range total is still shown per-product further right, and is
           // preserved separately in platformTotals.rangeSpendTax for the
           // post-generate toast on the Download page.
-          i === 0 ? platform : "", i === 0 ? round2(daySpendRaw) : "", i === 0 ? round2(daySpendTaxTotal) : "",
-          p.name, p.price,
-          round2(p.day.spend), round2(spendTax(p.day)), p.day.units, dayTotalSales, round2(computeCpc(p.day)), daySummaryAcos, dayAdSales,
-          round2(p.range.spend), round2(spendTax(p.range)), p.range.units, rangeTotalSales, round2(computeCpc(p.range)), rangeSummaryAcos, rangeAdSales,
+          i === 0 ? platform : "",
+          i === 0 ? round2(daySpendRaw) : "",
+          i === 0 ? round2(daySpendTaxTotal) : "",
+          p.name,
+          priceCell(p.price),
+          round2(p.day.spend),
+          round2(spendTax(p.day)),
+          p.day.units,
+          dayTotalSales,
+          round2(computeCpc(p.day)),
+          daySummaryAcos,
+          dayAdSales,
+          round2(p.range.spend),
+          round2(spendTax(p.range)),
+          p.range.units,
+          rangeTotalSales,
+          round2(computeCpc(p.range)),
+          rangeSummaryAcos,
+          rangeAdSales,
           // Overall sales QTS/Value is the SINGLE reporting day's total (matches
           // the dayLabel header above), not the 7-day range — the seller's own
           // manual workbook tracks this figure daily, not as a weekly rollup.
           // The range total is still available per-platform in platformTotals /
           // platformSummaries.overallRangeUnits/-Value for the emailed summary.
-          i === 0 ? overallDay.units : "", i === 0 ? round2(overallDay.value) : "",
+          i === 0 ? overallDay.units : "",
+          i === 0 ? round2(overallDay.value) : ""
         ]);
       });
     } else {
-      sumAoa.push([platform, 0, 0, platform === "Meesho" && ms.loadErrors.length ? "⚠ Meesho data could not be loaded — see Notes" : "(no ad spend in range)", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", overallDay.units, round2(overallDay.value)]);
+      sumAoa.push([platform, 0, 0, platform === "Meesho" && ms.loadErrors.length ? "\u26A0 Meesho data could not be loaded \u2014 see Notes" : "(no ad spend in range)", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", overallDay.units, round2(overallDay.value)]);
     }
     if (blockRows > 1) {
       [0, 1, 2, 19, 20].forEach((c) => sumMerges.push({ s: { r: blockStart, c }, e: { r: blockStart + blockRows - 1, c } }));
     }
   });
-
-  // Social Media (Meta Ads) — one Summary row per promoted product, added only when there's
-  // actually spend to show (an empty/not-yet-uploaded barm_daily_social_media leaves the Summary
-  // sheet unchanged). Meta campaigns are mapped to products by campaign name
-  // (SOCIAL_MEDIA_CAMPAIGN_PRODUCTS); price is looked up from the Amazon platform's own product rows
-  // for that name. The channel's total day spend sits on the first row (merged down), the same shape
-  // as a multi-product platform block. Overall sales QTS/Value is left blank — those sales are
-  // already counted once under Amazon's own Overall Sales, so repeating them would double-count.
-  let socialMediaRow: number | null = null;
-  let socialMediaSummary: SocialMediaEmailSummary | null = null;
-  // Meta channel ACOS = channel Spend (without tax) ÷ Shopify sales whose visit came from a Meta ad
-  // click (fbclid, see metaAdsAttributedSales). null (shown "N/A") when it can't be verified — no
-  // Shopify orders on file for the whole window (or they failed to load), no spend, or no
-  // attributed sales to divide by. Used by the Summary sheet, the Ad spend report sheet and the email.
+  let socialMediaRow = null;
+  const socialHeadRows = [];
+  const socialBoldRows = [];
+  let socialMediaSummary = null;
   const metaDayVerified = !!googleOrders.shopifyFrom && endDate >= googleOrders.shopifyFrom;
   const metaRangeVerified = !!googleOrders.shopifyFrom && range.start >= googleOrders.shopifyFrom;
-  const metaAcos = (verified: boolean, spend: number, adSales: number) =>
-    verified && spend > 0 && adSales > 0 ? Math.round((spend / adSales) * 10000) / 10000 : null;
+  const metaAcos = (verified, spend, adSales) => verified && spend > 0 && adSales > 0 ? Math.round(spend / adSales * 1e4) / 1e4 : null;
   const metaDayAcos = metaAcos(metaDayVerified, socialMedia.daySpend, googleOrders.metaAdDayValue);
   const metaRangeAcos = metaAcos(metaRangeVerified, socialMedia.rangeSpend, googleOrders.metaAdRangeValue);
   const metaDayAdSales = metaDayVerified ? round2(googleOrders.metaAdDayValue) : null;
   const metaRangeAdSales = metaRangeVerified ? round2(googleOrders.metaAdRangeValue) : null;
-  // Meta-attributed orders (same orders as the Ad Sales above); null (shown "N/A") when unverified.
   const metaDayOrders = metaDayVerified ? googleOrders.metaAdDayOrders : null;
   const metaRangeOrders = metaRangeVerified ? googleOrders.metaAdRangeOrders : null;
-  const socialMediaProducts: { product: string; campaigns: string[]; price: number; dayAgg: WindowAgg; rangeAgg: WindowAgg }[] = [];
+  const socialMediaProducts = [];
   if (socialMedia.daySpend > 0 || socialMedia.rangeSpend > 0) {
-    const amazonRowsForSocial = groupProductsByName([...amz.products.values()], undefined, skuToMasterSkuidName);
-    const byProduct = new Map<string, { campaigns: string[]; daySpend: number; rangeSpend: number }>();
+    const amazonRowsForSocial = groupProductsByName([...amz.products.values()], void 0, skuToMasterSkuidName);
+    const byProduct = /* @__PURE__ */ new Map();
     socialMedia.campaigns.forEach((c) => {
       const product = socialMediaProductFor(c.name);
-      const hit = byProduct.get(product) ?? { campaigns: [], daySpend: 0, rangeSpend: 0 };
+      const hit = byProduct.get(product) ?? { campaigns: [], adNames: [], ads: [], daySpend: 0, rangeSpend: 0 };
       hit.campaigns.push(c.name);
+      hit.ads.push(c);
+      c.adNames.forEach((a) => {
+        if (!hit.adNames.includes(a)) hit.adNames.push(a);
+      });
       hit.daySpend += c.daySpend;
       hit.rangeSpend += c.rangeSpend;
       byProduct.set(product, hit);
     });
     byProduct.forEach((v, product) => {
       const amazonRow = amazonRowsForSocial.find((p) => p.name.trim().toLowerCase() === product.toLowerCase());
-      // Orders stay 0 (shown blank), per the seller's explicit instruction: Meta's export carries
-      // spend only, and these products' Amazon orders are already counted under Amazon's own rows —
-      // borrowing them here double-credited the same orders to two channels.
       socialMediaProducts.push({
         product: amazonRow?.name ?? product,
         campaigns: v.campaigns,
+        adNames: v.adNames,
+        ads: v.ads,
         price: amazonRow?.price ?? 0,
         dayAgg: { spend: round2(v.daySpend), units: 0 },
-        rangeAgg: { spend: round2(v.rangeSpend), units: 0 },
+        rangeAgg: { spend: round2(v.rangeSpend), units: 0 }
       });
     });
     socialMediaProducts.sort((a, b) => b.rangeAgg.spend - a.rangeAgg.spend || b.dayAgg.spend - a.dayAgg.spend);
-    // Summary sheet + email show only the products Meta actually ran on the reporting day: a campaign
-    // paused earlier in the week still has 7-day spend, but listing it with a ₹0 day reads as active
-    // (seller's explicit instruction). Its spend stays on the "Ad spend report" sheet's Social Media
-    // block, which keeps every product. With no daily row for the day at all (daily export not
-    // uploaded), there's no way to tell who ran, so every product is kept as before.
     const socialSummaryProducts = socialMedia.daySpend > 0 ? socialMediaProducts.filter((p) => p.dayAgg.spend > 0) : socialMediaProducts;
-    const dayTotalAgg: WindowAgg = { spend: socialMedia.daySpend, units: 0 };
+    const dayTotalAgg = { spend: socialMedia.daySpend, units: 0 };
+    const metaSalesFor = (product, start, end) => {
+      const key2 = product.trim().toLowerCase();
+      let value = 0;
+      let orders = 0;
+      googleOrders.metaAdOrders.filter((o) => o.order_date >= start && o.order_date <= end).forEach((o) => {
+        const lines = o.items.filter((i) => (skuToMasterSkuidName.get(String(i.sku ?? "").trim()) ?? "").trim().toLowerCase() === key2);
+        if (!lines.length) return;
+        orders += 1;
+        value += lines.reduce((s, i) => s + (i.line_total == null || i.line_total === "" ? num3(i.quantity) * num3(i.price) : num3(i.line_total)), 0);
+      });
+      return { value: round2(value), orders };
+    };
+    const productMeta = new Map(socialSummaryProducts.map((p) => {
+      const d = metaSalesFor(p.product, endDate, endDate);
+      const r = metaSalesFor(p.product, range.start, endDate);
+      return [p.product, {
+        dayOrders: metaDayVerified ? d.orders : null,
+        daySales: metaDayVerified ? d.value : null,
+        dayAcos: metaAcos(metaDayVerified, p.dayAgg.spend, d.value),
+        rangeOrders: metaRangeVerified ? r.orders : null,
+        rangeSales: metaRangeVerified ? r.value : null,
+        rangeAcos: metaAcos(metaRangeVerified, p.rangeAgg.spend, r.value)
+      }];
+    }));
     socialMediaRow = sumAoa.length;
-    // CPC stays blank (both blocks) — Meta's export carries spend only (see the orders note above).
-    // Total Orders / Total Sales / ACOS / Ad Sales are the Meta channel's own (metaDayAcos etc. above),
-    // on the first row and merged down like the channel spend. Total Sales = the same verified
-    // Meta-attributed sales as Ad Sales (Meta has no other sales figure).
-    socialSummaryProducts.forEach((p, i) => sumAoa.push([
-      i === 0 ? "Social Media" : "",
-      i === 0 ? round2(socialMedia.daySpend) : "", i === 0 ? round2(spendTax(dayTotalAgg)) : "",
-      p.product, p.price || "",
-      round2(p.dayAgg.spend), round2(spendTax(p.dayAgg)), i === 0 ? metaDayOrders ?? "N/A" : "", i === 0 ? metaDayAdSales ?? "N/A" : "", "",
-      i === 0 ? metaDayAcos ?? "N/A" : "", i === 0 ? metaDayAdSales ?? "N/A" : null,
-      round2(p.rangeAgg.spend), round2(spendTax(p.rangeAgg)), i === 0 ? metaRangeOrders ?? "N/A" : "", i === 0 ? metaRangeAdSales ?? "N/A" : "", "",
-      i === 0 ? metaRangeAcos ?? "N/A" : "", i === 0 ? metaRangeAdSales ?? "N/A" : null,
-      "", "",
-    ]));
-    if (socialSummaryProducts.length > 1) {
-      [0, 1, 2, 7, 8, 10, 11, 14, 15, 17, 18, 19, 20].forEach((c) => sumMerges.push({ s: { r: socialMediaRow!, c }, e: { r: socialMediaRow! + socialSummaryProducts.length - 1, c } }));
+    const block = (agg) => ({ spend: round2(agg.spend), spendTax: round2(spendTax(agg)), orders: 0, cpc: 0, acos: null });
+    const metaReported = META_AD_SALES_SOURCE === "meta_reported";
+    const adBlock = (spend, sales, orders, verified) => ({
+      spend: round2(spend),
+      spendTax: round2(spendTax({ spend, units: 0 })),
+      orders: verified ? orders : null,
+      sales: verified && sales != null ? round2(sales) : null,
+      // ACOS = Spend (without tax) ÷ Sales; with no sales (0 or not reported) the divisor is 1, so
+      // ACOS = Spend ÷ 1 — same convention as CPC with 0 orders (seller's rule, 26 Nov 2026).
+      acos: spend > 0 ? Math.round(spend / (verified && sales != null && sales > 0 ? sales : 1) * 1e4) / 1e4 : null
+    });
+    const adLabel = (c) => {
+      const i = c.name.indexOf(META_AD_SEPARATOR);
+      return i >= 0 ? c.name.slice(i + META_AD_SEPARATOR.length) : c.adNames.length ? c.adNames.join("; ") : c.name;
+    };
+    const sumOrNull = (xs) => xs.every((x) => x == null) ? null : xs.reduce((s, x) => s + (x ?? 0), 0);
+    const products = socialSummaryProducts.map((p) => {
+      const m = productMeta.get(p.product);
+      const ads = p.ads.slice().sort((a, b) => b.rangeSpend - a.rangeSpend || b.daySpend - a.daySpend).map((c) => ({
+        name: adLabel(c),
+        day: metaReported ? adBlock(c.daySpend, c.dayMetaValue, c.dayMetaPurchases, c.dayMetaValue != null) : adBlock(c.daySpend, null, null, false),
+        range: metaReported ? adBlock(c.rangeSpend, c.rangeMetaValue, c.rangeMetaPurchases, c.rangeMetaValue != null) : adBlock(c.rangeSpend, null, null, false)
+      }));
+      const total = metaReported ? {
+        day: adBlock(p.dayAgg.spend, sumOrNull(ads.map((a) => a.day.sales)), sumOrNull(ads.map((a) => a.day.orders)), ads.some((a) => a.day.sales != null)),
+        range: adBlock(p.rangeAgg.spend, sumOrNull(ads.map((a) => a.range.sales)), sumOrNull(ads.map((a) => a.range.orders)), ads.some((a) => a.range.sales != null))
+      } : {
+        day: adBlock(p.dayAgg.spend, m.daySales, m.dayOrders, m.daySales != null),
+        range: adBlock(p.rangeAgg.spend, m.rangeSales, m.rangeOrders, m.rangeSales != null)
+      };
+      return {
+        product: p.product,
+        campaigns: p.campaigns,
+        price: p.price,
+        day: { ...block(p.dayAgg), orders: m.dayOrders ?? 0, acos: m.dayAcos },
+        range: { ...block(p.rangeAgg), orders: m.rangeOrders ?? 0, acos: m.rangeAcos },
+        adNames: p.adNames,
+        daySales: m.daySales,
+        rangeSales: m.rangeSales,
+        ads,
+        total
+      };
+    });
+    const grandBlock = (spend, totals) => adBlock(spend, sumOrNull(totals.map((t) => t.sales)), sumOrNull(totals.map((t) => t.orders)), totals.some((t) => t.sales != null));
+    const grandTotal = {
+      day: grandBlock(socialMedia.daySpend, products.map((p) => p.total.day)),
+      range: grandBlock(socialMedia.rangeSpend, products.map((p) => p.total.range))
+    };
+    const metaCells = (b) => [b.spend, b.spendTax, b.orders ?? "N/A", b.sales ?? "N/A", "", b.acos ?? "N/A", b.sales ?? "N/A"];
+    const blank7 = ["", "", "", "", "", "", ""];
+    const metaExtra = (d, r) => [
+      d.sales != null && d.sales > 0 && d.orders != null && d.orders > 0 ? round2(d.sales / d.orders) : "\u2013",
+      d.orders ?? "N/A",
+      r.orders ?? "N/A"
+    ];
+    const pushSocial = (label, price, day, range2, extra) => {
+      if (extra) sumExtras.set(sumAoa.length, extra);
+      [[day, 10], [range2, 17]].forEach(([b, c]) => {
+        if ((b[3] === "N/A" || b[3] === 0) && typeof b[5] === "number") sumPlainAcos.push({ r: sumAoa.length, c });
+      });
+      const first = sumAoa.length === socialMediaRow;
+      sumAoa.push([
+        first ? "Social Media (Meta)" : "",
+        first ? round2(socialMedia.daySpend) : "",
+        first ? round2(spendTax(dayTotalAgg)) : "",
+        label,
+        price,
+        ...day,
+        ...range2,
+        "",
+        ""
+      ]);
+    };
+    products.forEach((p) => {
+      socialHeadRows.push(sumAoa.length);
+      pushSocial(`${p.product}${p.price ? ` \xB7 \u20B9${p.price.toLocaleString("en-IN")}` : ""}`, "", blank7, blank7);
+      p.ads.forEach((a, i) => pushSocial(`Ad ${i + 1}: ${a.name}`, "", metaCells(a.day), metaCells(a.range), metaExtra(a.day, a.range)));
+      socialBoldRows.push(sumAoa.length);
+      pushSocial(`Total \u2013 ${p.product}`, p.price || "", metaCells(p.total.day), metaCells(p.total.range), metaExtra(p.total.day, p.total.range));
+    });
+    socialBoldRows.push(sumAoa.length);
+    pushSocial("Grand total \u2013 all Meta products", "", metaCells(grandTotal.day), metaCells(grandTotal.range), metaExtra(grandTotal.day, grandTotal.range));
+    if (sumAoa.length - socialMediaRow > 1) {
+      [0, 1, 2, 19, 20].forEach((c) => sumMerges.push({ s: { r: socialMediaRow, c }, e: { r: sumAoa.length - 1, c } }));
     }
-    // Same figures as the Summary-sheet rows above, reshaped for the emailed daily digest (see
-    // buildAdSpendDailyHtml in supabase/functions/send-ad-spend-email/index.ts), which renders
-    // them directly below Meesho's, per the seller's explicit request.
-    const block = (agg: WindowAgg): ProductMetricBlock => ({ spend: round2(agg.spend), spendTax: round2(spendTax(agg)), orders: 0, cpc: 0, acos: null });
-    const products = socialSummaryProducts.map((p) => ({ product: p.product, campaigns: p.campaigns, price: p.price, day: block(p.dayAgg), range: block(p.rangeAgg) }));
     socialMediaSummary = {
       daySpend: round2(socialMedia.daySpend),
       daySpendTax: round2(spendTax(dayTotalAgg)),
@@ -2696,56 +3592,152 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       price: products[0].price,
       day: products[0].day,
       range: products[0].range,
+      productBreakdown: true,
+      adBreakdown: true,
+      adSalesSource: META_AD_SALES_SOURCE,
+      grandTotal,
       products,
       dayAcos: metaDayAcos,
       rangeAcos: metaRangeAcos,
       dayAdSales: metaDayAdSales,
-      rangeAdSales: metaRangeAdSales,
+      rangeAdSales: metaRangeAdSales
     };
   }
-
-  // Google (direct/website) orders — one extra Summary row, same lightweight treatment as Social
-  // Media above, added only when there's actually data on file. CPC stays blank; ACOS/Ad Sales are
-  // filled from Google Ads-attributed Shopify orders only (see below and fetchGoogleOrders).
-  // Total Orders/Total Sales are shown for BOTH the day block and the range block (same shape as
-  // every real platform's row), and Overall Sales QTS/Value are the SINGLE reporting day's total —
-  // fixed from the previous version, which put the 7-day range total in that last column, mislabeled
-  // under the single-day "Overall sales (<date>)" header (see fetchGoogleOrders's own comment).
-  let googleRow: number | null = null;
-  let googleSummary: GoogleEmailSummary | null = null;
-  //
-  // Ad spend (with/without tax) comes from the Google Ads "Campaign report" upload
-  // (barm_daily_google_ad_spend), resolved per window exactly like Social Media's: the day block is
-  // the reporting day's own daily row, the range block the row matching the full window (else the
-  // daily rows inside it). Spend with tax uses the same default GST multiplier as Meta's. CPC stays
-  // blank. ACOS = Spend (without tax) ÷ Ad Sales and Ad Sales = only the Shopify orders whose visit
-  // came from a Google Ads click (see fetchGoogleOrders); ACOS is blank when there are none — the
-  // other website orders aren't attributed to the ads, so spend ÷ them would read as ad
-  // performance it isn't. A reporting day before the first Shopify day has no attribution at all,
-  // so that report is written exactly as before (old label, blank ACOS/Ad Sales, old Notes text).
-  const googleDayAgg: WindowAgg = { spend: googleAdSpend.daySpend, units: 0 };
-  const googleRangeAgg: WindowAgg = { spend: googleAdSpend.rangeSpend, units: 0 };
+  let googleRow = null;
+  const googleDetailRows = [];
+  let googleSummary = null;
+  const googleDayAgg = { spend: googleAdSpend.daySpend, units: 0 };
+  const googleRangeAgg = { spend: googleAdSpend.rangeSpend, units: 0 };
   const hasGoogleSpend = googleAdSpend.daySpend > 0 || googleAdSpend.rangeSpend > 0;
   const googleAttributed = !!googleOrders.shopifyFrom && endDate >= googleOrders.shopifyFrom;
   const googleDayRatios = googleAdsRatios(googleDayAgg.spend, googleOrders.adDayValue);
   const googleRangeRatios = googleAdsRatios(googleRangeAgg.spend, googleOrders.adRangeValue);
-  const ratio4 = (v: number | null) => (v === null ? null : Math.round(v * 10000) / 10000);
+  const ratio4 = (v) => v === null ? null : Math.round(v * 1e4) / 1e4;
   if (googleOrders.rangeUnits > 0 || googleOrders.rangeValue > 0 || hasGoogleSpend) {
     googleRow = sumAoa.length;
-    sumAoa.push([
+    const googleExtra = [
+      googleOrders.dayUnits > 0 ? round2(googleOrders.dayValue / googleOrders.dayUnits) : "\u2013",
+      googleAttributed ? googleOrders.adDayOrders : "",
+      googleAttributed ? googleOrders.adRangeOrders : ""
+    ];
+    const googleTotals = [
       "Google",
-      round2(googleDayAgg.spend), round2(spendTax(googleDayAgg)),
-      hasGoogleSpend ? (googleAttributed ? "(Google Ads spend + website orders)" : "(Google Ads spend + B-Arm orders)") : "(Orders/Sales only — no Google Ads report for this window)", "",
-      round2(googleDayAgg.spend), round2(spendTax(googleDayAgg)), googleOrders.dayUnits, round2(googleOrders.dayValue), "",
-      googleAttributed ? ratio4(googleDayRatios.acos) ?? "" : "", googleAttributed ? round2(googleOrders.adDayValue) : "",
-      round2(googleRangeAgg.spend), round2(spendTax(googleRangeAgg)), googleOrders.rangeUnits, round2(googleOrders.rangeValue), "",
-      googleAttributed ? ratio4(googleRangeRatios.acos) ?? "" : "", googleAttributed ? round2(googleOrders.adRangeValue) : "",
-      googleOrders.dayUnits, round2(googleOrders.dayValue),
-    ]);
-    // Same figures, reshaped for the emailed daily digest (see buildAdSpendDailyHtml in
-    // supabase/functions/send-ad-spend-email/index.ts), which renders this as one more row
-    // directly below Social Media's, per the same pattern. Day totals, matching the fix above —
-    // the digest is headlined by the single reporting day, same as every other platform's summary.
+      round2(googleDayAgg.spend),
+      round2(spendTax(googleDayAgg)),
+      hasGoogleSpend ? googleAttributed ? "(Google Ads spend + website orders)" : "(Google Ads spend + B-Arm orders)" : "(Orders/Sales only \u2014 no Google Ads report for this window)",
+      "",
+      round2(googleDayAgg.spend),
+      round2(spendTax(googleDayAgg)),
+      googleOrders.dayUnits,
+      round2(googleOrders.dayValue),
+      "",
+      googleAttributed ? ratio4(googleDayRatios.acos) ?? "" : "",
+      googleAttributed ? round2(googleOrders.adDayValue) : "",
+      round2(googleRangeAgg.spend),
+      round2(spendTax(googleRangeAgg)),
+      googleOrders.rangeUnits,
+      round2(googleOrders.rangeValue),
+      "",
+      googleAttributed ? ratio4(googleRangeRatios.acos) ?? "" : "",
+      googleAttributed ? round2(googleOrders.adRangeValue) : "",
+      googleOrders.dayUnits,
+      round2(googleOrders.dayValue)
+    ];
+    if (hasGoogleSpend && googleAttributed && googleAdSpend.campaigns.length) {
+      const gProducts = /* @__PURE__ */ new Map();
+      const gAcc = (product) => {
+        const hit = gProducts.get(product) ?? { campaigns: [], daySales: 0, rangeSales: 0, dayUnits: 0, rangeUnits: 0, dayOrders: /* @__PURE__ */ new Set(), rangeOrders: /* @__PURE__ */ new Set() };
+        gProducts.set(product, hit);
+        return hit;
+      };
+      googleAdSpend.campaigns.forEach((c) => gAcc(googleProductFor(c.name)).campaigns.push(c));
+      googleOrders.adLines.forEach((l) => {
+        const a = gAcc(googleProductFor(l.name));
+        a.rangeSales += l.value;
+        a.rangeUnits += l.quantity;
+        if (l.order) a.rangeOrders.add(l.order);
+        if (l.date === endDate) {
+          a.daySales += l.value;
+          a.dayUnits += l.quantity;
+          if (l.order) a.dayOrders.add(l.order);
+        }
+      });
+      const rangeSpendOf = (p) => p.campaigns.reduce((s, c) => s + c.rangeSpend, 0);
+      const daySpendOf = (p) => p.campaigns.reduce((s, c) => s + c.daySpend, 0);
+      const ordered = [...gProducts.entries()].sort((a, b) => rangeSpendOf(b[1]) - rangeSpendOf(a[1]) || b[1].rangeSales - a[1].rangeSales);
+      const blank7G = ["", "", "", "", "", "", ""];
+      const spendCells = (spend) => [round2(spend), round2(spendTax({ spend, units: 0 })), "", "", "", "", ""];
+      const totalCells = (spend, orders, sales) => [
+        round2(spend),
+        round2(spendTax({ spend, units: 0 })),
+        orders,
+        round2(sales),
+        "",
+        spend > 0 ? Math.round(spend / (sales > 0 ? sales : 1) * 1e4) / 1e4 : "",
+        round2(sales)
+      ];
+      const pushGoogle = (label, day, range2, extra) => {
+        if (extra) sumExtras.set(sumAoa.length, extra);
+        [[day, 10], [range2, 17]].forEach(([b, c]) => {
+          if (b[3] === 0 && typeof b[5] === "number") sumPlainAcos.push({ r: sumAoa.length, c });
+        });
+        const first = sumAoa.length === googleRow;
+        sumAoa.push([
+          first ? "Google" : "",
+          first ? googleTotals[1] : "",
+          first ? googleTotals[2] : "",
+          label,
+          "",
+          ...day,
+          ...range2,
+          first ? googleTotals[19] : "",
+          first ? googleTotals[20] : ""
+        ]);
+      };
+      ordered.forEach(([product, p]) => {
+        socialHeadRows.push(sumAoa.length);
+        pushGoogle(product, blank7G, blank7G);
+        p.campaigns.slice().sort((a, b) => b.rangeSpend - a.rangeSpend || b.daySpend - a.daySpend).forEach((c, i) => pushGoogle(`Ad ${i + 1}: ${c.name}`, spendCells(c.daySpend), spendCells(c.rangeSpend)));
+        socialBoldRows.push(sumAoa.length);
+        const productExtra = [p.dayUnits > 0 ? round2(p.daySales / p.dayUnits) : "\u2013", p.dayOrders.size, p.rangeOrders.size];
+        pushGoogle(
+          `Total \u2013 ${product}`,
+          totalCells(daySpendOf(p), p.dayOrders.size, p.daySales),
+          totalCells(rangeSpendOf(p), p.rangeOrders.size, p.rangeSales),
+          productExtra
+        );
+        const detailBlock = (spend, orders, sales) => [
+          round2(spend),
+          round2(spendTax({ spend, units: 0 })),
+          orders,
+          "",
+          spend > 0 ? Math.round(spend / (sales > 0 ? sales : 1) * 1e4) / 1e4 : ""
+        ];
+        googleDetailRows.push({
+          cells: [
+            p.campaigns.map((c) => c.name).join(", ") || "(no Google Ads campaign)",
+            product,
+            "",
+            ...detailBlock(daySpendOf(p), p.dayOrders.size, p.daySales),
+            ...detailBlock(rangeSpendOf(p), p.rangeOrders.size, p.rangeSales)
+          ],
+          extra: productExtra,
+          // ACOS columns (original 7 = day, 12 = range) holding Spend ÷ 1: shown as the amount.
+          plainAcosCols: [
+            ...daySpendOf(p) > 0 && p.daySales <= 0 ? [7] : [],
+            ...rangeSpendOf(p) > 0 && p.rangeSales <= 0 ? [12] : []
+          ]
+        });
+      });
+      socialBoldRows.push(sumAoa.length);
+      pushGoogle("Grand total \u2013 all Google", googleTotals.slice(5, 12), googleTotals.slice(12, 19), googleExtra);
+      if (sumAoa.length - googleRow > 1) {
+        [0, 1, 2, 19, 20].forEach((c) => sumMerges.push({ s: { r: googleRow, c }, e: { r: sumAoa.length - 1, c } }));
+      }
+    } else {
+      sumExtras.set(sumAoa.length, googleExtra);
+      sumAoa.push(googleTotals);
+    }
     googleSummary = {
       totalUnits: googleOrders.dayUnits,
       totalValue: round2(googleOrders.dayValue),
@@ -2759,99 +3751,128 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       dayAcos: googleAttributed ? ratio4(googleDayRatios.acos) : null,
       rangeAcos: googleAttributed ? ratio4(googleRangeRatios.acos) : null,
       dayRoas: googleAttributed ? ratio4(googleDayRatios.roas) : null,
-      rangeRoas: googleAttributed ? ratio4(googleRangeRatios.roas) : null,
+      rangeRoas: googleAttributed ? ratio4(googleRangeRatios.roas) : null
     };
   }
-
-  // A Meesho table that failed to load must never pass for a quiet day (see fetchMeeshoProducts).
-  let meeshoErrorRow: number | null = null;
+  let meeshoErrorRow = null;
   if (ms.loadErrors.length) {
     meeshoErrorRow = sumAoa.length + 1;
-    sumAoa.push([], [`⚠ Meesho data could not be loaded (database/query error, not an empty day) — Meesho figures above are missing or incomplete: ${ms.loadErrors.join("; ")}`]);
+    sumAoa.push([], [`\u26A0 Meesho data could not be loaded (database/query error, not an empty day) \u2014 Meesho figures above are missing or incomplete: ${ms.loadErrors.join("; ")}`]);
   }
-
-  // Optimization suggestions (Gemini) — replaces the Action Sheet's generic tiered text with a
-  // real per-campaign bid-cut/negative-keyword recommendation, for both Amazon and Flipkart rows,
-  // matching the seller's own request. One Gemini call per platform covers every flagged campaign
-  // at once (not one call per product) to keep this affordable and fast on the unattended daily
-  // cron. See enrichOptimizationActionRows's own comment for exactly what data each is sourced from.
   await enrichAmazonActionRows(actionRows, amz.spRows, endDate, aiSuggestions);
   await enrichFlipkartActionRows(actionRows, fk.fsnRows, aiSuggestions);
-
-  const wsSummary = XLSX.utils.aoa_to_sheet(sumAoa);
+  const sumCol = (c) => c + (c >= 5 ? 1 : 0) + (c >= 8 ? 1 : 0) + (c >= 15 ? 1 : 0);
+  sumAoa.forEach((row, r) => {
+    if (row.length < 15) return;
+    const [sell, adDay, adRange] = sumExtras.get(r) ?? ["", "", ""];
+    row.splice(15, 0, adRange);
+    row.splice(8, 0, adDay);
+    row.splice(5, 0, sell);
+  });
+  sumMerges.forEach((m) => {
+    m.s.c = sumCol(m.s.c);
+    m.e.c = sumCol(m.e.c);
+  });
+  const worstHeadMerge = sumMerges.find((m) => m.s.r === 3 && m.s.c === 3);
+  if (worstHeadMerge) worstHeadMerge.e.c = 5;
+  const SUM_COLS_OUT = sumCol(SUM_COLS - 1) + 1;
+  const wsSummary = XLSX4.utils.aoa_to_sheet(sumAoa);
   wsSummary["!merges"] = sumMerges;
   if (wsSummary["A2"]) wsSummary["A2"].s = { font: { bold: true, sz: 13 } };
-  sumHeaderRowsStyled.forEach((row) => styleHeader(wsSummary, row, SUM_COLS, "312E81"));
-  sumLabelCells.forEach(({ row, platform }) => styleLabel(wsSummary, XLSX.utils.encode_cell({ r: row, c: 0 }), PLATFORM_FILL[platform]));
-  // Clicking the "Amazon"/"Flipkart"/"Meesho" platform cell opens the live
-  // Daily Ad Spend dashboard page (same cross-platform data this report is
-  // built from) — a hyperlink, not just a styled label, so the seller can
-  // jump from the static Excel snapshot straight to the always-current view.
+  sumHeaderRowsStyled.forEach((row) => styleHeader(wsSummary, row, SUM_COLS_OUT, "312E81"));
+  sumLabelCells.forEach(({ row, platform }) => styleLabel(wsSummary, XLSX4.utils.encode_cell({ r: row, c: 0 }), PLATFORM_FILL[platform]));
   sumLabelCells.forEach(({ row, platform }) => {
-    const addr = XLSX.utils.encode_cell({ r: row, c: 0 });
+    const addr = XLSX4.utils.encode_cell({ r: row, c: 0 });
     const cell = wsSummary[addr];
     if (!cell) return;
     cell.l = { Target: `${SITE_URL}/dashboard/daily-ad-spend`, Tooltip: `Open ${platform} in the Daily Ad Spend dashboard` };
   });
-  // Social Media isn't a real `Platform` (see the comment where socialMediaRow is built), so it's
-  // styled directly here instead of through sumLabelCells/PLATFORM_FILL — same bold-label
-  // treatment, a Meta-blue fill, no dashboard hyperlink (there's no dedicated Social Media page).
-  if (socialMediaRow !== null) styleLabel(wsSummary, XLSX.utils.encode_cell({ r: socialMediaRow, c: 0 }), "1877F2");
-  // Google isn't a real `Platform` either (see the comment where googleRow is built) — same
-  // treatment as Social Media above, Google's own brand blue, no dashboard hyperlink (there's no
-  // dedicated Google analytics page, just the Upload page's Google Orders (B-Arm) card).
-  if (googleRow !== null) styleLabel(wsSummary, XLSX.utils.encode_cell({ r: googleRow, c: 0 }), "4285F4");
-  const meeshoErrorCell = meeshoErrorRow !== null ? wsSummary[XLSX.utils.encode_cell({ r: meeshoErrorRow, c: 0 })] : undefined;
+  if (socialMediaRow !== null) styleLabel(wsSummary, XLSX4.utils.encode_cell({ r: socialMediaRow, c: 0 }), META_FILL);
+  if (googleRow !== null) styleLabel(wsSummary, XLSX4.utils.encode_cell({ r: googleRow, c: 0 }), GOOGLE_FILL);
+  const meeshoErrorCell = meeshoErrorRow !== null ? wsSummary[XLSX4.utils.encode_cell({ r: meeshoErrorRow, c: 0 })] : void 0;
   if (meeshoErrorCell) meeshoErrorCell.s = { font: { bold: true, color: { rgb: "B91C1C" } } };
-  wsSummary["!cols"] = [
-    { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 60 }, { wch: 10 },
-    { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 24 }, { wch: 13 }, { wch: 13 }, { wch: 13 }, // day block: Spend, Spend(with tax), Total Orders, Total Sales (wider header), CPC, ACOS, Ad Sales
-    { wch: 13 }, { wch: 13 }, { wch: 13 }, { wch: 24 }, { wch: 13 }, { wch: 13 }, { wch: 13 }, // range block: same shape
-    { wch: 10 }, { wch: 14 },
+  const sumWidths = [
+    { wch: 20 },
+    { wch: 16 },
+    { wch: 16 },
+    { wch: 60 },
+    { wch: 10 },
+    { wch: 13 },
+    { wch: 13 },
+    { wch: 13 },
+    { wch: 24 },
+    { wch: 13 },
+    { wch: 13 },
+    { wch: 13 },
+    // day block: Spend, Spend(with tax), Total Orders, Total Sales (wider header), CPC, ACOS, Ad Sales
+    { wch: 13 },
+    { wch: 13 },
+    { wch: 13 },
+    { wch: 24 },
+    { wch: 13 },
+    { wch: 13 },
+    { wch: 13 },
+    // range block: same shape
+    { wch: 10 },
+    { wch: 14 }
   ];
+  sumWidths.splice(15, 0, { wch: 11 });
+  sumWidths.splice(8, 0, { wch: 11 });
+  sumWidths.splice(5, 0, { wch: 13 });
+  sumWidths[4] = { wch: 13 };
+  wsSummary["!cols"] = sumWidths;
+  const sumFormats = {
+    1: CURRENCY_FMT,
+    2: CURRENCY_FMT,
+    4: CURRENCY_FMT,
+    5: CURRENCY_FMT,
+    6: CURRENCY_FMT,
+    8: CURRENCY_FMT,
+    9: CURRENCY_FMT,
+    10: PERCENT_FMT,
+    11: CURRENCY_FMT,
+    12: CURRENCY_FMT,
+    13: CURRENCY_FMT,
+    15: CURRENCY_FMT,
+    16: CURRENCY_FMT,
+    17: PERCENT_FMT,
+    18: CURRENCY_FMT,
+    20: CURRENCY_FMT
+  };
   applyNumberFormats(wsSummary, 5, sumAoa.length, {
-    1: CURRENCY_FMT, 2: CURRENCY_FMT, 4: CURRENCY_FMT, 5: CURRENCY_FMT, 6: CURRENCY_FMT,
-    8: CURRENCY_FMT, 9: CURRENCY_FMT, 10: PERCENT_FMT, 11: CURRENCY_FMT,
-    12: CURRENCY_FMT, 13: CURRENCY_FMT, 15: CURRENCY_FMT, 16: CURRENCY_FMT, 17: PERCENT_FMT, 18: CURRENCY_FMT,
-    20: CURRENCY_FMT,
+    ...Object.fromEntries(Object.entries(sumFormats).map(([c, f]) => [sumCol(Number(c)), f])),
+    5: CURRENCY_FMT
+    // Sell price
   });
-  // Long titles (a SKU with no product-master entry falls back to the raw
-  // marketing title) need to wrap within the column instead of overflowing
-  // or reading as clipped — same fix applied to the Ad spend report sheet's
-  // Product Name column below.
+  sumPlainAcos.forEach(({ r, c }) => {
+    const cell = wsSummary[XLSX4.utils.encode_cell({ r, c: sumCol(c) })];
+    if (cell && typeof cell.v === "number") cell.z = "0.00";
+  });
   for (let r = 5; r < sumAoa.length; r++) {
-    const addr = XLSX.utils.encode_cell({ r, c: 3 });
+    const addr = XLSX4.utils.encode_cell({ r, c: 3 });
     if (wsSummary[addr]) wsSummary[addr].s = { alignment: { wrapText: true, vertical: "top" } };
   }
-  XLSX.utils.book_append_sheet(wb, wsSummary, "Summary");
-
-  // ── Ad spend report sheet (every advertised product, per platform) ──
-  // SKU sits ahead of Product Name so a name resolved via a fallback (or one
-  // that's just wrong/ambiguous) can always be traced back to the exact SKU
-  // the spend/orders were keyed on.
+  const emphasise = (r, fill) => {
+    for (let c = 3; c <= sumCol(18); c++) {
+      const addr = XLSX4.utils.encode_cell({ r, c });
+      const cell = wsSummary[addr] ?? (wsSummary[addr] = { t: "s", v: "" });
+      cell.s = { ...cell.s ?? {}, font: { ...cell.s?.font ?? {}, bold: true }, ...fill ? { fill: { fgColor: { rgb: fill } } } : {} };
+    }
+  };
+  socialHeadRows.forEach((r) => emphasise(r, "EEF2FF"));
+  socialBoldRows.forEach((r) => emphasise(r));
+  blockDivider(wsSummary, sumCol(12), sumAoa.map((row, r) => r >= 3 && row.length >= SUM_COLS_OUT ? r : -1).filter((r) => r >= 0));
+  XLSX4.utils.book_append_sheet(wb, wsSummary, "Summary");
   const DETAIL_COLS = 13;
-  const detailAoa: (string | number | null)[][] = [];
-  const detailHeaderRows: number[] = [];
-  const detailLabelCells: { addr: string; platform: Platform }[] = [];
-  const detailMerges: XLSX.Range[] = [];
+  const detailAoa = [];
+  const detailHeaderRows = [];
+  const detailLabelCells = [];
+  const detailMerges = [];
+  const detailExtras = /* @__PURE__ */ new Map();
+  const detailPlainAcos = [];
   adPlatforms.forEach(({ platform, products }) => {
-    // Sorted by day ACOS descending (worst first) — same metric/direction as the Summary
-    // sheet's "Worst ACOS product" shortlist, so a reader doesn't have to reconcile two
-    // different orderings for the same numbers across sheets.
-    // Grouped by resolved product name first — a product's 4-5 SKU variants
-    // (per the product-master table) merge into one row with summed spend/
-    // orders, instead of printing once per SKU with the name repeated.
-    // Scoped to products with actual ad spend in the range — same bar the
-    // Summary sheet's per-platform totals already use. A product that only
-    // ever sold organically (₹0 spend, real order units) previously still
-    // printed here with Spend/CPC/ACOS all reading 0, which isn't an "ad"
-    // row at all: against a hand-built reference report, these purely-organic
-    // rows were the single biggest source of mismatch — they inflated this
-    // sheet's Orders total ~40-60% above what an ad-spend-only view shows.
-    const rows = groupProductsByName([...products.values()], masterSkuidsByName, skuToMasterSkuidName)
-      .filter((p) => spendTax(p.range) > 0)
-      .sort((a, b) => acosSortRank(b.day, b.price, listingPriceFor(platform, b.sku)) - acosSortRank(a.day, a.price, listingPriceFor(platform, a.sku)));
-    detailLabelCells.push({ addr: XLSX.utils.encode_cell({ r: detailAoa.length, c: 0 }), platform });
+    const rows = groupProductsByName([...products.values()], masterSkuidsByName, skuToMasterSkuidName).filter((p) => spendTax(p.range) > 0).sort((a, b) => acosSortRank(b.day, b.price, listingPriceFor(platform, b.sku)) - acosSortRank(a.day, a.price, listingPriceFor(platform, a.sku)));
+    detailLabelCells.push({ addr: XLSX4.utils.encode_cell({ r: detailAoa.length, c: 0 }), platform });
     detailAoa.push([platform, ...Array(DETAIL_COLS - 1).fill("")]);
     detailAoa.push(Array(DETAIL_COLS).fill(""));
     const groupRow = detailAoa.length;
@@ -2863,21 +3884,21 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       { s: { r: groupRow, c: 1 }, e: { r: groupRow + 1, c: 1 } },
       { s: { r: groupRow, c: 2 }, e: { r: groupRow + 1, c: 2 } },
       { s: { r: groupRow, c: 3 }, e: { r: groupRow, c: 7 } },
-      { s: { r: groupRow, c: 8 }, e: { r: groupRow, c: 12 } },
+      { s: { r: groupRow, c: 8 }, e: { r: groupRow, c: 12 } }
     );
-    rows.forEach((p) => detailAoa.push([p.sku, ...productAoaRow(p, listingPriceFor(platform, p.sku))]));
+    detailExtras.set(groupRow, ["Sell price", "", ""]);
+    detailExtras.set(groupRow + 1, ["", "Ad orders", "Ad orders"]);
+    rows.forEach((p) => {
+      detailExtras.set(detailAoa.length, [sellPriceCell(p.day), adOrdersCell(p.day), adOrdersCell(p.range)]);
+      detailAoa.push([p.sku, ...productAoaRow(p, listingPriceFor(platform, p.sku))]);
+    });
     if (!rows.length) detailAoa.push(["(no advertised products with activity in range)", ...Array(DETAIL_COLS - 1).fill("")]);
     detailAoa.push([]);
   });
-
-  // Social Media (Meta Ads) — same column layout as the platform blocks above, one row per product
-  // (same rows as the Summary sheet), with the Meta campaign name(s) in the first column instead of
-  // SKUs. CPC stays blank: Meta's export carries spend only. Orders and ACOS are the Meta channel's own
-  // (same figure as the Summary sheet), on the first row and merged down.
-  let socialDetailLabelRow: number | null = null;
+  let socialDetailLabelRow = null;
   if (socialMediaProducts.length) {
     socialDetailLabelRow = detailAoa.length;
-    detailAoa.push(["Social Media", ...Array(DETAIL_COLS - 1).fill("")]);
+    detailAoa.push(["Social Media (Meta)", ...Array(DETAIL_COLS - 1).fill("")]);
     detailAoa.push(Array(DETAIL_COLS).fill(""));
     const groupRow = detailAoa.length;
     detailHeaderRows.push(groupRow);
@@ -2888,362 +3909,326 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       { s: { r: groupRow, c: 1 }, e: { r: groupRow + 1, c: 1 } },
       { s: { r: groupRow, c: 2 }, e: { r: groupRow + 1, c: 2 } },
       { s: { r: groupRow, c: 3 }, e: { r: groupRow, c: 7 } },
-      { s: { r: groupRow, c: 8 }, e: { r: groupRow, c: 12 } },
+      { s: { r: groupRow, c: 8 }, e: { r: groupRow, c: 12 } }
     );
+    detailExtras.set(groupRow, ["Sell price", "", ""]);
+    detailExtras.set(groupRow + 1, ["", "Ad orders", "Ad orders"]);
     const firstProductRow = detailAoa.length;
+    socialMediaProducts.forEach((_p, i) => detailExtras.set(firstProductRow + i, ["\u2013", i === 0 ? metaDayOrders ?? "N/A" : "", i === 0 ? metaRangeOrders ?? "N/A" : ""]));
     socialMediaProducts.forEach((p, i) => detailAoa.push([
-      p.campaigns.join(", "), p.product, p.price || "",
-      round2(p.dayAgg.spend), round2(spendTax(p.dayAgg)), i === 0 ? metaDayOrders ?? "N/A" : "", "", i === 0 ? metaDayAcos ?? "N/A" : "",
-      round2(p.rangeAgg.spend), round2(spendTax(p.rangeAgg)), i === 0 ? metaRangeOrders ?? "N/A" : "", "", i === 0 ? metaRangeAcos ?? "N/A" : "",
+      p.campaigns.join(", "),
+      p.product,
+      p.price || "",
+      round2(p.dayAgg.spend),
+      round2(spendTax(p.dayAgg)),
+      i === 0 ? metaDayOrders ?? "N/A" : "",
+      "",
+      i === 0 ? metaDayAcos ?? "N/A" : "",
+      round2(p.rangeAgg.spend),
+      round2(spendTax(p.rangeAgg)),
+      i === 0 ? metaRangeOrders ?? "N/A" : "",
+      "",
+      i === 0 ? metaRangeAcos ?? "N/A" : ""
     ]));
     if (socialMediaProducts.length > 1) {
       [5, 7, 10, 12].forEach((c) => detailMerges.push({ s: { r: firstProductRow, c }, e: { r: firstProductRow + socialMediaProducts.length - 1, c } }));
     }
     detailAoa.push([]);
   }
-
-  // Google (direct/website) orders — appended as its own small Product/Quantity/Price/Sales
-  // section, same shape as the "B Arm orders"/"Meesho (B Arm) orders" leaderboards elsewhere in
-  // this workbook, rather than forced into the ad-spend column layout above: Spend/CPC/ACOS don't
-  // exist for this channel, and every platform block above is filtered to spend > 0 (every Google
-  // row would fail that and print as "no advertised products with activity"). Scoped to this
-  // report's date/range window by order_date, same as fetchGoogleOrders's Summary-row figures.
-  let googleDetailLabelRow: number | null = null;
-  let googleDetailHeaderRow: number | null = null;
-  if (googleOrders.perProduct.length) {
+  let googleDetailLabelRow = null;
+  let googleDetailHeaderRow = null;
+  if (googleDetailRows.length) {
     googleDetailLabelRow = detailAoa.length;
-    detailAoa.push(["Google"]);
+    detailAoa.push(["Google", ...Array(DETAIL_COLS - 1).fill("")]);
+    detailAoa.push(Array(DETAIL_COLS).fill(""));
+    const groupRow = detailAoa.length;
+    detailHeaderRows.push(groupRow);
+    detailAoa.push(["Campaign(s)", "Product Name", "Price", dayLabel, "", "", "", "", rangeLabel, "", "", "", ""]);
+    detailAoa.push(["", "", "", ...METRIC_NAMES, ...METRIC_NAMES]);
+    detailMerges.push(
+      { s: { r: groupRow, c: 0 }, e: { r: groupRow + 1, c: 0 } },
+      { s: { r: groupRow, c: 1 }, e: { r: groupRow + 1, c: 1 } },
+      { s: { r: groupRow, c: 2 }, e: { r: groupRow + 1, c: 2 } },
+      { s: { r: groupRow, c: 3 }, e: { r: groupRow, c: 7 } },
+      { s: { r: groupRow, c: 8 }, e: { r: groupRow, c: 12 } }
+    );
+    detailExtras.set(groupRow, ["Sell price", "", ""]);
+    detailExtras.set(groupRow + 1, ["", "Ad orders", "Ad orders"]);
+    googleDetailRows.forEach((g) => {
+      detailExtras.set(detailAoa.length, g.extra);
+      g.plainAcosCols.forEach((c) => detailPlainAcos.push({ r: detailAoa.length, c }));
+      detailAoa.push(g.cells);
+    });
+    detailAoa.push([]);
+  }
+  if (googleOrders.perProduct.length) {
+    if (googleDetailLabelRow === null) {
+      googleDetailLabelRow = detailAoa.length;
+      detailAoa.push(["Google"]);
+    } else {
+      detailAoa.push([`All website orders, ${rangeLabel}`]);
+    }
     googleDetailHeaderRow = detailAoa.length;
     detailAoa.push(["Product", "Quantity", "Price", "Sales"]);
     googleOrders.perProduct.forEach((p) => detailAoa.push([p.name, p.quantity, round2(p.price), round2(p.quantity * p.price)]));
     detailAoa.push([]);
   }
-
-  const wsDetail = XLSX.utils.aoa_to_sheet(detailAoa);
+  const detCol = (c) => c + (c >= 3 ? 1 : 0) + (c >= 6 ? 1 : 0) + (c >= 11 ? 1 : 0);
+  detailAoa.forEach((row, r) => {
+    if (row.length < DETAIL_COLS) return;
+    const [sell, adDay, adRange] = detailExtras.get(r) ?? ["", "", ""];
+    row.splice(11, 0, adRange);
+    row.splice(6, 0, adDay);
+    row.splice(3, 0, sell);
+  });
+  detailMerges.forEach((m) => {
+    m.s.c = detCol(m.s.c);
+    m.e.c = detCol(m.e.c);
+  });
+  detailHeaderRows.forEach((row) => detailMerges.push({ s: { r: row, c: 3 }, e: { r: row + 1, c: 3 } }));
+  const DETAIL_COLS_OUT = detCol(DETAIL_COLS - 1) + 1;
+  const wsDetail = XLSX4.utils.aoa_to_sheet(detailAoa);
   wsDetail["!merges"] = detailMerges;
   detailLabelCells.forEach(({ addr, platform }) => styleLabel(wsDetail, addr, PLATFORM_FILL[platform]));
-  detailHeaderRows.forEach((row) => { styleHeader(wsDetail, row, DETAIL_COLS, "312E81"); styleHeader(wsDetail, row + 1, DETAIL_COLS, "312E81"); });
-  if (socialDetailLabelRow !== null) styleLabel(wsDetail, XLSX.utils.encode_cell({ r: socialDetailLabelRow, c: 0 }), "1877F2");
-  if (googleDetailLabelRow !== null) styleLabel(wsDetail, XLSX.utils.encode_cell({ r: googleDetailLabelRow, c: 0 }), "4285F4");
-  if (googleDetailHeaderRow !== null) styleHeader(wsDetail, googleDetailHeaderRow, 4, "312E81");
-  wsDetail["!cols"] = [{ wch: 30 }, { wch: 60 }, { wch: 10 }, ...Array.from({ length: DETAIL_COLS - 3 }, () => ({ wch: 13 }))];
-  applyNumberFormats(wsDetail, 0, detailAoa.length, {
-    2: CURRENCY_FMT, 3: CURRENCY_FMT, 4: CURRENCY_FMT, 6: CURRENCY_FMT, 7: PERCENT_FMT,
-    8: CURRENCY_FMT, 9: CURRENCY_FMT, 11: CURRENCY_FMT, 12: PERCENT_FMT,
+  detailHeaderRows.forEach((row) => {
+    styleHeader(wsDetail, row, DETAIL_COLS_OUT, "312E81");
+    styleHeader(wsDetail, row + 1, DETAIL_COLS_OUT, "312E81");
   });
-  // Long titles (a SKU with no product-master entry falls back to the raw
-  // marketing title) need to wrap within the column instead of overflowing —
-  // same for the SKU(s) column now that a merged product row can list several
-  // comma-joined SKU variants.
+  if (socialDetailLabelRow !== null) styleLabel(wsDetail, XLSX4.utils.encode_cell({ r: socialDetailLabelRow, c: 0 }), META_FILL);
+  if (googleDetailLabelRow !== null) styleLabel(wsDetail, XLSX4.utils.encode_cell({ r: googleDetailLabelRow, c: 0 }), GOOGLE_FILL);
+  if (googleDetailHeaderRow !== null) styleHeader(wsDetail, googleDetailHeaderRow, 4, "312E81");
+  wsDetail["!cols"] = [{ wch: 30 }, { wch: 60 }, { wch: 13 }, { wch: 13 }, ...Array.from({ length: DETAIL_COLS_OUT - 4 }, () => ({ wch: 13 }))];
+  const detailFormats = {
+    2: CURRENCY_FMT,
+    3: CURRENCY_FMT,
+    4: CURRENCY_FMT,
+    6: CURRENCY_FMT,
+    7: PERCENT_FMT,
+    8: CURRENCY_FMT,
+    9: CURRENCY_FMT,
+    11: CURRENCY_FMT,
+    12: PERCENT_FMT
+  };
+  applyNumberFormats(wsDetail, 0, detailAoa.length, {
+    ...Object.fromEntries(Object.entries(detailFormats).map(([c, f]) => [detCol(Number(c)), f])),
+    3: CURRENCY_FMT
+    // Sell price
+  });
+  detailPlainAcos.forEach(({ r, c }) => {
+    const cell = wsDetail[XLSX4.utils.encode_cell({ r, c: detCol(c) })];
+    if (cell && typeof cell.v === "number") cell.z = "0.00";
+  });
   for (let r = 0; r < detailAoa.length; r++) {
     [0, 1].forEach((c) => {
-      const addr = XLSX.utils.encode_cell({ r, c });
+      const addr = XLSX4.utils.encode_cell({ r, c });
       if (wsDetail[addr] && wsDetail[addr].v) wsDetail[addr].s = { ...wsDetail[addr].s, alignment: { wrapText: true, vertical: "top" } };
     });
   }
-  XLSX.utils.book_append_sheet(wb, wsDetail, "Ad spend report");
-
-  // ── SKU Wise Report — flat, per-SKU (ungrouped) listing across all platforms ──
-  // Unlike "Ad spend report" above (which merges every SKU variant of a product into one row via
-  // groupProductsByName), this sheet keeps one row per actual SKU — added alongside it at the
-  // seller's request, not replacing it, so a SKU's own individual numbers can be sorted/filtered
-  // directly by Platform or Price. Every metric is split into its own single-day and 7-day-range
-  // pair of columns (same dayLabel/rangeLabel two-row header pattern as the Ad spend report sheet
-  // above), per the seller's explicit request that this sheet stop being range-only. Total Sales:
-  // Amazon/Flipkart use real per-order revenue (WindowAgg.revenue — SUM(item-price x quantity) /
-  // SUM(Invoice Amount) across this SKU's own non-cancelled order rows); Meesho stays on the flat
-  // Price x Orders(units) estimate, at the seller's explicit choice (also still what the B Arm
-  // orders / Meesho leaderboard sheets elsewhere in this workbook use). ACOS uses the same
-  // computeAcos as every other sheet (Ad Spend / Ad-Attributed Sales when on file, falling back to
-  // Total Sales otherwise — see computeAcos's own comment). Total Ad Sales / Total Ad Orders are
-  // each platform's own ad-attributed sales/orders figures — the same ones ACOS is computed from —
-  // surfaced here directly so a reader can see the ACOS denominator, not just the ratio: Amazon's
-  // Sponsored Products "7 Day Total Sales"/"7 Day Total Orders" (blank when a SKU has no Sponsored
-  // Products row at all, i.e. SB/SD-only spend, matching Amazon's own raw export convention);
-  // Flipkart's ads-export "Total Revenue"/direct+indirect Units Sold; Meesho's ad report's own
-  // "Orders by ad" count, and that count x Price for Ad Sales (Meesho's ad export has no ₹ sales
-  // figure directly).
+  blockDivider(wsDetail, detCol(8), detailAoa.map((row, r) => row.length >= DETAIL_COLS_OUT ? r : -1).filter((r) => r >= 0));
+  XLSX4.utils.book_append_sheet(wb, wsDetail, "Ad spend report");
   const SKU_WISE_METRIC_NAMES = ["Spend (without tax)", "Spend (with tax)", "Orders", "Total Sales", "CPC", "ACOS", "Total Ad Sales", "Total Ad Orders"];
   const SKU_WISE_COLS = 3 + SKU_WISE_METRIC_NAMES.length * 2;
-  const skuWiseRows: (string | number | null)[][] = [];
+  const skuWiseRows = [];
   adPlatforms.forEach(({ platform, products, revenueRangeBySku }) => {
-    [...products.values()]
-      .filter((p) => spendTax(p.range) > 0)
-      .forEach((p) => {
-        // Every platform (Amazon/Flipkart/Meesho alike) now uses the real per-order revenue sum —
-        // see fetchMeeshoProducts's own comment on why Meesho's day.revenue/revenueRangeBySku are
-        // sourced from each order row's raw Supplier Listed Price, not priceBySku. Day uses
-        // p.day.revenue directly — the same field revenueRangeBySku's range figure is itself
-        // sourced from, just not exposed as its own returned Map for the day window.
-        const dayTotalSales = p.day.revenue || 0;
-        const rangeTotalSales = revenueRangeBySku.get(p.sku) || 0;
-        const dayAdSales =
-          platform === "Amazon" ? (p.day.adAttributedSales !== undefined ? round2(p.day.adAttributedSales) : null)
-          : platform === "Flipkart" ? round2(p.day.adSales || 0)
-          : round2((p.day.adOrders || 0) * p.price);
-        const rangeAdSales =
-          platform === "Amazon" ? (p.range.adAttributedSales !== undefined ? round2(p.range.adAttributedSales) : null)
-          : platform === "Flipkart" ? round2(p.range.adSales || 0)
-          : round2((p.range.adOrders || 0) * p.price);
-        const dayAdOrders = platform === "Amazon" ? (p.day.adOrders !== undefined ? p.day.adOrders : null) : p.day.adOrders || 0;
-        const rangeAdOrders = platform === "Amazon" ? (p.range.adOrders !== undefined ? p.range.adOrders : null) : p.range.adOrders || 0;
-        // This sheet is ungrouped (one row per real SKU, unlike Ad spend report's merged rows
-        // above), so p.sku is always a single exact SKU and always a valid key into the maps.
-        const listingPrice = listingPriceFor(platform, p.sku);
-        skuWiseRows.push([
-          p.sku, platform, p.price,
-          round2(p.day.spend), round2(spendTax(p.day)), p.day.units, round2(dayTotalSales), round2(computeCpc(p.day)), acosCell(p.day, p.price, listingPrice), dayAdSales, dayAdOrders,
-          round2(p.range.spend), round2(spendTax(p.range)), p.range.units, round2(rangeTotalSales), round2(computeCpc(p.range)), acosCell(p.range, p.price, listingPrice), rangeAdSales, rangeAdOrders,
-        ]);
-      });
+    [...products.values()].filter((p) => spendTax(p.range) > 0).forEach((p) => {
+      const dayTotalSales = p.day.revenue || 0;
+      const rangeTotalSales = revenueRangeBySku.get(p.sku) || 0;
+      const dayAdSales = platform === "Amazon" ? p.day.adAttributedSales !== void 0 ? round2(p.day.adAttributedSales) : null : platform === "Flipkart" ? round2(p.day.adSales || 0) : round2((p.day.adOrders || 0) * p.price);
+      const rangeAdSales = platform === "Amazon" ? p.range.adAttributedSales !== void 0 ? round2(p.range.adAttributedSales) : null : platform === "Flipkart" ? round2(p.range.adSales || 0) : round2((p.range.adOrders || 0) * p.price);
+      const dayAdOrders = platform === "Amazon" ? p.day.adOrders !== void 0 ? p.day.adOrders : null : p.day.adOrders || 0;
+      const rangeAdOrders = platform === "Amazon" ? p.range.adOrders !== void 0 ? p.range.adOrders : null : p.range.adOrders || 0;
+      const listingPrice = listingPriceFor(platform, p.sku);
+      skuWiseRows.push([
+        p.sku,
+        platform,
+        priceCell(p.price),
+        round2(p.day.spend),
+        round2(spendTax(p.day)),
+        p.day.units,
+        round2(dayTotalSales),
+        round2(computeCpc(p.day)),
+        acosCell(p.day, p.price, listingPrice),
+        dayAdSales,
+        dayAdOrders,
+        round2(p.range.spend),
+        round2(spendTax(p.range)),
+        p.range.units,
+        round2(rangeTotalSales),
+        round2(computeCpc(p.range)),
+        acosCell(p.range, p.price, listingPrice),
+        rangeAdSales,
+        rangeAdOrders
+      ]);
+    });
   });
-  // Highest range Total Sales first, across every platform — the point of a flat, per-SKU sheet is
-  // to see top sellers regardless of which platform they're on. Index 14 = range Total Sales,
-  // per SKU_WISE_METRIC_NAMES's position in the range block (cols 11-18, Total Sales is 4th).
   const SKU_WISE_RANGE_TOTAL_SALES_COL = 3 + SKU_WISE_METRIC_NAMES.length + SKU_WISE_METRIC_NAMES.indexOf("Total Sales");
   skuWiseRows.sort((a, b) => Number(b[SKU_WISE_RANGE_TOTAL_SALES_COL]) - Number(a[SKU_WISE_RANGE_TOTAL_SALES_COL]));
-  const skuWiseAoa: (string | number | null)[][] = [
+  const skuWiseAoa = [
     ["", "", "", dayLabel, "", "", "", "", "", "", "", rangeLabel, "", "", "", "", "", "", ""],
     ["SKU ID", "Platform", "Price", ...SKU_WISE_METRIC_NAMES, ...SKU_WISE_METRIC_NAMES],
-    ...skuWiseRows,
+    ...skuWiseRows
   ];
-  const wsSkuWise = XLSX.utils.aoa_to_sheet(skuWiseAoa);
+  const wsSkuWise = XLSX4.utils.aoa_to_sheet(skuWiseAoa);
   wsSkuWise["!merges"] = [
     { s: { r: 0, c: 0 }, e: { r: 1, c: 0 } },
     { s: { r: 0, c: 1 }, e: { r: 1, c: 1 } },
     { s: { r: 0, c: 2 }, e: { r: 1, c: 2 } },
     { s: { r: 0, c: 3 }, e: { r: 0, c: 2 + SKU_WISE_METRIC_NAMES.length } },
-    { s: { r: 0, c: 3 + SKU_WISE_METRIC_NAMES.length }, e: { r: 0, c: 2 + SKU_WISE_METRIC_NAMES.length * 2 } },
+    { s: { r: 0, c: 3 + SKU_WISE_METRIC_NAMES.length }, e: { r: 0, c: 2 + SKU_WISE_METRIC_NAMES.length * 2 } }
   ];
   styleHeader(wsSkuWise, 0, SKU_WISE_COLS, "312E81");
   styleHeader(wsSkuWise, 1, SKU_WISE_COLS, "312E81");
   wsSkuWise["!views"] = [{ state: "frozen", ySplit: 2 }];
   wsSkuWise["!cols"] = [
-    { wch: 24 }, { wch: 10 }, { wch: 10 },
-    ...Array.from({ length: SKU_WISE_METRIC_NAMES.length * 2 }, () => ({ wch: 14 })),
+    { wch: 24 },
+    { wch: 10 },
+    { wch: 10 },
+    ...Array.from({ length: SKU_WISE_METRIC_NAMES.length * 2 }, () => ({ wch: 14 }))
   ];
   const dayBlockStart = 3;
   const rangeBlockStart = 3 + SKU_WISE_METRIC_NAMES.length;
   applyNumberFormats(wsSkuWise, 2, skuWiseAoa.length, {
     2: CURRENCY_FMT,
-    [dayBlockStart]: CURRENCY_FMT, [dayBlockStart + 1]: CURRENCY_FMT, [dayBlockStart + 3]: CURRENCY_FMT,
-    [dayBlockStart + 4]: CURRENCY_FMT, [dayBlockStart + 5]: PERCENT_FMT, [dayBlockStart + 6]: CURRENCY_FMT,
-    [rangeBlockStart]: CURRENCY_FMT, [rangeBlockStart + 1]: CURRENCY_FMT, [rangeBlockStart + 3]: CURRENCY_FMT,
-    [rangeBlockStart + 4]: CURRENCY_FMT, [rangeBlockStart + 5]: PERCENT_FMT, [rangeBlockStart + 6]: CURRENCY_FMT,
+    [dayBlockStart]: CURRENCY_FMT,
+    [dayBlockStart + 1]: CURRENCY_FMT,
+    [dayBlockStart + 3]: CURRENCY_FMT,
+    [dayBlockStart + 4]: CURRENCY_FMT,
+    [dayBlockStart + 5]: PERCENT_FMT,
+    [dayBlockStart + 6]: CURRENCY_FMT,
+    [rangeBlockStart]: CURRENCY_FMT,
+    [rangeBlockStart + 1]: CURRENCY_FMT,
+    [rangeBlockStart + 3]: CURRENCY_FMT,
+    [rangeBlockStart + 4]: CURRENCY_FMT,
+    [rangeBlockStart + 5]: PERCENT_FMT,
+    [rangeBlockStart + 6]: CURRENCY_FMT
   });
-  if (!skuWiseRows.length) XLSX.utils.sheet_add_aoa(wsSkuWise, [["(no advertised SKUs with activity in range)"]], { origin: { r: 2, c: 0 } });
-  XLSX.utils.book_append_sheet(wb, wsSkuWise, "SKU Wise Report");
-
-  // ── Ad Status Report — product name x platform, best-effort name match ──
-  // No cross-platform SKU/product mapping exists in this dashboard, so a
-  // product is matched across Amazon and Flipkart purely by its (lowercased,
-  // trimmed) product name. Two listings with slightly different titles on the
-  // two platforms will show as two separate rows rather than one. 1/0 per
-  // platform means "this platform has real ad Spend (with tax) on this
-  // product this range" (adStatusHasSpend, i.e. spendTax(a) > 0) — strictly
-  // spend, per the seller's later, explicit instruction ("spend aakirtha 1,
-  // illana 0, avlaotha"), NOT real Sales/Orders and not raw Impressions. A
-  // product can have real orders on a platform with zero ad spend there that
-  // window (organic sales) and correctly reads as 0 here now.
-  const statusKey = (name: string) => name.trim().toLowerCase();
-  const statusNames = new Map<string, string>(); // key -> display name
-  const statusHasSpend: Record<Platform, Set<string>> = { Amazon: new Set(), Flipkart: new Set(), Meesho: new Set() };
+  if (!skuWiseRows.length) XLSX4.utils.sheet_add_aoa(wsSkuWise, [["(no advertised SKUs with activity in range)"]], { origin: { r: 2, c: 0 } });
+  XLSX4.utils.book_append_sheet(wb, wsSkuWise, "SKU Wise Report");
+  const statusKey = (name) => name.trim().toLowerCase();
+  const statusNames = /* @__PURE__ */ new Map();
+  const statusHasSpend = { Amazon: /* @__PURE__ */ new Set(), Flipkart: /* @__PURE__ */ new Set(), Meesho: /* @__PURE__ */ new Set() };
   platforms.forEach(({ platform, products }) => {
     products.forEach((p) => {
-      const key = statusKey(p.name);
-      if (!statusNames.has(key)) statusNames.set(key, p.name);
-      if (adStatusHasSpend(p.range)) statusHasSpend[platform].add(key);
+      const key2 = statusKey(p.name);
+      if (!statusNames.has(key2)) statusNames.set(key2, p.name);
+      if (adStatusHasSpend(p.range)) statusHasSpend[platform].add(key2);
     });
   });
-  const statusAoa: (string | number)[][] = [["Product", "Amazon", "Flipkart", "Meesho"]];
-  // Live-everywhere products first (3 platforms → 2 → 1 → 0), alphabetical within each
-  // count so a reader scans down to find where a product with fewer live platforms sits,
-  // rather than hunting alphabetically through all 273 rows for the ones running nowhere.
-  const liveCount = (key: string) =>
-    (statusHasSpend.Amazon.has(key) ? 1 : 0) + (statusHasSpend.Flipkart.has(key) ? 1 : 0) + (statusHasSpend.Meesho.has(key) ? 1 : 0);
-  [...statusNames.entries()]
-    .sort((a, b) => liveCount(b[0]) - liveCount(a[0]) || a[1].localeCompare(b[1]))
-    .forEach(([key, name]) => {
-      statusAoa.push([name, statusHasSpend.Amazon.has(key) ? 1 : 0, statusHasSpend.Flipkart.has(key) ? 1 : 0, statusHasSpend.Meesho.has(key) ? 1 : 0]);
-    });
-  const wsStatus = XLSX.utils.aoa_to_sheet(statusAoa);
+  const statusAoa = [["Product", "Amazon", "Flipkart", "Meesho"]];
+  const liveCount = (key2) => (statusHasSpend.Amazon.has(key2) ? 1 : 0) + (statusHasSpend.Flipkart.has(key2) ? 1 : 0) + (statusHasSpend.Meesho.has(key2) ? 1 : 0);
+  [...statusNames.entries()].sort((a, b) => liveCount(b[0]) - liveCount(a[0]) || a[1].localeCompare(b[1])).forEach(([key2, name]) => {
+    statusAoa.push([name, statusHasSpend.Amazon.has(key2) ? 1 : 0, statusHasSpend.Flipkart.has(key2) ? 1 : 0, statusHasSpend.Meesho.has(key2) ? 1 : 0]);
+  });
+  const wsStatus = XLSX4.utils.aoa_to_sheet(statusAoa);
   styleHeader(wsStatus, 0, 4, "312E81");
   wsStatus["!cols"] = [{ wch: 60 }, { wch: 10 }, { wch: 10 }, { wch: 10 }];
   wsStatus["!views"] = [{ state: "frozen", ySplit: 1 }];
-  XLSX.utils.book_append_sheet(wb, wsStatus, "Ad Status Report");
-
-  // ── Action Sheet — products over the 14% trailing-7-day ACOS threshold, worst first.
-  // Spend/Orders/ACOS are ALL the 7-day range window here (unlike every other sheet's "Spend
-  // (date)" columns, which are the single reporting day) — showing the single day's spend/orders
-  // next to a 7-day ACOS produced rows like "₹0.00 spend, 91% ACOS" for a SKU with no activity
-  // today but real spend earlier in the week, which read as wrong even though it wasn't. The
-  // Summary sheet nearby is where the single-day figures still live.
-  // Campaign Name + SKU ID replace the Product column (per the seller's own request) — Campaign
-  // Name comes from enrichOptimizationActionRows's sku->campaign resolution above and is only
-  // populated for rows that matched a real campaign in the uploaded ad-spend data; a row with no
-  // match (e.g. Meesho, which has no campaign data in this app at all, or a SKU that didn't appear
-  // in any campaign row) shows "-" rather than a guessed campaign name.
-  const actionAoa: (string | number)[][] = [
-    ["Platform", "Campaign Name", "SKU ID", "Price", `Spend (${dotDate(range.start)} to ${dotDate(endDate)})`, `Spend with tax (${dotDate(range.start)} to ${dotDate(endDate)})`, "Orders", `ACOS (${dotDate(range.start)} to ${dotDate(endDate)})`, "Recommended Action"],
+  XLSX4.utils.book_append_sheet(wb, wsStatus, "Ad Status Report");
+  const actionAoa = [
+    ["Platform", "Campaign Name", "SKU ID", "Price", `Spend (${dotDate(range.start)} to ${dotDate(endDate)})`, `Spend with tax (${dotDate(range.start)} to ${dotDate(endDate)})`, "Orders", `ACOS (${dotDate(range.start)} to ${dotDate(endDate)})`, "Recommended Action"]
   ];
-  [...actionRows]
-    .sort((a, b) => b.acos - a.acos)
-    .forEach((r) => actionAoa.push([
-      r.platform, r.campaign || "-", r.sku, r.price, r.spend, r.spendTax, r.orders,
-      // The residual sentinel (see actionSheetAcos) blanks here instead of rendering as a literal
-      // "999%" — same convention acosCell uses everywhere else in this workbook.
-      r.acos === pct(ACOS_UNDEFINED_SENTINEL) ? "" : r.acos,
-      r.action,
-    ]));
+  [...actionRows].sort((a, b) => b.acos - a.acos).forEach((r) => actionAoa.push([
+    r.platform,
+    r.campaign || "-",
+    r.sku,
+    r.price,
+    r.spend,
+    r.spendTax,
+    r.orders,
+    // The residual sentinel (see actionSheetAcos) blanks here instead of rendering as a literal
+    // "999%" — same convention acosCell uses everywhere else in this workbook.
+    r.acos === pct(ACOS_UNDEFINED_SENTINEL) ? "" : r.acos,
+    r.action
+  ]));
   if (!actionRows.length) actionAoa.push(["(no products over the 14% 7-day ACOS threshold)", "", "", "", "", "", "", "", ""]);
-  const wsAction = XLSX.utils.aoa_to_sheet(actionAoa);
+  const wsAction = XLSX4.utils.aoa_to_sheet(actionAoa);
   styleHeader(wsAction, 0, 9, "B91C1C");
   wsAction["!cols"] = [{ wch: 12 }, { wch: 34 }, { wch: 20 }, { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 10 }, { wch: 16 }, { wch: 32 }];
   wsAction["!views"] = [{ state: "frozen", ySplit: 1 }];
   applyNumberFormats(wsAction, 1, actionAoa.length, { 3: CURRENCY_FMT, 4: CURRENCY_FMT, 5: CURRENCY_FMT, 7: PERCENT_FMT });
-  XLSX.utils.book_append_sheet(wb, wsAction, "Action Sheet");
-
-  // ── Low Spend Campaigns — single reporting day, both platforms ──
-  const lowSpend: CampaignSpendRow[] = [...amz.campaigns, ...fk.campaigns, ...ms.campaigns]
-    .filter((c) => c.spend <= LOW_SPEND_THRESHOLD)
-    .sort((a, b) => a.spend - b.spend);
-  const lowAoa: (string | number)[][] = [["Platform", "Campaign Name", `Spend (${dotDate(endDate)})`]];
+  XLSX4.utils.book_append_sheet(wb, wsAction, "Action Sheet");
+  const lowSpend = [...amz.campaigns, ...fk.campaigns, ...ms.campaigns].filter((c) => c.spend <= LOW_SPEND_THRESHOLD).sort((a, b) => a.spend - b.spend);
+  const lowAoa = [["Platform", "Campaign Name", `Spend (${dotDate(endDate)})`]];
   lowSpend.forEach((c) => lowAoa.push([c.platform, c.campaign, round2(c.spend)]));
   if (!lowSpend.length) lowAoa.push(["(no campaigns at or under the threshold)", "", ""]);
-  const wsLow = XLSX.utils.aoa_to_sheet(lowAoa);
+  const wsLow = XLSX4.utils.aoa_to_sheet(lowAoa);
   styleHeader(wsLow, 0, 3, "6B7280");
   wsLow["!cols"] = [{ wch: 12 }, { wch: 50 }, { wch: 16 }];
   wsLow["!views"] = [{ state: "frozen", ySplit: 1 }];
   applyNumberFormats(wsLow, 1, lowAoa.length, { 2: CURRENCY_FMT });
-  XLSX.utils.book_append_sheet(wb, wsLow, "Low Spend Campaigns");
-
-  // ── Raw per-platform sheets — mirrors the hand-built workbook's own
-  // Amazon Spend / Amazon orders / Flipkart Spend / Flipkart Orders /
-  // Meesho (B Arm) Spend / Meesho (B Arm) orders tabs, so anyone reconciling
-  // this report against the raw upload doesn't have to go find the original
-  // file — it's sitting right here, unmodified. ──
+  XLSX4.utils.book_append_sheet(wb, wsLow, "Low Spend Campaigns");
   rawRowsToSheet(wb, "Amazon Spend", amz.spRowsRaw);
   rawRowsToSheet(wb, "Amazon orders", amz.orderRows);
   rawRowsToSheet(wb, "Flipkart Spend", fk.fsnRows);
   rawRowsToSheet(wb, "Flipkart Orders", fk.orderRows);
-  const meeshoEmptyText = (table: string): string | undefined => {
+  const meeshoEmptyText = (table) => {
     const err = ms.loadErrors.find((e) => e.startsWith(`${table}:`));
-    return err ? `⚠ Could not load Meesho data — ${err}. This is a database/query error, not an empty day: regenerate the report once it's fixed.` : undefined;
+    return err ? `\u26A0 Could not load Meesho data \u2014 ${err}. This is a database/query error, not an empty day: regenerate the report once it's fixed.` : void 0;
   };
-  rawRowsToSheet(wb, "Meesho (B Arm) Spend", ms.adsRows, undefined, meeshoEmptyText("barm_daily_ms_barm_ads"));
-  // Meesho orders also gets a Product/Quantity/Price/Sales leaderboard next to
-  // the raw dump — same shape and formula (Sales = Price x range Quantity) as
-  // the cross-platform "B Arm orders" sheet below, scoped to just Meesho here,
-  // matching the seller's own hand-built workbook's Meesho orders tab.
-  const meeshoLeaderboardRows = groupProductsByName([...ms.products.values()], undefined, skuToMasterSkuidName)
-    .filter((p) => p.range.units > 0)
-    .sort((a, b) => b.range.units * b.price - a.range.units * a.price)
-    .map((p): (string | number)[] => [p.name, p.range.units, p.price, round2(p.price * p.range.units)]);
+  rawRowsToSheet(wb, "Meesho (B Arm) Spend", ms.adsRows, void 0, meeshoEmptyText("barm_daily_ms_barm_ads"));
+  const meeshoLeaderboardRows = groupProductsByName([...ms.products.values()], void 0, skuToMasterSkuidName).filter((p) => p.range.units > 0).sort((a, b) => b.range.units * b.price - a.range.units * a.price).map((p) => [p.name, p.range.units, p.price, round2(p.price * p.range.units)]);
   rawRowsToSheet(wb, "Meesho (B Arm) orders", ms.orderRows, {
     header: ["Product", "Quantity", "Price", "Sales"],
     rows: meeshoLeaderboardRows,
-    currencyCols: [2, 3],
+    currencyCols: [2, 3]
   }, meeshoEmptyText("barm_daily_ms_barm_orders"));
-
-  // ── B Arm orders — Google's own Product/Date/Quantity/Price/Sales
-  // breakdown, one row per day per product across the full 7-day range —
-  // per the seller's later, explicit instruction, this sheet is Google-only
-  // now, replacing an earlier Amazon/Flipkart/Meesho cross-platform merge
-  // that used to live here (Amazon/Flipkart/Meesho are still shown on every
-  // other sheet — Ad spend report, SKU Wise Report, Summary, etc. — just not
-  // here anymore). A first version of this sheet was single-day/no-date; the
-  // seller then asked for the full range with a Date column instead, so a
-  // reader can see exactly which day contributed what, rather than either a
-  // single day or a dateless range aggregate. googleOrders.dailyPerProduct is
-  // one row per (date, product) already sorted date-then-name (see
-  // fetchGoogleOrders's own comment) — deliberately NOT the range-scoped,
-  // per-product-only perProduct the Ad spend report sheet's separate Google
-  // detail table still uses.
-  const bArmAoa: (string | number)[][] = [["Product", "Date", "Quantity", "Price", "Sales"]];
-  googleOrders.dailyPerProduct
-    .filter((p) => p.quantity > 0)
-    .forEach((p) => bArmAoa.push([p.name, dotDate(p.date), p.quantity, round2(p.price), round2(p.quantity * p.price)]));
-  const wsBArm = XLSX.utils.aoa_to_sheet(bArmAoa);
+  const bArmAoa = [["Product", "Date", "Quantity", "Price", "Sales"]];
+  googleOrders.dailyPerProduct.filter((p) => p.quantity > 0).forEach((p) => bArmAoa.push([p.name, dotDate(p.date), p.quantity, round2(p.price), round2(p.quantity * p.price)]));
+  const wsBArm = XLSX4.utils.aoa_to_sheet(bArmAoa);
   styleHeader(wsBArm, 0, 5, "6B7280");
   wsBArm["!cols"] = [{ wch: 60 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 14 }];
   wsBArm["!views"] = [{ state: "frozen", ySplit: 1 }];
   applyNumberFormats(wsBArm, 1, bArmAoa.length, { 3: CURRENCY_FMT, 4: CURRENCY_FMT });
-  XLSX.utils.book_append_sheet(wb, wsBArm, "B Arm orders");
-
-  // ── Notes ──
-  const wsNotes = XLSX.utils.aoa_to_sheet([
-    ["Ad Spend Report — methodology"],
+  XLSX4.utils.book_append_sheet(wb, wsBArm, "B Arm orders");
+  const wsNotes = XLSX4.utils.aoa_to_sheet([
+    ["Ad Spend Report \u2014 methodology"],
     [""],
-    [`Generated for ${accountName || "this account"} · reporting day ${dotDate(endDate)} · range ${dotDate(range.start)} to ${dotDate(endDate)} (${rangeDays} days)`],
+    [`Generated for ${accountName || "this account"} \xB7 reporting day ${dotDate(endDate)} \xB7 range ${dotDate(range.start)} to ${dotDate(endDate)} (${rangeDays} days)`],
     [""],
-    ...(amazonSpendWarnings.length
-      ? [
-          [
-            "⚠ AMAZON BRAND/DISPLAY SPEND NOT IN THE FIGURES BELOW — " +
-              `unmapped: ₹${round2(amz.unmappedSpend).toFixed(2)} over the range (₹${round2(amz.unmappedSpendDay).toFixed(2)} on ${dotDate(endDate)}), before tax. ` +
-              "Every product row and the Amazon totals are understated by this much until it's fixed and the report is regenerated:",
-          ],
-          ...amazonSpendWarnings.map((w) => [`  ${w}`]),
-          [""],
-        ]
-      : []),
-    ...(incompleteDates.length
-      ? [
-          [
-            "⚠ INCOMPLETE DATA — every platform's own ad-spend export lags about a day (today's spend isn't downloadable until tomorrow). " +
-              "The figures below are understated until the missing day(s) are re-uploaded and this report is regenerated:",
-          ],
-          ...incompleteDates.map(({ platform, missingDates: md }) => [`  ${platform}: no ad-spend rows for ${md.map(dotDate).join(", ")}`]),
-          [""],
-        ]
-      : []),
-    ...(ms.loadErrors.length
-      ? [
-          ["⚠ MEESHO DATA COULD NOT BE LOADED — a database/query error, not an empty day. Every Meesho figure in this report is missing or understated until it's fixed and the report is regenerated:"],
-          ...ms.loadErrors.map((e) => [`  ${e}`]),
-          [""],
-        ]
-      : []),
-    ["Spend (with tax) = raw ad spend x 1.18 (a flat 18% GST for every product), applied once after summing — never a per-row multiply."],
+    ...amazonSpendWarnings.length ? [
+      [
+        `\u26A0 AMAZON BRAND/DISPLAY SPEND NOT IN THE FIGURES BELOW \u2014 unmapped: \u20B9${round2(amz.unmappedSpend).toFixed(2)} over the range (\u20B9${round2(amz.unmappedSpendDay).toFixed(2)} on ${dotDate(endDate)}), before tax. Every product row and the Amazon totals are understated by this much until it's fixed and the report is regenerated:`
+      ],
+      ...amazonSpendWarnings.map((w) => [`  ${w}`]),
+      [""]
+    ] : [],
+    ...incompleteDates.length ? [
+      [
+        "\u26A0 INCOMPLETE DATA \u2014 every platform's own ad-spend export lags about a day (today's spend isn't downloadable until tomorrow). The figures below are understated until the missing day(s) are re-uploaded and this report is regenerated:"
+      ],
+      ...incompleteDates.map(({ platform, missingDates: md }) => [`  ${platform}: no ad-spend rows for ${md.map(dotDate).join(", ")}`]),
+      [""]
+    ] : [],
+    ...ms.loadErrors.length ? [
+      ["\u26A0 MEESHO DATA COULD NOT BE LOADED \u2014 a database/query error, not an empty day. Every Meesho figure in this report is missing or understated until it's fixed and the report is regenerated:"],
+      ...ms.loadErrors.map((e) => [`  ${e}`]),
+      [""]
+    ] : [],
+    ["Spend (with tax) = raw ad spend x 1.18 (a flat 18% GST for every product), applied once after summing \u2014 never a per-row multiply."],
     ["CPC = Spend(with tax) / Orders. When Orders = 0, CPC = Spend(with tax) (undefined ratio, shown as the spend itself rather than blank)."],
-    ["ACOS (23 Sep 2026 rule — every ACOS column on the Summary, Ad spend report and SKU Wise sheets, and the email; the Action Sheet keeps its own ranking ACOS): Spend (without tax) / the SKU's own ad-attributed sales — Amazon: raw Sponsored Products Spend / \"7 Day Total Sales\" (no GST); Flipkart: its ads-export Total Revenue; Meesho: its ad-attributed order count x price — ONLY when the window has real Orders > 0 AND ad-attributed sales > 0. In every other case ACOS = CPC / Price, where CPC = Spend (with tax) / Orders (Spend (with tax) when Orders = 0) and Price is the listing price on file (barm_amazon_price_listing / barm_flipkart_listings / meesho_price_marketing), else the report price. ACOS is blank only for a row with spend but no price on file anywhere."],
-    ["\"Orders\" = units sold of that product in the window, from the Orders/Order report, cancelled orders excluded. This is NOT ad-click-attributed units."],
-    ["Meesho ad metrics count ad orders only — Summary, Ad spend report, SKU Wise Report, Action Sheet and the daily email: Orders = \"Orders by ad\" from Meesho's own Ads report (matches the Meesho (B Arm) Spend sheet 1:1 for the same SKU and date), Total Sales = Ad Sales (Ad Orders x Price), CPC = Spend (with tax) / Ad Orders, ACOS = Spend / Ad Sales, or CPC / Price when there are no ad orders. Overall sales QTS/Value and the Meesho (B Arm) orders leaderboard still count every Meesho order. The orders sheet's \"Order source = Ad order\" tag is NOT used — Meesho's two exports don't always agree on it. Amazon/Flipkart are unaffected."],
-    ["\"Day\" = the single reporting day above. \"Range\" = that day and the", rangeDays - 1, "days before it, inclusive."],
+    [`ACOS (23 Sep 2026 rule \u2014 every ACOS column on the Summary, Ad spend report and SKU Wise sheets, and the email; the Action Sheet keeps its own ranking ACOS): Spend (without tax) / the SKU's own ad-attributed sales \u2014 Amazon: raw Sponsored Products Spend / "7 Day Total Sales" (no GST); Flipkart: its ads-export Total Revenue; Meesho: its ad-attributed order count x price \u2014 ONLY when the window has real Orders > 0 AND ad-attributed sales > 0. In every other case ACOS = CPC / Price, where CPC = Spend (with tax) / Orders (Spend (with tax) when Orders = 0) and Price is the listing price on file (barm_amazon_price_listing / barm_flipkart_listings / meesho_price_marketing), else the report price. ACOS is blank only for a row with spend but no price on file anywhere.`],
+    ['"Orders" = units sold of that product in the window, from the Orders/Order report, cancelled orders excluded. This is NOT ad-click-attributed units.'],
+    [`Meesho ad metrics count ad orders only \u2014 Summary, Ad spend report, SKU Wise Report, Action Sheet and the daily email: Orders = "Orders by ad" from Meesho's own Ads report (matches the Meesho (B Arm) Spend sheet 1:1 for the same SKU and date), Total Sales = Ad Sales (Ad Orders x Price), CPC = Spend (with tax) / Ad Orders, ACOS = Spend / Ad Sales, or CPC / Price when there are no ad orders. Overall sales QTS/Value and the Meesho (B Arm) orders leaderboard still count every Meesho order. The orders sheet's "Order source = Ad order" tag is NOT used \u2014 Meesho's two exports don't always agree on it. Amazon/Flipkart are unaffected.`],
+    ['"Day" = the single reporting day above. "Range" = that day and the', rangeDays - 1, "days before it, inclusive."],
     [""],
-    ["Amazon: spend is a plain sum of your daily \"Last 7 days\" upload's AM-ads sheet (its copy in barm_daily_am_ads — this is the only report that uses that upload; every other report reads the Upload-page cards), which also carries your per-SKU split of Sponsored Brands/Display spend (each campaign-day's first split row is named, the rest have a blank campaign) — that split is how Brand/Display spend reaches each product here. An SB/SD campaign-day with no such split is spread over the SKUs mapped to it on the Upload page; SB/SD spend with neither a split nor a mapping for the range window: ₹" + round2(amz.unmappedSpend) + (amz.unmappedSpend > 0 ? " — not attributed to any product below (see the ⚠ warning at the top)." : " — every SB/SD campaign row on file is split or mapped.") + " Unsplit SB/SD rows in AM ads (no Advertised SKU) are counted here per campaign, never dropped; where the SB/SD campaign report card also has that campaign-day, the card's figure is used." + (amz.campaignsMissingOnEndDate.length ? " Some Brand/Display campaigns have no row on the reporting day — see the ⚠ warning at the top." : "")],
+    [`Amazon: spend is a plain sum of your daily "Last 7 days" upload's AM-ads sheet (its copy in barm_daily_am_ads \u2014 this is the only report that uses that upload; every other report reads the Upload-page cards), which also carries your per-SKU split of Sponsored Brands/Display spend (each campaign-day's first split row is named, the rest have a blank campaign) \u2014 that split is how Brand/Display spend reaches each product here. An SB/SD campaign-day with no such split is spread over the SKUs mapped to it on the Upload page; SB/SD spend with neither a split nor a mapping for the range window: \u20B9` + round2(amz.unmappedSpend) + (amz.unmappedSpend > 0 ? " \u2014 not attributed to any product below (see the \u26A0 warning at the top)." : " \u2014 every SB/SD campaign row on file is split or mapped.") + " Unsplit SB/SD rows in AM ads (no Advertised SKU) are counted here per campaign, never dropped; where the SB/SD campaign report card also has that campaign-day, the card's figure is used." + (amz.campaignsMissingOnEndDate.length ? " Some Brand/Display campaigns have no row on the reporting day \u2014 see the \u26A0 warning at the top." : "")],
     ["Flipkart: FSN report spend is per-SKU for every campaign type, so no apportioning is needed. Price comes from the SKU's own FK Orders Invoice Amount for the window (summed Invoice Amount / summed quantity, non-cancelled rows); only a SKU with no real order in the window falls back to the Listings snapshot (then the Earn more report's realised price)."],
-    ["Meesho: Ads report spend is per-SKU. Overall sales Value / Total Sales = Quantity x each order row's own Supplier Listed Price (Incl. GST + Commission), from the Orders report only. meesho_price_marketing (the live scraped listing price) is used only for the displayed Price and as the Price in the ACOS CPC / Price fallback. Column names come from the seller's own workbook, not a native Meesho export seen directly — see src/lib/meeshoReportUpload.ts if a real export's headers turn out to differ."],
-    ["Social-media (Meta) spend appears as its own Summary-sheet block when uploaded, separate from the three marketplace platforms: one row per promoted product (Meta campaigns are matched to products by campaign name), with each campaign listed in the Ad spend report sheet's Social Media section. Google Ads spend (the Google Ads \"Campaign report\" uploaded on the Upload page's Google card) fills the Google row's Ad spend columns: the day block from that day's own export, the range block from an export covering exactly the range, else the daily exports inside it. ₹0 there means no Google Ads report is on file for that window, not ₹0 spent." +
-      " Social Media Orders / Total Sales / Ad Sales / ACOS are the Meta channel's own (first row, merged): Orders, Total Sales and Ad Sales = only the Shopify orders whose visit came from a Meta ad click (fbclid on the landing URL), cancelled orders excluded; ACOS = Meta Spend (without tax) / Ad Sales. N/A when it can't be verified — Shopify orders not on file for the whole window, no Meta spend, or no attributed sales. CPC stays blank." +
-      (googleAttributed
-        ? " The Google row's Orders/Sales are the website orders: the Google card's B-Arm orders plus the Shopify orders received by webhook, cancelled and test orders excluded. From the first day Shopify orders are on file, Google card rows from a Shopify \"Total sales by product\" export, and B-Arm lines that are the same sale as a Shopify order (same date, unit price and quantity), are left out so nothing is counted twice; no row is deleted. Google Ads Ad Sales = only the Shopify orders whose visit came from a Google Ads click (gclid / gbraid / wbraid / gad_* on the landing URL) — Google Ads' own export reports 0 conversions. ACOS = Spend (without tax) / Ad Sales, blank when there are no Ad Sales or no Google Ads report; ROAS = Ad Sales / Spend (without tax). CPC stays blank."
-        : " The Google row's Orders/Sales are the B-Arm orders; its CPC/ACOS stay blank since those orders are not attributed to the ads.")],
-    ...(googleAttributed
-      ? [[
-          `Google, this report: ROAS ${googleDayRatios.roas === null ? "—" : googleDayRatios.roas.toFixed(2)} on ${dotDate(endDate)} (Ad Sales ₹${round2(googleOrders.adDayValue).toFixed(2)}, ${googleOrders.adDayOrders} order(s)), ` +
-            `${googleRangeRatios.roas === null ? "—" : googleRangeRatios.roas.toFixed(2)} over the range (Ad Sales ₹${round2(googleOrders.adRangeValue).toFixed(2)}, ${googleOrders.adRangeOrders} order(s)).` +
-            (googleOrders.dropped.length
-              ? ` Left out as Shopify duplicates: ${googleOrders.dropped.map((d) => `${d.invoice} (₹${round2(d.value).toFixed(2)}${d.matchedOrder ? ` = ${d.matchedOrder}` : ""})`).join("; ")}.`
-              : ""),
-        ]]
-      : []),
-    ...(googleOrders.shopifyLoadError
-      ? [[`⚠ SHOPIFY ORDERS COULD NOT BE LOADED (${googleOrders.shopifyLoadError}) — the Google row uses the Google card rows alone, so Shopify orders are missing and Ad Sales/ACOS/ROAS read as 0 until it's fixed and the report is regenerated.`]]
-      : []),
+    ["Meesho: Ads report spend is per-SKU. Overall sales Value / Total Sales = Quantity x each order row's own Supplier Listed Price (Incl. GST + Commission), from the Orders report only. meesho_price_marketing (the live scraped listing price) is used only for the displayed Price and as the Price in the ACOS CPC / Price fallback. Column names come from the seller's own workbook, not a native Meesho export seen directly \u2014 see src/lib/meeshoReportUpload.ts if a real export's headers turn out to differ."],
+    [`Social-media (Meta) spend appears as its own Summary-sheet block when uploaded, separate from the three marketplace platforms: one row per promoted product (Meta campaigns are matched to products by campaign name), with each campaign listed in the Ad spend report sheet's Social Media section. Google Ads spend (the Google Ads "Campaign report" uploaded on the Upload page's Google card) fills the Google row's Ad spend columns: the day block from that day's own export, the range block from an export covering exactly the range, else the daily exports inside it. \u20B90 there means no Google Ads report is on file for that window, not \u20B90 spent. Social Media Orders / Total Sales / Ad Sales / ACOS are the Meta channel's own (first row, merged): Orders, Total Sales and Ad Sales = only the Shopify orders whose visit came from a Meta ad click (fbclid on the landing URL), cancelled orders excluded; ACOS = Meta Spend (without tax) / Ad Sales. N/A when it can't be verified \u2014 Shopify orders not on file for the whole window, no Meta spend, or no attributed sales. CPC stays blank.` + (googleAttributed ? ` The Google row's Orders/Sales are the website orders: the Google card's B-Arm orders plus the Shopify orders received by webhook, cancelled and test orders excluded. From the first day Shopify orders are on file, Google card rows from a Shopify "Total sales by product" export, and B-Arm lines that are the same sale as a Shopify order (same date, unit price and quantity), are left out so nothing is counted twice; no row is deleted. Google Ads Ad Sales = only the Shopify orders whose visit came from a Google Ads click (gclid / gbraid / wbraid / gad_* on the landing URL) \u2014 Google Ads' own export reports 0 conversions. ACOS = Spend (without tax) / Ad Sales, blank when there are no Ad Sales or no Google Ads report; ROAS = Ad Sales / Spend (without tax). CPC stays blank.` : " The Google row's Orders/Sales are the B-Arm orders; its CPC/ACOS stay blank since those orders are not attributed to the ads.")],
+    ...googleAttributed ? [[
+      `Google, this report: ROAS ${googleDayRatios.roas === null ? "\u2014" : googleDayRatios.roas.toFixed(2)} on ${dotDate(endDate)} (Ad Sales \u20B9${round2(googleOrders.adDayValue).toFixed(2)}, ${googleOrders.adDayOrders} order(s)), ${googleRangeRatios.roas === null ? "\u2014" : googleRangeRatios.roas.toFixed(2)} over the range (Ad Sales \u20B9${round2(googleOrders.adRangeValue).toFixed(2)}, ${googleOrders.adRangeOrders} order(s)).` + (googleOrders.dropped.length ? ` Left out as Shopify duplicates: ${googleOrders.dropped.map((d) => `${d.invoice} (\u20B9${round2(d.value).toFixed(2)}${d.matchedOrder ? ` = ${d.matchedOrder}` : ""})`).join("; ")}.` : "")
+    ]] : [],
+    ...googleOrders.shopifyLoadError ? [[`\u26A0 SHOPIFY ORDERS COULD NOT BE LOADED (${googleOrders.shopifyLoadError}) \u2014 the Google row uses the Google card rows alone, so Shopify orders are missing and Ad Sales/ACOS/ROAS read as 0 until it's fixed and the report is regenerated.`]] : [],
     [""],
-    ["Ad Status Report matches products across Amazon, Flipkart and Meesho by product NAME only (no cross-platform SKU mapping exists) — two listings with different titles for the same physical product will show as separate rows."],
-    ["Action Sheet lists every SKU whose trailing 7-day ACOS is above 14%, worst first (identified by Campaign Name + SKU ID, not product name; Spend/Spend with tax/Orders/ACOS are all the 7-day range here, unlike every other sheet's single-day figures). Every row carries a concrete bid-cut %: rows matched to a real campaign in the uploaded Amazon/Flipkart ad data get one sized to that campaign's own ad-group/SKU performance (AI-assisted); unmatched rows (e.g. Meesho, which has no campaign data in this app, or a SKU that matched no campaign) get one computed from the SKU's own 7-day ACOS instead (20%/35%/50% cut for 14-60%/60-90%/90%+ ACOS). No specific search-term/keyword name is ever invented — that data isn't captured anywhere in this app; only a live SellerMate pull (Amazon only, on request) has real keyword-level detail."],
-    [`Low Spend Campaigns lists every campaign spending ₹${LOW_SPEND_THRESHOLD} or less on the single reporting day above, across all platforms, ascending by spend.`],
+    ["Ad Status Report matches products across Amazon, Flipkart and Meesho by product NAME only (no cross-platform SKU mapping exists) \u2014 two listings with different titles for the same physical product will show as separate rows."],
+    ["Action Sheet lists every SKU whose trailing 7-day ACOS is above 14%, worst first (identified by Campaign Name + SKU ID, not product name; Spend/Spend with tax/Orders/ACOS are all the 7-day range here, unlike every other sheet's single-day figures). Every row carries a concrete bid-cut %: rows matched to a real campaign in the uploaded Amazon/Flipkart ad data get one sized to that campaign's own ad-group/SKU performance (AI-assisted); unmatched rows (e.g. Meesho, which has no campaign data in this app, or a SKU that matched no campaign) get one computed from the SKU's own 7-day ACOS instead (20%/35%/50% cut for 14-60%/60-90%/90%+ ACOS). No specific search-term/keyword name is ever invented \u2014 that data isn't captured anywhere in this app; only a live SellerMate pull (Amazon only, on request) has real keyword-level detail."],
+    [`Low Spend Campaigns lists every campaign spending \u20B9${LOW_SPEND_THRESHOLD} or less on the single reporting day above, across all platforms, ascending by spend.`],
     [""],
-    [opts.persistHistory
-      ? `Every product with activity in the range window above was also upserted into the barm_ad_spend_history table (Spend/Orders/CPC/ACOS, day and range) — a running history independent of this file, keyed on (report_date, platform, sku). Rows saved this run: ${historyRowsSaved}.`
-      : "Preview build — nothing was saved to the barm_ad_spend_history table."],
+    [opts.persistHistory ? `Every product with activity in the range window above was also upserted into the barm_ad_spend_history table (Spend/Orders/CPC/ACOS, day and range) \u2014 a running history independent of this file, keyed on (report_date, platform, sku). Rows saved this run: ${historyRowsSaved}.` : "Preview build \u2014 nothing was saved to the barm_ad_spend_history table."]
   ]);
   wsNotes["!cols"] = [{ wch: 110 }];
   if (wsNotes["A1"]) wsNotes["A1"].s = { font: { bold: true, sz: 13 } };
-  XLSX.utils.book_append_sheet(wb, wsNotes, "Notes");
-
+  XLSX4.utils.book_append_sheet(wb, wsNotes, "Notes");
   const filename = `Ad_Spend_Report_${endDate}.xlsx`;
   return {
     wb,
@@ -3260,12 +4245,34 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     lowSpendCampaignCount: lowSpend.length,
     historyRowsSaved,
     incompleteDates,
-    dataLoadErrors: ms.loadErrors.map((error) => ({ platform: "Meesho" as const, error })),
+    dataLoadErrors: ms.loadErrors.map((error) => ({ platform: "Meesho", error }))
   };
 }
-
-export async function exportAdSpendReport(opts: AdSpendReportOpts): Promise<Omit<AdSpendReportResult, "wb">> {
+async function exportAdSpendReport(opts) {
   const { wb, ...stats } = await buildAdSpendReportWorkbook(opts);
-  XLSX.writeFile(wb, stats.filename, { bookSST: true, compression: true });
+  XLSX4.writeFile(wb, stats.filename, { bookSST: true, compression: true });
   return stats;
 }
+export {
+  ACOS_UNDEFINED_SENTINEL,
+  META_AD_SALES_SOURCE,
+  acosCell,
+  acosSortRank,
+  actionSheetAcos,
+  adOrdersCell,
+  adStatusHasSpend,
+  buildAdSpendReportWorkbook,
+  computeAcos,
+  computeCpc,
+  exportAdSpendReport,
+  fetchAmazonListingPriceMap,
+  fetchAmazonProducts,
+  fetchFlipkartListingPriceMap,
+  fetchFlipkartProducts,
+  fetchMeeshoProducts,
+  flipkartRowRevenue,
+  getDateWindow,
+  groupProductsByName,
+  sellPriceCell,
+  spendTax
+};
