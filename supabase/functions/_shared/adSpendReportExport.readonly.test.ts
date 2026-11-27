@@ -1,6 +1,6 @@
 // Proves buildAdSpendReportWorkbook is read-only unless a caller explicitly asks for history to be
 // saved: a preview/audit build once overwrote production barm_ad_spend_history rows just by being
-// generated. fetch is stubbed with a fake Supabase that serves one Sponsored Products row and records
+// generated. fetch is stubbed with a fake Supabase that serves one test-SKU ad row and records
 // every request, so this runs offline and can never touch a real database.
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/testing/asserts.ts";
 
@@ -16,6 +16,18 @@ const SP_ROW = {
   advertised_sku: "TEST-SKU-1", advertised_asin: "B000TEST01", impressions: 100, clicks: 10,
   spend: 250, sales_7d: 1000, orders_7d: 2, units_7d: 2, advertised_sku_units_7d: 2,
 };
+// The 7-Day report reads Amazon ad spend from the daily combined upload (barm_daily_am_ads) since the
+// SP card stopped feeding it, so the fake serves the same test SKU there too — without it the build
+// stops with "No uploaded Amazon, Flipkart or Meesho ad/order data". Made-up fixture, offline only.
+const DAILY_AM_ADS_ROW = {
+  id: 1, report_date: "2026-09-17", end_date: "2026-09-17", campaign_name: "Test campaign", ad_group_name: "Test group",
+  sku: "TEST-SKU-1", asin: "B000TEST01", impressions: 100, clicks: 10, spend: 250, sales_7d: 1000, acos: 0.25,
+  orders_7d: 2, units_7d: 2, raw: { "Ad Type": "SP", "Advertised SKU": "TEST-SKU-1" },
+};
+const FIXTURES: Record<string, unknown[]> = {
+  barm_amazon_sp_advertised_product: [SP_ROW],
+  barm_daily_am_ads: [DAILY_AM_ADS_ROW],
+};
 
 const realFetch = globalThis.fetch;
 globalThis.fetch = (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -28,7 +40,7 @@ globalThis.fetch = (input: string | URL | Request, init?: RequestInit): Promise<
   const u = new URL(url);
   const table = u.pathname.split("/").pop();
   const firstPage = !u.searchParams.get("offset") || u.searchParams.get("offset") === "0";
-  return json(table === "barm_amazon_sp_advertised_product" && firstPage ? [SP_ROW] : []);
+  return json(firstPage ? FIXTURES[table ?? ""] ?? [] : []);
 };
 
 const { buildAdSpendReportWorkbook } = await import("./adSpendReportExport.ts");

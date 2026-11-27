@@ -1,5 +1,11 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/testing/asserts.ts";
-import { spendTax, computeCpc, computeAcos, actionSheetAcos, ACOS_UNDEFINED_SENTINEL, acosCell, acosSortRank, getDateWindow, groupProductsByName, flipkartRowRevenue, adStatusHasSpend } from "./adSpendReportExport.ts";
+
+// The report module builds its Supabase client when it loads, which needs a URL and key. These tests only
+// call pure functions, so give it fake values (never a real project) when none are set, then load it.
+if (!Deno.env.get("SUPABASE_URL")) Deno.env.set("SUPABASE_URL", "http://fake-supabase.test");
+if (!Deno.env.get("SUPABASE_ANON_KEY")) Deno.env.set("SUPABASE_ANON_KEY", "fake-anon-key");
+const { spendTax, computeCpc, computeAcos, actionSheetAcos, ACOS_UNDEFINED_SENTINEL, acosCell, acosSortRank, getDateWindow, groupProductsByName, flipkartRowRevenue, adStatusHasSpend } =
+  await import("./adSpendReportExport.ts");
 
 Deno.test("spendTax applies the flat 1.18 GST multiplier when none is tagged", () => {
   assertEquals(spendTax({ spend: 100, units: 5 }), 118);
