@@ -146,6 +146,9 @@ export const computeCpc = (a: WindowAgg): number => (a.units > 0 ? spendTax(a) /
 export const sellPriceCell = (a: WindowAgg): number | string =>
   a.units > 0 && (a.revenue ?? 0) > 0 ? Math.round(((a.revenue ?? 0) / a.units) * 100) / 100 : "–";
 export const adOrdersCell = (a: WindowAgg): number | string => (a.adOrders !== undefined ? a.adOrders : "–");
+// Meta / Google ACOS with no attributed sales = Spend ÷ 1, shown as a percentage of the spend amount:
+// ₹315.59 -> "316%" (seller, 27 Nov 2026). Stored as spend ÷ 100 so it formats like every other ACOS cell.
+export const noSalesAcos = (spend: number): number => Math.round((spend / 100) * 10000) / 10000;
 // Ad Status Report's per-platform 1/0 indicator: real ad Spend (with tax) this range window,
 // strictly — per the seller's later, explicit instruction, confirmed a second time after review:
 // "spend aakirtha 1, illana 0, avlaotha" (ad spend happened -> 1, otherwise -> 0, nothing else
@@ -2850,7 +2853,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       sales: verified && sales != null ? round2(sales) : null,
       // ACOS = Spend (without tax) ÷ Sales; with no sales (0 or not reported) the divisor is 1, so
       // ACOS = Spend ÷ 1 (seller's rule, 26 Nov 2026, confirmed again 27 Nov).
-      acos: spend > 0 ? Math.round((spend / (verified && sales != null && sales > 0 ? sales : 1)) * 10000) / 10000 : null,
+      acos: spend > 0 ? (verified && sales != null && sales > 0 ? Math.round((spend / sales) * 10000) / 10000 : noSalesAcos(spend)) : null,
     });
     const adLabel = (c: WindowedCampaign) => {
       const i = c.name.indexOf(META_AD_SEPARATOR);
@@ -3026,7 +3029,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       const spendCells = (spend: number) => [round2(spend), round2(spendTax({ spend, units: 0 })), "", "", "", "", ""];
       const totalCells = (spend: number, orders: number, sales: number) => [
         round2(spend), round2(spendTax({ spend, units: 0 })), orders, round2(sales), "",
-        spend > 0 ? Math.round((spend / (sales > 0 ? sales : 1)) * 10000) / 10000 : "", round2(sales),
+        spend > 0 ? (sales > 0 ? Math.round((spend / sales) * 10000) / 10000 : noSalesAcos(spend)) : "", round2(sales),
       ];
       const pushGoogle = (label: string, day: (string | number | null)[], range: (string | number | null)[], extra?: (string | number)[]) => {
         if (extra) sumExtras.set(sumAoa.length, extra);
@@ -3057,7 +3060,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
         // Ad spend report sheet: Campaign(s) | Product | Price | Spend, Spend(with tax), Orders, CPC, ACOS (x2).
         const detailBlock = (spend: number, orders: number, sales: number) => [
           round2(spend), round2(spendTax({ spend, units: 0 })), orders, "",
-          spend > 0 ? Math.round((spend / (sales > 0 ? sales : 1)) * 10000) / 10000 : "",
+          spend > 0 ? (sales > 0 ? Math.round((spend / sales) * 10000) / 10000 : noSalesAcos(spend)) : "",
         ];
         googleDetailRows.push({
           cells: [
@@ -3075,7 +3078,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
         // Daily mail: the same product block (campaign spend rows + product total).
         const mailTotal = (spend: number, orders: number, sales: number, units: number): GoogleMailBlock => ({
           spend: round2(spend), spendTax: round2(spendTax({ spend, units: 0 })), orders, sales: round2(sales),
-          acos: spend > 0 ? Math.round((spend / (sales > 0 ? sales : 1)) * 10000) / 10000 : null,
+          acos: spend > 0 ? (sales > 0 ? Math.round((spend / sales) * 10000) / 10000 : noSalesAcos(spend)) : null,
           sellPrice: units > 0 && sales > 0 ? round2(sales / units) : null,
         });
         googleMailProducts.push({
@@ -3200,10 +3203,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     ...Object.fromEntries(Object.entries(sumFormats).map(([c, f]) => [sumCol(Number(c)), f])),
     5: CURRENCY_FMT, // Sell price
   });
-  sumPlainAcos.forEach(({ r, c }) => {
-    const cell = wsSummary[XLSX.utils.encode_cell({ r, c: sumCol(c) })];
-    if (cell && typeof cell.v === "number") cell.z = "0.00";
-  });
+  // (sumPlainAcos: since 27 Nov these no-sales ACOS cells are ordinary percentages — no special format.)
   // Long titles (a SKU with no product-master entry falls back to the raw
   // marketing title) need to wrap within the column instead of overflowing
   // or reading as clipped — same fix applied to the Ad spend report sheet's
@@ -3392,10 +3392,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     ...Object.fromEntries(Object.entries(detailFormats).map(([c, f]) => [detCol(Number(c)), f])),
     3: CURRENCY_FMT, // Sell price
   });
-  detailPlainAcos.forEach(({ r, c }) => {
-    const cell = wsDetail[XLSX.utils.encode_cell({ r, c: detCol(c) })];
-    if (cell && typeof cell.v === "number") cell.z = "0.00";
-  });
+  // (detailPlainAcos: since 27 Nov these no-sales ACOS cells are ordinary percentages — no special format.)
   // Long titles (a SKU with no product-master entry falls back to the raw
   // marketing title) need to wrap within the column instead of overflowing —
   // same for the SKU(s) column now that a merged product row can list several
