@@ -2116,6 +2116,8 @@ export interface ProductMetricBlock {
   // null when computeAcos hit the ACOS_UNDEFINED_SENTINEL (ad spend with zero
   // attributed sales) — see acosCell. Renders as a blank cell/dash, never "999%".
   acos: number | null;
+  /** The ad platform's own ad-attributed orders (mail "Ad orders" column); null = none on file. */
+  adOrders?: number | null;
 }
 
 // Mirrors exactly the Summary sheet's per-platform block (platform totals +
@@ -2133,12 +2135,12 @@ export interface PlatformEmailSummary {
   overallDayValue: number;
   overallRangeUnits: number;
   overallRangeValue: number;
-  topProducts: { name: string; price: number; day: ProductMetricBlock; range: ProductMetricBlock }[];
+  topProducts: { name: string; price: number; sellPrice?: number | null; day: ProductMetricBlock; range: ProductMetricBlock }[];
   // Every product with any range spend (not just the top-3 shortlist), sorted worst-day-ACOS-first —
   // same population and order as topProducts, just unsliced. Mirrors the full per-platform
   // "Here is the Amazon/Flipkart platform's ad spend report" tables in the manual daily mail,
   // which list every advertised product rather than only the top 3.
-  allProducts: { name: string; price: number; day: ProductMetricBlock; range: ProductMetricBlock }[];
+  allProducts: { name: string; price: number; sellPrice?: number | null; day: ProductMetricBlock; range: ProductMetricBlock }[];
 }
 
 // Kept as its own type instead of widening Platform/PlatformEmailSummary to include "Social Media",
@@ -2207,7 +2209,16 @@ export interface GoogleEmailSummary {
   rangeAcos: number | null;
   dayRoas: number | null;
   rangeRoas: number | null;
+  /** Website order units over the 7-day window (mail grand total, 7-day Orders). */
+  rangeUnits?: number;
+  /** Shopify orders from a Google Ads click (mail "Ad orders"); null when not attributed. */
+  dayAdOrders?: number | null;
+  rangeAdOrders?: number | null;
+  /** Product -> campaign rows -> product total, the same as the Summary sheet (27 Nov 2026). */
+  products?: { product: string; campaigns: { name: string; day: { spend: number; spendTax: number }; range: { spend: number; spendTax: number } }[]; total: { day: GoogleMailBlock; range: GoogleMailBlock } }[];
 }
+/** A Google product total in the daily mail. acos = Spend ÷ Sales, Spend ÷ 1 with no sales; sellPrice null = no sale. */
+export interface GoogleMailBlock { spend: number; spendTax: number; orders: number; sales: number; acos: number | null; sellPrice: number | null }
 
 export interface AdSpendReportResult {
   wb: XLSX.WorkBook;
@@ -2635,6 +2646,19 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       .filter((p) => spendTax(p.range) > ACOS_SHORTLIST_MIN_SPEND)
       .sort((a, b) => acosSortRank(b.day, b.price, listingPriceFor(platform, b.sku)) - acosSortRank(a.day, a.price, listingPriceFor(platform, a.sku)))
       .slice(0, TOP_N);
+    // One product as the daily mail shows it — same figures as the Summary / Ad spend report rows,
+    // plus Sell price (day) and the ad platform's own Ad orders (26-27 Nov 2026, mail = Excel layout).
+    const emailProduct = (p: ProductRow) => {
+      const listingPrice = listingPriceFor(platform, p.sku);
+      const sell = sellPriceCell(p.day);
+      return {
+        name: p.name,
+        price: p.price,
+        sellPrice: typeof sell === "number" ? sell : null,
+        day: { spend: round2(p.day.spend), spendTax: round2(spendTax(p.day)), orders: p.day.units, cpc: round2(computeCpc(p.day)), acos: acosCell(p.day, p.price, listingPrice), adOrders: p.day.adOrders ?? null },
+        range: { spend: round2(p.range.spend), spendTax: round2(spendTax(p.range)), orders: p.range.units, cpc: round2(computeCpc(p.range)), acos: acosCell(p.range, p.price, listingPrice), adOrders: p.range.adOrders ?? null },
+      };
+    };
     platformSummaries.push({
       platform,
       daySpend: round2(daySpendRaw),
@@ -2645,26 +2669,10 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       overallDayValue: round2(overallDay.value),
       overallRangeUnits: overallRange.units,
       overallRangeValue: round2(overallRange.value),
-      topProducts: shortlist.map((p) => {
-        const listingPrice = listingPriceFor(platform, p.sku);
-        return {
-          name: p.name,
-          price: p.price,
-          day: { spend: round2(p.day.spend), spendTax: round2(spendTax(p.day)), orders: p.day.units, cpc: round2(computeCpc(p.day)), acos: acosCell(p.day, p.price, listingPrice) },
-          range: { spend: round2(p.range.spend), spendTax: round2(spendTax(p.range)), orders: p.range.units, cpc: round2(computeCpc(p.range)), acos: acosCell(p.range, p.price, listingPrice) },
-        };
-      }),
+      topProducts: shortlist.map(emailProduct),
       allProducts: [...rows]
         .sort((a, b) => acosSortRank(b.day, b.price, listingPriceFor(platform, b.sku)) - acosSortRank(a.day, a.price, listingPriceFor(platform, a.sku)))
-        .map((p) => {
-          const listingPrice = listingPriceFor(platform, p.sku);
-          return {
-            name: p.name,
-            price: p.price,
-            day: { spend: round2(p.day.spend), spendTax: round2(spendTax(p.day)), orders: p.day.units, cpc: round2(computeCpc(p.day)), acos: acosCell(p.day, p.price, listingPrice) },
-            range: { spend: round2(p.range.spend), spendTax: round2(spendTax(p.range)), orders: p.range.units, cpc: round2(computeCpc(p.range)), acos: acosCell(p.range, p.price, listingPrice) },
-          };
-        }),
+        .map(emailProduct),
     });
 
     const blockStart = sumAoa.length;
@@ -2840,13 +2848,16 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       spendTax: round2(spendTax({ spend, units: 0 })),
       orders: verified ? orders : null,
       sales: verified && sales != null ? round2(sales) : null,
-      // ACOS = Spend (without tax) ÷ attributed Sales; N/A (null) when there are no attributed sales
-      // (27 Nov 2026, seller's rule — replaces the 26 Nov "Spend ÷ 1").
-      acos: verified && sales != null && sales > 0 ? metaAcos(true, spend, sales) : null,
+      // ACOS = Spend (without tax) ÷ Sales; with no sales (0 or not reported) the divisor is 1, so
+      // ACOS = Spend ÷ 1 (seller's rule, 26 Nov 2026, confirmed again 27 Nov).
+      acos: spend > 0 ? Math.round((spend / (verified && sales != null && sales > 0 ? sales : 1)) * 10000) / 10000 : null,
     });
     const adLabel = (c: WindowedCampaign) => {
       const i = c.name.indexOf(META_AD_SEPARATOR);
-      return i >= 0 ? c.name.slice(i + META_AD_SEPARATOR.length) : c.adNames.length ? c.adNames.join("; ") : c.name;
+      if (i < 0) return c.adNames.length ? c.adNames.join("; ") : c.name;
+      // "<ad> :: <ad set>" — the same name twice when the ad set is named after the ad: show it once.
+      const parts = c.name.slice(i + META_AD_SEPARATOR.length).split(META_AD_SEPARATOR).map((x) => x.trim()).filter(Boolean);
+      return [...new Set(parts)].join(META_AD_SEPARATOR);
     };
     const sumOrNull = (xs: (number | null)[]) => (xs.every((x) => x == null) ? null : xs.reduce<number>((s, x) => s + (x ?? 0), 0));
     const products: SocialMediaProductSummary[] = socialSummaryProducts.map((p) => {
@@ -2892,7 +2903,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
     ];
     const pushSocial = (label: string, price: number | "", day: (string | number)[], range: (string | number)[], extra?: (string | number)[]) => {
       if (extra) sumExtras.set(sumAoa.length, extra);
-      // Since 27 Nov a block with no sales has ACOS N/A (a string), so this no longer marks any cell.
+      // A block with no sales has ACOS = Spend ÷ 1: shown as that plain amount (277.25), not a % (27725%).
       ([[day, 10], [range, 17]] as const).forEach(([b, c]) => {
         if ((b[3] === "N/A" || b[3] === 0) && typeof b[5] === "number") sumPlainAcos.push({ r: sumAoa.length, c });
       });
@@ -2945,6 +2956,8 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
   /** Google per-product rows for the Ad spend report sheet (same figures as the Summary's Google block):
    *  the 13 original detail columns plus [Sell price, day Ad orders, range Ad orders]. */
   const googleDetailRows: { cells: (string | number)[]; extra: (string | number)[]; plainAcosCols: number[] }[] = [];
+  /** Google per-product blocks for the daily mail (GoogleEmailSummary.products). */
+  const googleMailProducts: NonNullable<GoogleEmailSummary["products"]> = [];
   let googleSummary: GoogleEmailSummary | null = null;
   //
   // Ad spend (with/without tax) comes from the Google Ads "Campaign report" upload
@@ -2986,7 +2999,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       // Google Ads-click Shopify orders of that product (googleProductFor on the line's product title).
       // A product with two campaigns can't split its sales between them (the Google export has no
       // campaign ID), so orders/sales/ACOS sit on the product total. The grand total is the Google row as
-      // before, unchanged. ACOS = Spend ÷ Sales, N/A with no attributed sales (27 Nov 2026).
+      // before, unchanged. ACOS = Spend ÷ Sales, or Spend ÷ 1 (shown as the amount) with no sales.
       type GProduct = { campaigns: WindowedCampaign[]; daySales: number; rangeSales: number; dayUnits: number; rangeUnits: number; dayOrders: Set<string>; rangeOrders: Set<string> };
       const gProducts = new Map<string, GProduct>();
       const gAcc = (product: string) => {
@@ -3013,7 +3026,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       const spendCells = (spend: number) => [round2(spend), round2(spendTax({ spend, units: 0 })), "", "", "", "", ""];
       const totalCells = (spend: number, orders: number, sales: number) => [
         round2(spend), round2(spendTax({ spend, units: 0 })), orders, round2(sales), "",
-        spend > 0 && sales > 0 ? Math.round((spend / sales) * 10000) / 10000 : "N/A", round2(sales),
+        spend > 0 ? Math.round((spend / (sales > 0 ? sales : 1)) * 10000) / 10000 : "", round2(sales),
       ];
       const pushGoogle = (label: string, day: (string | number | null)[], range: (string | number | null)[], extra?: (string | number)[]) => {
         if (extra) sumExtras.set(sumAoa.length, extra);
@@ -3044,7 +3057,7 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
         // Ad spend report sheet: Campaign(s) | Product | Price | Spend, Spend(with tax), Orders, CPC, ACOS (x2).
         const detailBlock = (spend: number, orders: number, sales: number) => [
           round2(spend), round2(spendTax({ spend, units: 0 })), orders, "",
-          spend > 0 && sales > 0 ? Math.round((spend / sales) * 10000) / 10000 : "N/A",
+          spend > 0 ? Math.round((spend / (sales > 0 ? sales : 1)) * 10000) / 10000 : "",
         ];
         googleDetailRows.push({
           cells: [
@@ -3058,6 +3071,24 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
             ...(daySpendOf(p) > 0 && p.daySales <= 0 ? [7] : []),
             ...(rangeSpendOf(p) > 0 && p.rangeSales <= 0 ? [12] : []),
           ],
+        });
+        // Daily mail: the same product block (campaign spend rows + product total).
+        const mailTotal = (spend: number, orders: number, sales: number, units: number): GoogleMailBlock => ({
+          spend: round2(spend), spendTax: round2(spendTax({ spend, units: 0 })), orders, sales: round2(sales),
+          acos: spend > 0 ? Math.round((spend / (sales > 0 ? sales : 1)) * 10000) / 10000 : null,
+          sellPrice: units > 0 && sales > 0 ? round2(sales / units) : null,
+        });
+        googleMailProducts.push({
+          product,
+          campaigns: p.campaigns.slice().sort((a, b) => b.rangeSpend - a.rangeSpend || b.daySpend - a.daySpend).map((c) => ({
+            name: c.name,
+            day: { spend: round2(c.daySpend), spendTax: round2(spendTax({ spend: c.daySpend, units: 0 })) },
+            range: { spend: round2(c.rangeSpend), spendTax: round2(spendTax({ spend: c.rangeSpend, units: 0 })) },
+          })),
+          total: {
+            day: mailTotal(daySpendOf(p), p.dayOrders.size, p.daySales, p.dayUnits),
+            range: mailTotal(rangeSpendOf(p), p.rangeOrders.size, p.rangeSales, p.rangeUnits),
+          },
         });
       });
       socialBoldRows.push(sumAoa.length);
@@ -3087,6 +3118,10 @@ export async function buildAdSpendReportWorkbook(opts: AdSpendReportOpts): Promi
       rangeAcos: googleAttributed ? ratio4(googleRangeRatios.acos) : null,
       dayRoas: googleAttributed ? ratio4(googleDayRatios.roas) : null,
       rangeRoas: googleAttributed ? ratio4(googleRangeRatios.roas) : null,
+      rangeUnits: googleOrders.rangeUnits,
+      dayAdOrders: googleAttributed ? googleOrders.adDayOrders : null,
+      rangeAdOrders: googleAttributed ? googleOrders.adRangeOrders : null,
+      ...(googleMailProducts.length ? { products: googleMailProducts } : {}),
     };
   }
 
